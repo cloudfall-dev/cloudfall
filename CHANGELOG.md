@@ -111,6 +111,14 @@ Notable changes to Cloudfall. The format follows
 
 ### Fixed
 
+- The time baseline accepts a host whose clock another daemon keeps
+  (ntp, ntpsec, chrony). `timedatectl set-ntp` drives systemd-timesyncd
+  only, so on such hosts check mode reported "Would enable network time
+  synchronization" and a deploy failed with "NTP not supported". The role
+  now switches NTP on only where systemd-timesyncd is installed, and
+  otherwise requires the clock to be synchronized; check mode warns when
+  nothing keeps time, and a deploy fails with a message naming the daemon
+  to check when the clock does not synchronize within 60 seconds
 - `cloudfall add` into a read-only or full project failed with a Python
   traceback and could leave a new server type behind when only the
   server file failed. It now removes what it wrote and fails with
