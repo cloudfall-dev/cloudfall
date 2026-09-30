@@ -16,9 +16,14 @@
       - --property=LocalRTC
       - --property=NTP
       - --property=NTPSynchronized
+      - --property=CanNTP
   changed_when: false
   check_mode: false
   register: cloudfall_time_before
+
+# timedatectl's NTP switch drives systemd-timesyncd only (CanNTP=yes). A host
+# without it keeps time with another daemon such as ntp, ntpsec, or chrony,
+# which Cloudfall leaves in place and judges by NTPSynchronized alone.
 
 - name: Report timezone drift in check mode
   ansible.builtin.debug:
@@ -70,7 +75,19 @@
   changed_when: true
   when:
     - ansible_check_mode
+    - "'CanNTP=yes' in cloudfall_time_before.stdout_lines"
     - "'NTP=yes' not in cloudfall_time_before.stdout_lines"
+
+- name: Report an unsynchronized clock without systemd-timesyncd in check mode
+  ansible.builtin.debug:
+    msg: >-
+      The clock is not synchronized and systemd-timesyncd is not installed;
+      a deploy waits for the host's own NTP daemon and fails if it does not
+      synchronize
+  when:
+    - ansible_check_mode
+    - "'CanNTP=yes' not in cloudfall_time_before.stdout_lines"
+    - "'NTPSynchronized=yes' not in cloudfall_time_before.stdout_lines"
 
 - name: Enable network time synchronization
   ansible.builtin.command:
@@ -81,6 +98,7 @@
   changed_when: true
   when:
     - not ansible_check_mode
+    - "'CanNTP=yes' in cloudfall_time_before.stdout_lines"
     - "'NTP=yes' not in cloudfall_time_before.stdout_lines"
 
 - name: Read applied time configuration
@@ -91,6 +109,7 @@
       - --property=Timezone
       - --property=LocalRTC
       - --property=NTP
+      - --property=CanNTP
   changed_when: false
   check_mode: false
   register: cloudfall_time_after
@@ -100,7 +119,10 @@
     that:
       - ansible_check_mode or 'Timezone=' ~ cloudfall_time_timezone in cloudfall_time_after.stdout_lines
       - ansible_check_mode or 'LocalRTC=no' in cloudfall_time_after.stdout_lines
-      - ansible_check_mode or 'NTP=yes' in cloudfall_time_after.stdout_lines
+      - >-
+        ansible_check_mode
+        or 'CanNTP=yes' not in cloudfall_time_after.stdout_lines
+        or 'NTP=yes' in cloudfall_time_after.stdout_lines
     fail_msg: The host did not converge to the Cloudfall UTC time baseline
 
 - name: Wait for synchronized network time
@@ -116,4 +138,14 @@
   until: cloudfall_time_synchronized.stdout == "yes"
   retries: 12
   delay: 5
+  failed_when: false
+  when: not ansible_check_mode
+
+- name: Require synchronized network time
+  ansible.builtin.assert:
+    that:
+      - cloudfall_time_synchronized.stdout == "yes"
+    fail_msg: >-
+      The clock did not synchronize within 60 seconds; check the host's NTP
+      daemon (systemd-timesyncd, ntp, ntpsec, or chrony)
   when: not ansible_check_mode
