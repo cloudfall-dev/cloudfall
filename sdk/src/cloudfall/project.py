@@ -695,6 +695,11 @@ first:
 |---|---|
 {exit_rows}
 
+`cloudfall-engine` keeps its own contract: its envelope has no `status`, a
+failure is an envelope on stdout too, and its codes are listed by
+`cloudfall-engine manifest` (79 to 82 for engine failures, with the
+snake_case code in `error.context.code`).
+
 ## Evidence
 
 `{tmp}/` holds everything derived or produced: observations, receipts,

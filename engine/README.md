@@ -55,11 +55,31 @@ uv run cloudfall-engine playbook run engine/ansible/playbooks/proxy.yml \
   --roles engine/ansible/roles --limit proxy --tags nginx
 ```
 
-`--check`, `--diff`, `--syntax-check`, `--limit`, `--tags`, and `--extra-vars`
-pass through to `ansible-playbook`. A project uses this instead of
+`--dry-run` (Ansible's check mode), `--diff`, `--syntax-check`, `--limit`,
+`--tags`, and `--extra-vars` pass through to `ansible-playbook`. Ansible's play
+log streams to stderr as it runs; stdout carries one JSON document when the run
+ends. A project uses this instead of
 setting `ANSIBLE_CONFIG` against a checkout; the `task` targets in this
 repository still call `ansible-playbook` directly because they run from the
 source tree.
+
+## Output and exit codes
+
+`cloudfall-engine` is built on [treaty](https://github.com/romamo/treaty): every
+command answers one JSON envelope on stdout (`ok`, `data`, `error`, `warnings`,
+`meta`) and `cloudfall-engine manifest` describes every command, flag, and exit
+code. Input errors exit 2 before anything runs. Engine failures have their own
+codes, with the original snake_case code in `error.context.code`:
+
+| Exit | Code | Meaning |
+|---|---|---|
+| 79 | `PROJECT_INVALID` | no project directory could be resolved |
+| 80 | `CONFIG_INVALID` | the project's resources failed validation |
+| 81 | `ARTIFACT_BUILD_FAILED` | the component could not be cloned or packaged |
+| 82 | `PLAYBOOK_FAILED` | `ansible-playbook` exited non-zero; `error.context.returncode` has its code |
+
+Relative paths such as `--output tmp/ansible-inventory.json` and the default
+`--output-dir tmp/artifacts` land in the project, whatever the working directory.
 
 ## UTC time baseline
 

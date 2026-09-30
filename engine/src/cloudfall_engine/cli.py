@@ -1,30 +1,35 @@
-"""Command-line boundary for the Cloudfall execution engine."""
+"""Command-line boundary for the Cloudfall execution engine.
 
-from __future__ import annotations
+Built on treaty: every run answers one JSON envelope on stdout, a failure
+carries a declared exit code, and ``cloudfall-engine manifest`` describes
+each command. Ansible's play log streams to stderr.
+"""
 
 import json
 import os
-import sys
+from dataclasses import dataclass
+from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
-from cloudfall.arguments import (
-    StrictArgumentParser,
-    parse_arguments,
-    project_path_argument,
-)
+from cloudfall.domain import ResourceId
 from cloudfall.inventory import PlatformInventory
-from cloudfall.output import begin_invocation
 from cloudfall.project import (
     PROJECT_DIRECTORY_VARIABLE,
     ProjectError,
-    project_context,
+    resolve_project_directory,
 )
 from cloudfall.resources import default_engine_directory, default_schema_directory
 from cloudfall.validation import ConfigValidationError, validate_config
+from treaty import App, Arg, Ctx, Exit, Flag, Out, ParseError
 
 from cloudfall_engine.ansible_inventory import render_ansible_inventory
-from cloudfall_engine.artifact import ArtifactBuildError, build_artifact
+from cloudfall_engine.artifact import (
+    GIT_REF_PATTERN,
+    GIT_TIMEOUT_SECONDS,
+    ArtifactBuildError,
+    build_artifact,
+)
 from cloudfall_engine.playbook import (
     PlaybookError,
     PlaybookRun,
@@ -34,244 +39,396 @@ from cloudfall_engine.playbook import (
 )
 
 if TYPE_CHECKING:
-    import argparse
     from collections.abc import Sequence
 
+app = App(
+    "cloudfall-engine",
+    version=version("cloudfall"),
+    description="Run validated Cloudfall operations with Ansible",
+)
+app.scalar(
+    ResourceId,
+    parse=ResourceId.from_boundary,
+    pattern=r"[a-z][a-z0-9]*(-[a-z0-9]+)*",
+)
+app.exit_code(
+    "PROJECT_INVALID",
+    79,
+    description="No project directory could be resolved",
+    retryable=False,
+    side_effects="none",
+    suggestion=(
+        f"pass --project, set {PROJECT_DIRECTORY_VARIABLE}, "
+        "or run inside a project"
+    ),
+)
+app.exit_code(
+    "CONFIG_INVALID",
+    80,
+    description="The project's resources failed validation",
+    retryable=False,
+    side_effects="none",
+    suggestion="fix the resource error.context names, then run the command again",
+)
+app.exit_code(
+    "ARTIFACT_BUILD_FAILED",
+    81,
+    description="The component could not be cloned or packaged",
+    retryable=False,
+    side_effects="none",
+)
+app.exit_code(
+    "PLAYBOOK_FAILED",
+    82,
+    description="ansible-playbook exited non-zero; hosts may be partly converged",
+    retryable=False,
+    side_effects="partial",
+    suggestion="read the Ansible log on stderr, fix the failing task, and run again",
+)
 
-def _add_project_directory_argument(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--project",
-        type=Path,
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProjectArgs:
+    """Options every command that reads a project shares."""
+
+    project: Path | None = Flag(
         default=None,
-        help=(
-            f"project directory to run in (default: ${PROJECT_DIRECTORY_VARIABLE}, "
+        description=(
+            f"Project directory (default: ${PROJECT_DIRECTORY_VARIABLE}, "
             "else the current directory when it is a project)"
+        ),
+    )
+    schemas: Path = Flag(
+        default=default_schema_directory(),
+        description="Versioned schema directory (default: bundled schemas)",
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class Project:
+    """The resolved project and the inventory its resources validate to."""
+
+    directory: Path
+    inventory: PlatformInventory
+
+    @classmethod
+    def acquire(cls, args: ProjectArgs, _ctx: Ctx) -> Self:
+        """Resolve and validate the project before the handler runs."""
+        try:
+            directory = resolve_project_directory(
+                args.project, os.environ, Path.cwd()
+            )
+        except ProjectError as error:
+            raise Exit.PROJECT_INVALID(
+                error.detail, context={"code": error.code}
+            ) from error
+        try:
+            state = validate_config(directory, args.schemas)
+        except ConfigValidationError as error:
+            raise _config_invalid(error) from error
+        return cls(directory, PlatformInventory.from_state(state))
+
+    def path(self, value: Path) -> Path:
+        """Resolve a relative path inside the project, whatever the cwd."""
+        return value if value.is_absolute() else self.directory / value
+
+
+def _config_invalid(error: ConfigValidationError) -> Exception:
+    return Exit.CONFIG_INVALID(error.issue.message, context=error.issue.as_dict())
+
+
+inventory = app.group("inventory", description="Generate execution inventory")
+
+
+@dataclass(frozen=True, slots=True)
+class RenderArgs(ProjectArgs):
+    """Arguments of ``inventory render``."""
+
+    output: Path | None = Flag(
+        default=None,
+        description=(
+            "Also write the inventory JSON to this file (relative to the project)"
         ),
     )
 
 
-def _parser() -> StrictArgumentParser:
-    parser = StrictArgumentParser(prog="cloudfall-engine")
-    commands = parser.add_subparsers(dest="command", required=True)
+@dataclass(frozen=True, slots=True)
+class RenderedInventory:
+    """The rendered inventory and where it was written."""
 
-    inventory_parser = commands.add_parser(
-        "inventory", help="generate execution inventory"
-    )
-    inventory_commands = inventory_parser.add_subparsers(
-        dest="inventory_command", required=True
-    )
-    render_parser = inventory_commands.add_parser(
-        "render", help="render Ansible JSON inventory"
-    )
-    _add_project_directory_argument(render_parser)
-    render_parser.add_argument(
-        "--schemas",
-        type=Path,
-        default=default_schema_directory(),
-        help="versioned schema directory (default: bundled schemas)",
-    )
-    render_parser.add_argument(
-        "--output",
-        type=project_path_argument,
-        help="write inventory JSON to this file instead of stdout",
-    )
+    inventory: dict[str, object] = Out(ordered=True, high_entropy=False)
+    """The Ansible JSON inventory, exactly as Ansible reads it"""
+    output: Path | None = None
+    """Where it was written, or null without --output"""
 
-    artifact_parser = commands.add_parser("artifact", help="build release artifacts")
-    artifact_commands = artifact_parser.add_subparsers(
-        dest="artifact_command", required=True
+
+@inventory.command(
+    "render",
+    description="Render the validated config as Ansible JSON inventory",
+    danger_level="safe",
+    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID"],
+    examples=[
+        (
+            "Write the inventory Ansible reads",
+            "cloudfall-engine inventory render --output tmp/ansible-inventory.json",
+        ),
+    ],
+)
+def render(args: RenderArgs, _ctx: Ctx, project: Project) -> RenderedInventory:
+    """Render the inventory, and write it when ``--output`` names a file."""
+    rendered = render_ansible_inventory(project.inventory)
+    if args.output is None:
+        return RenderedInventory(rendered)
+    output = project.path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(f"{json.dumps(rendered, sort_keys=True)}\n", encoding="utf-8")
+    return RenderedInventory(rendered, output)
+
+
+artifact = app.group("artifact", description="Build release artifacts")
+
+
+@dataclass(frozen=True, slots=True)
+class BuildArgs(ProjectArgs):
+    """Arguments of ``artifact build``."""
+
+    component: ResourceId = Arg(description="Component to package")
+    ref: str = Flag(
+        description="Git ref (branch, tag, or commit) to package",
+        pattern=GIT_REF_PATTERN.pattern,
     )
-    build_parser = artifact_commands.add_parser(
-        "build", help="clone, package, and hash one component release"
-    )
-    _add_project_directory_argument(build_parser)
-    build_parser.add_argument("component")
-    build_parser.add_argument(
-        "--ref",
-        required=True,
-        help="git ref (branch, tag, or commit) to package",
-    )
-    build_parser.add_argument(
-        "--schemas",
-        type=Path,
-        default=default_schema_directory(),
-        help="versioned schema directory (default: bundled schemas)",
-    )
-    build_parser.add_argument(
-        "--output-dir",
-        type=project_path_argument,
+    output_dir: Path = Flag(
         default=Path("tmp/artifacts"),
-        help="artifact output directory (default: tmp/artifacts)",
-    )
-
-    playbook_parser = commands.add_parser(
-        "playbook", help="run Ansible playbooks with the engine configuration"
-    )
-    playbook_commands = playbook_parser.add_subparsers(
-        dest="playbook_command", required=True
-    )
-    list_parser = playbook_commands.add_parser(
-        "list", help="list the playbooks bundled with the engine"
-    )
-    _add_engine_argument(list_parser)
-    run_parser = playbook_commands.add_parser(
-        "run", help="run one bundled playbook or a playbook file"
-    )
-    run_parser.add_argument(
-        "playbook",
-        help="bundled playbook name (see `playbook list`) or a playbook path",
-    )
-    _add_engine_argument(run_parser)
-    run_parser.add_argument(
-        "--inventory",
-        type=project_path_argument,
-        default=Path("tmp/ansible-inventory.json"),
-        help="rendered inventory path (default: tmp/ansible-inventory.json)",
-    )
-    run_parser.add_argument(
-        "--roles",
-        type=Path,
-        action="append",
-        default=[],
-        help="role directory searched before the bundled roles (repeatable)",
-    )
-    run_parser.add_argument(
-        "--extra-vars",
-        action="append",
-        default=[],
-        help="passed through to ansible-playbook unchanged (repeatable)",
-    )
-    run_parser.add_argument(
-        "--tags",
-        action="append",
-        default=[],
-        help="only run plays and tasks tagged with this value (repeatable)",
-    )
-    run_parser.add_argument("--limit", help="restrict the run to a host pattern")
-    run_parser.add_argument("--check", action="store_true", help="run in check mode")
-    run_parser.add_argument("--diff", action="store_true", help="show file diffs")
-    run_parser.add_argument(
-        "--syntax-check",
-        action="store_true",
-        help="only check the playbook syntax",
-    )
-    return parser
-
-
-def _add_engine_argument(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--engine",
-        type=Path,
-        default=default_engine_directory(),
-        help="engine directory containing ansible contracts (default: bundled engine)",
+        description="Artifact output directory, relative to the project",
     )
 
 
-def _render_inventory(arguments: argparse.Namespace) -> int:
-    try:
-        state = validate_config(
-            Path(arguments.project_directory), Path(arguments.schemas)
-        )
-    except ConfigValidationError as error:
-        sys.stderr.write(f"{json.dumps(error.as_dict(), sort_keys=True)}\n")
-        return 2
+@dataclass(frozen=True, slots=True)
+class BuiltRelease:
+    """One packaged and hashed release."""
 
-    inventory = PlatformInventory.from_state(state)
-    rendered = render_ansible_inventory(inventory)
-    serialized = f"{json.dumps(rendered, sort_keys=True)}\n"
-    if arguments.output is None:
-        sys.stdout.write(serialized)
-    else:
-        output_path = Path(arguments.output)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(serialized, encoding="utf-8")
-        result = {"output": str(output_path), "status": "ok"}
-        sys.stdout.write(f"{json.dumps(result, sort_keys=True)}\n")
-    return 0
+    effect: str
+    component: str
+    release: str
+    git_ref: str
+    git_commit: str
+    archive: Path
+    metadata: Path
+    archive_sha256: str
+    size_bytes: int
+    built_at: str = Out(volatile=True)
 
 
-def _build_artifact(arguments: argparse.Namespace) -> int:
-    try:
-        state = validate_config(
-            Path(arguments.project_directory), Path(arguments.schemas)
-        )
-    except ConfigValidationError as error:
-        sys.stderr.write(f"{json.dumps(error.as_dict(), sort_keys=True)}\n")
-        return 2
-
-    inventory = PlatformInventory.from_state(state)
+@artifact.command(
+    "build",
+    description="Clone, package, and hash one component release",
+    danger_level="mutating",
+    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "ARTIFACT_BUILD_FAILED"],
+    timeout=3 * GIT_TIMEOUT_SECONDS,
+    supports_raw_payload=True,
+    examples=[
+        (
+            "Package the main branch of one component",
+            "cloudfall-engine artifact build crm-backend --ref main",
+        ),
+    ],
+)
+def build(args: BuildArgs, _ctx: Ctx, project: Project) -> BuiltRelease:
+    """Clone the component at ``--ref`` and package it under the project."""
     try:
         built = build_artifact(
-            inventory,
-            arguments.component,
-            arguments.ref,
-            Path(arguments.output_dir),
-            Path(arguments.schemas),
+            project.inventory,
+            str(args.component),
+            args.ref,
+            project.path(args.output_dir),
+            args.schemas,
         )
     except ArtifactBuildError as error:
-        sys.stderr.write(f"{json.dumps(error.as_dict(), sort_keys=True)}\n")
-        return 2
+        raise Exit.ARTIFACT_BUILD_FAILED(
+            error.detail, context={"code": error.code}
+        ) from error
     except ConfigValidationError as error:
-        sys.stderr.write(f"{json.dumps(error.as_dict(), sort_keys=True)}\n")
-        return 2
-    sys.stdout.write(f"{json.dumps(built.as_dict(), sort_keys=True)}\n")
-    return 0
+        raise _config_invalid(error) from error
+    return BuiltRelease(
+        effect="created",
+        component=built.component_id,
+        release=built.release,
+        git_ref=built.git_ref,
+        git_commit=built.git_commit,
+        archive=built.archive_path,
+        metadata=built.metadata_path,
+        archive_sha256=built.archive_sha256,
+        size_bytes=built.size_bytes,
+        built_at=built.built_at,
+    )
 
 
-def _list_playbooks(arguments: argparse.Namespace) -> int:
+playbook = app.group(
+    "playbook", description="Run Ansible playbooks with the engine configuration"
+)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class EngineArgs:
+    """Options every playbook command shares."""
+
+    engine: Path = Flag(
+        default=default_engine_directory(),
+        description=(
+            "Engine directory containing the Ansible contracts "
+            "(default: bundled engine)"
+        ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ListArgs(EngineArgs):
+    """Arguments of ``playbook list``."""
+
+
+@dataclass(frozen=True, slots=True)
+class Playbooks:
+    """The playbooks an engine directory bundles."""
+
+    engine: Path
+    playbooks: list[str] = Out(ordered=True)
+
+
+@playbook.command(
+    "list",
+    description="List the playbooks bundled with the engine",
+    danger_level="safe",
+    exit_codes=["NOT_FOUND"],
+    examples=[("List the bundled playbooks", "cloudfall-engine playbook list")],
+)
+def list_playbooks(args: ListArgs, _ctx: Ctx) -> Playbooks:
+    """List the bundled playbooks by name."""
     try:
-        names = bundled_playbooks(Path(arguments.engine))
+        names = bundled_playbooks(args.engine)
     except PlaybookError as error:
-        sys.stderr.write(f"{json.dumps(error.as_dict(), sort_keys=True)}\n")
-        return 2
-    result = {"engine": str(arguments.engine), "playbooks": list(names)}
-    sys.stdout.write(f"{json.dumps(result, sort_keys=True)}\n")
-    return 0
+        raise Exit.NOT_FOUND(error.detail, context={"code": error.code}) from error
+    return Playbooks(args.engine, list(names))
 
 
-def _run_playbook(arguments: argparse.Namespace) -> int:
-    engine_directory = Path(arguments.engine)
+@dataclass(frozen=True, slots=True)
+class RunArgs(EngineArgs):
+    """Arguments of ``playbook run``, checked before anything runs."""
+
+    playbook: str = Arg(
+        description="Bundled playbook name (see playbook list) or a playbook path"
+    )
+    inventory: Path = Flag(
+        default=Path("tmp/ansible-inventory.json"),
+        description="Rendered inventory path",
+    )
+    roles: tuple[Path, ...] = Flag(
+        default=(),
+        description="Role directory searched before the bundled roles (repeatable)",
+    )
+    extra_vars: tuple[str, ...] = Flag(
+        default=(),
+        description="Passed through to ansible-playbook unchanged (repeatable)",
+    )
+    tags: tuple[str, ...] = Flag(
+        default=(),
+        description="Only run plays and tasks tagged with this value (repeatable)",
+    )
+    limit: str | None = Flag(
+        default=None, description="Restrict the run to a host pattern"
+    )
+    dry_run: bool = Flag(
+        default=False,
+        description="Run in Ansible check mode: report changes, make none",
+    )
+    diff: bool = Flag(default=False, description="Show file diffs")
+    syntax_check: bool = Flag(
+        default=False, description="Only check the playbook syntax"
+    )
+
+    def __post_init__(self) -> None:
+        """Report a missing playbook, inventory, or role directory as input."""
+        _playbook_run(self)
+
+
+def _playbook_run(args: RunArgs) -> PlaybookRun:
     try:
-        run = PlaybookRun(
-            playbook=resolve_playbook(arguments.playbook, engine_directory),
-            inventory_file=Path(arguments.inventory),
-            role_directories=tuple(Path(role) for role in arguments.roles),
-            extra_vars=tuple(arguments.extra_vars),
-            tags=tuple(arguments.tags),
-            limit=arguments.limit,
-            check=arguments.check,
-            diff=arguments.diff,
-            syntax_check=arguments.syntax_check,
+        return PlaybookRun(
+            playbook=resolve_playbook(args.playbook, args.engine),
+            inventory_file=args.inventory,
+            role_directories=args.roles,
+            extra_vars=args.extra_vars,
+            tags=args.tags,
+            limit=args.limit,
+            check=args.dry_run,
+            diff=args.diff,
+            syntax_check=args.syntax_check,
         )
-        return execute_playbook(run, engine_directory)
     except PlaybookError as error:
-        sys.stderr.write(f"{json.dumps(error.as_dict(), sort_keys=True)}\n")
-        return 2
+        raise ParseError(error.detail, context={"code": error.code}) from error
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Run one engine command and return a process exit code."""
-    # The shared parser reports usage errors through cloudfall's writer,
-    # which stamps each document with its invocation.
-    begin_invocation()
-    arguments = parse_arguments(_parser(), argv)
-    if arguments.command == "playbook":
-        if arguments.playbook_command == "list":
-            return _list_playbooks(arguments)
-        return _run_playbook(arguments)
+@dataclass(frozen=True, slots=True)
+class Played:
+    """A playbook run that ansible-playbook finished with exit 0."""
+
+    effect: str
+    playbook: Path
+    inventory: Path
+
+
+@playbook.command(
+    "run",
+    description=(
+        "Run one bundled or project playbook against the inventory; "
+        "the Ansible log streams to stderr"
+    ),
+    danger_level="mutating",
+    exit_codes=["PRECONDITION", "PLAYBOOK_FAILED"],
+    timeout=None,
+    supports_raw_payload=True,
+    examples=[
+        (
+            "Collect read-only server snapshots",
+            "cloudfall-engine playbook run inspect "
+            "--inventory tmp/ansible-inventory.json",
+        ),
+        (
+            "Preview a converge without changing hosts",
+            "cloudfall-engine playbook run time --dry-run --diff",
+        ),
+    ],
+)
+def run_playbook(args: RunArgs, _ctx: Ctx) -> Played:
+    """Run ansible-playbook in the foreground and report how it ended."""
+    run = _playbook_run(args)
     try:
-        with project_context(arguments.project, os.environ) as project_directory:
-            arguments.project_directory = project_directory
-            if arguments.command == "inventory":
-                return _render_inventory(arguments)
-            if arguments.command == "artifact":
-                return _build_artifact(arguments)
-    except ProjectError as error:
-        sys.stderr.write(f"{json.dumps(error.as_dict(), sort_keys=True)}\n")
-        return 2
-    message = "argparse accepted an unsupported engine command"
-    raise RuntimeError(message)
+        returncode = execute_playbook(run, args.engine)
+    except PlaybookError as error:
+        raise Exit.PRECONDITION(
+            error.detail, context={"code": error.code}
+        ) from error
+    if returncode != 0:
+        message = f"the playbook failed: ansible-playbook exited {returncode}"
+        raise Exit.PLAYBOOK_FAILED(
+            message,
+            context={"returncode": returncode, "playbook": str(run.playbook)},
+        )
+    return Played(_effect(args), run.playbook, run.inventory_file)
+
+
+def _effect(args: RunArgs) -> str:
+    if args.syntax_check:
+        return "noop"
+    # Ansible reports what changed only in its log, so a live run claims the
+    # converge rather than counting changed tasks.
+    return "would_update" if args.dry_run else "updated"
+
+
+def main(argv: Sequence[str]) -> int:
+    """Run one engine command in-process and return its exit code."""
+    return app.run(argv)
 
 
 def run() -> None:
     """Installed engine console-script entry point."""
-    raise SystemExit(main())
+    app.main()

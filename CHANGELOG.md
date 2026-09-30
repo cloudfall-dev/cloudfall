@@ -70,6 +70,16 @@ Notable changes to Cloudfall. The format follows
 
 ### Changed
 
+- **Breaking:** `cloudfall-engine` runs on [treaty](https://github.com/romamo/treaty).
+  Every command answers one JSON envelope on stdout (`ok`, `data`, `error`,
+  `warnings`, `meta`), errors included, which used to go to stderr in their
+  own shape; `inventory render` puts the inventory under `data.inventory`
+  (the `--output` file is unchanged). Failures exit with their own codes:
+  79 `PROJECT_INVALID`, 80 `CONFIG_INVALID`, 81 `ARTIFACT_BUILD_FAILED`,
+  82 `PLAYBOOK_FAILED`; the old snake_case code is in `error.context.code`.
+  A missing playbook, inventory, or role directory exits 2 before Ansible
+  starts. `playbook run --check` is now `--dry-run`; Ansible's play log
+  streams to stderr. `cloudfall-engine manifest` describes every command
 - Every JSON document has the same six top-level keys: `ok` (true exactly
   when the exit code is 0), `status` (the command's verdict, such as `ok`,
   `plan`, `drift` or `unhealthy`), `data` (the command's payload, which

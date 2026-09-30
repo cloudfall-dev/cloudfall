@@ -25,9 +25,9 @@ if TYPE_CHECKING:
     from cloudfall.inventory import ComponentInventory, PlatformInventory
 
 _ARTIFACT_SCHEMA = "artifact.schema.json"
-_GIT_TIMEOUT_SECONDS = 600
+GIT_TIMEOUT_SECONDS = 600
 _SHORT_COMMIT_LENGTH = 7
-_GIT_REF_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@^~-]{0,199}")
+GIT_REF_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@^~-]{0,199}")
 _ERROR_COMPONENT_MISSING = "artifact_component_missing"
 _ERROR_SUBDIRECTORY_MISSING = "artifact_subdirectory_missing"
 _ERROR_REF_INVALID = "artifact_ref_invalid"
@@ -192,7 +192,7 @@ def _component(
 
 
 def _validate_ref(git_ref: str) -> None:
-    if not _GIT_REF_PATTERN.fullmatch(git_ref):
+    if not GIT_REF_PATTERN.fullmatch(git_ref):
         detail = f"git ref contains unsupported characters: {git_ref!r}"
         raise ArtifactBuildError(_ERROR_REF_INVALID, detail)
 
@@ -228,7 +228,7 @@ def _run_git(*arguments: str) -> str:
             capture_output=True,
             check=True,
             text=True,
-            timeout=_GIT_TIMEOUT_SECONDS,
+            timeout=GIT_TIMEOUT_SECONDS,
         )
     except subprocess.CalledProcessError as error:
         detail = (
@@ -238,7 +238,7 @@ def _run_git(*arguments: str) -> str:
     except subprocess.TimeoutExpired as error:
         detail = (
             f"git {' '.join(arguments[:2])} exceeded "
-            f"{_GIT_TIMEOUT_SECONDS} seconds"
+            f"{GIT_TIMEOUT_SECONDS} seconds"
         )
         raise ArtifactBuildError(_ERROR_GIT_TIMEOUT, detail) from error
     return completed.stdout

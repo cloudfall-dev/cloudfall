@@ -6,6 +6,7 @@ import hashlib
 import json
 import tarfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 from cloudfall.cli import main
@@ -212,7 +213,7 @@ def test_cli_deploy_reports_a_missing_artifact(
 
 def _cli_lifecycle(
     argv: list[str], tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> tuple[int, dict[str, object]]:
+) -> tuple[int, dict[str, Any]]:
     exit_code = main(
         [
             *argv,

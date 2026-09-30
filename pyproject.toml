@@ -20,6 +20,7 @@ dependencies = [
     "ansible-core>=2.21,<2.22",
     "jsonschema[format]>=4.23,<5",
     "pyyaml>=6,<7",
+    "treaty==1.0.0rc4",
 ]
 
 [project.urls]
@@ -80,6 +81,10 @@ ignore = [
     "D203",
     "D213",
 ]
+
+# treaty's Arg, Flag, and Out are dataclass field specifiers, like field().
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["treaty.Arg", "treaty.Flag", "treaty.Out"]
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["D103", "INP001", "PLR2004", "S101"]
