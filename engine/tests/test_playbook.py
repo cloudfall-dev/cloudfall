@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from cloudfall.inventory import PlatformInventory
 from cloudfall.validation import validate_config
 from cloudfall_engine.ansible_inventory import render_ansible_inventory
-from cloudfall_engine.cli import main
+from cloudfall_engine.cli import app, main
 from cloudfall_engine.playbook import (
     PlaybookError,
     PlaybookRun,
@@ -115,12 +116,14 @@ def test_command_carries_engine_config_and_role_path(tmp_path: Path) -> None:
 
 def test_cli_lists_bundled_playbooks(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["playbook", "list", "--engine", str(ENGINE)]) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["engine"] == str(ENGINE)
-    assert "inspect" in payload["playbooks"]
+    data = json.loads(capsys.readouterr().out)["data"]
+    assert data["engine"] == str(ENGINE)
+    assert "inspect" in data["playbooks"]
 
 
-def test_cli_syntax_checks_a_bundled_playbook(inventory_file: Path) -> None:
+def test_cli_syntax_checks_a_bundled_playbook(
+    inventory_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     exit_code = main(
         [
             "playbook",
@@ -133,10 +136,12 @@ def test_cli_syntax_checks_a_bundled_playbook(inventory_file: Path) -> None:
             "--syntax-check",
         ]
     )
+
     assert exit_code == 0
+    assert json.loads(capsys.readouterr().out)["data"]["effect"] == "noop"
 
 
-def test_cli_reports_unknown_playbook(
+def test_cli_reports_unknown_playbook_before_running(
     inventory_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     exit_code = main(
@@ -150,44 +155,55 @@ def test_cli_reports_unknown_playbook(
             str(inventory_file),
         ]
     )
+
+    error = json.loads(capsys.readouterr().out)["error"]
     assert exit_code == 2
-    payload = json.loads(capsys.readouterr().err)
-    assert payload["error"]["code"] == "playbook_missing"
+    assert error["phase"] == "validation"
+    assert error["context"]["code"] == "playbook_missing"
 
 
 def test_a_usage_error_is_a_json_document(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    with pytest.raises(SystemExit) as exit_info:
-        main(["playbook", "list", "--bogus"])
+    exit_code = main(["playbook", "list", "--bogus"])
 
     captured = capsys.readouterr()
-    assert exit_info.value.code == 2
-    assert captured.out == ""
-    assert json.loads(captured.err)["error"]["code"] == "invalid_argument"
+    assert exit_code == 2
+    assert json.loads(captured.out)["error"]["code"] == "ARG_ERROR"
 
 
-def test_quiet_is_an_unknown_option_the_engine_names(
-    capsys: pytest.CaptureFixture[str],
+def test_check_mode_is_the_dry_run_flag(
+    inventory_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The engine has no --quiet, so it must say so instead of going silent."""
-    with pytest.raises(SystemExit) as exit_info:
-        main(["playbook", "list", "--quiet"])
+    """Ansible's --check is spelled --dry-run, like every treaty command."""
+    exit_code = main(
+        [
+            "playbook",
+            "run",
+            "inspect",
+            "--engine",
+            str(ENGINE),
+            "--inventory",
+            str(inventory_file),
+            "--check",
+        ]
+    )
 
-    captured = capsys.readouterr()
-    assert exit_info.value.code == 2
-    assert captured.out == ""
-    error = json.loads(captured.err)["error"]
-    assert error["code"] == "invalid_argument"
-    assert "--quiet" in error["message"]
+    assert exit_code == 2
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "ARG_ERROR"
 
 
-def test_engine_help_carries_no_cloudfall_exit_codes(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """The table describes cloudfall; the engine does not claim it."""
-    with pytest.raises(SystemExit) as exit_info:
-        main(["--help"])
+def test_every_engine_failure_code_is_declared() -> None:
+    commands = cast("dict[str, dict[str, Any]]", app.manifest()["commands"])
+    declared = {
+        int(number): entry["name"]
+        for command in commands.values()
+        for number, entry in command["exit_codes"].items()
+    }
 
-    assert exit_info.value.code == 0
-    assert "exit codes:" not in capsys.readouterr().err
+    assert {declared[n] for n in (79, 80, 81, 82)} == {
+        "PROJECT_INVALID",
+        "CONFIG_INVALID",
+        "ARTIFACT_BUILD_FAILED",
+        "PLAYBOOK_FAILED",
+    }

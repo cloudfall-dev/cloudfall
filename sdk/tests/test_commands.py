@@ -1,4 +1,4 @@
-"""The command catalog matches the argparse trees it classifies."""
+"""The command catalog matches the command trees it classifies."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from cloudfall.commands import (
     CommandEffect,
     commands_with_effect,
 )
-from cloudfall_engine.cli import _parser as engine_parser
+from cloudfall_engine.cli import app as engine_app
 
 
 def _leaves(parser: argparse.ArgumentParser, prefix: str = "") -> dict[str, set[str]]:
@@ -47,7 +47,12 @@ def test_catalog_names_every_cli_leaf_command_once() -> None:
 def test_catalog_names_every_engine_leaf_command_once() -> None:
     cataloged = [command.name for command in ENGINE_COMMANDS]
 
-    assert sorted(cataloged) == sorted(_leaves(engine_parser()))
+    engine_leaves = [
+        str(path).replace(".", " ")
+        for path in engine_app.commands
+        if path not in engine_app.builtins
+    ]
+    assert sorted(cataloged) == sorted(engine_leaves)
     assert len(cataloged) == len(set(cataloged))
     assert all(command.program == "cloudfall-engine" for command in ENGINE_COMMANDS)
 

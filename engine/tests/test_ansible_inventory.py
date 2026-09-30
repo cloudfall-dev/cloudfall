@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -292,18 +293,19 @@ def test_engine_cli_emits_ansible_json(
         ]
     )
 
-    captured = capsys.readouterr()
-    payload = json.loads(captured.out)
+    document = json.loads(capsys.readouterr().out)
     assert exit_code == 0
+    assert document["ok"] is True
+    assert document["data"]["output"] is None
+    inventory = document["data"]["inventory"]
     assert (
-        payload["all"]["children"]["cloudfall_servers"]["hosts"]["h1"]["ansible_user"]
+        inventory["all"]["children"]["cloudfall_servers"]["hosts"]["h1"]["ansible_user"]
         == "cloudfall"
     )
     assert (
         "component_crm_backend"
-        in payload["all"]["children"]["cloudfall_components"]["children"]
+        in inventory["all"]["children"]["cloudfall_components"]["children"]
     )
-    assert captured.err == ""
 
 
 def test_engine_cli_can_write_inventory_file(
@@ -324,15 +326,49 @@ def test_engine_cli_can_write_inventory_file(
         ]
     )
 
-    captured = capsys.readouterr()
+    document = json.loads(capsys.readouterr().out)
     assert exit_code == 0
-    assert json.loads(captured.out) == {
-        "output": str(output_path),
-        "status": "ok",
-    }
+    assert document["data"]["output"] == str(output_path)
     written = json.loads(output_path.read_text(encoding="utf-8"))
+    assert written == document["data"]["inventory"]
     assert sorted(written["all"]["children"]["cloudfall_servers"]["hosts"]) == [
         "h1",
         "h2",
     ]
-    assert captured.err == ""
+
+
+def test_engine_cli_writes_a_relative_output_inside_the_project(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = tmp_path / "project"
+    shutil.copytree(EXAMPLES, project)
+    exit_code = main(
+        [
+            "inventory",
+            "render",
+            "--project",
+            str(project),
+            "--schemas",
+            str(SCHEMAS),
+            "--output",
+            "tmp/inventory.json",
+        ]
+    )
+
+    document = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert document["data"]["output"] == str(project / "tmp" / "inventory.json")
+    assert (project / "tmp" / "inventory.json").is_file()
+
+
+def test_engine_cli_names_a_missing_project(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(["inventory", "render", "--project", str(tmp_path / "gone")])
+
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert exit_code == 79
+    assert error["code"] == "PROJECT_INVALID"
+    assert error["context"]["code"] == "project_directory_missing"
