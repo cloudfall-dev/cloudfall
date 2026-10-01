@@ -25,7 +25,8 @@ from cloudfall.ansible_api import (
     inventory_from_config,
     read_inventory,
 )
-from cloudfall.ansible_reader import FleetRead, read_fleet
+from cloudfall.ansible_reader import read_fleet
+from cloudfall.app import app as treaty_app
 from cloudfall.arguments import (
     StrictArgumentParser,
     add_output_options,
@@ -36,7 +37,6 @@ from cloudfall.arguments import (
     root_parser,
     schema_version_argument,
 )
-from cloudfall.audit import AuditStatus, audit_inventory
 from cloudfall.authoring import (
     AuthoringError,
     ServerOptions,
@@ -152,7 +152,6 @@ from cloudfall.resources import default_engine_directory, default_schema_directo
 from cloudfall.secrets import (
     SecretsError,
     SopsSecretProvider,
-    load_environment_receipts,
     render_environment,
 )
 from cloudfall.service_evidence import (
@@ -1267,10 +1266,18 @@ def _add_lifecycle_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the CLI and return a process exit code."""
+    """Run the CLI and return a process exit code.
+
+    A command already moved to treaty runs there; argparse answers every
+    other command line, root ``--help`` and ``--version`` included, until the
+    last command moves (see ``cloudfall.app``).
+    """
+    words = list(sys.argv[1:] if argv is None else argv)
+    if treaty_app.resolves(words):
+        return treaty_app.run(words)
     begin_invocation()
     try:
-        code = _main(argv)
+        code = _main(words)
     except OSError as error:
         # A path the command must write is read-only or not ours: a fact
         # about the environment, reported like any other failure. Every
@@ -1484,7 +1491,6 @@ def _dispatch(
     arguments: Namespace, state: ValidatedConfig, schema_directory: Path
 ) -> int:
     handlers: dict[str, Callable[[Namespace, ValidatedConfig, Path], int]] = {
-        "audit": _run_audit,
         "backup:run": _run_backup_run,
         "backup:verify": _run_backup_verify,
         "secrets:render": _run_secrets_render,
@@ -1493,18 +1499,13 @@ def _dispatch(
         "dashboard:serve": _run_dashboard_serve,
         "deploy": _run_deploy,
         "health": _run_health,
-        "inventory:show": _run_inventory_show,
         "observe": _run_observe,
         "migrate": _run_migrate,
         "operator:approve": _run_operator_approve,
-        "operator:list": _run_operator_list,
         "operator:run": _run_operator_run,
-        "operator:show": _run_operator_show,
         "restart": _run_restart,
         "rollback": _run_rollback,
         "services:inspect": _run_services_inspect,
-        "services:status": _run_services_status,
-        "config:validate": _run_config_validate,
     }
     key = _command_key(arguments)
     try:
@@ -1531,29 +1532,8 @@ def _command_key(arguments: Namespace) -> str:
     return f"{arguments.command}:{subcommand}"
 
 
-def _run_config_validate(
-    _arguments: Namespace, state: ValidatedConfig, _schema_directory: Path
-) -> int:
-    write_result(state.as_dict())
-    return 0
-
-
-def _run_inventory_show(
-    arguments: Namespace, state: ValidatedConfig, _schema_directory: Path
-) -> int:
-    payload: dict[str, object] = {
-        "status": "ok",
-        "inventory": PlatformInventory.from_state(state).as_dict(),
-    }
-    read = getattr(arguments, "fleet_read", None)
-    if isinstance(read, FleetRead):
-        payload["ansible"] = read.as_dict()
-    write_result(payload)
-    return 0
-
-
 def _run_operations(arguments: Namespace) -> int:
-    """Read the catalog, which needs no fleet and no inventory.
+    """Propose or approve against the catalog, which needs no fleet.
 
     An agent needs its tool list from a repository Cloudfall cannot read a
     fleet from yet, so the catalog resolves against the repository it lives
@@ -1566,33 +1546,14 @@ def _run_operations(arguments: Namespace) -> int:
     )
     if arguments.operations_command == "approve":
         return _approve_decision(arguments, repository)
-    if arguments.operations_command == "decisions":
-        # The record outlives the catalog: what was proposed and approved
-        # stays readable however the declared operations change.
-        store = _decision_store(arguments, repository)
-        write_result(
-            {
-                "status": "ok",
-                "directory": str(store.directory),
-                "decisions": [
-                    decision.as_document() for decision in store.list()
-                ],
-            }
-        )
-        return 0
+    # list, show and decisions run on treaty (cloudfall.app); propose is
+    # the only other subcommand that reaches argparse.
     catalog = load_catalog(
         repository,
         Path(arguments.schemas),
         repository / Path(arguments.operations),
     )
-    if arguments.operations_command == "show":
-        operation = catalog.get(arguments.operation)
-        write_result({"status": "ok", "operation": operation.as_dict()})
-        return 0
-    if arguments.operations_command == "propose":
-        return _propose_operation(arguments, repository, catalog)
-    write_result(catalog.as_dict())
-    return 0
+    return _propose_operation(arguments, repository, catalog)
 
 
 def _run_why(arguments: Namespace) -> int:
@@ -1752,27 +1713,6 @@ def _run_observe(
     return code
 
 
-_AUDIT_EXIT_CODES = {
-    AuditStatus.COMPLIANT: 0,
-    AuditStatus.DRIFT: 1,
-    AuditStatus.UNKNOWN: 3,
-}
-
-
-def _run_audit(
-    arguments: Namespace, state: ValidatedConfig, schema_directory: Path
-) -> int:
-    observations = load_observations(Path(arguments.observed), schema_directory)
-    report = audit_inventory(
-        PlatformInventory.from_state(state),
-        observations,
-        load_environment_receipts(Path(arguments.env_receipts), schema_directory),
-    )
-    code = _AUDIT_EXIT_CODES[report.status]
-    write_result(report.as_dict(), exit_code=code)
-    return code
-
-
 def _run_secrets_render(
     arguments: Namespace, _state: ValidatedConfig, schema_directory: Path
 ) -> int:
@@ -1919,30 +1859,6 @@ def _run_operator_run(
         return _operator_exit(error)
 
 
-def _run_operator_list(
-    arguments: Namespace, _state: ValidatedConfig, schema_directory: Path
-) -> int:
-    try:
-        store = _operator_store(arguments, schema_directory)
-        proposals = [proposal.as_document() for proposal in store.list()]
-    except OperatorError as error:
-        return _operator_exit(error)
-    write_result({"status": "ok", "proposals": proposals})
-    return 0
-
-
-def _run_operator_show(
-    arguments: Namespace, _state: ValidatedConfig, schema_directory: Path
-) -> int:
-    try:
-        store = _operator_store(arguments, schema_directory)
-        proposal = store.load(arguments.proposal)
-    except OperatorError as error:
-        return _operator_exit(error)
-    write_result({"status": "ok", "proposal": proposal.as_document()})
-    return 0
-
-
 def _run_operator_approve(
     arguments: Namespace, state: ValidatedConfig, schema_directory: Path
 ) -> int:
@@ -1994,19 +1910,6 @@ def _run_services_inspect(
         {
             "status": "ok",
             "observations": [str(path) for path in paths],
-        }
-    )
-    return 0
-
-
-def _run_services_status(
-    arguments: Namespace, state: ValidatedConfig, schema_directory: Path
-) -> int:
-    operations = _service_operations(arguments, state, schema_directory)
-    write_result(
-        {
-            "status": "ok",
-            "services": [domain.as_dict() for domain in operations.domains],
         }
     )
     return 0

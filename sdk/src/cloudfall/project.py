@@ -695,6 +695,14 @@ first:
 |---|---|
 {exit_rows}
 
+`cloudfall` is moving to the treaty contract a command at a time; the
+commands `cloudfall manifest` lists have moved. Their envelope has no
+top-level `status`: the verdict is `data.status`, beside the keys described
+above. A failure is an envelope on stdout too, the exit code is the one
+`cloudfall manifest` declares (a negative verdict such as drift keeps its
+report in `data`), and the snake_case code is in `error.context.code`. Pick
+the format with `--format json`; `--output` names a file there.
+
 `cloudfall-engine` keeps its own contract: its envelope has no `status`, a
 failure is an envelope on stdout too, and its codes are listed by
 `cloudfall-engine manifest` (79 to 82 for engine failures, with the

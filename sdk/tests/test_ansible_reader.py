@@ -351,9 +351,10 @@ def test_the_cli_refuses_two_fleets_at_once(
         ]
     )
 
-    payload = json.loads(capsys.readouterr().err)
+    payload = json.loads(capsys.readouterr().out)
     assert exit_code == 2
-    assert payload["error"]["code"] == "project_source_ambiguous"
+    assert payload["error"]["code"] == "ARG_ERROR"
+    assert "--project" in json.dumps(payload["error"])
 
 
 def test_the_cli_reports_a_missing_inventory_as_json(
@@ -361,6 +362,7 @@ def test_the_cli_reports_a_missing_inventory_as_json(
 ) -> None:
     exit_code = main(["inventory", "show", "--inventory", str(tmp_path / "absent")])
 
-    payload = json.loads(capsys.readouterr().err)
-    assert exit_code == 2
-    assert payload["error"]["code"] == "ansible_inventory_missing"
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 85
+    assert payload["error"]["code"] == "INVENTORY_UNREADABLE"
+    assert payload["error"]["context"]["code"] == "ansible_inventory_missing"

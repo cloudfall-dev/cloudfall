@@ -250,6 +250,7 @@ def test_the_cli_refuses_an_undeclared_operation(
         ["operations", "show", "restart", "--repository", str(repository)]
     )
 
-    payload = json.loads(capsys.readouterr().err)
-    assert exit_code == 2
-    assert payload["error"]["code"] == "operation_undeclared"
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 5
+    assert payload["error"]["code"] == "NOT_FOUND"
+    assert payload["error"]["context"]["code"] == "operation_undeclared"

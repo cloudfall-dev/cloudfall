@@ -137,9 +137,11 @@ def test_audit_reports_raid_package_service_and_config_drift(
         ]
     )
     captured = capsys.readouterr()
-    assert exit_code == 1
+    assert exit_code == 83
     document = json.loads(captured.out)
-    assert (document["ok"], document["status"]) == (False, "drift")
+    assert (document["ok"], document["error"]["code"]) == (False, "DRIFT")
+    assert document["data"]["status"] == "drift"
+    assert document["data"]["summary"]["servers"]["drift"] == 1
     assert captured.err == ""
 
 
@@ -414,9 +416,10 @@ def test_missing_observation_is_unknown(
         ]
     )
     captured = capsys.readouterr()
-    assert exit_code == 3
+    assert exit_code == 84
     document = json.loads(captured.out)
-    assert (document["ok"], document["status"]) == (False, "unknown")
+    assert (document["ok"], document["error"]["code"]) == (False, "UNKNOWN")
+    assert document["data"]["status"] == "unknown"
     assert captured.err == ""
 
 
@@ -451,7 +454,7 @@ def test_audit_cli_emits_json_and_compliance_exit_code(
 
     captured = capsys.readouterr()
     assert exit_code == 0
-    assert json.loads(captured.out)["status"] == "compliant"
+    assert json.loads(captured.out)["data"]["status"] == "compliant"
     assert captured.err == ""
 
 

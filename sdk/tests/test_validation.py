@@ -5,12 +5,10 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from unittest.mock import ANY
 
 import pytest
 from cloudfall.cli import main
 from cloudfall.domain import ResourceId, ResourceKind
-from cloudfall.output import RESPONSE_META
 from cloudfall.validation import ConfigValidationError, validate_config
 
 ROOT = Path(__file__).parents[2]
@@ -269,14 +267,18 @@ def test_cli_emits_structured_success(
     )
 
     captured = capsys.readouterr()
+    document = json.loads(captured.out)
     assert exit_code == 0
-    assert json.loads(captured.out) == {
-        "ok": True,
+    assert (document["ok"], document["error"], document["warnings"]) == (
+        True,
+        None,
+        [],
+    )
+    assert document["meta"]["command"] == "config.validate"
+    assert document["data"] == {
         "status": "ok",
-        "error": None,
-        "data": {
-            "resources": 12,
-            "byKind": {
+        "resources": 12,
+        "byKind": {
             "AlertRule": 1,
             "OperatorPolicy": 1,
             "Component": 1,
@@ -287,12 +289,8 @@ def test_cli_emits_structured_success(
             "Server": 2,
             "Service": 2,
             "SshPublicKey": 1,
-            },
         },
-        "meta": {**RESPONSE_META.as_dict(), "request_id": ANY, "duration_ms": ANY},
-        "warnings": [],
     }
-    assert captured.err == ""
 
 
 def test_cli_emits_structured_failure(
@@ -310,9 +308,8 @@ def test_cli_emits_structured_failure(
         ]
     )
 
-    captured = capsys.readouterr()
-    payload = json.loads(captured.err)
-    assert exit_code == 2
-    assert payload["status"] == "error"
-    assert payload["error"]["code"] == "resource_reference_missing"
-    assert captured.out == ""
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 80
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "CONFIG_INVALID"
+    assert payload["error"]["context"]["code"] == "resource_reference_missing"

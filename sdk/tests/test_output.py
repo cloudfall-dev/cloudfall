@@ -67,10 +67,8 @@ def test_version_flag_prints_the_package_and_schema_versions(
 def test_results_and_errors_carry_the_same_meta_and_warnings(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    ok, result, _ = _run(["config", "validate", "--project", str(EXAMPLES)], capsys)
-    failed, _, error = _run(
-        ["config", "validate", "--project", str(ROOT / "missing")], capsys
-    )
+    ok, result, _ = _run(["changelog"], capsys)
+    failed, _, error = _run(["observe", "--project", str(ROOT / "missing")], capsys)
     usage_code, _, usage = _run(["deploy"], capsys)
 
     assert (ok, failed, usage_code) == (0, 2, 2)
@@ -331,10 +329,10 @@ def test_writing_outside_an_invocation_is_a_bug() -> None:
 def test_help_goes_to_stderr_when_stdout_is_not_a_terminal(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    code, out, err = _run(["inventory", "show", "--help"], capsys)
+    code, out, err = _run(["observe", "--help"], capsys)
 
     assert (code, out) == (0, "")
-    assert err.startswith("usage: cloudfall inventory show")
+    assert err.startswith("usage: cloudfall observe")
 
 
 def test_quiet_silences_help_off_a_terminal(
@@ -375,9 +373,9 @@ def test_help_stays_on_stdout_for_a_person_at_a_terminal() -> None:
 @pytest.mark.parametrize(
     "argv",
     [
-        ["--quiet", "config", "validate", "--project", str(ROOT / "missing")],
-        ["config", "validate", "--project", str(ROOT / "missing"), "--quiet"],
-        ["--quiet", "inventory", "shoe"],
+        ["--quiet", "observe", "--project", str(ROOT / "missing")],
+        ["observe", "--project", str(ROOT / "missing"), "--quiet"],
+        ["--quiet", "dashboard", "shoe"],
     ],
 )
 def test_quiet_leaves_only_the_exit_code(
@@ -425,7 +423,7 @@ def test_warnings_as_errors_leaves_a_clean_result_alone(
     assert (json.loads(out)["ok"], json.loads(out)["error"]) == (True, None)
 
 
-@pytest.mark.parametrize("argv", [["--help"], ["inventory", "show", "--help"]])
+@pytest.mark.parametrize("argv", [["--help"], ["observe", "--help"]])
 def test_help_ends_with_every_exit_code(
     argv: list[str], capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -447,7 +445,7 @@ def test_the_error_carries_the_code_the_process_exits_with(
     try:
         cases = [
             (_run(["deploy"], capsys), 2),
-            (_run(["inventory", "show", "--project", str(tmp_path)], capsys), 2),
+            (_run(["observe", "--project", str(tmp_path)], capsys), 2),
             (_run(["init", str(read_only / "project")], capsys), 1),
         ]
     finally:

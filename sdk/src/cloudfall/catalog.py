@@ -30,6 +30,8 @@ from cloudfall.validation import ConfigValidationError, SchemaCatalog, Validatio
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
+ERROR_OPERATION_UNDECLARED = "operation_undeclared"
+"""Code of the issue ``OperationCatalog.get`` raises for an id it does not declare."""
 CATALOG_DIRECTORY = "operations"
 """Directory holding one document per declared operation."""
 
@@ -185,7 +187,7 @@ class OperationCatalog:
             operation.operation_id.value for operation in self.operations
         )
         issue = ValidationIssue(
-            code="operation_undeclared",
+            code=ERROR_OPERATION_UNDECLARED,
             message=(
                 f"no operation {operation_id} is declared in {self.directory}; "
                 f"declared operations: {declared or 'none'}"

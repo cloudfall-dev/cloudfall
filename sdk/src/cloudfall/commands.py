@@ -109,6 +109,32 @@ class OutputShape:
             schema["description"] = self.when
         return schema
 
+    def treaty_schema(self) -> dict[str, object]:
+        """Return the JSON Schema of this shape in treaty's envelope.
+
+        ``status`` moves into ``data`` beside the other keys, every key is
+        written on every answer (an optional one as an empty object), and a
+        failed run keeps ``data`` only for a verdict such as drift.
+        """
+        data_keys = tuple(
+            OutputKey(key.name, key.stability)
+            for key in self.keys
+            if key.name != "error"
+        )
+        data = {
+            **_object_schema(data_keys),
+            "type": ["object", "null"],
+            **_stability(_DATA),
+        }
+        error_schema = {"type": ["null", "object"], **_stability(_ERROR)}
+        schema = _object_schema(
+            (_OK, _DATA, _ERROR, *_WRITER_KEYS),
+            {"data": data, "error": error_schema},
+        )
+        if self.when is not None:
+            schema["description"] = self.when
+        return schema
+
 
 def _object_schema(
     keys: tuple[OutputKey, ...], nested: dict[str, object] | None = None
@@ -180,6 +206,9 @@ class CommandContract:
     output: tuple[OutputShape, ...] = ()
     """Each shape of the JSON document the command writes to stdout."""
 
+    treaty: bool = False
+    """The command runs on treaty (``cloudfall.app``), in treaty's envelope."""
+
     @property
     def invocation(self) -> str:
         """Return the command as typed from the project directory."""
@@ -187,9 +216,13 @@ class CommandContract:
 
     def output_schema(self) -> dict[str, object]:
         """Return the JSON Schema of the command's stdout documents."""
-        if len(self.output) == 1:
-            return self.output[0].json_schema()
-        return {"oneOf": [shape.json_schema() for shape in self.output]}
+        schemas = [
+            shape.treaty_schema() if self.treaty else shape.json_schema()
+            for shape in self.output
+        ]
+        if len(schemas) == 1:
+            return schemas[0]
+        return {"oneOf": schemas}
 
 
 _YES = "`--yes`; without it the command validates and prints the plan only"
@@ -268,6 +301,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.READ,
         "validate every resource against the schemas and cross-references",
         output=(_shape("status", "resources", "byKind"),),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -282,6 +316,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
                 when="`ansible` only when the fleet is read from an Ansible inventory",
             ),
         ),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -289,6 +324,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.READ,
         "list the operations an agent may run, with their risk levels",
         output=(_shape("status", "directory", "operations", "byRisk"),),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -296,6 +332,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.READ,
         "show one declared operation with its inputs and verify step",
         output=(_shape("status", "operation"),),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -321,6 +358,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.READ,
         "list what was proposed, what check mode showed, and who approved",
         output=(_shape("status", "directory", "decisions"),),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -362,6 +400,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.READ,
         "compare the declared config with observed server snapshots",
         output=(_shape("status", "summary", "unmatchedObservations", "servers"),),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -376,6 +415,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.READ,
         "derive each public service's lifecycle from current evidence",
         output=(_shape("status", "services"),),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -469,6 +509,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.READ,
         "list proposal receipts",
         output=(_shape("status", "proposals"),),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -476,6 +517,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.READ,
         "show one proposal receipt",
         output=_PROPOSAL,
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",

@@ -391,9 +391,10 @@ def test_cli_reports_a_missing_project_as_json(
 ) -> None:
     exit_code = main(["audit", "--project", str(tmp_path / "nope"), "--observed", "x"])
 
-    payload = json.loads(capsys.readouterr().err)
-    assert exit_code == 2
-    assert payload["error"]["code"] == "project_directory_missing"
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 79
+    assert payload["error"]["code"] == "PROJECT_INVALID"
+    assert payload["error"]["context"]["code"] == "project_directory_missing"
 
 
 def _section(document: str, heading: str) -> str:
