@@ -207,7 +207,7 @@ def test_relative_output_leaving_the_project_is_rejected(
     observed = tmp_path / "observed"
     observed.mkdir()
 
-    payload = _usage_error(
+    payload = _treaty_usage_error(
         [
             "dashboard",
             "build",
@@ -221,7 +221,7 @@ def test_relative_output_leaving_the_project_is_rejected(
         capsys,
     )
 
-    assert "leaves the project directory" in str(payload["error"])
+    assert "escapes its base directory" in json.dumps(payload["error"])
     assert not (EXAMPLES.parent / "escape").exists()
 
 
@@ -248,5 +248,5 @@ def test_absolute_output_outside_the_project_is_allowed(
     )
 
     assert exit_code == 0
-    assert json.loads(capsys.readouterr().out)["status"] == "ok"
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "ok"
     assert (output / "index.html").is_file()

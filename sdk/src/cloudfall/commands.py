@@ -114,12 +114,16 @@ class OutputShape:
 
         ``status`` moves into ``data`` beside the other keys, every key is
         written on every answer (an optional one as an empty object), and a
-        failed run keeps ``data`` only for a verdict such as drift.
+        failed run keeps ``data`` only for a verdict such as drift. A command
+        treaty runs as mutating also writes ``effect`` (REQ-C-003).
         """
-        data_keys = tuple(
-            OutputKey(key.name, key.stability)
-            for key in self.keys
-            if key.name != "error"
+        data_keys = (
+            *(
+                OutputKey(key.name, key.stability)
+                for key in self.keys
+                if key.name != "error"
+            ),
+            OutputKey("effect", optional=True),
         )
         data = {
             **_object_schema(data_keys),
@@ -266,6 +270,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.PROJECT,
         "lay out a new project directory",
         output=(_shape("status", "project", "files", "next"),),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -280,6 +285,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.PROJECT,
         "declare an `SshPublicKey` from a public key file",
         output=_ADDED,
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -287,6 +293,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.PROJECT,
         "declare a `ServerType` from the bundled Debian 13 baseline",
         output=_ADDED,
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -294,6 +301,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.PROJECT,
         "declare a `Server`, creating its type on first use",
         output=_ADDED,
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -408,6 +416,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.READ,
         "probe DNS, TLS, origin, and public routes into evidence",
         output=(_shape("status", "observations"),),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -440,6 +449,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.READ,
         "build the static read-only operations dashboard",
         output=(_shape("status", "health", "tasks", "dashboard"),),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
