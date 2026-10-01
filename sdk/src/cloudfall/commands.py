@@ -385,6 +385,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
                 when="`--format json`, the default; `--format html` is not JSON",
             ),
         ),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",

@@ -80,6 +80,13 @@ Notable changes to Cloudfall. The format follows
   A missing playbook, inventory, or role directory exits 2 before Ansible
   starts. `playbook run --check` is now `--dry-run`; Ansible's play log
   streams to stderr. `cloudfall-engine manifest` describes every command
+- **Breaking:** `why` runs on treaty, `--format html` included (treaty
+  #179): the page is drawn from the answer's JSON document, as before. Its
+  verdict moves to `data.status`; a bad `--since` or `--until` is 2
+  `ARG_ERROR` with `why_instant_invalid` in `error.context.code`, and a
+  record that cannot be read 86 `RECORD_INVALID`. treaty offers a custom
+  format on every command (#209), so `--format html` on any other treaty
+  command renders its `data` as a page of JSON
 - **Breaking:** seven commands that run Ansible move to treaty: `health`,
   `backup run`, `backup verify`, `operations propose`, `operations approve`,
   `operator approve` and `migrate`. Ansible runs through treaty in the

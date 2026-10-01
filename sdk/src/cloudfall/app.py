@@ -15,9 +15,11 @@ such as drift, exits with its own code and keeps the report in ``data``.
 from __future__ import annotations
 
 import errno
+import json
 import os
 from dataclasses import dataclass
 from functools import partial
+from html import escape
 from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Self, cast
@@ -147,6 +149,7 @@ from cloudfall.validation import (
     ValidatedConfig,
     validate_config,
 )
+from cloudfall.why import WhyError, WhyQuery, answer, render_why_document
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -222,6 +225,19 @@ app.exit_code(
     retryable=False,
     side_effects="none",
 )
+
+
+def _html_page(data: object) -> str:
+    """Render any command's data as a page of its JSON, for ``--format html``.
+
+    Only ``why`` has a page of its own; treaty offers a format on every
+    command once one has it (treaty #209), so the others answer this.
+    """
+    body = escape(json.dumps(data, indent=2, sort_keys=True))
+    return f'<!doctype html>\n<meta charset="utf-8">\n<pre>{body}</pre>\n'
+
+
+app.format("html", render=_html_page, media_type="text/html")
 
 
 class Payload:
@@ -2090,3 +2106,79 @@ def migrate(args: MigrateArgs, ctx: Ctx, fleet: Fleet) -> Migration:
         message = f"the migration failed at {migration.step}"
         raise Exit.ENGINE_STEP_FAILED(message, context=cause, data=migration)
     return migration
+
+
+# why
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WhyArgs(DecisionsArgs):
+    """Arguments of ``why``."""
+
+    host: str | None = Flag(
+        default=None, description="Only decisions whose record names this host"
+    )
+    operation: ResourceId | None = Flag(
+        default=None, description="Only decisions of this declared operation"
+    )
+    since: str | None = Flag(
+        default=None,
+        description=(
+            "Only decisions with a moment at or after this ISO 8601 time or date"
+        ),
+    )
+    until: str | None = Flag(
+        default=None,
+        description=(
+            "Only decisions with a moment at or before this ISO 8601 time or date"
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        """Refuse a time the question cannot be asked with."""
+        DecisionsArgs.__post_init__(self)
+        try:
+            self.query()
+        except WhyError as error:
+            raise ParseError(error.detail, context={"code": error.code}) from error
+
+    def query(self) -> WhyQuery:
+        """Return the question, as the record is filtered by it."""
+        return WhyQuery.from_boundary(
+            host=self.host,
+            operation=self.operation.value if self.operation is not None else None,
+            since=self.since,
+            until=self.until,
+        )
+
+
+class WhyPayload(Payload):
+    """``why``: each decision the question is about, told from its record."""
+
+    command = "why"
+
+
+@app.command(
+    "why",
+    description=(
+        "Answer why the agent did that, from the record, for a host, an operation "
+        "or a time window; --format html renders one page"
+    ),
+    danger_level="safe",
+    exit_codes=["RECORD_INVALID"],
+    renderers={"html": render_why_document},
+    examples=[
+        ("Ask about one host", "cloudfall why --host h1"),
+        ("One page for a person", "cloudfall why --since 2026-10-01 --format html"),
+    ],
+)
+def why(args: WhyArgs, _ctx: Ctx) -> WhyPayload:
+    """Answer from the record alone: no catalog, no fleet."""
+    store = DecisionStore(
+        directory=args.root / args.decisions, catalog=SchemaCatalog(args.schemas)
+    )
+    try:
+        result = answer(store, args.query())
+    except (DecisionError, WhyError) as error:
+        raise Exit.RECORD_INVALID(error.detail, context={"code": error.code}) from error
+    return WhyPayload(result.as_dict())

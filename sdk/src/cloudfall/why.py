@@ -18,13 +18,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import escape
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from cloudfall.decision import DecisionStatus, Requirement
 from cloudfall.domain import Hostname, ResourceId
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping, Sequence
 
     from cloudfall.decision import Decision, DecisionStore, RunRecord
 
@@ -234,17 +234,28 @@ def moments_of(decision: Decision) -> tuple[Instant, ...]:
 
 def render_why_html(result: WhyAnswer) -> str:
     """Render the answer as one page a person reads without the JSON."""
-    cards = "".join(_render_card(entry) for entry in result.explanations)
+    return render_why_document(result.as_dict())
+
+
+def render_why_document(document: Mapping[str, object]) -> str:
+    """Render the answer's JSON document as one page, as ``--format html`` does.
+
+    The page is drawn from the document alone, so treaty's renderer, which
+    receives the answer's ``data``, draws the same page as the object would.
+    """
+    answers = cast("Sequence[Mapping[str, object]]", document["answers"])
+    query = cast("Mapping[str, object]", document["query"])
+    cards = "".join(_render_card(entry) for entry in answers)
     if not cards:
         cards = (
             '<p class="empty">The record holds no decision this question is about.</p>'
         )
     filters = ", ".join(
         f"{escape(key)} = {escape(str(value))}"
-        for key, value in result.query.as_dict().items()
+        for key, value in query.items()
     )
     asked = escape(filters) if filters else "Every decision the record holds"
-    count = len(result.explanations)
+    count = len(answers)
     counted = f"{count} decision{'' if count == 1 else 's'}"
     return f"""<!doctype html>
 <html lang="en">
@@ -285,7 +296,7 @@ def render_why_html(result: WhyAnswer) -> str:
   <header>
     <h1>Why did the agent do that</h1>
     <p class="muted">{asked} · {counted}
-      · from <code>{escape(result.directory)}</code></p>
+      · from <code>{escape(str(document["directory"]))}</code></p>
   </header>
   {cards}
   <footer>Read-only projection of the decision records. Nothing here is inferred;
@@ -296,17 +307,24 @@ def render_why_html(result: WhyAnswer) -> str:
 """
 
 
-def _render_card(entry: Explanation) -> str:
-    decision = entry.decision
-    steps = "".join(f"<li>{escape(sentence)}</li>" for sentence in entry.story)
-    hosts = ", ".join(escape(host) for host in entry.hosts) or "none named"
+def _render_card(entry: Mapping[str, object]) -> str:
+    decision = cast("Mapping[str, object]", entry["decision"])
+    spec = cast("Mapping[str, object]", decision["spec"])
+    operation = cast("Mapping[str, object]", spec["operation"])
+    status = DecisionStatus(str(spec["status"]))
+    story = cast("Sequence[str]", entry["story"])
+    steps = "".join(f"<li>{escape(sentence)}</li>" for sentence in story)
+    hosts = (
+        ", ".join(escape(host) for host in cast("Sequence[str]", entry["hosts"]))
+        or "none named"
+    )
     return (
         '<article class="decision">'
         '<div class="decision-head">'
-        f"<div><h3>{escape(decision.operation_id.value)}</h3>"
-        f"<code>{escape(decision.decision_id.value)}</code></div>"
-        f'<span class="badge {_tone(decision.status)}">'
-        f"{escape(decision.status.value)}</span></div>"
+        f"<div><h3>{escape(str(operation['id']))}</h3>"
+        f"<code>{escape(str(entry['id']))}</code></div>"
+        f'<span class="badge {_tone(status)}">'
+        f"{escape(status.value)}</span></div>"
         f"<ol>{steps}</ol>"
         f'<div class="hosts muted">Hosts the record names: {hosts}</div>'
         "</article>"

@@ -46,7 +46,6 @@ from cloudfall.dashboard_server import (
 from cloudfall.decision import (
     DECISION_DIRECTORY,
     DecisionError,
-    DecisionStore,
 )
 from cloudfall.importer import (
     ImportTargets,
@@ -129,7 +128,7 @@ from cloudfall.validation import (
     ValidatedConfig,
     validate_config,
 )
-from cloudfall.why import WhyError, WhyQuery, answer, render_why_html
+from cloudfall.why import WhyError
 
 
 def _add_config_parsers(
@@ -1398,39 +1397,6 @@ def _command_key(arguments: Namespace) -> str:
     return f"{arguments.command}:{subcommand}"
 
 
-def _run_why(arguments: Namespace) -> int:
-    """Answer the question from the record alone: no catalog, no fleet.
-
-    The record outlives both, so the question must be answerable from a
-    checkout that holds nothing but the decisions directory.
-    """
-    repository = (
-        Path(arguments.repository) if arguments.repository is not None else Path.cwd()
-    )
-    query = WhyQuery.from_boundary(
-        host=arguments.host,
-        operation=(
-            arguments.operation.value if arguments.operation is not None else None
-        ),
-        since=arguments.since,
-        until=arguments.until,
-    )
-    result = answer(_decision_store(arguments, repository), query)
-    if arguments.format == "html":
-        sys.stdout.write(render_why_html(result))
-        sys.stdout.flush()
-        return 0
-    write_result(result.as_dict())
-    return 0
-
-
-def _decision_store(arguments: Namespace, repository: Path) -> DecisionStore:
-    return DecisionStore(
-        directory=repository / Path(arguments.decisions),
-        catalog=SchemaCatalog(Path(arguments.schemas)),
-    )
-
-
 def _run_changelog(arguments: Namespace) -> int:
     write_result(
         {
@@ -1449,7 +1415,6 @@ _PROJECTLESS_COMMANDS: Mapping[str, Callable[[Namespace], int]] = {
 
 
 _RECORD_COMMANDS: Mapping[str, Callable[[Namespace], int]] = {
-    "why": _run_why,
 }
 """The commands that read the repository and nothing else: no fleet, no project."""
 
