@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
     from cloudfall.importer import ImportTargets, RenderImportResult
 
-_ERROR_API_UNREACHABLE = "render_api_unreachable"
+ERROR_API_UNREACHABLE = "render_api_unreachable"
 _ERROR_API_INVALID = "render_api_invalid"
 _PAGE_LIMIT = 100
 _SERVICE_TYPES: Mapping[str, str] = {
@@ -137,7 +137,7 @@ class HttpRenderApiClient:
                 body = response.read()
         except OSError as error:
             message = f"Render API unreachable: {url}: {error}"
-            raise RenderImportError(_ERROR_API_UNREACHABLE, message) from error
+            raise RenderImportError(ERROR_API_UNREACHABLE, message) from error
         try:
             return cast("object", json.loads(body.decode("utf-8")))
         except json.JSONDecodeError as error:

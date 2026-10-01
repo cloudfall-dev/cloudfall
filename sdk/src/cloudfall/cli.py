@@ -14,7 +14,6 @@ if TYPE_CHECKING:
     from argparse import Namespace
     from collections.abc import Callable, Mapping, Sequence
 
-    from cloudfall.operations import FleetOperations
     from cloudfall.operator import AlertFeed, OperatorProposal
 
 from cloudfall.ansible_api import (
@@ -47,34 +46,10 @@ from cloudfall.decision import (
     DECISION_DIRECTORY,
     DecisionError,
 )
-from cloudfall.importer import (
-    ImportTargets,
-    RenderImportError,
-    import_render_blueprint,
-)
 from cloudfall.inventory import PlatformInventory
 from cloudfall.lifecycle import (
-    DeployOptions,
     EngineContext,
-    LifecycleError,
-    LifecyclePreview,
-    deploy,
-    migrate_data,
-    preview_data_migration,
-    preview_deploy,
-    preview_restart,
-    preview_rollback,
-    restart,
-    rollback,
 )
-from cloudfall.observation import load_observations
-from cloudfall.observe import (
-    ObservationRequest,
-    ObserveError,
-    collect_observations,
-    team_configuration,
-)
-from cloudfall.operations import UtcTimestamp, build_operations_view
 from cloudfall.operator import (
     OperatorError,
     ProposalStore,
@@ -105,23 +80,7 @@ from cloudfall.project import (
     is_project,
     project_context,
 )
-from cloudfall.render_api import (
-    HttpRenderApiClient,
-    import_render_api,
-    read_api_key,
-)
 from cloudfall.resources import default_engine_directory, default_schema_directory
-from cloudfall.secrets import (
-    SecretsError,
-    SopsSecretProvider,
-    render_environment,
-)
-from cloudfall.service_evidence import (
-    DeploymentReceiptSet,
-    DomainObservationSet,
-    load_deployment_receipts,
-    load_domain_observations,
-)
 from cloudfall.validation import (
     ConfigValidationError,
     SchemaCatalog,
@@ -1267,9 +1226,6 @@ def _main(argv: Sequence[str] | None) -> int:
             return _dispatch_from_inventory(arguments, source)
         with project_context(arguments.project, os.environ) as project_directory:
             arguments.project_directory = project_directory
-            without_state = _run_without_validated_fleet(arguments)
-            if without_state is not None:
-                return without_state
             schema_directory = Path(arguments.schemas)
             state = validate_config(project_directory, schema_directory)
             return _dispatch(arguments, state, schema_directory)
@@ -1284,18 +1240,6 @@ def _main(argv: Sequence[str] | None) -> int:
 
 
 _ERROR_SOURCE_AMBIGUOUS = "project_source_ambiguous"
-_RENDERED_INVENTORY = Path("tmp/ansible-inventory.json")
-_OVERLAY_DIRECTORY = "tmp/cloudfall"
-
-
-def _run_without_validated_fleet(arguments: Namespace) -> int | None:
-    """Run the commands that read no fleet, or return ``None`` for the rest.
-
-    `import` writes the fleet rather than reads it (`add` runs on treaty).
-    """
-    if arguments.command == "import":
-        return _run_import_render(arguments)
-    return None
 
 
 def _inventory_source(
@@ -1337,40 +1281,12 @@ def _dispatch_from_inventory(arguments: Namespace, source: InventorySource) -> i
     return _dispatch(arguments, read.config, schema_directory)
 
 
-def _run_import_render(arguments: Namespace) -> int:
-    try:
-        targets = ImportTargets(
-            application_id=arguments.application,
-            server_id=arguments.server,
-            project_directory=Path(arguments.output_dir),
-            environment_directory=Path(arguments.env_dir),
-        )
-        if arguments.import_command == "render-api":
-            api_key = read_api_key(Path(arguments.api_key_file))
-            client = HttpRenderApiClient(api_key=api_key, base_url=arguments.api_url)
-            result = import_render_api(client, targets, Path(arguments.schemas))
-        else:
-            result = import_render_blueprint(
-                Path(arguments.blueprint), targets, Path(arguments.schemas)
-            )
-    except (RenderImportError, ConfigValidationError) as error:
-        return write_error(error.as_dict(), 2)
-    write_result(result.as_dict())
-    return 0
-
-
 def _dispatch(
     arguments: Namespace, state: ValidatedConfig, schema_directory: Path
 ) -> int:
     handlers: dict[str, Callable[[Namespace, ValidatedConfig, Path], int]] = {
-        "secrets:render": _run_secrets_render,
-        "data:migrate": _run_data_migrate,
         "dashboard:serve": _run_dashboard_serve,
-        "deploy": _run_deploy,
-        "observe": _run_observe,
         "operator:run": _run_operator_run,
-        "restart": _run_restart,
-        "rollback": _run_rollback,
     }
     key = _command_key(arguments)
     try:
@@ -1417,60 +1333,6 @@ _PROJECTLESS_COMMANDS: Mapping[str, Callable[[Namespace], int]] = {
 _RECORD_COMMANDS: Mapping[str, Callable[[Namespace], int]] = {
 }
 """The commands that read the repository and nothing else: no fleet, no project."""
-
-
-def _run_observe(
-    arguments: Namespace, state: ValidatedConfig, _schema_directory: Path
-) -> int:
-    """Inspect every declared server and write one snapshot each."""
-    source = getattr(arguments, "inventory_source", None)
-    sources = (
-        (source.value,)
-        if source is not None
-        else (Path(arguments.project_directory) / _RENDERED_INVENTORY,)
-    )
-    try:
-        request = ObservationRequest(
-            inventory_sources=sources,
-            output_directory=Path(arguments.output_dir).resolve(),
-            engine_directory=Path(arguments.engine),
-            limit=arguments.limit,
-            configuration=(
-                team_configuration(Path.cwd()) if source is not None else None
-            ),
-        )
-        result = collect_observations(
-            PlatformInventory.from_state(state),
-            request,
-            Path(_OVERLAY_DIRECTORY),
-        )
-    except ObserveError as error:
-        return write_error(error.as_dict(), 2)
-    code = 0 if result.complete else 1
-    write_result(result.as_dict(), exit_code=code)
-    return code
-
-
-def _run_secrets_render(
-    arguments: Namespace, _state: ValidatedConfig, schema_directory: Path
-) -> int:
-    output = (
-        Path(arguments.output_file)
-        if arguments.output_file is not None
-        else Path("tmp/env") / f"{arguments.component}.env"
-    )
-    try:
-        result = render_environment(
-            _engine_context(arguments, schema_directory),
-            arguments.component,
-            SopsSecretProvider(secrets_directory=Path(arguments.secrets_dir)),
-            output,
-            receipt_directory=Path(arguments.receipts),
-        )
-    except SecretsError as error:
-        return write_error(error.as_dict(), 2)
-    write_result(result)
-    return 0
 
 
 def _operator_store(arguments: Namespace, schema_directory: Path) -> ProposalStore:
@@ -1590,25 +1452,6 @@ def _run_dashboard_serve(
     return 0
 
 
-def _service_operations(
-    arguments: Namespace, state: ValidatedConfig, schema_directory: Path
-) -> FleetOperations:
-    observations = load_observations(Path(arguments.observed), schema_directory)
-    deployment_receipts = _optional_deployment_receipts(
-        Path(arguments.deployments), schema_directory
-    )
-    domain_observations = _optional_domain_observations(
-        Path(arguments.service_observed), schema_directory
-    )
-    return build_operations_view(
-        PlatformInventory.from_state(state),
-        observations,
-        deployment_receipts,
-        domain_observations,
-        generated_at=UtcTimestamp.now(),
-    )
-
-
 def _engine_context(arguments: Namespace, schema_directory: Path) -> EngineContext:
     return EngineContext(
         project_directory=Path(arguments.project_directory),
@@ -1618,134 +1461,8 @@ def _engine_context(arguments: Namespace, schema_directory: Path) -> EngineConte
     )
 
 
-def _lifecycle_exit(error: LifecycleError) -> int:
-    code = 1 if error.code == "lifecycle_execution_failed" else 2
-    return write_error(error.as_dict(), code)
-
-
-def _run_data_migrate(
-    arguments: Namespace, _state: ValidatedConfig, schema_directory: Path
-) -> int:
-    context = _engine_context(arguments, schema_directory)
-    try:
-        if not arguments.yes:
-            return _write_plan(
-                preview_data_migration(
-                    context,
-                    arguments.service,
-                    str(arguments.database),
-                    Path(arguments.source_url_file),
-                )
-            )
-        result = migrate_data(
-            context,
-            arguments.service,
-            str(arguments.database),
-            Path(arguments.source_url_file),
-            Path(arguments.receipts),
-        )
-    except LifecycleError as error:
-        return _lifecycle_exit(error)
-    write_result(result)
-    return 0
-
-
-def _run_deploy(
-    arguments: Namespace, _state: ValidatedConfig, schema_directory: Path
-) -> int:
-    context = _engine_context(arguments, schema_directory)
-    try:
-        if not arguments.yes:
-            return _write_plan(
-                preview_deploy(
-                    context,
-                    arguments.component,
-                    arguments.release,
-                    Path(arguments.artifacts),
-                )
-            )
-        result = deploy(
-            context,
-            arguments.component,
-            arguments.release,
-            Path(arguments.artifacts),
-            DeployOptions(
-                environment_file=(
-                    Path(arguments.env_file) if arguments.env_file is not None else None
-                ),
-                receipt_directory=Path(arguments.receipts),
-            ),
-        )
-    except LifecycleError as error:
-        return _lifecycle_exit(error)
-    write_result(result.as_dict())
-    return 0
-
-
-def _run_rollback(
-    arguments: Namespace, _state: ValidatedConfig, schema_directory: Path
-) -> int:
-    context = _engine_context(arguments, schema_directory)
-    try:
-        if not arguments.yes:
-            return _write_plan(
-                preview_rollback(context, arguments.component, arguments.release)
-            )
-        result = rollback(
-            context,
-            arguments.component,
-            arguments.release,
-        )
-    except LifecycleError as error:
-        return _lifecycle_exit(error)
-    write_result(result.as_dict())
-    return 0
-
-
-def _run_restart(
-    arguments: Namespace, _state: ValidatedConfig, schema_directory: Path
-) -> int:
-    context = _engine_context(arguments, schema_directory)
-    try:
-        if not arguments.yes:
-            return _write_plan(preview_restart(context, arguments.component))
-        result = restart(context, arguments.component)
-    except LifecycleError as error:
-        return _lifecycle_exit(error)
-    write_result(result.as_dict())
-    return 0
-
-
-def _write_plan(preview: LifecyclePreview) -> int:
-    write_result(
-        {
-            **preview.as_dict(),
-            "instruction": "review the plan and re-run with --yes to execute it",
-        }
-    )
-    return 0
-
-
 def run() -> None:
     """Installed console-script entry point."""
     raise SystemExit(main())
 
 
-def _optional_deployment_receipts(
-    directory: Path, schema_directory: Path
-) -> DeploymentReceiptSet:
-    return (
-        load_deployment_receipts(directory, schema_directory)
-        if directory.is_dir()
-        else DeploymentReceiptSet.empty()
-    )
-
-
-def _optional_domain_observations(
-    directory: Path, schema_directory: Path
-) -> DomainObservationSet:
-    return (
-        load_domain_observations(directory, schema_directory)
-        if directory.is_dir()
-        else DomainObservationSet.empty()
-    )

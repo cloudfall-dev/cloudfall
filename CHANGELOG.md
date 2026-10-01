@@ -80,6 +80,23 @@ Notable changes to Cloudfall. The format follows
   A missing playbook, inventory, or role directory exits 2 before Ansible
   starts. `playbook run --check` is now `--dry-run`; Ansible's play log
   streams to stderr. `cloudfall-engine manifest` describes every command
+- **Breaking:** the last eight commands that change state move to treaty:
+  `observe`, `secrets render`, `import render`, `import render-api`,
+  `deploy`, `rollback`, `restart` and `data migrate` (treaty #183 lets
+  their camelCase keys through). Each keeps its `data` keys, `status`
+  included, and adds `effect`. `deploy`, `rollback`, `restart` and
+  `data migrate` still change nothing without `--yes`; their plan answers
+  `effect: noop` and writes the result keys as `null`, and the result
+  writes the plan keys (`wouldRun`, `instruction`) as `null`, since treaty
+  answers one object per command. `observe` exits 91 `INCOMPLETE` (was 1)
+  with the run in `data` when a server gave no snapshot. Engine steps,
+  sops and the Render API go through treaty: `doctor` checks sops, and
+  `import render-api` honours `--proxy` and marks its answer as content
+  from outside. Failures that were exit 2 are 4 `PRECONDITION` with the
+  old code in `error.context.code`. A key a command writes only sometimes
+  is `null` when absent, so `inventory show` writes `data.ansible` as
+  `null` for a project. Still on argparse: `changelog`, `operator run`
+  (treaty #175) and `dashboard serve`
 - **Breaking:** `why` runs on treaty, `--format html` included (treaty
   #179): the page is drawn from the answer's JSON document, as before. Its
   verdict moves to `data.status`; a bad `--since` or `--until` is 2
@@ -123,7 +140,7 @@ Notable changes to Cloudfall. The format follows
   root `--help` and `--version` stay on argparse for now. Their answer is a
   treaty envelope (`ok`, `data`, `error`, `meta`, `warnings`): the verdict
   moves from the top-level `status` to `data.status`, and the other `data`
-  keys are unchanged. `inventory show` writes `data.ansible` as `{}` for a
+  keys are unchanged. `inventory show` writes `data.ansible` as `null` for a
   project. Failures are an envelope on stdout with their own exit codes:
   79 `PROJECT_INVALID`, 80 `CONFIG_INVALID` (resources or evidence files),
   85 `INVENTORY_UNREADABLE`, 86 `RECORD_INVALID`, 5 `NOT_FOUND` for an

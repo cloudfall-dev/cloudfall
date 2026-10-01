@@ -208,10 +208,10 @@ def test_cli_deploy_reports_a_missing_artifact(
         ]
     )
 
-    captured = capsys.readouterr()
-    assert exit_code == 2
-    payload = json.loads(captured.err)
-    assert payload["error"]["code"] == "lifecycle_artifact_missing"
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 4
+    assert payload["error"]["code"] == "PRECONDITION"
+    assert payload["error"]["context"]["code"] == "lifecycle_artifact_missing"
 
 
 def _cli_lifecycle(
@@ -230,9 +230,7 @@ def _cli_lifecycle(
             str(tmp_path / "inventory.json"),
         ]
     )
-    captured = capsys.readouterr()
-    stream = captured.out if exit_code == 0 else captured.err
-    payload = json.loads(stream)
+    payload = json.loads(capsys.readouterr().out)
     assert isinstance(payload, dict)
     return exit_code, payload
 
@@ -253,7 +251,8 @@ def test_cli_server_changes_show_a_plan_without_yes(
     exit_code, payload = _cli_lifecycle(argv, tmp_path, capsys)
 
     assert exit_code == 0
-    assert payload["status"] == "plan"
+    assert payload["data"]["status"] == "plan"
+    assert payload["data"]["effect"] == "noop"
     assert payload["data"]["action"] == action
     assert payload["data"]["component"] == "crm-backend"
     assert payload["data"]["servers"]
@@ -281,7 +280,8 @@ def test_cli_deploy_plan_verifies_the_artifact(
     )
 
     assert exit_code == 0
-    assert payload["status"] == "plan"
+    assert payload["data"]["status"] == "plan"
+    assert payload["data"]["effect"] == "noop"
     assert payload["data"]["release"] == RELEASE
     would_run = str(payload["data"]["wouldRun"])
     assert f"release {RELEASE} of component crm-backend" in would_run
@@ -293,10 +293,10 @@ def test_cli_plan_mode_still_rejects_an_undeclared_component(
 ) -> None:
     exit_code, payload = _cli_lifecycle(["restart", "ghost"], tmp_path, capsys)
 
-    assert exit_code == 2
+    assert exit_code == 4
     error = payload["error"]
     assert isinstance(error, dict)
-    assert error["code"] == "lifecycle_component_missing"
+    assert error["context"]["code"] == "lifecycle_component_missing"
 
 
 def test_cli_data_migration_plan_checks_the_source_url_file(
@@ -314,15 +314,16 @@ def test_cli_data_migration_plan_checks_the_source_url_file(
     ]
 
     exit_code, payload = _cli_lifecycle(argv, tmp_path, capsys)
-    assert exit_code == 2
+    assert exit_code == 4
     error = payload["error"]
     assert isinstance(error, dict)
-    assert error["code"] == "lifecycle_source_url_missing"
+    assert error["context"]["code"] == "lifecycle_source_url_missing"
 
     source_url_file.write_text("postgresql://u:p@db.example.test/crm\n")
     exit_code, payload = _cli_lifecycle(argv, tmp_path, capsys)
     assert exit_code == 0
-    assert payload["status"] == "plan"
+    assert payload["data"]["status"] == "plan"
+    assert payload["data"]["effect"] == "noop"
     assert payload["data"]["service"] == "postgresql-main"
     assert "u:p@" not in json.dumps(payload)
 
