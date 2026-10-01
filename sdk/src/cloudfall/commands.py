@@ -348,6 +348,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.READ,
         "run one operation in check mode and record what it would change",
         output=(_shape("status", "decision"),),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -359,6 +360,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
             _shape("status", "decision", "next", when="without `--yes`"),
             _shape("status", "decision", when="with `--yes`"),
         ),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -442,6 +444,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
                 when="`detail` only when the component is unhealthy",
             ),
         ),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -603,6 +606,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
                 when="`paused` (exit 3) or `error` (exit 1) at `step`",
             ),
         ),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -611,6 +615,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "run the declared backup for one service on its server",
         gate="the service must declare the backup; a receipt is written",
         output=_BACKUP,
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -619,6 +624,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "restore the newest backup into a scratch database on the server",
         gate="the service must declare the backup; a receipt is written",
         output=_BACKUP,
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -627,6 +633,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "execute one proposal and verify that its trigger resolves",
         gate="the proposal id names a receipt a human has reviewed",
         output=_PROPOSAL,
+        treaty=True,
     ),
 )
 
