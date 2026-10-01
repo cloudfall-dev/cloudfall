@@ -121,6 +121,11 @@ Notable changes to Cloudfall. The format follows
 
 ### Fixed
 
+- `migrate --build` and the `cloudfall-mcp` `build_artifact` tool read the
+  release from the engine's treaty envelope, under `data`. Since the engine
+  moved to treaty every build step failed with "artifact builder returned no
+  release id". `build_artifact` now returns the engine's `data` keys
+  (`git_ref`, `archive_sha256`, ...) beside `status`
 - The time baseline accepts a host whose clock another daemon keeps
   (ntp, ntpsec, chrony). `timedatectl set-ntp` drives systemd-timesyncd
   only, so on such hosts check mode reported "Would enable network time
