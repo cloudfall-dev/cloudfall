@@ -67,10 +67,6 @@ def test_a_half_moved_group_sends_the_rest_to_argparse(
     assert "--gateway-ca" in error["error"]["message"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="treaty #181: a failure's data loses an output adapter's array order",
-)
 def test_a_drift_report_keeps_the_order_the_checks_ran_in(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

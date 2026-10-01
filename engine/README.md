@@ -56,10 +56,11 @@ uv run cloudfall-engine playbook run engine/ansible/playbooks/proxy.yml \
 ```
 
 `--dry-run` (Ansible's check mode), `--diff`, `--syntax-check`, `--limit`,
-`--tags`, and `--extra-vars` pass through to `ansible-playbook`. At a terminal,
-Ansible's play log streams to stderr as it runs; elsewhere, such as under an
-agent or in CI, pass `-v` to see it. stdout carries one JSON document when the
-run ends, and a failed run keeps the end of the log in `error.context.output`.
+`--tags`, and `--extra-vars` pass through to `ansible-playbook`. Ansible's play
+log streams to stderr as it runs, as plain text whether or not a terminal is
+attached (`--quiet` silences it). stdout carries one JSON document when the run
+ends, and a failed run keeps the end of the log in `error.context.output`,
+marked as untrusted content from the hosts.
 `cloudfall-engine doctor` checks that ansible-playbook and git are installed.
 A project uses this instead of
 setting `ANSIBLE_CONFIG` against a checkout; the `task` targets in this

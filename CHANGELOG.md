@@ -122,18 +122,16 @@ Notable changes to Cloudfall. The format follows
   85 `INVENTORY_UNREADABLE`, 86 `RECORD_INVALID`, 5 `NOT_FOUND` for an
   undeclared operation or a missing proposal, 2 `ARG_ERROR` for bad input;
   the old snake_case code is in `error.context.code`. `audit` exits 83
-  `DRIFT` (was 1) or 84 `UNKNOWN` (was 3) with the report in `data`; until
-  treaty #181 is fixed, that report's lists come back sorted rather than in
-  the order the servers and checks were declared. Pick
+  `DRIFT` (was 1) or 84 `UNKNOWN` (was 3) with the report in `data`. Pick
   the format with `--format json`: `--output` after one of these commands
   is refused, since treaty's `--output` names a file. Relative paths still
   resolve against the project, without changing the working directory
 - `cloudfall-engine` runs Ansible and git through treaty's `ctx.run`
-  (treaty 1.0.0rc10), so `--timeout` and Ctrl-C stop the whole process
+  (treaty 1.0.0rc12), so `--timeout` and Ctrl-C stop the whole process
   group, and secrets are redacted from the play log. The play log streams
-  to stderr at a terminal; elsewhere, such as under an agent or in CI, it
-  shows only with `-v`, one JSON line per log line. A failed playbook
-  carries the last 4096 characters of the log in `error.context.output`.
+  to stderr as plain text, as before, terminal or not; `--quiet` silences
+  it. A failed playbook carries the last 4096 characters of the log in
+  `error.context.output`, marked as untrusted content from the hosts.
   `playbook run` reports `meta.dry_run: true` under `--dry-run`. A git step
   that runs past its 600-second limit now exits 10 `TIMEOUT`, not 81 with
   `artifact_git_timeout`. `cloudfall-engine doctor` checks for
