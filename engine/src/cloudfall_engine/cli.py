@@ -2,12 +2,14 @@
 
 Built on treaty: every run answers one JSON envelope on stdout, a failure
 carries a declared exit code, and ``cloudfall-engine manifest`` describes
-each command. Ansible's play log streams to stderr.
+each command. Ansible and git run through ``ctx.run``; Ansible's play log
+streams to stderr on a terminal or under ``-v``.
 """
 
 import json
 import os
 from dataclasses import dataclass
+from functools import partial
 from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING, Self
@@ -21,20 +23,22 @@ from cloudfall.project import (
 )
 from cloudfall.resources import default_engine_directory, default_schema_directory
 from cloudfall.validation import ConfigValidationError, validate_config
-from treaty import App, Arg, Ctx, Exit, Flag, Out, ParseError
+from treaty import App, Arg, Ctx, Exit, Flag, Out, ParseError, Subprocess, Timeout
 
 from cloudfall_engine.ansible_inventory import render_ansible_inventory
 from cloudfall_engine.artifact import (
+    GIT_MINIMUM_VERSION,
     GIT_REF_PATTERN,
     GIT_TIMEOUT_SECONDS,
     ArtifactBuildError,
     build_artifact,
 )
 from cloudfall_engine.playbook import (
+    ANSIBLE_MINIMUM_VERSION,
     PlaybookError,
     PlaybookRun,
     bundled_playbooks,
-    execute_playbook,
+    playbook_command,
     resolve_playbook,
 )
 
@@ -83,7 +87,10 @@ app.exit_code(
     description="ansible-playbook exited non-zero; hosts may be partly converged",
     retryable=False,
     side_effects="partial",
-    suggestion="read the Ansible log on stderr, fix the failing task, and run again",
+    suggestion=(
+        "read the end of the Ansible log in error.context.output, or run "
+        "again with -v to stream all of it; fix the failing task, and run again"
+    ),
 )
 
 
@@ -225,6 +232,8 @@ class BuiltRelease:
     danger_level="mutating",
     exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "ARTIFACT_BUILD_FAILED"],
     timeout=3 * GIT_TIMEOUT_SECONDS,
+    subprocess=Subprocess("git"),
+    required_tools={"git": GIT_MINIMUM_VERSION},
     supports_raw_payload=True,
     examples=[
         (
@@ -233,7 +242,7 @@ class BuiltRelease:
         ),
     ],
 )
-def build(args: BuildArgs, _ctx: Ctx, project: Project) -> BuiltRelease:
+def build(args: BuildArgs, ctx: Ctx, project: Project) -> BuiltRelease:
     """Clone the component at ``--ref`` and package it under the project."""
     try:
         built = build_artifact(
@@ -242,6 +251,9 @@ def build(args: BuildArgs, _ctx: Ctx, project: Project) -> BuiltRelease:
             args.ref,
             project.path(args.output_dir),
             args.schemas,
+            run=partial(
+                ctx.run, timeout=Timeout(GIT_TIMEOUT_SECONDS), check=False
+            ),
         )
     except ArtifactBuildError as error:
         raise Exit.ARTIFACT_BUILD_FAILED(
@@ -380,11 +392,14 @@ class Played:
     "run",
     description=(
         "Run one bundled or project playbook against the inventory; "
-        "the Ansible log streams to stderr"
+        "the Ansible log streams to stderr at a terminal or under -v"
     ),
     danger_level="mutating",
     exit_codes=["PRECONDITION", "PLAYBOOK_FAILED"],
     timeout=None,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": ANSIBLE_MINIMUM_VERSION},
+    external=False,
     supports_raw_payload=True,
     examples=[
         (
@@ -398,20 +413,30 @@ class Played:
         ),
     ],
 )
-def run_playbook(args: RunArgs, _ctx: Ctx) -> Played:
+def run_playbook(args: RunArgs, ctx: Ctx) -> Played:
     """Run ansible-playbook in the foreground and report how it ended."""
     run = _playbook_run(args)
     try:
-        returncode = execute_playbook(run, args.engine)
+        command = playbook_command(run, args.engine)
     except PlaybookError as error:
         raise Exit.PRECONDITION(
             error.detail, context={"code": error.code}
         ) from error
-    if returncode != 0:
+    # Stdout belongs to the envelope, so treaty streams Ansible's play log to
+    # stderr line by line, redacted, and keeps its tail for a failure.
+    completed = ctx.run(
+        command.argv, env=command.environment, check=False, stream=True
+    )
+    if completed.returncode != 0:
+        returncode = completed.returncode
         message = f"the playbook failed: ansible-playbook exited {returncode}"
         raise Exit.PLAYBOOK_FAILED(
             message,
-            context={"returncode": returncode, "playbook": str(run.playbook)},
+            context={
+                "returncode": returncode,
+                "playbook": str(run.playbook),
+                "output": completed.stdout,
+            },
         )
     return Played(_effect(args), run.playbook, run.inventory_file)
 

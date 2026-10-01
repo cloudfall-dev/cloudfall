@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+ANSIBLE_MINIMUM_VERSION = "2.21.0"
+"""The ansible-core release the bundled roles are written against"""
 _PLAYBOOK_SUFFIX = ".yml"
 _ERROR_PLAYBOOK_MISSING = "playbook_missing"
 _ERROR_INVENTORY_MISSING = "inventory_missing"
@@ -163,17 +163,3 @@ def playbook_command(run: PlaybookRun, engine_directory: Path) -> PlaybookComman
         ),
     }
     return PlaybookCommand(argv=tuple(argv), environment=environment)
-
-
-def execute_playbook(run: PlaybookRun, engine_directory: Path) -> int:
-    """Run the playbook in the foreground and return its exit code."""
-    command = playbook_command(run, engine_directory)
-    # Stdout belongs to the caller's result document, so Ansible's play log
-    # streams to stderr, live, for the person watching the run.
-    completed = subprocess.run(  # noqa: S603 - fixed binary, validated args.
-        command.argv,
-        env={**os.environ, **command.environment},
-        stdout=sys.__stderr__,
-        check=False,
-    )
-    return completed.returncode

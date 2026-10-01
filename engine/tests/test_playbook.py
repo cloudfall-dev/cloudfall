@@ -193,6 +193,70 @@ def test_check_mode_is_the_dry_run_flag(
     assert json.loads(capsys.readouterr().out)["error"]["code"] == "ARG_ERROR"
 
 
+def _local_playbook(tmp_path: Path, task: str) -> Path:
+    playbook = tmp_path / "local.yml"
+    playbook.write_text(
+        "- hosts: localhost\n"
+        "  connection: local\n"
+        "  gather_facts: false\n"
+        "  tasks:\n"
+        f"    - {task}\n",
+        encoding="utf-8",
+    )
+    return playbook
+
+
+def test_a_failed_play_carries_the_end_of_the_ansible_log(
+    tmp_path: Path, inventory_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Off a terminal the log is not streamed, so the failure must carry it."""
+    playbook = _local_playbook(
+        tmp_path, "ansible.builtin.fail: {msg: cloudfall-probe-failure}"
+    )
+
+    exit_code = main(
+        [
+            "playbook",
+            "run",
+            str(playbook),
+            "--engine",
+            str(ENGINE),
+            "--inventory",
+            str(inventory_file),
+        ]
+    )
+
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert exit_code == 82
+    assert error["code"] == "PLAYBOOK_FAILED"
+    assert error["context"]["returncode"] == 2
+    assert "cloudfall-probe-failure" in error["context"]["output"]
+
+
+def test_a_dry_run_says_so_in_meta(
+    tmp_path: Path, inventory_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    playbook = _local_playbook(tmp_path, "ansible.builtin.debug: {msg: probe}")
+
+    exit_code = main(
+        [
+            "playbook",
+            "run",
+            str(playbook),
+            "--engine",
+            str(ENGINE),
+            "--inventory",
+            str(inventory_file),
+            "--dry-run",
+        ]
+    )
+
+    envelope = json.loads(capsys.readouterr().out)
+    assert exit_code == 0, envelope["error"]
+    assert envelope["data"]["effect"] == "would_update"
+    assert envelope["meta"]["dry_run"] is True
+
+
 def test_every_engine_failure_code_is_declared() -> None:
     commands = cast("dict[str, dict[str, Any]]", app.manifest()["commands"])
     declared = {
