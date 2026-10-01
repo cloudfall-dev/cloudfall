@@ -94,7 +94,9 @@ Notable changes to Cloudfall. The format follows
   85 `INVENTORY_UNREADABLE`, 86 `RECORD_INVALID`, 5 `NOT_FOUND` for an
   undeclared operation or a missing proposal, 2 `ARG_ERROR` for bad input;
   the old snake_case code is in `error.context.code`. `audit` exits 83
-  `DRIFT` (was 1) or 84 `UNKNOWN` (was 3) with the report in `data`. Pick
+  `DRIFT` (was 1) or 84 `UNKNOWN` (was 3) with the report in `data`; until
+  treaty #181 is fixed, that report's lists come back sorted rather than in
+  the order the servers and checks were declared. Pick
   the format with `--format json`: `--output` after one of these commands
   is refused, since treaty's `--output` names a file. Relative paths still
   resolve against the project, without changing the working directory

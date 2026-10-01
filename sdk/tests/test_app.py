@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from cloudfall.commands import CLI_COMMANDS
 
 ROOT = Path(__file__).parents[2]
 EXAMPLES = ROOT / "config" / "examples"
+COMPLIANT = ROOT / "config" / "tests" / "observed" / "compliant"
 
 
 def test_the_contract_marks_exactly_the_commands_treaty_runs() -> None:
@@ -60,3 +62,26 @@ def test_a_half_moved_group_sends_the_rest_to_argparse(
     error = json.loads(capsys.readouterr().err)
     assert code == 2
     assert error["status"] == "error"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="treaty #181: a failure's data loses an output adapter's array order",
+)
+def test_a_drift_report_keeps_the_order_the_checks_ran_in(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    observations = tmp_path / "observed"
+    shutil.copytree(COMPLIANT, observations)
+    h1 = observations / "h1.json"
+    h1.write_text(
+        h1.read_text(encoding="utf-8").replace("[UU]", "[U_]"), encoding="utf-8"
+    )
+
+    code = main(
+        ["audit", "--project", str(EXAMPLES), "--observed", str(observations)]
+    )
+
+    report = json.loads(capsys.readouterr().out)["data"]
+    assert code == 83
+    assert report["servers"][0]["checks"][0]["check"] == "server_type.id"
