@@ -285,7 +285,7 @@ requires-dist = [
     { name = "jsonschema", extras = ["format"], specifier = ">=4.23,<5" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2,<3" },
     { name = "pyyaml", specifier = ">=6,<7" },
-    { name = "treaty", specifier = "==1.0.0rc14" },
+    { name = "treaty", specifier = "==1.0.0rc18" },
 ]
 provides-extras = ["mcp"]
 
@@ -1085,11 +1085,11 @@ wheels = [
 
 [[package]]
 name = "treaty"
-version = "1.0.0rc14"
+version = "1.0.0rc18"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d1/20/81f1ed3c12939a83d78651fbe82ce89903b05c9079cc7e88e4417ba17e9e/treaty-1.0.0rc14.tar.gz", hash = "sha256:26498a8dc0c163e46bdf3c1fc1fe7c144638b1798cad14742f8efde13763f49e", size = 513570, upload-time = "2026-10-02T01:44:36.77Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4d/d0/3c17b51f57328feab7b65eeea18f333a876436d52216a17df7f7300285f0/treaty-1.0.0rc18.tar.gz", hash = "sha256:33defd5ede0e9568eaf5a34dc759422483cc508ea9368b90b61cb8120125018c", size = 519893, upload-time = "2026-10-02T09:36:27.466Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9b/c6/f377b673fde544a69305646674d6cdd234455285336a33abcce3dee3879a/treaty-1.0.0rc14-py3-none-any.whl", hash = "sha256:3178710be0b507d4d7a481db11326e2c94c29aa8c2633db1645d8e4c67a2f28e", size = 515200, upload-time = "2026-10-02T01:44:34.915Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/47/07abe2d4f97af626eeb4628032a2b0927ac2709d557669bcb3fb957ae7e5/treaty-1.0.0rc18-py3-none-any.whl", hash = "sha256:bdd353f80aeafc46fa8d12a34cbdff7007cf95f2087825076f0e724829854073", size = 520884, upload-time = "2026-10-02T09:36:25.96Z" },
 ]
 
 [[package]]
