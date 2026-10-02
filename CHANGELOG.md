@@ -90,7 +90,7 @@ Notable changes to Cloudfall. The format follows
   treaty #197). The plan writes the result keys as `null`, and the result
   writes the plan keys (`wouldRun`, `instruction`) as `null`, since treaty
   answers one object per command. `observe` is read-only (it declares the
-  snapshots it writes under the project) and exits 91 `INCOMPLETE` (was 1)
+  snapshots it writes under the project as output, kept by `cleanup`) and exits 91 `INCOMPLETE` (was 1)
   with the run in `data` when a server gave no snapshot. Engine steps,
   sops and the Render API go through treaty: `doctor` checks sops, and
   `import render-api` honours `--proxy` and marks its answer as content
@@ -127,7 +127,8 @@ Notable changes to Cloudfall. The format follows
   with the same `data` keys, plus `effect: created` on `init` and `add`,
   which treaty requires of a command that changes the project.
   `dashboard build` and `services inspect` stay read-only and declare the
-  reports they regenerate under `tmp/`. Failures: 6 `CONFLICT` for a resource that already
+  reports they write under `tmp/` as their output, which treaty's `cleanup`
+  never removes. Failures: 6 `CONFLICT` for a resource that already
   exists (was 2), 7 `PERMISSION_DENIED` for a read-only project or path
   (was 1 or 2), 4 `PRECONDITION` for a non-empty `init` directory (was 2),
   5 `NOT_FOUND` for a missing key file, 2 `ARG_ERROR` for a bad id, name or
@@ -154,7 +155,7 @@ Notable changes to Cloudfall. The format follows
   is refused, since treaty's `--output` names a file. Relative paths still
   resolve against the project, without changing the working directory
 - `cloudfall-engine` runs Ansible and git through treaty's `ctx.run`
-  (treaty 1.0.0rc14), so `--timeout` and Ctrl-C stop the whole process
+  (treaty 1.0.0rc18), so `--timeout` and Ctrl-C stop the whole process
   group, and secrets are redacted from the play log. The play log streams
   to stderr as plain text, as before, terminal or not; `--quiet` silences
   it. A failed playbook carries the last 4096 characters of the log in

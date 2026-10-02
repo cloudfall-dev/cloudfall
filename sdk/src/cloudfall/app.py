@@ -1304,7 +1304,7 @@ class DashboardPayload(Payload):
     timeout=120,
     supports_raw_payload=True,
     project_root=PROJECT_MARKERS,
-    filesystem_side_effects=[SideEffect("{project_root}/tmp/dashboard/", "cache")],
+    filesystem_side_effects=[SideEffect("{project_root}/tmp/dashboard/", "output")],
     exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PERMISSION_DENIED"],
     examples=[
         (
@@ -1362,7 +1362,7 @@ class InspectedPayload(Payload):
     timeout=600,
     project_root=PROJECT_MARKERS,
     filesystem_side_effects=[
-        SideEffect("{project_root}/tmp/observed-services/", "cache")
+        SideEffect("{project_root}/tmp/observed-services/", "output")
     ],
     exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PERMISSION_DENIED"],
     examples=[("Probe every declared domain", "cloudfall services inspect")],
@@ -2323,12 +2323,12 @@ def _playbook_runner(
         "Collect read-only server snapshots from the fleet; servers without one "
         "exit non-zero with the run in data"
     ),
-    # It only reads the hosts; its snapshots and the inventory overlay are
-    # regenerated under the project on every run.
+    # It only reads the hosts. The snapshots are its product, which audit
+    # reads, so cleanup keeps them; the inventory overlay is regenerated.
     danger_level="safe",
     project_root=PROJECT_MARKERS,
     filesystem_side_effects=[
-        SideEffect("{project_root}/tmp/observed/", "cache"),
+        SideEffect("{project_root}/tmp/observed/", "output"),
         SideEffect("{project_root}/tmp/cloudfall/", "cache"),
     ],
     exit_codes=[
