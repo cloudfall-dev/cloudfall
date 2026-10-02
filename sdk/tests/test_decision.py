@@ -626,7 +626,8 @@ def test_the_cli_shows_the_proposal_before_it_runs_anything(
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
     assert payload["data"]["status"] == "pending"
-    assert payload["data"]["effect"] == "noop"
+    assert payload["data"]["effect"] == "would_update"
+    assert payload["meta"]["dry_run"] is True
     assert payload["data"]["decision"]["spec"]["status"] == "proposed"
     assert store.load(proposed.decision_id).status is DecisionStatus.PROPOSED
 

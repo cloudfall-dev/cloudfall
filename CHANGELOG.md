@@ -84,11 +84,13 @@ Notable changes to Cloudfall. The format follows
   `observe`, `secrets render`, `import render`, `import render-api`,
   `deploy`, `rollback`, `restart` and `data migrate` (treaty #183 lets
   their camelCase keys through). Each keeps its `data` keys, `status`
-  included, and adds `effect`. `deploy`, `rollback`, `restart` and
-  `data migrate` still change nothing without `--yes`; their plan answers
-  `effect: noop` and writes the result keys as `null`, and the result
+  included; the ones that write add `effect`. `deploy`, `rollback`,
+  `restart` and `data migrate` still change nothing without `--yes`: that
+  run is treaty's dry run (`effect: would_update`, `meta.dry_run: true`,
+  treaty #197). The plan writes the result keys as `null`, and the result
   writes the plan keys (`wouldRun`, `instruction`) as `null`, since treaty
-  answers one object per command. `observe` exits 91 `INCOMPLETE` (was 1)
+  answers one object per command. `observe` is read-only (it declares the
+  snapshots it writes under the project) and exits 91 `INCOMPLETE` (was 1)
   with the run in `data` when a server gave no snapshot. Engine steps,
   sops and the Render API go through treaty: `doctor` checks sops, and
   `import render-api` honours `--proxy` and marks its answer as content
@@ -109,8 +111,9 @@ Notable changes to Cloudfall. The format follows
   `operator approve` and `migrate`. Ansible runs through treaty in the
   project directory, so `--timeout` and Ctrl-C stop it, and `doctor` checks
   ansible-playbook. `operations approve` and `migrate` still change nothing
-  without `--yes`; that preview answers `effect: noop` with
-  `data.status` `pending` or `plan`. New exit codes, each with the result
+  without `--yes`; that preview is treaty's dry run, `effect: would_update`
+  and `meta.dry_run: true`, with `data.status` `pending` or `plan`. New exit
+  codes, each with the result
   in `data`: 87 `ENGINE_STEP_FAILED` (an inventory render or playbook
   failed, was 1), 88 `UNHEALTHY` (was 1), 89 `CHECK_FAILED` when check mode
   fails in `propose` (was 1), 90 `NOT_VERIFIED` when an approved run fails
@@ -122,9 +125,10 @@ Notable changes to Cloudfall. The format follows
 - **Breaking:** six more `cloudfall` commands run on treaty: `init`,
   `add ssh-key`, `add server-type`, `add server`, `dashboard build` and
   `services inspect`. Their answer is the treaty envelope described below,
-  with the same `data` keys plus `effect` (`created`, or `updated` for a
-  dashboard written over an older one), which treaty requires of every
-  command that writes. Failures: 6 `CONFLICT` for a resource that already
+  with the same `data` keys, plus `effect: created` on `init` and `add`,
+  which treaty requires of a command that changes the project.
+  `dashboard build` and `services inspect` stay read-only and declare the
+  reports they regenerate under `tmp/`. Failures: 6 `CONFLICT` for a resource that already
   exists (was 2), 7 `PERMISSION_DENIED` for a read-only project or path
   (was 1 or 2), 4 `PRECONDITION` for a non-empty `init` directory (was 2),
   5 `NOT_FOUND` for a missing key file, 2 `ARG_ERROR` for a bad id, name or
@@ -151,7 +155,7 @@ Notable changes to Cloudfall. The format follows
   is refused, since treaty's `--output` names a file. Relative paths still
   resolve against the project, without changing the working directory
 - `cloudfall-engine` runs Ansible and git through treaty's `ctx.run`
-  (treaty 1.0.0rc12), so `--timeout` and Ctrl-C stop the whole process
+  (treaty 1.0.0rc13), so `--timeout` and Ctrl-C stop the whole process
   group, and secrets are redacted from the play log. The play log streams
   to stderr as plain text, as before, terminal or not; `--quiet` silences
   it. A failed playbook carries the last 4096 characters of the log in

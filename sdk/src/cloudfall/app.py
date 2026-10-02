@@ -35,6 +35,7 @@ from treaty import (
     Flag,
     Out,
     ParseError,
+    SideEffect,
     Subprocess,
     Timeout,
 )
@@ -89,6 +90,7 @@ from cloudfall.domain import (
     LinuxUser,
     ReleaseId,
     ResourceId,
+    ResourceKind,
     TcpPort,
 )
 from cloudfall.importer import (
@@ -207,6 +209,8 @@ app.scalar(
 )
 # 79 and 80 mean what they mean on cloudfall-engine; 81 and 82 stay the
 # engine's (artifact build, playbook run) for the commands that wrap it.
+PROJECT_MARKERS = tuple(kind.directory for kind in ResourceKind)
+"""A project holds at least one resource kind directory, such as ``servers``."""
 GIT_TIMEOUT_SECONDS = 30
 """How long one git step of ``init`` may take."""
 _NOT_WRITABLE = frozenset({errno.EACCES, errno.EPERM, errno.EROFS})
@@ -1275,23 +1279,20 @@ class DashboardBuildArgs(EvidenceArgs):
         _inside_project(self.output_dir, "output-dir")
 
 
-@dataclass(frozen=True, slots=True)
-class DashboardBuilt:
-    """The static dashboard written, and the fleet health it shows."""
+class DashboardPayload(Payload):
+    """``dashboard build``: the pages written, and the fleet health they show."""
 
-    effect: str
-    status: str
-    health: str
-    tasks: int
-    dashboard: dict[str, str]
+    command = "dashboard build"
 
 
 @dashboard.command(
     "build",
     description="Build a static read-only operations dashboard",
-    danger_level="mutating",
+    danger_level="safe",
     timeout=120,
     supports_raw_payload=True,
+    project_root=PROJECT_MARKERS,
+    filesystem_side_effects=[SideEffect("{project_root}/tmp/dashboard/", "cache")],
     exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PERMISSION_DENIED"],
     examples=[
         (
@@ -1302,23 +1303,22 @@ class DashboardBuilt:
 )
 def dashboard_build(
     args: DashboardBuildArgs, _ctx: Ctx, fleet: Fleet
-) -> DashboardBuilt:
+) -> DashboardPayload:
     """Write the dashboard pages for the fleet's current evidence."""
     view = args.operations_view(fleet)
-    output = fleet.path(args.output_dir)
-    effect = "updated" if output.exists() else "created"
     try:
-        artifacts = build_dashboard(view, output)
+        artifacts = build_dashboard(view, fleet.path(args.output_dir))
     except OSError as error:
         if error.errno not in _NOT_WRITABLE:
             raise
         raise _not_writable(error) from error
-    return DashboardBuilt(
-        effect=effect,
-        status="ok",
-        health=view.health.value,
-        tasks=len(view.tasks),
-        dashboard=artifacts.as_dict(),
+    return DashboardPayload(
+        {
+            "status": "ok",
+            "health": view.health.value,
+            "tasks": len(view.tasks),
+            "dashboard": artifacts.as_dict(),
+        }
     )
 
 
@@ -1336,27 +1336,28 @@ class ServicesInspectArgs(ProjectArgs):
         _inside_project(self.output_dir, "output-dir")
 
 
-@dataclass(frozen=True, slots=True)
-class ServicesInspected:
-    """The domain observation files written."""
+class InspectedPayload(Payload):
+    """``services inspect``: the domain observation files written."""
 
-    effect: str
-    status: str
-    observations: list[str] = Out(ordered=True)
+    command = "services inspect"
 
 
 @services.command(
     "inspect",
     description="Collect DNS, TLS, origin, and public route evidence",
-    danger_level="mutating",
+    danger_level="safe",
     # DNS, TLS, and HTTP probes of every declared domain, one after another.
     timeout=600,
+    project_root=PROJECT_MARKERS,
+    filesystem_side_effects=[
+        SideEffect("{project_root}/tmp/observed-services/", "cache")
+    ],
     exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PERMISSION_DENIED"],
     examples=[("Probe every declared domain", "cloudfall services inspect")],
 )
 def services_inspect(
     args: ServicesInspectArgs, _ctx: Ctx, fleet: Fleet
-) -> ServicesInspected:
+) -> InspectedPayload:
     """Probe each declared domain and write one observation per domain."""
     try:
         paths = inspect_domains(
@@ -1369,10 +1370,8 @@ def services_inspect(
         if error.errno not in _NOT_WRITABLE:
             raise
         raise _not_writable(error) from error
-    return ServicesInspected(
-        effect="created",
-        status="ok",
-        observations=[str(path) for path in paths],
+    return InspectedPayload(
+        {"status": "ok", "observations": [str(path) for path in paths]}
     )
 
 
@@ -1699,6 +1698,7 @@ class ApproveDecisionArgs(DecisionsArgs):
     )
     yes: bool = Flag(
         default=False,
+        confirm=True,
         description=(
             "Change the servers; without it the command shows the recorded "
             "proposal and runs nothing"
@@ -1805,10 +1805,9 @@ def operations_approve(args: ApproveDecisionArgs, ctx: Ctx) -> Decided:
             raise Exit.NOT_FOUND(error.detail, context={"code": error.code}) from error
         raise _record_invalid(error) from error
     if not args.yes:
-        # Nothing ran. treaty reads would_* only from a dry run it switched,
-        # and --yes is the inverse of its --dry-run (treaty #197).
+        # Without --yes the run is treaty's dry run (Flag(confirm=True)).
         return Decided(
-            effect="noop",
+            effect="would_update",
             status="pending",
             decision=decision.as_document(),
             next=[
@@ -2030,6 +2029,7 @@ class MigrateArgs(EngineArgs):
     )
     yes: bool = Flag(
         default=False,
+        confirm=True,
         description=(
             "Change the servers; without it the command prints the plan and "
             "runs nothing"
@@ -2150,8 +2150,8 @@ def migrate(args: MigrateArgs, ctx: Ctx, fleet: Fleet) -> Migration:
         ) from error
     status = str(result["status"])
     migration = Migration(
-        # A plan changes nothing: noop, as without --yes in `operations approve`.
-        effect="noop" if status == "plan" else "updated",
+        # A plan is the dry run --yes confirms.
+        effect="would_update" if status == "plan" else "updated",
         status=status,
         steps=list(cast("list[dict[str, object]]", result["steps"])),
         completed=int(cast("int", result["completed"])),
@@ -2259,7 +2259,7 @@ app.exit_code(
         "Some servers produced no snapshot or Ansible failed; data says which"
     ),
     retryable=True,
-    # The hosts are only read; a retry rewrites the snapshots it wrote.
+    # observe only reads the hosts; a retry rewrites the snapshots it wrote.
     side_effects="none",
     suggestion="read data.missing and data.detail, fix the hosts, then observe again",
 )
@@ -2290,7 +2290,6 @@ class ObservedPayload(Payload):
     """``observe``: which servers produced a snapshot."""
 
     command = "observe"
-    writes = True
 
 
 def _playbook_runner(
@@ -2311,7 +2310,14 @@ def _playbook_runner(
         "Collect read-only server snapshots from the fleet; servers without one "
         "exit non-zero with the run in data"
     ),
-    danger_level="mutating",
+    # It only reads the hosts; its snapshots and the inventory overlay are
+    # regenerated under the project on every run.
+    danger_level="safe",
+    project_root=PROJECT_MARKERS,
+    filesystem_side_effects=[
+        SideEffect("{project_root}/tmp/observed/", "cache"),
+        SideEffect("{project_root}/tmp/cloudfall/", "cache"),
+    ],
     exit_codes=[
         "PROJECT_INVALID",
         "CONFIG_INVALID",
@@ -2334,7 +2340,6 @@ def observe(args: ObserveArgs, ctx: Ctx, fleet: Fleet) -> ObservedPayload:
         else (fleet.directory / "tmp/ansible-inventory.json",)
     )
     output = fleet.path(args.output_dir)
-    effect = "updated" if output.exists() else "created"
     try:
         request = ObservationRequest(
             inventory_sources=sources,
@@ -2353,7 +2358,7 @@ def observe(args: ObserveArgs, ctx: Ctx, fleet: Fleet) -> ObservedPayload:
         )
     except ObserveError as error:
         raise Exit.PRECONDITION(error.detail, context={"code": error.code}) from error
-    payload = ObservedPayload({**result.as_dict(), "effect": effect})
+    payload = ObservedPayload(result.as_dict())
     if not result.complete:
         message = f"{len(result.missing)} server(s) produced no snapshot"
         raise Exit.INCOMPLETE(message, data=payload)
@@ -2657,6 +2662,7 @@ class ComponentArgs(EngineArgs):
     component: ResourceId = Arg(description="Component to act on")
     yes: bool = Flag(
         default=False,
+        confirm=True,
         description=(
             "Change the servers; without it the command validates the request "
             "and only shows what it would do"
@@ -2718,6 +2724,7 @@ class DataMigrateArgs(EngineArgs):
     )
     yes: bool = Flag(
         default=False,
+        confirm=True,
         description=(
             "Change the servers; without it the command validates the request "
             "and only shows what it would do"
@@ -2759,9 +2766,12 @@ class DataMigratePayload(Payload):
 
 
 def _plan(preview: LifecyclePreview) -> dict[str, object]:
-    # Nothing ran: noop, as treaty reads would_* only from its own dry run
-    # (treaty #197).
-    return {**preview.as_dict(), "instruction": _PLAN_INSTRUCTION, "effect": "noop"}
+    # Without --yes the run is treaty's dry run (Flag(confirm=True)).
+    return {
+        **preview.as_dict(),
+        "instruction": _PLAN_INSTRUCTION,
+        "effect": "would_update",
+    }
 
 
 _LIFECYCLE_EXIT_CODES = [
