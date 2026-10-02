@@ -106,9 +106,7 @@ def test_missing_required_argument_is_a_json_usage_error(
 @pytest.mark.parametrize(
     "argv",
     [
-        ["health", "Bad ID!"],
         ["rollback", "crm-backend", "--release", "r1"],
-        ["backup", "run", "acme%2Fdb"],
     ],
 )
 def test_invalid_identifiers_fail_before_dispatch(
@@ -124,17 +122,23 @@ def test_invalid_identifiers_fail_before_dispatch(
     assert "invalid" in str(error["message"])
 
 
+@pytest.mark.parametrize(
+    ("argv", "field"),
+    [
+        (["operator", "show", "../ghost"], "proposal"),
+        (["health", "Bad ID!"], "component"),
+        (["backup", "run", "acme%2Fdb"], "service"),
+    ],
+)
 def test_an_invalid_identifier_fails_before_a_treaty_command_runs(
-    capsys: pytest.CaptureFixture[str],
+    argv: list[str], field: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    payload = _treaty_usage_error(
-        ["operator", "show", "../ghost", "--project", str(EXAMPLES)], capsys
-    )
+    payload = _treaty_usage_error([*argv, "--project", str(EXAMPLES)], capsys)
 
     error = payload["error"]
     assert isinstance(error, dict)
     assert error["code"] == "ARG_ERROR"
-    assert "proposal" in str(error["message"])
+    assert field in str(error["message"])
 
 
 def test_import_render_rejects_an_invalid_application_id(

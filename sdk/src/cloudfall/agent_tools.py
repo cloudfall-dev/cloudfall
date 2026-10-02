@@ -40,6 +40,7 @@ from cloudfall.lifecycle import (
     DeployOptions,
     EngineContext,
     LifecycleError,
+    StepRunner,
     backup_service,
     build_release_artifact,
     deploy,
@@ -48,6 +49,7 @@ from cloudfall.lifecycle import (
     restart,
     rollback,
     run_engine_playbook,
+    subprocess_step,
     verify_backup,
 )
 from cloudfall.migrate import MigrateError, MigrateOptions, execute_migration
@@ -125,6 +127,8 @@ class AgentConfig:
     gateway_ca_path: Path | None = None
     gateway_certificate_path: Path | None = None
     gateway_key_path: Path | None = None
+    run: StepRunner = subprocess_step
+    """Starts each engine step: ``subprocess`` here, ``ctx.run`` under treaty."""
 
     def context(self) -> EngineContext:
         """Return the engine execution context shared by mutating tools."""
@@ -133,6 +137,7 @@ class AgentConfig:
             schema_directory=self.schema_directory,
             engine_directory=self.engine_directory,
             inventory_file=self.inventory_file,
+            run=self.run,
         )
 
 

@@ -55,7 +55,7 @@ matters.
 _TREE_DIRECTORY = "tree"
 _DIFF_SUFFIX = ".diff"
 _ANSIBLE_CONFIG_FILE = "ansible.cfg"
-_CHECK_TIMEOUT_SECONDS = 1800
+CHECK_TIMEOUT_SECONDS = 1800
 _CHANGED_KEY = "changed"
 
 _ERROR_ANSIBLE_MISSING = "decision_ansible_missing"
@@ -65,7 +65,7 @@ _ERROR_INPUT_UNKNOWN = "decision_input_unknown"
 _ERROR_INPUT_MISSING = "decision_input_missing"
 _ERROR_INPUT_TYPE = "decision_input_type"
 _ERROR_DECISION_EXISTS = "decision_exists"
-_ERROR_DECISION_MISSING = "decision_missing"
+ERROR_DECISION_MISSING = "decision_missing"
 _ERROR_NOT_PROPOSED = "decision_not_proposed"
 _ERROR_APPROVER_UNKNOWN = "decision_approver_unknown"
 
@@ -316,7 +316,7 @@ class DecisionStore:
         path = self._path(decision.decision_id)
         if not path.exists():
             message = f"decision does not exist: {path}"
-            raise DecisionError(_ERROR_DECISION_MISSING, message)
+            raise DecisionError(ERROR_DECISION_MISSING, message)
         return self._write(path, decision)
 
     def load(self, decision_id: ResourceId) -> Decision:
@@ -324,7 +324,7 @@ class DecisionStore:
         path = self._path(decision_id)
         if not path.is_file():
             message = f"decision does not exist: {path}"
-            raise DecisionError(_ERROR_DECISION_MISSING, message)
+            raise DecisionError(ERROR_DECISION_MISSING, message)
         document = cast(
             "dict[str, object]", json.loads(path.read_text(encoding="utf-8"))
         )
@@ -770,7 +770,7 @@ def _run_check(
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             check=False,
-            timeout=_CHECK_TIMEOUT_SECONDS,
+            timeout=CHECK_TIMEOUT_SECONDS,
         )
     return completed.returncode
 

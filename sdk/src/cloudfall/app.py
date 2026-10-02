@@ -35,6 +35,7 @@ from treaty import (
     Timeout,
 )
 
+from cloudfall.agent_tools import AgentConfig
 from cloudfall.ansible_api import (
     AnsibleReadError,
     InventorySource,
@@ -64,7 +65,20 @@ from cloudfall.catalog import (
 )
 from cloudfall.commands import CLI_COMMANDS
 from cloudfall.dashboard import build_dashboard
-from cloudfall.decision import DECISION_DIRECTORY, DecisionError, DecisionStore
+from cloudfall.decision import (
+    CHECK_TIMEOUT_SECONDS,
+    DECISION_DIRECTORY,
+    ERROR_DECISION_MISSING,
+    ApprovalRequest,
+    CheckRunner,
+    DecisionError,
+    DecisionStatus,
+    DecisionStore,
+    ProposalRequest,
+    Targets,
+    approve,
+    propose,
+)
 from cloudfall.domain import (
     ConnectionAddress,
     Hostname,
@@ -73,9 +87,36 @@ from cloudfall.domain import (
     TcpPort,
 )
 from cloudfall.inventory import PlatformInventory
+from cloudfall.lifecycle import (
+    ERROR_EXECUTION_FAILED,
+    STEP_TIMEOUT_SECONDS,
+    EngineContext,
+    ExecutionStep,
+    LifecycleError,
+    StepRun,
+    StepRunner,
+    backup_service,
+    health,
+    verify_backup,
+)
+from cloudfall.migrate import MigrateError, MigrateOptions, execute_migration
 from cloudfall.observation import load_observations
 from cloudfall.operations import FleetOperations, UtcTimestamp, build_operations_view
-from cloudfall.operator import ERROR_PROPOSAL_MISSING, OperatorError, ProposalStore
+from cloudfall.operator import (
+    ERROR_PROPOSAL_MISSING,
+    AlertFeed,
+    ApproveOptions,
+    OperatorError,
+    ProposalStatus,
+    ProposalStore,
+    TriggerKind,
+    alert_resolution_verifier,
+    drift_resolution_verifier,
+    engine_auditor,
+    engine_executor,
+    gateway_feed,
+)
+from cloudfall.operator import approve as approve_proposal
 from cloudfall.project import (
     PROJECT_DIRECTORY_VARIABLE,
     InitOptions,
@@ -89,7 +130,7 @@ from cloudfall.project import (
     resolve_installed_version,
     resolve_project_directory,
 )
-from cloudfall.resources import default_schema_directory
+from cloudfall.resources import default_engine_directory, default_schema_directory
 from cloudfall.secrets import load_environment_receipts
 from cloudfall.service_evidence import (
     DeploymentReceiptSet,
@@ -108,7 +149,7 @@ from cloudfall.validation import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
 app = App(
     "cloudfall",
@@ -1254,3 +1295,798 @@ def services_inspect(
         status="ok",
         observations=[str(path) for path in paths],
     )
+
+
+# Commands that change servers: health, backup run/verify, operations
+# propose/approve, operator approve, migrate. Ansible runs through ctx.run,
+# in the project directory as it did under argparse.
+
+
+app.exit_code(
+    "ENGINE_STEP_FAILED",
+    87,
+    description=(
+        "An engine step (inventory render or playbook run) failed; hosts may be "
+        "partly changed"
+    ),
+    retryable=False,
+    side_effects="partial",
+    suggestion="read error.message for the end of the step's output, fix it, rerun",
+)
+app.exit_code(
+    "UNHEALTHY",
+    88,
+    description="A health check failed on a server; data holds the result",
+    retryable=True,
+    side_effects="none",
+    suggestion=(
+        "read data.detail for the failing server; restart the component or "
+        "redeploy it, then probe again"
+    ),
+)
+app.exit_code(
+    "CHECK_FAILED",
+    89,
+    description=(
+        "Check mode failed; the decision is recorded with its diff, in data"
+    ),
+    retryable=False,
+    side_effects="none",
+    suggestion="read the diff the decision cites before proposing again",
+)
+app.exit_code(
+    "NOT_VERIFIED",
+    90,
+    description=(
+        "The approved run failed or its verify step did not confirm it; data "
+        "holds the record"
+    ),
+    retryable=False,
+    side_effects="partial",
+)
+
+
+def _step_runner(ctx: Ctx, directory: Path) -> StepRunner:
+    """Run each engine step through ``ctx.run``, in the project directory."""
+
+    def run(step: ExecutionStep) -> StepRun:
+        return ctx.run(
+            step.argv,
+            env=step.environment,
+            cwd=directory,
+            timeout=Timeout(STEP_TIMEOUT_SECONDS),
+            check=False,
+        )
+
+    return run
+
+
+def _check_runner(ctx: Ctx, directory: Path) -> CheckRunner:
+    """Run check mode through ``ctx.run``, keeping its output as the diff."""
+
+    def run(argv: Sequence[str], environment: Mapping[str, str], diff: Path) -> int:
+        done = ctx.run(
+            list(argv),
+            env=environment,
+            cwd=directory,
+            timeout=Timeout(CHECK_TIMEOUT_SECONDS),
+            check=False,
+        )
+        diff.write_text(done.stdout + done.stderr, encoding="utf-8")
+        return done.returncode
+
+    return run
+
+
+def _lifecycle_failed(error: LifecycleError) -> Exception:
+    context = {"code": error.code}
+    if error.code == ERROR_EXECUTION_FAILED:
+        return Exit.ENGINE_STEP_FAILED(error.detail, context=context)
+    return Exit.PRECONDITION(error.detail, context=context)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class EngineArgs(ProjectArgs):
+    """Options of a command that runs engine playbooks against the fleet."""
+
+    engine: Path = Flag(
+        default=default_engine_directory(),
+        description="Engine directory containing ansible contracts (default: bundled)",
+    )
+    inventory_file: Path = Flag(
+        default=Path("tmp/ansible-inventory.json"),
+        description="Rendered inventory path (default: tmp/ansible-inventory.json)",
+    )
+
+    def __post_init__(self) -> None:
+        """Keep a relative inventory path inside the project."""
+        _inside_project(self.inventory_file, "inventory-file")
+
+    def context(self, fleet: Fleet, ctx: Ctx) -> EngineContext:
+        """Return the engine contract, with steps run through ``ctx.run``."""
+        return EngineContext(
+            project_directory=fleet.directory,
+            schema_directory=self.schemas,
+            engine_directory=self.engine,
+            inventory_file=fleet.path(self.inventory_file),
+            run=_step_runner(ctx, fleet.directory),
+        )
+
+
+# health
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class HealthArgs(EngineArgs):
+    """Arguments of ``health``."""
+
+    component: ResourceId = Arg(description="Component to probe")
+
+
+class HealthPayload(Payload):
+    """``health``: the probe's result on every server of the component."""
+
+    command = "health"
+
+
+@app.command(
+    "health",
+    description=(
+        "Probe one component's declared health check; an unhealthy result "
+        "exits non-zero with the result in data"
+    ),
+    danger_level="safe",
+    exit_codes=[
+        "PROJECT_INVALID",
+        "CONFIG_INVALID",
+        "PRECONDITION",
+        "UNHEALTHY",
+    ],
+    timeout=None,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0"},
+    examples=[("Probe one component", "cloudfall health crm-backend")],
+)
+def health_command(args: HealthArgs, ctx: Ctx, fleet: Fleet) -> HealthPayload:
+    """Run the health playbook and answer whether every server passed."""
+    try:
+        result = health(args.context(fleet, ctx), args.component)
+    except LifecycleError as error:
+        raise _lifecycle_failed(error) from error
+    payload = HealthPayload(result.as_dict())
+    if not result.healthy:
+        message = f"{args.component} failed its health check"
+        raise Exit.UNHEALTHY(message, data=payload)
+    return payload
+
+
+# backup run, verify
+
+
+backup = app.group("backup", description="Run and prove declared service backups")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BackupArgs(EngineArgs):
+    """Arguments of ``backup run`` and ``backup verify``."""
+
+    service: ResourceId = Arg(description="Declared service to back up")
+    receipts: Path = Flag(
+        default=Path("tmp/backups"),
+        description="Backup receipt directory (default: tmp/backups)",
+    )
+
+    def __post_init__(self) -> None:
+        """Keep relative paths inside the project."""
+        EngineArgs.__post_init__(self)
+        _inside_project(self.receipts, "receipts")
+
+
+@dataclass(frozen=True, slots=True)
+class BackedUp:
+    """The receipt one backup or restore check wrote."""
+
+    effect: str
+    status: str
+    receipt: dict[str, object] = Out(ordered=True)
+    path: Path = Path()
+
+
+def _backed_up(body: Mapping[str, object]) -> BackedUp:
+    return BackedUp(
+        effect="created",
+        status=str(body["status"]),
+        receipt=dict(cast("Mapping[str, object]", body["receipt"])),
+        path=Path(str(body["path"])),
+    )
+
+
+_BACKUP_EXIT_CODES = [
+    "PROJECT_INVALID",
+    "CONFIG_INVALID",
+    "PRECONDITION",
+    "ENGINE_STEP_FAILED",
+]
+
+
+@backup.command(
+    "run",
+    description="Run the declared backup for one service and keep its receipt",
+    danger_level="mutating",
+    exit_codes=_BACKUP_EXIT_CODES,
+    timeout=None,
+    supports_raw_payload=True,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0"},
+    examples=[("Back up one database service", "cloudfall backup run postgresql-main")],
+)
+def backup_run(args: BackupArgs, ctx: Ctx, fleet: Fleet) -> BackedUp:
+    """Run the backup playbook for the service."""
+    try:
+        body = backup_service(
+            args.context(fleet, ctx), args.service, fleet.path(args.receipts)
+        )
+    except LifecycleError as error:
+        raise _lifecycle_failed(error) from error
+    return _backed_up(body)
+
+
+@backup.command(
+    "verify",
+    description="Prove the newest backup restores for one service",
+    danger_level="mutating",
+    exit_codes=_BACKUP_EXIT_CODES,
+    timeout=None,
+    supports_raw_payload=True,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0"},
+    examples=[
+        (
+            "Restore-check one database service",
+            "cloudfall backup verify postgresql-main",
+        ),
+    ],
+)
+def backup_verify(args: BackupArgs, ctx: Ctx, fleet: Fleet) -> BackedUp:
+    """Restore the newest backup into scratch and keep the proof."""
+    try:
+        body = verify_backup(
+            args.context(fleet, ctx), args.service, fleet.path(args.receipts)
+        )
+    except LifecycleError as error:
+        raise _lifecycle_failed(error) from error
+    return _backed_up(body)
+
+
+# operations propose, approve
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProposeArgs(CatalogArgs):
+    """Arguments of ``operations propose``."""
+
+    operation: ResourceId = Arg(description="Operation id")
+    target: str | None = Flag(
+        default=None,
+        description=(
+            "Host or group the operation runs against, as its target scope requires"
+        ),
+    )
+    input: tuple[str, ...] = Flag(
+        default=(),
+        description="Value for one declared input, as NAME=VALUE (repeatable)",
+    )
+    observed: Path = Flag(
+        default=Path("tmp/observed"),
+        description=(
+            "Snapshot directory the proposal cites as its basis (default: tmp/observed)"
+        ),
+    )
+    decisions: Path = Flag(
+        default=Path(DECISION_DIRECTORY),
+        description=(
+            f"Directory holding the decision records (default: {DECISION_DIRECTORY})"
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        """Refuse a malformed input, and keep relative paths in the repository."""
+        CatalogArgs.__post_init__(self)
+        _inside_project(self.observed, "observed")
+        _inside_project(self.decisions, "decisions")
+        self.inputs()
+
+    def inputs(self) -> dict[str, object]:
+        """Return the declared inputs, parsed from ``NAME=VALUE``."""
+        inputs: dict[str, object] = {}
+        for entry in self.input:
+            name, separator, value = entry.partition("=")
+            if not separator or not name:
+                message = f"input must be given as NAME=VALUE, got {entry!r}"
+                raise ParseError(message, context={"flag": "input"})
+            inputs[name] = value
+        return inputs
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ApproveDecisionArgs(DecisionsArgs):
+    """Arguments of ``operations approve``."""
+
+    decision: ResourceId = Arg(description="Decision id from `operations propose`")
+    approver: str | None = Flag(
+        default=None,
+        description="Who is approving (default: the USER environment variable)",
+    )
+    yes: bool = Flag(
+        default=False,
+        description=(
+            "Change the servers; without it the command shows the recorded "
+            "proposal and runs nothing"
+        ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class Decided:
+    """One decision record, and what to do next when it waits for approval."""
+
+    effect: str
+    status: str
+    decision: dict[str, object] = Out(ordered=True)
+    next: list[str] = Out(ordered=True)
+
+
+def _decision_failed(error: DecisionError) -> Exception:
+    return Exit.PRECONDITION(error.detail, context={"code": error.code})
+
+
+@operations.command(
+    "propose",
+    description=(
+        "Run one operation in check mode and record what it would do; nothing "
+        "on the fleet changes"
+    ),
+    danger_level="mutating",
+    exit_codes=["CONFIG_INVALID", "NOT_FOUND", "PRECONDITION", "CHECK_FAILED"],
+    timeout=None,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0"},
+    supports_raw_payload=True,
+    examples=[
+        (
+            "Propose a restart of nginx on one host",
+            "cloudfall operations propose restart-nginx --target h1",
+        ),
+    ],
+)
+def operations_propose(args: ProposeArgs, ctx: Ctx) -> Decided:
+    """Record a proposal with the diff check mode produced."""
+    catalog = args.catalog()
+    try:
+        operation = catalog.get(args.operation)
+    except ConfigValidationError as error:
+        if error.issue.code == ERROR_OPERATION_UNDECLARED:
+            raise Exit.NOT_FOUND(
+                error.issue.message, context=error.issue.as_dict()
+            ) from error
+        raise _config_invalid(error) from error
+    request = ProposalRequest(
+        operation=operation,
+        targets=Targets(scope=operation.targets, pattern=args.target),
+        inputs=args.inputs(),
+        repository=args.root,
+        observations=args.root / args.observed,
+    )
+    store = DecisionStore(
+        directory=args.root / args.decisions, catalog=SchemaCatalog(args.schemas)
+    )
+    try:
+        decision = propose(request, store, run=_check_runner(ctx, args.root))
+    except DecisionError as error:
+        raise _decision_failed(error) from error
+    decided = Decided(
+        effect="created", status="ok", decision=decision.as_document(), next=[]
+    )
+    if decision.check.exit_code != 0:
+        message = (
+            f"check mode exited {decision.check.exit_code}; the decision is "
+            "recorded with its diff"
+        )
+        raise Exit.CHECK_FAILED(message, data=decided)
+    return decided
+
+
+@operations.command(
+    "approve",
+    description=(
+        "Approve one recorded proposal, run it, and verify it; without --yes it "
+        "shows the proposal and runs nothing"
+    ),
+    danger_level="mutating",
+    exit_codes=["NOT_FOUND", "PRECONDITION", "RECORD_INVALID", "NOT_VERIFIED"],
+    timeout=None,
+    supports_raw_payload=True,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0"},
+    examples=[
+        ("Review a proposal", "cloudfall operations approve restart-nginx-20260101"),
+        ("Run it", "cloudfall operations approve restart-nginx-20260101 --yes"),
+    ],
+)
+def operations_approve(args: ApproveDecisionArgs, ctx: Ctx) -> Decided:
+    """Run what was proposed, as recorded, and record how it ended."""
+    store = DecisionStore(
+        directory=args.root / args.decisions, catalog=SchemaCatalog(args.schemas)
+    )
+    try:
+        decision = store.load(args.decision)
+    except DecisionError as error:
+        if error.code == ERROR_DECISION_MISSING:
+            raise Exit.NOT_FOUND(error.detail, context={"code": error.code}) from error
+        raise _record_invalid(error) from error
+    if not args.yes:
+        # Nothing ran. treaty reads would_* only from a dry run it switched,
+        # and --yes is the inverse of its --dry-run (treaty #197).
+        return Decided(
+            effect="noop",
+            status="pending",
+            decision=decision.as_document(),
+            next=[
+                f"review the recorded diff at {decision.check.diff.path}",
+                "approve with --yes to run it",
+            ],
+        )
+    approver = args.approver if args.approver is not None else ctx.env.get("USER", "")
+    try:
+        approved = approve(
+            ApprovalRequest(decision=decision, approver=approver, repository=args.root),
+            store,
+            run=_check_runner(ctx, args.root),
+        )
+    except DecisionError as error:
+        raise _decision_failed(error) from error
+    decided = Decided(
+        effect="updated", status="ok", decision=approved.as_document(), next=[]
+    )
+    if approved.status is DecisionStatus.FAILED:
+        message = "the approved run failed or its verify step did not confirm it"
+        raise Exit.NOT_VERIFIED(message, data=decided)
+    return decided
+
+
+# operator approve
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OperatorApproveArgs(ProposalArgs):
+    """Arguments of ``operator approve``."""
+
+    proposal: ResourceId = Arg(description="Proposal id")
+    engine: Path = Flag(
+        default=default_engine_directory(),
+        description="Engine directory containing ansible contracts (default: bundled)",
+    )
+    inventory_file: Path = Flag(
+        default=Path("tmp/ansible-inventory.json"),
+        description="Rendered inventory path (default: tmp/ansible-inventory.json)",
+    )
+    observed: Path = Flag(
+        default=Path("tmp/operator/observed"),
+        description=(
+            "Observation directory for drift verification "
+            "(default: tmp/operator/observed)"
+        ),
+    )
+    verify_timeout: float = Flag(
+        default=180.0,
+        description="Seconds to wait for the trigger to resolve (default: 180)",
+    )
+    gateway_url: str | None = Flag(
+        default=None,
+        description="Alerts endpoint (default: derived from the declared gateway)",
+    )
+    gateway_ca: Path | None = Flag(default=None, description="Gateway CA file")
+    gateway_cert: Path | None = Flag(
+        default=None, description="Client certificate for the gateway"
+    )
+    gateway_key: Path | None = Flag(
+        default=None, description="Client key for the gateway", secret=False
+    )
+
+    def __post_init__(self) -> None:
+        """Keep relative paths inside the project."""
+        ProposalArgs.__post_init__(self)
+        _inside_project(self.inventory_file, "inventory-file")
+        _inside_project(self.observed, "observed")
+
+    def context(self, fleet: Fleet, ctx: Ctx) -> EngineContext:
+        """Return the engine contract, with steps run through ``ctx.run``."""
+        return EngineContext(
+            project_directory=fleet.directory,
+            schema_directory=self.schemas,
+            engine_directory=self.engine,
+            inventory_file=fleet.path(self.inventory_file),
+            run=_step_runner(ctx, fleet.directory),
+        )
+
+    def feed(self, fleet: Fleet) -> AlertFeed:
+        """Return the gateway's alert feed, which an alert proposal needs."""
+        if (
+            self.gateway_ca is None
+            or self.gateway_cert is None
+            or self.gateway_key is None
+        ):
+            message = (
+                "approving an alert-triggered proposal requires --gateway-ca, "
+                "--gateway-cert, and --gateway-key"
+            )
+            raise Exit.PRECONDITION(
+                message, context={"code": "operator_gateway_material_missing"}
+            )
+        return gateway_feed(
+            fleet.inventory,
+            ca_path=self.gateway_ca,
+            certificate_path=self.gateway_cert,
+            key_path=self.gateway_key,
+            url_override=self.gateway_url,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Approved:
+    """One proposal receipt after its approved run."""
+
+    effect: str
+    status: str
+    proposal: dict[str, object] = Out(ordered=True)
+
+
+@operator.command(
+    "approve",
+    description="Execute a proposal and verify its trigger resolves",
+    danger_level="mutating",
+    exit_codes=[
+        "PROJECT_INVALID",
+        "CONFIG_INVALID",
+        "NOT_FOUND",
+        "PRECONDITION",
+        "RECORD_INVALID",
+        "ENGINE_STEP_FAILED",
+        "NOT_VERIFIED",
+    ],
+    timeout=None,
+    supports_raw_payload=True,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0"},
+    examples=[
+        ("Approve one proposal", "cloudfall operator approve nginx-down-20260101"),
+    ],
+)
+def operator_approve(
+    args: OperatorApproveArgs, ctx: Ctx, fleet: Fleet
+) -> Approved:
+    """Run the proposal's operation, then wait for its trigger to resolve."""
+    store = args.store(fleet)
+    context = args.context(fleet, ctx)
+    try:
+        pending = store.load(args.proposal)
+        if pending.trigger_kind is TriggerKind.ALERT:
+            verifier = alert_resolution_verifier(args.feed(fleet))
+        else:
+            verifier = drift_resolution_verifier(
+                engine_auditor(context, fleet.inventory, fleet.path(args.observed))
+            )
+        proposal = approve_proposal(
+            store,
+            args.proposal,
+            engine_executor(context),
+            verifier,
+            ApproveOptions(verify_timeout_seconds=args.verify_timeout),
+        )
+    except OperatorError as error:
+        raise _record_invalid(error) from error
+    except LifecycleError as error:
+        raise _lifecycle_failed(error) from error
+    verified = proposal.status is ProposalStatus.VERIFIED
+    approved = Approved(
+        effect="updated",
+        status="ok" if verified else "failed",
+        proposal=proposal.as_document(),
+    )
+    if not verified:
+        message = "the run finished but its trigger did not resolve"
+        raise Exit.NOT_VERIFIED(message, data=approved)
+    return approved
+
+
+# migrate
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MigrateArgs(EngineArgs):
+    """Arguments of ``migrate``."""
+
+    observed: Path = Flag(
+        default=Path("tmp/observed"),
+        description="Server observation directory (default: tmp/observed)",
+    )
+    service_observed: Path = Flag(
+        default=Path("tmp/observed-services"),
+        description="Domain observation directory (default: tmp/observed-services)",
+    )
+    deployments: Path = Flag(
+        default=Path("tmp/deployments"),
+        description="Deployment receipt directory (default: tmp/deployments)",
+    )
+    receipts: Path = Flag(
+        default=Path("tmp/releases"),
+        description="Release receipt directory (default: tmp/releases)",
+    )
+    artifacts: Path = Flag(
+        default=Path("tmp/artifacts"),
+        description="Artifact directory (default: tmp/artifacts)",
+    )
+    plan_file: Path = Flag(
+        default=Path("tmp/migrate/plan.json"),
+        description="Persisted migration plan (default: tmp/migrate/plan.json)",
+    )
+    build: tuple[str, ...] = Flag(
+        default=(),
+        description="Build a component from a git ref, as COMPONENT=REF (repeatable)",
+    )
+    release: tuple[str, ...] = Flag(
+        default=(),
+        description="Deploy an existing release, as COMPONENT=RELEASE (repeatable)",
+    )
+    env_file: tuple[str, ...] = Flag(
+        default=(),
+        description="Environment file for a component, as COMPONENT=PATH (repeatable)",
+    )
+    data: tuple[str, ...] = Flag(
+        default=(),
+        description=(
+            "Source URL file for a database, as DATABASE=PATH (repeatable)"
+        ),
+    )
+    yes: bool = Flag(
+        default=False,
+        description=(
+            "Change the servers; without it the command prints the plan and "
+            "runs nothing"
+        ),
+    )
+    restart: bool = Flag(
+        default=False,
+        description="Discard the persisted plan and start again",
+    )
+
+    def __post_init__(self) -> None:
+        """Refuse a malformed pair, and keep relative paths in the project."""
+        EngineArgs.__post_init__(self)
+        for flag in (
+            "observed",
+            "service_observed",
+            "deployments",
+            "receipts",
+            "artifacts",
+            "plan_file",
+        ):
+            _inside_project(getattr(self, flag), flag.replace("_", "-"))
+        for option, entries in (
+            ("build", self.build),
+            ("release", self.release),
+            ("env-file", self.env_file),
+            ("data", self.data),
+        ):
+            _pairs(entries, option)
+
+    def options(self, fleet: Fleet) -> MigrateOptions:
+        """Return what this run builds, deploys and migrates."""
+        return MigrateOptions(
+            plan_file=fleet.path(self.plan_file),
+            builds=_pairs(self.build, "build"),
+            releases=_pairs(self.release, "release"),
+            environment_files={
+                component: Path(value)
+                for component, value in _pairs(self.env_file, "env-file").items()
+            },
+            data_migrations={
+                database: Path(value)
+                for database, value in _pairs(self.data, "data").items()
+            },
+            execute=self.yes,
+            restart=self.restart,
+        )
+
+    def config(self, fleet: Fleet, ctx: Ctx) -> AgentConfig:
+        """Return the filesystem contract the migration runs under."""
+        return AgentConfig(
+            project_directory=fleet.directory,
+            schema_directory=self.schemas,
+            engine_directory=self.engine,
+            inventory_file=fleet.path(self.inventory_file),
+            observed_directory=fleet.path(self.observed),
+            service_observed_directory=fleet.path(self.service_observed),
+            deployments_directory=fleet.path(self.deployments),
+            releases_directory=fleet.path(self.receipts),
+            artifacts_directory=fleet.path(self.artifacts),
+            run=_step_runner(ctx, fleet.directory),
+        )
+
+
+def _pairs(entries: tuple[str, ...], option: str) -> dict[str, str]:
+    pairs: dict[str, str] = {}
+    for entry in entries:
+        key, separator, value = entry.partition("=")
+        if not separator or not key or not value:
+            message = f"--{option} expects NAME=VALUE, got {entry!r}"
+            raise ParseError(message, context={"flag": option})
+        pairs[key] = value
+    return pairs
+
+
+@dataclass(frozen=True, slots=True)
+class Migration:
+    """The migration plan's steps and how far the run got."""
+
+    effect: str
+    status: str
+    steps: list[dict[str, object]] = Out(ordered=True)
+    completed: int = 0
+    next: str | None = None
+    step: str | None = None
+
+
+@app.command(
+    "migrate",
+    description=(
+        "Run the resumable end-to-end migration; without --yes it prints the plan "
+        "and runs nothing"
+    ),
+    danger_level="mutating",
+    exit_codes=[
+        "PROJECT_INVALID",
+        "CONFIG_INVALID",
+        "PRECONDITION",
+        "PARTIAL_FAILURE",
+        "ENGINE_STEP_FAILED",
+    ],
+    timeout=None,
+    supports_raw_payload=True,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0", "git": "2.24.0"},
+    examples=[
+        ("Print the plan", "cloudfall migrate --build crm-backend=main"),
+        ("Run it", "cloudfall migrate --build crm-backend=main --yes"),
+    ],
+)
+def migrate(args: MigrateArgs, ctx: Ctx, fleet: Fleet) -> Migration:
+    """Run each pending step, saving progress after every one."""
+    try:
+        result = execute_migration(args.config(fleet, ctx), args.options(fleet))
+    except MigrateError as error:
+        raise Exit.PRECONDITION(
+            error.detail, context={"code": error.code}
+        ) from error
+    status = str(result["status"])
+    migration = Migration(
+        # A plan changes nothing: noop, as without --yes in `operations approve`.
+        effect="noop" if status == "plan" else "updated",
+        status=status,
+        steps=list(cast("list[dict[str, object]]", result["steps"])),
+        completed=int(cast("int", result["completed"])),
+        next=cast("str | None", result.get("next")),
+        step=cast("str | None", result.get("step")),
+    )
+    # The step's own error goes in error.context, beside the plan in data.
+    cause = {
+        "step": migration.step,
+        **cast("Mapping[str, object]", result.get("error", {})),
+    }
+    if status == "paused":
+        message = f"the migration paused at {migration.step}; resume it with --yes"
+        raise Exit.PARTIAL_FAILURE(message, context=cause, data=migration)
+    if status == "error":
+        message = f"the migration failed at {migration.step}"
+        raise Exit.ENGINE_STEP_FAILED(message, context=cause, data=migration)
+    return migration

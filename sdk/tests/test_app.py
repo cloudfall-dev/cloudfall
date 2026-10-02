@@ -57,11 +57,14 @@ def test_a_moved_command_keeps_its_keys_with_status_under_data(
 def test_a_half_moved_group_sends_the_rest_to_argparse(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    code = main(["operations", "propose", "restart", "--repository", str(EXAMPLES)])
+    """`operator list` runs on treaty; `operator run` is still argparse's."""
+    with pytest.raises(SystemExit) as exit_info:
+        main(["operator", "run", "--project", str(EXAMPLES)])
 
     error = json.loads(capsys.readouterr().err)
-    assert code == 2
+    assert exit_info.value.code == 2
     assert error["status"] == "error"
+    assert "--gateway-ca" in error["error"]["message"]
 
 
 @pytest.mark.xfail(

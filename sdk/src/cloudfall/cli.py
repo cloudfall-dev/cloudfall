@@ -14,11 +14,9 @@ if TYPE_CHECKING:
     from argparse import Namespace
     from collections.abc import Callable, Mapping, Sequence
 
-    from cloudfall.domain import ResourceId
     from cloudfall.operations import FleetOperations
     from cloudfall.operator import AlertFeed, OperatorProposal
 
-from cloudfall.agent_tools import AgentConfig
 from cloudfall.ansible_api import (
     ANSIBLE_CONFIG_FILE,
     AnsibleReadError,
@@ -38,7 +36,7 @@ from cloudfall.arguments import (
     root_parser,
     schema_version_argument,
 )
-from cloudfall.catalog import CATALOG_DIRECTORY, OperationCatalog, load_catalog
+from cloudfall.catalog import CATALOG_DIRECTORY
 from cloudfall.dashboard import RefreshInterval
 from cloudfall.dashboard_server import (
     EvidenceSources,
@@ -47,14 +45,8 @@ from cloudfall.dashboard_server import (
 )
 from cloudfall.decision import (
     DECISION_DIRECTORY,
-    ApprovalRequest,
     DecisionError,
-    DecisionStatus,
     DecisionStore,
-    ProposalRequest,
-    Targets,
-    approve,
-    propose,
 )
 from cloudfall.importer import (
     ImportTargets,
@@ -67,9 +59,7 @@ from cloudfall.lifecycle import (
     EngineContext,
     LifecycleError,
     LifecyclePreview,
-    backup_service,
     deploy,
-    health,
     migrate_data,
     preview_data_migration,
     preview_deploy,
@@ -77,9 +67,7 @@ from cloudfall.lifecycle import (
     preview_rollback,
     restart,
     rollback,
-    verify_backup,
 )
-from cloudfall.migrate import MigrateError, MigrateOptions, execute_migration
 from cloudfall.observation import load_observations
 from cloudfall.observe import (
     ObservationRequest,
@@ -89,9 +77,7 @@ from cloudfall.observe import (
 )
 from cloudfall.operations import UtcTimestamp, build_operations_view
 from cloudfall.operator import (
-    ApproveOptions,
     OperatorError,
-    ProposalStatus,
     ProposalStore,
     TriggerKind,
     alert_resolution_verifier,
@@ -101,9 +87,6 @@ from cloudfall.operator import (
     engine_auditor,
     engine_executor,
     gateway_feed,
-)
-from cloudfall.operator import (
-    approve as operator_approve,
 )
 from cloudfall.operator import (
     run_once as operator_run_once,
@@ -1381,16 +1364,11 @@ def _dispatch(
     arguments: Namespace, state: ValidatedConfig, schema_directory: Path
 ) -> int:
     handlers: dict[str, Callable[[Namespace, ValidatedConfig, Path], int]] = {
-        "backup:run": _run_backup_run,
-        "backup:verify": _run_backup_verify,
         "secrets:render": _run_secrets_render,
         "data:migrate": _run_data_migrate,
         "dashboard:serve": _run_dashboard_serve,
         "deploy": _run_deploy,
-        "health": _run_health,
         "observe": _run_observe,
-        "migrate": _run_migrate,
-        "operator:approve": _run_operator_approve,
         "operator:run": _run_operator_run,
         "restart": _run_restart,
         "rollback": _run_rollback,
@@ -1420,30 +1398,6 @@ def _command_key(arguments: Namespace) -> str:
     return f"{arguments.command}:{subcommand}"
 
 
-def _run_operations(arguments: Namespace) -> int:
-    """Propose or approve against the catalog, which needs no fleet.
-
-    An agent needs its tool list from a repository Cloudfall cannot read a
-    fleet from yet, so the catalog resolves against the repository it lives
-    in and nothing else.
-    """
-    repository = (
-        Path(arguments.repository)
-        if arguments.repository is not None
-        else Path.cwd()
-    )
-    if arguments.operations_command == "approve":
-        return _approve_decision(arguments, repository)
-    # list, show and decisions run on treaty (cloudfall.app); propose is
-    # the only other subcommand that reaches argparse.
-    catalog = load_catalog(
-        repository,
-        Path(arguments.schemas),
-        repository / Path(arguments.operations),
-    )
-    return _propose_operation(arguments, repository, catalog)
-
-
 def _run_why(arguments: Namespace) -> int:
     """Answer the question from the record alone: no catalog, no fleet.
 
@@ -1470,6 +1424,13 @@ def _run_why(arguments: Namespace) -> int:
     return 0
 
 
+def _decision_store(arguments: Namespace, repository: Path) -> DecisionStore:
+    return DecisionStore(
+        directory=repository / Path(arguments.decisions),
+        catalog=SchemaCatalog(Path(arguments.schemas)),
+    )
+
+
 def _run_changelog(arguments: Namespace) -> int:
     write_result(
         {
@@ -1488,84 +1449,9 @@ _PROJECTLESS_COMMANDS: Mapping[str, Callable[[Namespace], int]] = {
 
 
 _RECORD_COMMANDS: Mapping[str, Callable[[Namespace], int]] = {
-    "operations": _run_operations,
     "why": _run_why,
 }
 """The commands that read the repository and nothing else: no fleet, no project."""
-
-
-def _propose_operation(
-    arguments: Namespace, repository: Path, catalog: OperationCatalog
-) -> int:
-    """Run one operation in check mode and record what it would do."""
-    operation = catalog.get(arguments.operation)
-    request = ProposalRequest(
-        operation=operation,
-        targets=Targets(scope=operation.targets, pattern=arguments.target),
-        inputs=_declared_inputs(arguments.input),
-        repository=repository,
-        observations=repository / Path(arguments.observed),
-    )
-    decision = propose(request, _decision_store(arguments, repository))
-    code = 0 if decision.check.exit_code == 0 else 1
-    write_result(decision.as_dict(), exit_code=code)
-    return code
-
-
-def _approve_decision(arguments: Namespace, repository: Path) -> int:
-    """Approve one recorded proposal, run it, and verify it.
-
-    The approval needs no catalog: it acts on the record, so what a human
-    read is what runs.
-    """
-    store = _decision_store(arguments, repository)
-    decision = store.load(arguments.decision)
-    if not arguments.yes:
-        write_result(
-            {
-                "status": "pending",
-                "decision": decision.as_document(),
-                "next": [
-                    "review the recorded diff at "
-                    f"{decision.check.diff.path}",
-                    "approve with --yes to run it",
-                ],
-            }
-        )
-        return 0
-    approver = (
-        arguments.approver
-        if arguments.approver is not None
-        else os.environ.get("USER", "")
-    )
-    approved = approve(
-        ApprovalRequest(
-            decision=decision, approver=approver, repository=repository
-        ),
-        store,
-    )
-    code = 0 if approved.status is not DecisionStatus.FAILED else 1
-    write_result(approved.as_dict(), exit_code=code)
-    return code
-
-
-def _decision_store(arguments: Namespace, repository: Path) -> DecisionStore:
-    return DecisionStore(
-        directory=repository / Path(arguments.decisions),
-        catalog=SchemaCatalog(Path(arguments.schemas)),
-    )
-
-
-def _declared_inputs(declared: Sequence[str]) -> dict[str, object]:
-    """Parse repeated ``NAME=VALUE`` arguments into input values."""
-    inputs: dict[str, object] = {}
-    for entry in declared:
-        name, separator, value = entry.partition("=")
-        if not separator or not name:
-            message = f"input must be given as NAME=VALUE, got {entry!r}"
-            raise ValueError(message)
-        inputs[name] = value
-    return inputs
 
 
 def _run_observe(
@@ -1622,35 +1508,6 @@ def _run_secrets_render(
     return 0
 
 
-def _run_backup_run(
-    arguments: Namespace, _state: ValidatedConfig, schema_directory: Path
-) -> int:
-    return _run_backup_operation(arguments, schema_directory, backup_service)
-
-
-def _run_backup_verify(
-    arguments: Namespace, _state: ValidatedConfig, schema_directory: Path
-) -> int:
-    return _run_backup_operation(arguments, schema_directory, verify_backup)
-
-
-def _run_backup_operation(
-    arguments: Namespace,
-    schema_directory: Path,
-    operation: Callable[[EngineContext, ResourceId, Path], dict[str, object]],
-) -> int:
-    try:
-        result = operation(
-            _engine_context(arguments, schema_directory),
-            arguments.service,
-            Path(arguments.receipts),
-        )
-    except LifecycleError as error:
-        return _lifecycle_exit(error)
-    write_result(result)
-    return 0
-
-
 def _operator_store(arguments: Namespace, schema_directory: Path) -> ProposalStore:
     return ProposalStore(
         directory=Path(arguments.proposals),
@@ -1666,20 +1523,6 @@ def _operator_feed(arguments: Namespace, inventory: PlatformInventory) -> AlertF
         key_path=Path(arguments.gateway_key),
         url_override=arguments.gateway_url,
     )
-
-
-def _require_gateway_material(arguments: Namespace) -> None:
-    if (
-        arguments.gateway_ca is None
-        or arguments.gateway_cert is None
-        or arguments.gateway_key is None
-    ):
-        code = "operator_gateway_material_missing"
-        message = (
-            "approving an alert-triggered proposal requires --gateway-ca, "
-            "--gateway-cert, and --gateway-key"
-        )
-        raise OperatorError(code, message)
 
 
 def _operator_exit(error: OperatorError) -> int:
@@ -1744,44 +1587,6 @@ def _run_operator_run(
             time.sleep(arguments.interval)
     except OperatorError as error:
         return _operator_exit(error)
-
-
-def _run_operator_approve(
-    arguments: Namespace, state: ValidatedConfig, schema_directory: Path
-) -> int:
-    inventory = PlatformInventory.from_state(state)
-    try:
-        store = _operator_store(arguments, schema_directory)
-        proposal_id = arguments.proposal
-        pending = store.load(proposal_id)
-        context = _engine_context(arguments, schema_directory)
-        if pending.trigger_kind is TriggerKind.ALERT:
-            _require_gateway_material(arguments)
-            verifier = alert_resolution_verifier(_operator_feed(arguments, inventory))
-        else:
-            verifier = drift_resolution_verifier(
-                engine_auditor(context, inventory, Path(arguments.observed))
-            )
-        proposal = operator_approve(
-            store,
-            proposal_id,
-            engine_executor(context),
-            verifier,
-            ApproveOptions(verify_timeout_seconds=arguments.verify_timeout),
-        )
-    except OperatorError as error:
-        return _operator_exit(error)
-    except LifecycleError as error:
-        return _lifecycle_exit(error)
-    verified = proposal.status is ProposalStatus.VERIFIED
-    write_result(
-        {
-            "status": "ok" if verified else "failed",
-            "proposal": proposal.as_document(),
-        },
-        exit_code=0 if verified else 1,
-    )
-    return 0 if verified else 1
 
 
 def _run_dashboard_serve(
@@ -1944,84 +1749,6 @@ def _run_restart(
         return _lifecycle_exit(error)
     write_result(result.as_dict())
     return 0
-
-
-def _run_health(
-    arguments: Namespace, _state: ValidatedConfig, schema_directory: Path
-) -> int:
-    try:
-        result = health(
-            _engine_context(arguments, schema_directory),
-            arguments.component,
-        )
-    except LifecycleError as error:
-        return _lifecycle_exit(error)
-    code = 0 if result.healthy else 1
-    write_result(result.as_dict(), exit_code=code)
-    return code
-
-
-def _run_migrate(
-    arguments: Namespace, _state: ValidatedConfig, schema_directory: Path
-) -> int:
-    try:
-        builds = _key_value_pairs(arguments.build, "--build")
-        releases = _key_value_pairs(arguments.release, "--release")
-        environment_files = {
-            component: Path(value)
-            for component, value in _key_value_pairs(
-                arguments.env_file, "--env-file"
-            ).items()
-        }
-        data_migrations = {
-            database: Path(value)
-            for database, value in _key_value_pairs(arguments.data, "--data").items()
-        }
-    except ValueError as error:
-        payload = {
-            "status": "error",
-            "error": {"code": "invalid_argument", "message": str(error)},
-        }
-        return write_error(payload, 2)
-    config = AgentConfig(
-        project_directory=Path(arguments.project_directory),
-        schema_directory=schema_directory,
-        engine_directory=Path(arguments.engine),
-        inventory_file=Path(arguments.inventory_file),
-        observed_directory=Path(arguments.observed),
-        service_observed_directory=Path(arguments.service_observed),
-        deployments_directory=Path(arguments.deployments),
-        releases_directory=Path(arguments.receipts),
-        artifacts_directory=Path(arguments.artifacts),
-    )
-    options = MigrateOptions(
-        plan_file=Path(arguments.plan_file),
-        builds=builds,
-        releases=releases,
-        environment_files=environment_files,
-        data_migrations=data_migrations,
-        execute=arguments.yes,
-        restart=arguments.restart,
-    )
-    try:
-        result = execute_migration(config, options)
-    except MigrateError as error:
-        return write_error(error.as_dict(), 2)
-    status = str(result["status"])
-    code = 0 if status in {"ok", "plan"} else 3 if status == "paused" else 1
-    write_result(result, exit_code=code)
-    return code
-
-
-def _key_value_pairs(entries: list[str], option: str) -> dict[str, str]:
-    pairs: dict[str, str] = {}
-    for entry in entries:
-        component, separator, value = entry.partition("=")
-        if not separator or not component or not value:
-            message = f"{option} expects COMPONENT=VALUE, got {entry!r}"
-            raise ValueError(message)
-        pairs[component] = value
-    return pairs
 
 
 def _write_plan(preview: LifecyclePreview) -> int:

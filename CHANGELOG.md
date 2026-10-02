@@ -80,6 +80,21 @@ Notable changes to Cloudfall. The format follows
   A missing playbook, inventory, or role directory exits 2 before Ansible
   starts. `playbook run --check` is now `--dry-run`; Ansible's play log
   streams to stderr. `cloudfall-engine manifest` describes every command
+- **Breaking:** seven commands that run Ansible move to treaty: `health`,
+  `backup run`, `backup verify`, `operations propose`, `operations approve`,
+  `operator approve` and `migrate`. Ansible runs through treaty in the
+  project directory, so `--timeout` and Ctrl-C stop it, and `doctor` checks
+  ansible-playbook. `operations approve` and `migrate` still change nothing
+  without `--yes`; that preview answers `effect: noop` with
+  `data.status` `pending` or `plan`. New exit codes, each with the result
+  in `data`: 87 `ENGINE_STEP_FAILED` (an inventory render or playbook
+  failed, was 1), 88 `UNHEALTHY` (was 1), 89 `CHECK_FAILED` when check mode
+  fails in `propose` (was 1), 90 `NOT_VERIFIED` when an approved run fails
+  or does not verify (was 1), 3 `PARTIAL_FAILURE` for a paused `migrate`.
+  A failed `migrate` step's own code and message move from the top-level
+  `error` to `error.context`. `deploy`, `rollback`, `restart` and
+  `data migrate` stay on argparse until treaty #183, since their plan
+  answer has a `wouldRun` key
 - **Breaking:** six more `cloudfall` commands run on treaty: `init`,
   `add ssh-key`, `add server-type`, `add server`, `dashboard build` and
   `services inspect`. Their answer is the treaty envelope described below,

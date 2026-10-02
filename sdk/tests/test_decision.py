@@ -411,9 +411,10 @@ def test_the_cli_reports_a_gate_refusal_as_json(
         ]
     )
 
-    payload = json.loads(capsys.readouterr().err)
-    assert exit_code == 2
-    assert payload["error"]["code"] == "decision_target_required"
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 4
+    assert payload["error"]["code"] == "PRECONDITION"
+    assert payload["error"]["context"]["code"] == "decision_target_required"
 
 
 def test_the_record_is_readable_without_a_catalog(
@@ -624,7 +625,8 @@ def test_the_cli_shows_the_proposal_before_it_runs_anything(
 
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
-    assert payload["status"] == "pending"
+    assert payload["data"]["status"] == "pending"
+    assert payload["data"]["effect"] == "noop"
     assert payload["data"]["decision"]["spec"]["status"] == "proposed"
     assert store.load(proposed.decision_id).status is DecisionStatus.PROPOSED
 

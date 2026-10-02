@@ -221,7 +221,8 @@ def test_cli_migrate_previews_without_executing(
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert exit_code == 0
-    assert payload["status"] == "plan"
+    assert payload["data"]["status"] == "plan"
+    assert payload["data"]["effect"] == "noop"
     assert payload["data"]["next"] == "baseline"
 
 
@@ -243,7 +244,9 @@ def test_cli_migrate_rejects_malformed_component_pairs(
         ]
     )
 
-    captured = capsys.readouterr()
-    payload = json.loads(captured.err)
+    payload = json.loads(capsys.readouterr().out)
     assert exit_code == 2
-    assert payload["error"]["code"] == "invalid_argument"
+    assert payload["error"]["code"] == "ARG_ERROR"
+    assert "COMPONENT" in payload["error"]["message"] or "NAME=VALUE" in (
+        payload["error"]["message"]
+    )

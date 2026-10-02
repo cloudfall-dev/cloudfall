@@ -16,7 +16,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from jsonschema.exceptions import ValidationError
 
@@ -24,14 +24,13 @@ from cloudfall.inventory import PlatformInventory
 from cloudfall.validation import SchemaCatalog, validate_config
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
     from pathlib import Path
 
     from cloudfall.domain import ReleaseId, ResourceId
     from cloudfall.inventory import ComponentInventory, ServiceInventory
 
 _ARTIFACT_SCHEMA = "artifact.schema.json"
-_STEP_TIMEOUT_SECONDS = 3600
 _OUTPUT_TAIL_CHARACTERS = 2000
 _ERROR_COMPONENT_MISSING = "lifecycle_component_missing"
 _ERROR_ARTIFACT_MISSING = "lifecycle_artifact_missing"
@@ -40,7 +39,7 @@ _ERROR_ARTIFACT_IDENTITY = "lifecycle_artifact_identity_mismatch"
 _ERROR_ARTIFACT_DIGEST = "lifecycle_artifact_digest_mismatch"
 _ERROR_ANSIBLE_MISSING = "lifecycle_ansible_missing"
 _ERROR_ENGINE_MISSING = "lifecycle_engine_missing"
-_ERROR_EXECUTION_FAILED = "lifecycle_execution_failed"
+ERROR_EXECUTION_FAILED = "lifecycle_execution_failed"
 _ERROR_RECEIPT_MISSING = "lifecycle_receipt_missing"
 _ERROR_SERVICE_MISSING = "lifecycle_service_missing"
 _ERROR_DATABASE_MISSING = "lifecycle_database_missing"
@@ -71,6 +70,48 @@ class ExecutionStep:
     description: str
     argv: tuple[str, ...]
     environment: Mapping[str, str]
+
+
+class StepRun(Protocol):
+    """How one finished step reads: ``subprocess`` or treaty's ``ctx.run``."""
+
+    @property
+    def returncode(self) -> int:
+        """The exit code."""
+        ...
+
+    @property
+    def stdout(self) -> str:
+        """What the step printed on stdout."""
+        ...
+
+    @property
+    def stderr(self) -> str:
+        """What the step printed on stderr."""
+        ...
+
+
+type StepRunner = Callable[[ExecutionStep], StepRun]
+"""Runs one step to completion without raising on a non-zero exit."""
+
+STEP_TIMEOUT_SECONDS = 3600
+"""How long one step (an inventory render or a playbook run) may take."""
+
+
+def subprocess_step(step: ExecutionStep) -> StepRun:
+    """Run one step as a child process, the runner outside treaty commands."""
+    try:
+        return subprocess.run(  # noqa: S603 - argv from typed values.
+            list(step.argv),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=STEP_TIMEOUT_SECONDS,
+            env={**os.environ, **step.environment},
+        )
+    except subprocess.TimeoutExpired as error:
+        detail = f"{step.description} exceeded {STEP_TIMEOUT_SECONDS} seconds"
+        raise LifecycleError(ERROR_EXECUTION_FAILED, detail) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +215,8 @@ class EngineContext:
     schema_directory: Path
     engine_directory: Path
     inventory_file: Path
+    run: StepRunner = subprocess_step
+    """Starts each step: ``subprocess`` by default, ``ctx.run`` under treaty."""
 
     def playbook(self, name: str) -> Path:
         """Return the path of one engine playbook, requiring it to exist."""
@@ -347,9 +390,9 @@ def plan_health(
     )
 
 
-def execute_plan(plan: ExecutionPlan) -> None:
+def execute_plan(plan: ExecutionPlan, run: StepRunner) -> None:
     """Run every step of a plan, failing fast on the first error."""
-    _execute_steps(plan.steps)
+    _execute_steps(plan.steps, run)
 
 
 def run_engine_playbook(
@@ -362,7 +405,8 @@ def run_engine_playbook(
         (
             _render_inventory_step(context),
             _playbook_step(context, playbook_name, extra_vars),
-        )
+        ),
+        context.run,
     )
 
 
@@ -394,44 +438,30 @@ def build_release_artifact(
         argv=argv,
         environment={},
     )
-    output = _execute_step_with_output(step)
+    output = _execute_step_with_output(step, context.run)
     # The engine answers one treaty envelope: the build is under ``data``.
     parsed = cast("object", json.loads(output))
     if not isinstance(parsed, dict) or parsed.get("ok") is not True:
         detail = "artifact builder returned no successful envelope"
-        raise LifecycleError(_ERROR_EXECUTION_FAILED, detail)
+        raise LifecycleError(ERROR_EXECUTION_FAILED, detail)
     data = cast("object", parsed.get("data"))
     if not isinstance(data, dict) or not all(isinstance(key, str) for key in data):
         detail = "artifact builder returned a non-object payload"
-        raise LifecycleError(_ERROR_EXECUTION_FAILED, detail)
+        raise LifecycleError(ERROR_EXECUTION_FAILED, detail)
     return {"status": "ok", **cast("dict[str, object]", data)}
 
 
-def _execute_steps(steps: tuple[ExecutionStep, ...]) -> None:
+def _execute_steps(steps: tuple[ExecutionStep, ...], run: StepRunner) -> None:
     for step in steps:
-        _execute_step_with_output(step)
+        _execute_step_with_output(step, run)
 
 
-def _execute_step_with_output(step: ExecutionStep) -> str:
-    environment = {**os.environ, **step.environment}
-    try:
-        completed = subprocess.run(  # noqa: S603 - argv from typed values.
-            list(step.argv),
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=_STEP_TIMEOUT_SECONDS,
-            env=environment,
-        )
-    except subprocess.CalledProcessError as error:
-        tail = f"{error.stdout}\n{error.stderr}"[-_OUTPUT_TAIL_CHARACTERS:]
+def _execute_step_with_output(step: ExecutionStep, run: StepRunner) -> str:
+    completed = run(step)
+    if completed.returncode != 0:
+        tail = f"{completed.stdout}\n{completed.stderr}"[-_OUTPUT_TAIL_CHARACTERS:]
         detail = f"{step.description} failed: {tail.strip()}"
-        raise LifecycleError(_ERROR_EXECUTION_FAILED, detail) from error
-    except subprocess.TimeoutExpired as error:
-        detail = (
-            f"{step.description} exceeded {_STEP_TIMEOUT_SECONDS} seconds"
-        )
-        raise LifecycleError(_ERROR_EXECUTION_FAILED, detail) from error
+        raise LifecycleError(ERROR_EXECUTION_FAILED, detail)
     return completed.stdout
 
 
@@ -455,7 +485,7 @@ def deploy(
         artifact,
         resolved_options,
     )
-    execute_plan(plan)
+    execute_plan(plan, context.run)
     receipt = None
     if resolved_options.receipt_directory is not None:
         receipt = (
@@ -553,7 +583,7 @@ def rollback(
     """Switch one component back to an existing release, health gated."""
     component = _component(context, component_id)
     plan = plan_rollback(context, component_id, release)
-    execute_plan(plan)
+    execute_plan(plan, context.run)
     return LifecycleResult(
         action="rollback",
         component_id=component_id,
@@ -571,7 +601,7 @@ def restart(
     """Restart one component and require its declared health check."""
     component = _component(context, component_id)
     plan = plan_restart(context, component_id)
-    execute_plan(plan)
+    execute_plan(plan, context.run)
     return LifecycleResult(
         action="restart",
         component_id=component_id,
@@ -592,9 +622,9 @@ def health(
     healthy = True
     detail: str | None = None
     try:
-        execute_plan(plan)
+        execute_plan(plan, context.run)
     except LifecycleError as error:
-        if error.code != _ERROR_EXECUTION_FAILED:
+        if error.code != ERROR_EXECUTION_FAILED:
             raise
         healthy = False
         detail = error.detail
@@ -654,7 +684,7 @@ def migrate_data(
     plan = plan_data_migration(
         context, service_id, database, source_url_file, receipt_directory
     )
-    execute_plan(plan)
+    execute_plan(plan, context.run)
     result: dict[str, object] = {
         "status": "ok",
         "action": "data-migration",
