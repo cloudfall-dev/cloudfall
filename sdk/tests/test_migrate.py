@@ -222,7 +222,8 @@ def test_cli_migrate_previews_without_executing(
     payload = json.loads(captured.out)
     assert exit_code == 0
     assert payload["data"]["status"] == "plan"
-    assert payload["data"]["effect"] == "noop"
+    assert payload["data"]["effect"] == "would_update"
+    assert payload["meta"]["dry_run"] is True
     assert payload["data"]["next"] == "baseline"
 
 

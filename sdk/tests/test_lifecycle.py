@@ -252,7 +252,8 @@ def test_cli_server_changes_show_a_plan_without_yes(
 
     assert exit_code == 0
     assert payload["data"]["status"] == "plan"
-    assert payload["data"]["effect"] == "noop"
+    assert payload["data"]["effect"] == "would_update"
+    assert payload["meta"]["dry_run"] is True
     assert payload["data"]["action"] == action
     assert payload["data"]["component"] == "crm-backend"
     assert payload["data"]["servers"]
@@ -281,7 +282,8 @@ def test_cli_deploy_plan_verifies_the_artifact(
 
     assert exit_code == 0
     assert payload["data"]["status"] == "plan"
-    assert payload["data"]["effect"] == "noop"
+    assert payload["data"]["effect"] == "would_update"
+    assert payload["meta"]["dry_run"] is True
     assert payload["data"]["release"] == RELEASE
     would_run = str(payload["data"]["wouldRun"])
     assert f"release {RELEASE} of component crm-backend" in would_run
@@ -323,7 +325,8 @@ def test_cli_data_migration_plan_checks_the_source_url_file(
     exit_code, payload = _cli_lifecycle(argv, tmp_path, capsys)
     assert exit_code == 0
     assert payload["data"]["status"] == "plan"
-    assert payload["data"]["effect"] == "noop"
+    assert payload["data"]["effect"] == "would_update"
+    assert payload["meta"]["dry_run"] is True
     assert payload["data"]["service"] == "postgresql-main"
     assert "u:p@" not in json.dumps(payload)
 
