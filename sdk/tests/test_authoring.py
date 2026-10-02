@@ -203,9 +203,9 @@ def test_cli_add_reports_bad_arguments_as_json(
 
     exit_code = main(["add", "server", "H1", "--address", "203.0.113.10", *common])
 
-    payload = json.loads(capsys.readouterr().err)
+    payload = json.loads(capsys.readouterr().out)
     assert exit_code == 2
-    assert payload["error"]["code"] == "invalid_argument"
+    assert payload["error"]["code"] == "ARG_ERROR"
     assert not (project / "servers" / "H1.yaml").exists()
 
 
@@ -231,10 +231,10 @@ def test_cli_add_into_a_read_only_project_changes_nothing(
         for directory in (project, *(p for p in project.rglob("*") if p.is_dir())):
             directory.chmod(0o755)
 
-    captured = capsys.readouterr()
-    assert (code, captured.out) == (2, "")
-    error = json.loads(captured.err)["error"]
-    assert error["code"] == "project_write_failed"
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert code == 7
+    assert error["code"] == "PERMISSION_DENIED"
+    assert error["context"]["code"] == "project_write_failed"
     assert "Permission denied" in error["message"]
     assert _files(project) == before
 
@@ -258,14 +258,13 @@ def test_add_removes_what_it_wrote_when_a_later_file_fails(
     finally:
         servers.chmod(0o755)
 
-    assert code == 2
-    assert json.loads(capsys.readouterr().err)["error"]["code"] == (
-        "project_write_failed"
-    )
+    assert code == 7
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert error["context"]["code"] == "project_write_failed"
     assert _files(project) == before
 
 
-def test_any_command_reports_a_read_only_path_as_json(
+def test_init_reports_a_read_only_path_as_json(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     parent = tmp_path / "read-only"
@@ -276,9 +275,9 @@ def test_any_command_reports_a_read_only_path_as_json(
     finally:
         parent.chmod(0o755)
 
-    captured = capsys.readouterr()
-    assert (code, captured.out) == (1, "")
-    document = json.loads(captured.err)
+    document = json.loads(capsys.readouterr().out)
+    assert code == 7
     assert document["ok"] is False
-    assert document["error"]["code"] == "path_not_writable"
+    assert document["error"]["code"] == "PERMISSION_DENIED"
+    assert document["error"]["context"]["code"] == "path_not_writable"
     assert str(parent / "project") in document["error"]["message"]

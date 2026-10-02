@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from argparse import Namespace
     from collections.abc import Callable, Mapping, Sequence
 
+    from cloudfall.domain import ResourceId
     from cloudfall.operations import FleetOperations
     from cloudfall.operator import AlertFeed, OperatorProposal
 
@@ -37,17 +38,8 @@ from cloudfall.arguments import (
     root_parser,
     schema_version_argument,
 )
-from cloudfall.authoring import (
-    AuthoringError,
-    ServerOptions,
-    ServerTypeOptions,
-    SshKeyOptions,
-    add_server,
-    add_server_type,
-    add_ssh_key,
-)
 from cloudfall.catalog import CATALOG_DIRECTORY, OperationCatalog, load_catalog
-from cloudfall.dashboard import RefreshInterval, build_dashboard
+from cloudfall.dashboard import RefreshInterval
 from cloudfall.dashboard_server import (
     EvidenceSources,
     ListenEndpoint,
@@ -63,13 +55,6 @@ from cloudfall.decision import (
     Targets,
     approve,
     propose,
-)
-from cloudfall.domain import (
-    ConnectionAddress,
-    Hostname,
-    LinuxUser,
-    ResourceId,
-    TcpPort,
 )
 from cloudfall.importer import (
     ImportTargets,
@@ -134,14 +119,9 @@ from cloudfall.output import (
 )
 from cloudfall.project import (
     PROJECT_DIRECTORY_VARIABLE,
-    InitOptions,
-    ProjectDescription,
     ProjectError,
-    ProjectName,
-    init_project,
     is_project,
     project_context,
-    resolve_installed_version,
 )
 from cloudfall.render_api import (
     HttpRenderApiClient,
@@ -157,9 +137,6 @@ from cloudfall.secrets import (
 from cloudfall.service_evidence import (
     DeploymentReceiptSet,
     DomainObservationSet,
-    EvidenceTimestamp,
-    SocketDomainNetworkClient,
-    inspect_domains,
     load_deployment_receipts,
     load_domain_observations,
 )
@@ -1308,9 +1285,7 @@ def _main(argv: Sequence[str] | None) -> int:
             return _dispatch_from_inventory(arguments, source)
         with project_context(arguments.project, os.environ) as project_directory:
             arguments.project_directory = project_directory
-            without_state = _run_without_validated_fleet(
-                arguments, project_directory
-            )
+            without_state = _run_without_validated_fleet(arguments)
             if without_state is not None:
                 return without_state
             schema_directory = Path(arguments.schemas)
@@ -1331,15 +1306,11 @@ _RENDERED_INVENTORY = Path("tmp/ansible-inventory.json")
 _OVERLAY_DIRECTORY = "tmp/cloudfall"
 
 
-def _run_without_validated_fleet(
-    arguments: Namespace, project_directory: Path
-) -> int | None:
+def _run_without_validated_fleet(arguments: Namespace) -> int | None:
     """Run the commands that read no fleet, or return ``None`` for the rest.
 
-    `add` and `import` write the fleet rather than read it.
+    `import` writes the fleet rather than reads it (`add` runs on treaty).
     """
-    if arguments.command == "add":
-        return _run_add(arguments, project_directory)
     if arguments.command == "import":
         return _run_import_render(arguments)
     return None
@@ -1384,87 +1355,6 @@ def _dispatch_from_inventory(arguments: Namespace, source: InventorySource) -> i
     return _dispatch(arguments, read.config, schema_directory)
 
 
-def _run_init(arguments: Namespace) -> int:
-    directory = Path(arguments.directory)
-    try:
-        name = (
-            ProjectName.from_boundary(arguments.name)
-            if arguments.name is not None
-            else ProjectName.from_directory(directory)
-        )
-        options = InitOptions(
-            directory=directory,
-            name=name,
-            version=resolve_installed_version(),
-            description=(
-                ProjectDescription.from_boundary(arguments.description)
-                if arguments.description is not None
-                else None
-            ),
-        )
-        scaffold = init_project(options)
-    except ValueError as error:
-        payload = {
-            "status": "error",
-            "error": {"code": "invalid_argument", "message": str(error)},
-        }
-        return write_error(payload, 2)
-    except ProjectError as error:
-        return write_error(error.as_dict(), 2)
-    write_result(scaffold.as_dict())
-    return 0
-
-
-def _run_add(arguments: Namespace, project_directory: Path) -> int:
-    schema_directory = Path(arguments.schemas)
-    try:
-        if arguments.add_command == "ssh-key":
-            key_options = SshKeyOptions(
-                key_path=Path(arguments.key_file).expanduser(),
-                owner=ResourceId.from_boundary(arguments.owner),
-                environment=ResourceId.from_boundary(arguments.environment),
-                resource_id=(
-                    ResourceId.from_boundary(arguments.id)
-                    if arguments.id is not None
-                    else None
-                ),
-                description=arguments.description,
-            )
-            result = add_ssh_key(project_directory, key_options, schema_directory)
-        elif arguments.add_command == "server-type":
-            type_options = ServerTypeOptions(
-                resource_id=ResourceId.from_boundary(arguments.id),
-                description=arguments.description,
-            )
-            result = add_server_type(project_directory, type_options, schema_directory)
-        else:
-            server_options = ServerOptions(
-                resource_id=ResourceId.from_boundary(arguments.id),
-                address=ConnectionAddress.from_boundary(arguments.address),
-                server_type=ResourceId.from_boundary(arguments.type),
-                environment=ResourceId.from_boundary(arguments.environment),
-                ssh_user=LinuxUser.from_boundary(arguments.ssh_user),
-                ssh_port=TcpPort.from_boundary(arguments.ssh_port),
-                hostname=(
-                    Hostname.from_boundary(arguments.hostname)
-                    if arguments.hostname is not None
-                    else None
-                ),
-                description=arguments.description,
-            )
-            result = add_server(project_directory, server_options, schema_directory)
-    except (TypeError, ValueError) as error:
-        payload = {
-            "status": "error",
-            "error": {"code": "invalid_argument", "message": str(error)},
-        }
-        return write_error(payload, 2)
-    except AuthoringError as error:
-        return write_error(error.as_dict(), 2)
-    write_result(result.as_dict())
-    return 0
-
-
 def _run_import_render(arguments: Namespace) -> int:
     try:
         targets = ImportTargets(
@@ -1495,7 +1385,6 @@ def _dispatch(
         "backup:verify": _run_backup_verify,
         "secrets:render": _run_secrets_render,
         "data:migrate": _run_data_migrate,
-        "dashboard:build": _run_dashboard_build,
         "dashboard:serve": _run_dashboard_serve,
         "deploy": _run_deploy,
         "health": _run_health,
@@ -1505,7 +1394,6 @@ def _dispatch(
         "operator:run": _run_operator_run,
         "restart": _run_restart,
         "rollback": _run_rollback,
-        "services:inspect": _run_services_inspect,
     }
     key = _command_key(arguments)
     try:
@@ -1594,7 +1482,6 @@ def _run_changelog(arguments: Namespace) -> int:
 
 
 _PROJECTLESS_COMMANDS: Mapping[str, Callable[[Namespace], int]] = {
-    "init": _run_init,
     "changelog": _run_changelog,
 }
 """The commands that must run before a project exists, so none is resolved."""
@@ -1895,40 +1782,6 @@ def _run_operator_approve(
         exit_code=0 if verified else 1,
     )
     return 0 if verified else 1
-
-
-def _run_services_inspect(
-    arguments: Namespace, state: ValidatedConfig, _schema_directory: Path
-) -> int:
-    paths = inspect_domains(
-        PlatformInventory.from_state(state),
-        Path(arguments.output_dir),
-        SocketDomainNetworkClient(),
-        observed_at=EvidenceTimestamp.now(),
-    )
-    write_result(
-        {
-            "status": "ok",
-            "observations": [str(path) for path in paths],
-        }
-    )
-    return 0
-
-
-def _run_dashboard_build(
-    arguments: Namespace, state: ValidatedConfig, schema_directory: Path
-) -> int:
-    operations = _service_operations(arguments, state, schema_directory)
-    artifacts = build_dashboard(operations, Path(arguments.output_dir))
-    write_result(
-        {
-            "status": "ok",
-            "health": operations.health.value,
-            "tasks": len(operations.tasks),
-            "dashboard": artifacts.as_dict(),
-        }
-    )
-    return 0
 
 
 def _run_dashboard_serve(

@@ -439,17 +439,10 @@ def test_help_ends_with_every_exit_code(
 def test_the_error_carries_the_code_the_process_exits_with(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    read_only = tmp_path / "read-only"
-    read_only.mkdir()
-    read_only.chmod(0o555)
-    try:
-        cases = [
-            (_run(["deploy"], capsys), 2),
-            (_run(["observe", "--project", str(tmp_path)], capsys), 2),
-            (_run(["init", str(read_only / "project")], capsys), 1),
-        ]
-    finally:
-        read_only.chmod(0o755)
+    cases = [
+        (_run(["deploy"], capsys), 2),
+        (_run(["observe", "--project", str(tmp_path)], capsys), 2),
+    ]
 
     for (code, _, err), expected in cases:
         assert code == expected

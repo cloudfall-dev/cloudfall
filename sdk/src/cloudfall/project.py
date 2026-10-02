@@ -23,13 +23,13 @@ from dataclasses import dataclass
 from enum import Enum
 from importlib import metadata
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from cloudfall.commands import EXIT_CODES, CommandEffect, commands_with_effect
 from cloudfall.domain import ResourceKind
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
 _PROJECT_NAME_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$")
 _RELEASE_VERSION_PATTERN = re.compile(
@@ -359,22 +359,45 @@ def _git_binary() -> str:
     return git
 
 
-def _run_git(directory: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+class GitRun(Protocol):
+    """How one finished git invocation reads: ``ctx.run`` or ``subprocess``."""
+
+    @property
+    def returncode(self) -> int:
+        """The exit code."""
+        ...
+
+    @property
+    def stdout(self) -> str:
+        """What git printed on stdout."""
+        ...
+
+    @property
+    def stderr(self) -> str:
+        """What git printed on stderr."""
+        ...
+
+
+type GitRunner = Callable[[Sequence[str]], GitRun]
+"""Runs one git argv to completion without raising on a non-zero exit."""
+
+
+def _subprocess_git(argv: Sequence[str]) -> GitRun:
     try:
         return subprocess.run(  # noqa: S603 - fixed binary, fixed arguments.
-            [_git_binary(), "-C", str(directory), *arguments],
+            list(argv),
             check=False,
             capture_output=True,
             text=True,
             timeout=_GIT_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as error:
-        message = f"git {arguments[0]} in {directory} timed out: {error}"
+        message = f"git {argv[3]} timed out: {error}"
         raise ProjectError(_ERROR_GIT_FAILED, message) from error
 
 
-def _git_or_fail(directory: Path, *arguments: str) -> str:
-    completed = _run_git(directory, *arguments)
+def _git_or_fail(run: GitRunner, directory: Path, *arguments: str) -> str:
+    completed = run([_git_binary(), "-C", str(directory), *arguments])
     if completed.returncode != 0:
         message = (
             f"git {arguments[0]} in {directory} failed with exit code "
@@ -384,9 +407,11 @@ def _git_or_fail(directory: Path, *arguments: str) -> str:
     return completed.stdout
 
 
-def _initialize_git(directory: Path) -> GitSetup:
+def initialize_git(directory: Path, run: GitRunner) -> GitSetup:
     """Create a repository in the directory unless one already encloses it."""
-    enclosing = _run_git(directory, "rev-parse", "--is-inside-work-tree")
+    enclosing = run(
+        [_git_binary(), "-C", str(directory), "rev-parse", "--is-inside-work-tree"]
+    )
     if enclosing.returncode == 0 and enclosing.stdout.strip() == "true":
         return GitSetup.ENCLOSED
     if enclosing.returncode != _GIT_NOT_A_REPOSITORY_EXIT_CODE:
@@ -395,8 +420,12 @@ def _initialize_git(directory: Path) -> GitSetup:
             f"{enclosing.returncode}: {enclosing.stderr.strip()}"
         )
         raise ProjectError(_ERROR_GIT_FAILED, message)
-    _git_or_fail(directory, "init", "--quiet")
+    _git_or_fail(run, directory, "init", "--quiet")
     return GitSetup.INITIALIZED
+
+
+def _initialize_git(directory: Path) -> GitSetup:
+    return initialize_git(directory, _subprocess_git)
 
 
 def init_project(

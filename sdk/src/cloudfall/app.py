@@ -14,13 +14,26 @@ such as drift, exits with its own code and keeps the report in ``data``.
 
 from __future__ import annotations
 
+import errno
 import os
 from dataclasses import dataclass
+from functools import partial
 from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Self
+from typing import TYPE_CHECKING, ClassVar, Self, cast
 
-from treaty import App, Arg, Ctx, Excludes, Exit, Flag, ParseError
+from treaty import (
+    App,
+    Arg,
+    Ctx,
+    Excludes,
+    Exit,
+    Flag,
+    Out,
+    ParseError,
+    Subprocess,
+    Timeout,
+)
 
 from cloudfall.ansible_api import (
     AnsibleReadError,
@@ -30,6 +43,19 @@ from cloudfall.ansible_api import (
 )
 from cloudfall.ansible_reader import FleetRead, read_fleet
 from cloudfall.audit import AuditStatus, audit_inventory
+from cloudfall.authoring import (
+    ERROR_KEY_FILE_MISSING,
+    ERROR_PROJECT_WRITE_FAILED,
+    ERROR_RESOURCE_EXISTS,
+    AddResult,
+    AuthoringError,
+    ServerOptions,
+    ServerTypeOptions,
+    SshKeyOptions,
+    add_server,
+    add_server_type,
+    add_ssh_key,
+)
 from cloudfall.catalog import (
     CATALOG_DIRECTORY,
     ERROR_OPERATION_UNDECLARED,
@@ -37,17 +63,30 @@ from cloudfall.catalog import (
     load_catalog,
 )
 from cloudfall.commands import CLI_COMMANDS
+from cloudfall.dashboard import build_dashboard
 from cloudfall.decision import DECISION_DIRECTORY, DecisionError, DecisionStore
-from cloudfall.domain import ResourceId
+from cloudfall.domain import (
+    ConnectionAddress,
+    Hostname,
+    LinuxUser,
+    ResourceId,
+    TcpPort,
+)
 from cloudfall.inventory import PlatformInventory
 from cloudfall.observation import load_observations
-from cloudfall.operations import UtcTimestamp, build_operations_view
+from cloudfall.operations import FleetOperations, UtcTimestamp, build_operations_view
 from cloudfall.operator import ERROR_PROPOSAL_MISSING, OperatorError, ProposalStore
 from cloudfall.project import (
     PROJECT_DIRECTORY_VARIABLE,
+    InitOptions,
+    ProjectDescription,
     ProjectError,
+    ProjectName,
+    init_project,
+    initialize_git,
     is_project,
     project_path,
+    resolve_installed_version,
     resolve_project_directory,
 )
 from cloudfall.resources import default_schema_directory
@@ -55,6 +94,9 @@ from cloudfall.secrets import load_environment_receipts
 from cloudfall.service_evidence import (
     DeploymentReceiptSet,
     DomainObservationSet,
+    EvidenceTimestamp,
+    SocketDomainNetworkClient,
+    inspect_domains,
     load_deployment_receipts,
     load_domain_observations,
 )
@@ -83,6 +125,10 @@ app.scalar(
 )
 # 79 and 80 mean what they mean on cloudfall-engine; 81 and 82 stay the
 # engine's (artifact build, playbook run) for the commands that wrap it.
+GIT_TIMEOUT_SECONDS = 30
+"""How long one git step of ``init`` may take."""
+_NOT_WRITABLE = frozenset({errno.EACCES, errno.EPERM, errno.EROFS})
+
 app.exit_code(
     "PROJECT_INVALID",
     79,
@@ -675,8 +721,8 @@ services = app.group(
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class ServicesStatusArgs(ProjectArgs):
-    """Arguments of ``services status``."""
+class EvidenceArgs(ProjectArgs):
+    """Options of a command that reads the evidence a fleet's view is built from."""
 
     observed: Path = Flag(
         description="Directory containing observed-server JSON snapshots"
@@ -695,6 +741,25 @@ class ServicesStatusArgs(ProjectArgs):
         _inside_project(self.observed, "observed")
         _inside_project(self.service_observed, "service-observed")
         _inside_project(self.deployments, "deployments")
+
+    def operations_view(self, fleet: Fleet) -> FleetOperations:
+        """Build the fleet's operations view from the evidence on disk."""
+        deployments = fleet.path(self.deployments)
+        domains = fleet.path(self.service_observed)
+        try:
+            return build_operations_view(
+                fleet.inventory,
+                load_observations(fleet.path(self.observed), self.schemas),
+                load_deployment_receipts(deployments, self.schemas)
+                if deployments.is_dir()
+                else DeploymentReceiptSet.empty(),
+                load_domain_observations(domains, self.schemas)
+                if domains.is_dir()
+                else DomainObservationSet.empty(),
+                generated_at=UtcTimestamp.now(),
+            )
+        except ConfigValidationError as error:
+            raise _config_invalid(error) from error
 
 
 class ServicesPayload(Payload):
@@ -715,26 +780,477 @@ class ServicesPayload(Payload):
         ),
     ],
 )
-def services_status(
-    args: ServicesStatusArgs, _ctx: Ctx, fleet: Fleet
-) -> ServicesPayload:
+def services_status(args: EvidenceArgs, _ctx: Ctx, fleet: Fleet) -> ServicesPayload:
     """Answer each declared service's lifecycle from the evidence on disk."""
-    deployments = fleet.path(args.deployments)
-    domains = fleet.path(args.service_observed)
-    try:
-        view = build_operations_view(
-            fleet.inventory,
-            load_observations(fleet.path(args.observed), args.schemas),
-            load_deployment_receipts(deployments, args.schemas)
-            if deployments.is_dir()
-            else DeploymentReceiptSet.empty(),
-            load_domain_observations(domains, args.schemas)
-            if domains.is_dir()
-            else DomainObservationSet.empty(),
-            generated_at=UtcTimestamp.now(),
-        )
-    except ConfigValidationError as error:
-        raise _config_invalid(error) from error
+    view = args.operations_view(fleet)
     return ServicesPayload(
         {"status": "ok", "services": [domain.as_dict() for domain in view.domains]}
+    )
+
+
+def _not_writable(error: OSError) -> Exception:
+    """Report a path the command must write as read-only or not ours."""
+    message = f"cannot write {error.filename}: {error.strerror}"
+    return Exit.PERMISSION_DENIED(message, context={"code": "path_not_writable"})
+
+
+# init
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InitArgs:
+    """Arguments of ``init``, which runs before any project exists."""
+
+    directory: Path = Arg(
+        default=Path(),
+        description=(
+            "Project directory to create; must be empty or absent (default: .)"
+        ),
+    )
+    name: str | None = Flag(
+        default=None,
+        description=(
+            "Package name written to pyproject.toml (default: the directory name)"
+        ),
+    )
+    description: str | None = Flag(
+        default=None,
+        description=(
+            "One line saying what the project manages, written to the README and "
+            "pyproject.toml"
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        """Refuse a name or description the project files cannot hold."""
+        try:
+            self.project_name()
+            self.project_description()
+        except ValueError as error:
+            raise ParseError(str(error)) from error
+
+    def project_name(self) -> ProjectName:
+        """Return the package name, the directory's by default."""
+        if self.name is None:
+            return ProjectName.from_directory(self.directory)
+        return ProjectName.from_boundary(self.name)
+
+    def project_description(self) -> ProjectDescription | None:
+        """Return the one-line description, when one was given."""
+        if self.description is None:
+            return None
+        return ProjectDescription.from_boundary(self.description)
+
+
+@dataclass(frozen=True, slots=True)
+class Scaffolded:
+    """A new project, the files written into it, and what to run next."""
+
+    effect: str
+    status: str
+    project: dict[str, object] = Out(ordered=True)
+    files: list[str] = Out(ordered=True)
+    next: list[str] = Out(ordered=True)
+
+
+@app.command(
+    "init",
+    description="Create a new project: fleet, applications, and operations",
+    danger_level="mutating",
+    # Two git steps of up to GIT_TIMEOUT_SECONDS each, then local files.
+    timeout=3 * GIT_TIMEOUT_SECONDS,
+    exit_codes=["PRECONDITION", "PERMISSION_DENIED"],
+    subprocess=Subprocess("git"),
+    required_tools={"git": "2.24.0"},
+    examples=[
+        ("Create a project in a new directory", "cloudfall init fleet"),
+        (
+            "Name and describe it",
+            "cloudfall init fleet --name acme-fleet --description 'Acme servers'",
+        ),
+    ],
+)
+def init(args: InitArgs, ctx: Ctx) -> Scaffolded:
+    """Lay out a new project in an empty or absent directory."""
+    try:
+        options = InitOptions(
+            directory=args.directory,
+            name=args.project_name(),
+            version=resolve_installed_version(),
+            description=args.project_description(),
+        )
+        scaffold = init_project(
+            options,
+            initialize_git=partial(
+                initialize_git,
+                run=partial(ctx.run, timeout=Timeout(GIT_TIMEOUT_SECONDS), check=False),
+            ),
+        )
+    except ProjectError as error:
+        raise Exit.PRECONDITION(error.detail, context={"code": error.code}) from error
+    except OSError as error:
+        if error.errno not in _NOT_WRITABLE:
+            raise
+        raise _not_writable(error) from error
+    body = scaffold.as_dict()
+    return Scaffolded(
+        effect="created",
+        status="ok",
+        project=dict(cast("Mapping[str, object]", body["project"])),
+        files=list(scaffold.files),
+        next=list(cast("list[str]", body["next"])),
+    )
+
+
+# add ssh-key, server-type, server
+
+
+add = app.group("add", description="Write a fleet resource into the project")
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectDirectory:
+    """The project a command writes into, resolved but not yet validated."""
+
+    path: Path
+
+    @classmethod
+    def acquire(cls, args: ProjectArgs, _ctx: Ctx) -> Self:
+        """Resolve the project directory before the handler runs."""
+        try:
+            return cls(resolve_project_directory(args.project, os.environ, Path.cwd()))
+        except ProjectError as error:
+            raise Exit.PROJECT_INVALID(
+                error.detail, context={"code": error.code}
+            ) from error
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class AddArgs(ProjectArgs):
+    """Options every ``add`` command shares."""
+
+    description: str | None = Flag(
+        default=None, description="One line saying what the resource is for"
+    )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class AddSshKeyArgs(AddArgs):
+    """Arguments of ``add ssh-key``."""
+
+    key_file: Path = Arg(
+        description="Public key file, such as ~/.ssh/id_ed25519.pub",
+        # A path to a public key: nothing in it or in its name is secret.
+        secret=False,
+    )
+    owner: ResourceId = Flag(description="Who the key belongs to")
+    id: ResourceId | None = Flag(
+        default=None, description="Resource id (default: the owner)"
+    )
+    environment: ResourceId = Flag(
+        default=ResourceId.from_boundary("production"),
+        description="Environment the key is for (default: production)",
+    )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class AddServerTypeArgs(AddArgs):
+    """Arguments of ``add server-type``."""
+
+    id: ResourceId = Arg(
+        description="Resource id, such as debian-application"
+    )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class AddServerArgs(AddArgs):
+    """Arguments of ``add server``."""
+
+    id: ResourceId = Arg(
+        description="Resource id, such as h1"
+    )
+    address: str = Flag(description="IP address or hostname to connect to")
+    type: ResourceId = Flag(
+        default=ResourceId.from_boundary("debian-application"),
+        description=(
+            "Server type id; created when missing (default: debian-application)"
+        ),
+    )
+    environment: ResourceId = Flag(
+        default=ResourceId.from_boundary("production"),
+        description="Environment the server belongs to (default: production)",
+    )
+    hostname: str | None = Flag(
+        default=None,
+        description=(
+            "Hostname (default: the address when it is a hostname, else the id)"
+        ),
+    )
+    ssh_user: str = Flag(default="root", description="SSH user (default: root)")
+    ssh_port: int = Flag(default=22, description="SSH port (default: 22)")
+
+    def __post_init__(self) -> None:
+        """Refuse an address, user, port, or hostname a server cannot have."""
+        try:
+            self.options()
+        except (TypeError, ValueError) as error:
+            raise ParseError(str(error)) from error
+
+    def options(self) -> ServerOptions:
+        """Return the server to declare, as typed values."""
+        return ServerOptions(
+            resource_id=self.id,
+            address=ConnectionAddress.from_boundary(self.address),
+            server_type=self.type,
+            environment=self.environment,
+            ssh_user=LinuxUser.from_boundary(self.ssh_user),
+            ssh_port=TcpPort.from_boundary(self.ssh_port),
+            hostname=(
+                Hostname.from_boundary(self.hostname)
+                if self.hostname is not None
+                else None
+            ),
+            description=self.description,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Added:
+    """The resource files one ``add`` wrote into the project."""
+
+    effect: str
+    status: str
+    project: str
+    added: list[dict[str, object]] = Out(ordered=True)
+
+
+def _added(result: AddResult) -> Added:
+    body = result.as_dict()
+    return Added(
+        effect="created",
+        status="ok",
+        project=str(result.project),
+        added=list(cast("list[dict[str, object]]", body["added"])),
+    )
+
+
+def _authoring_failed(error: AuthoringError) -> Exception:
+    context = {"code": error.code}
+    if error.code == ERROR_RESOURCE_EXISTS:
+        return Exit.CONFLICT(error.detail, context=context)
+    if error.code == ERROR_KEY_FILE_MISSING:
+        return Exit.NOT_FOUND(error.detail, context=context)
+    if error.code == ERROR_PROJECT_WRITE_FAILED:
+        return Exit.PERMISSION_DENIED(error.detail, context=context)
+    return Exit.PRECONDITION(error.detail, context=context)
+
+
+_ADD_EXIT_CODES = [
+    "PROJECT_INVALID",
+    "CONFIG_INVALID",
+    "CONFLICT",
+    "PERMISSION_DENIED",
+    "PRECONDITION",
+]
+
+
+@add.command(
+    "ssh-key",
+    description="Declare an SSH public key read from a file",
+    danger_level="mutating",
+    timeout=30,
+    supports_raw_payload=True,
+    exit_codes=[*_ADD_EXIT_CODES, "NOT_FOUND"],
+    examples=[
+        (
+            "Declare your own key",
+            "cloudfall add ssh-key ~/.ssh/id_ed25519.pub --owner alice",
+        ),
+    ],
+)
+def add_ssh_key_command(
+    args: AddSshKeyArgs, _ctx: Ctx, project: ProjectDirectory
+) -> Added:
+    """Write one SshPublicKey resource into the project."""
+    options = SshKeyOptions(
+        key_path=args.key_file.expanduser(),
+        owner=args.owner,
+        environment=args.environment,
+        resource_id=args.id,
+        description=args.description,
+    )
+    try:
+        return _added(add_ssh_key(project.path, options, args.schemas))
+    except AuthoringError as error:
+        raise _authoring_failed(error) from error
+    except ConfigValidationError as error:
+        raise _config_invalid(error) from error
+
+
+@add.command(
+    "server-type",
+    description="Declare a server type from the bundled Debian 13 baseline",
+    danger_level="mutating",
+    timeout=30,
+    supports_raw_payload=True,
+    exit_codes=_ADD_EXIT_CODES,
+    examples=[
+        ("Declare the baseline type", "cloudfall add server-type debian-application"),
+    ],
+)
+def add_server_type_command(
+    args: AddServerTypeArgs, _ctx: Ctx, project: ProjectDirectory
+) -> Added:
+    """Write one ServerType resource into the project."""
+    options = ServerTypeOptions(resource_id=args.id, description=args.description)
+    try:
+        return _added(add_server_type(project.path, options, args.schemas))
+    except AuthoringError as error:
+        raise _authoring_failed(error) from error
+    except ConfigValidationError as error:
+        raise _config_invalid(error) from error
+
+
+@add.command(
+    "server",
+    description="Declare a server; creates its server type when missing",
+    danger_level="mutating",
+    timeout=30,
+    supports_raw_payload=True,
+    exit_codes=_ADD_EXIT_CODES,
+    examples=[
+        ("Declare a server by address", "cloudfall add server h1 --address 192.0.2.10"),
+    ],
+)
+def add_server_command(
+    args: AddServerArgs, _ctx: Ctx, project: ProjectDirectory
+) -> Added:
+    """Write one Server resource, and its ServerType when the project lacks it."""
+    try:
+        return _added(add_server(project.path, args.options(), args.schemas))
+    except AuthoringError as error:
+        raise _authoring_failed(error) from error
+    except ConfigValidationError as error:
+        raise _config_invalid(error) from error
+
+
+# dashboard build, services inspect
+
+
+dashboard = app.group("dashboard", description="Build operations dashboard artifacts")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DashboardBuildArgs(EvidenceArgs):
+    """Arguments of ``dashboard build``."""
+
+    output_dir: Path = Flag(
+        default=Path("tmp/dashboard"),
+        description="Dashboard output directory (default: tmp/dashboard)",
+    )
+
+    def __post_init__(self) -> None:
+        """Keep relative evidence and output paths inside the project."""
+        EvidenceArgs.__post_init__(self)
+        _inside_project(self.output_dir, "output-dir")
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardBuilt:
+    """The static dashboard written, and the fleet health it shows."""
+
+    effect: str
+    status: str
+    health: str
+    tasks: int
+    dashboard: dict[str, str]
+
+
+@dashboard.command(
+    "build",
+    description="Build a static read-only operations dashboard",
+    danger_level="mutating",
+    timeout=120,
+    supports_raw_payload=True,
+    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PERMISSION_DENIED"],
+    examples=[
+        (
+            "Build the dashboard from fresh snapshots",
+            "cloudfall dashboard build --observed tmp/observed",
+        ),
+    ],
+)
+def dashboard_build(
+    args: DashboardBuildArgs, _ctx: Ctx, fleet: Fleet
+) -> DashboardBuilt:
+    """Write the dashboard pages for the fleet's current evidence."""
+    view = args.operations_view(fleet)
+    output = fleet.path(args.output_dir)
+    effect = "updated" if output.exists() else "created"
+    try:
+        artifacts = build_dashboard(view, output)
+    except OSError as error:
+        if error.errno not in _NOT_WRITABLE:
+            raise
+        raise _not_writable(error) from error
+    return DashboardBuilt(
+        effect=effect,
+        status="ok",
+        health=view.health.value,
+        tasks=len(view.tasks),
+        dashboard=artifacts.as_dict(),
+    )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ServicesInspectArgs(ProjectArgs):
+    """Arguments of ``services inspect``."""
+
+    output_dir: Path = Flag(
+        default=Path("tmp/observed-services"),
+        description="Service observation directory (default: tmp/observed-services)",
+    )
+
+    def __post_init__(self) -> None:
+        """Keep a relative output path inside the project."""
+        _inside_project(self.output_dir, "output-dir")
+
+
+@dataclass(frozen=True, slots=True)
+class ServicesInspected:
+    """The domain observation files written."""
+
+    effect: str
+    status: str
+    observations: list[str] = Out(ordered=True)
+
+
+@services.command(
+    "inspect",
+    description="Collect DNS, TLS, origin, and public route evidence",
+    danger_level="mutating",
+    # DNS, TLS, and HTTP probes of every declared domain, one after another.
+    timeout=600,
+    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PERMISSION_DENIED"],
+    examples=[("Probe every declared domain", "cloudfall services inspect")],
+)
+def services_inspect(
+    args: ServicesInspectArgs, _ctx: Ctx, fleet: Fleet
+) -> ServicesInspected:
+    """Probe each declared domain and write one observation per domain."""
+    try:
+        paths = inspect_domains(
+            fleet.inventory,
+            fleet.path(args.output_dir),
+            SocketDomainNetworkClient(),
+            observed_at=EvidenceTimestamp.now(),
+        )
+    except OSError as error:
+        if error.errno not in _NOT_WRITABLE:
+            raise
+        raise _not_writable(error) from error
+    return ServicesInspected(
+        effect="created",
+        status="ok",
+        observations=[str(path) for path in paths],
     )

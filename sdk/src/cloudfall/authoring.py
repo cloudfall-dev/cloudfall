@@ -46,10 +46,10 @@ BASELINE_PACKAGES: tuple[str, ...] = (
 BASELINE_ROOT_MINIMUM_BYTES = 20_000_000_000
 """Smallest root filesystem the baseline server type accepts (20 GB)."""
 
-_ERROR_KEY_FILE_MISSING = "ssh_key_file_missing"
-_ERROR_KEY_FILE_INVALID = "ssh_key_file_invalid"
-_ERROR_RESOURCE_EXISTS = "resource_exists"
-_ERROR_PROJECT_WRITE_FAILED = "project_write_failed"
+ERROR_KEY_FILE_MISSING = "ssh_key_file_missing"
+ERROR_KEY_FILE_INVALID = "ssh_key_file_invalid"
+ERROR_RESOURCE_EXISTS = "resource_exists"
+ERROR_PROJECT_WRITE_FAILED = "project_write_failed"
 
 
 class AuthoringError(RuntimeError):
@@ -135,7 +135,7 @@ def read_public_key(key_path: Path) -> OpenSshPublicKey:
     """Read one OpenSSH public key from a file such as ``~/.ssh/id_ed25519.pub``."""
     if not key_path.is_file():
         message = f"SSH public key file does not exist: {key_path}"
-        raise AuthoringError(_ERROR_KEY_FILE_MISSING, message)
+        raise AuthoringError(ERROR_KEY_FILE_MISSING, message)
     lines = [
         line
         for line in key_path.read_text(encoding="utf-8").splitlines()
@@ -143,12 +143,12 @@ def read_public_key(key_path: Path) -> OpenSshPublicKey:
     ]
     if len(lines) != 1:
         message = f"SSH public key file must hold exactly one key: {key_path}"
-        raise AuthoringError(_ERROR_KEY_FILE_INVALID, message)
+        raise AuthoringError(ERROR_KEY_FILE_INVALID, message)
     try:
         return OpenSshPublicKey.from_boundary(lines[0].strip())
     except (TypeError, ValueError) as error:
         message = f"{key_path}: {error}"
-        raise AuthoringError(_ERROR_KEY_FILE_INVALID, message) from error
+        raise AuthoringError(ERROR_KEY_FILE_INVALID, message) from error
 
 
 def ssh_key_document(
@@ -317,7 +317,7 @@ def _commit(
         path = _resource_path(project, kind, resource_id)
         if path.exists():
             message = f"{kind.value}/{resource_id} already exists: {path}"
-            raise AuthoringError(_ERROR_RESOURCE_EXISTS, message)
+            raise AuthoringError(ERROR_RESOURCE_EXISTS, message)
         planned.append((kind, resource_id, path, document))
 
     written: list[Path] = []
@@ -339,7 +339,7 @@ def _commit(
         for path in written:
             path.unlink()
         message = f"cannot write {error.filename}: {error.strerror}"
-        raise AuthoringError(_ERROR_PROJECT_WRITE_FAILED, message) from error
+        raise AuthoringError(ERROR_PROJECT_WRITE_FAILED, message) from error
     return AddResult(
         project=project,
         added=tuple(

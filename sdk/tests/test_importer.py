@@ -225,3 +225,31 @@ def test_cli_import_render_emits_structured_output(
     assert payload["status"] == "ok"
     assert payload["data"]["components"] == ["acme-api", "acme-worker"]
     assert payload["data"]["report"].endswith("IMPORT-REPORT.md")
+
+
+def test_an_argparse_command_reports_a_read_only_path_as_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    blueprint = tmp_path / "render.yaml"
+    blueprint.write_text(BLUEPRINT, encoding="utf-8")
+    read_only = tmp_path / "read-only"
+    read_only.mkdir()
+    read_only.chmod(0o555)
+    try:
+        code = main(
+            [
+                *("import", "render", str(blueprint), "--project", str(tmp_path)),
+                *("--application", "acme", "--server", "h1"),
+                *("--output-dir", str(read_only / "config")),
+                *("--env-dir", str(read_only / "env"), "--schemas", str(SCHEMAS)),
+            ]
+        )
+    finally:
+        read_only.chmod(0o755)
+
+    captured = capsys.readouterr()
+    assert (code, captured.out) == (1, "")
+    document = json.loads(captured.err)
+    assert document["error"]["code"] == "path_not_writable"
+    assert document["error"]["exit_code"] == 1
+    assert str(read_only) in document["error"]["message"]

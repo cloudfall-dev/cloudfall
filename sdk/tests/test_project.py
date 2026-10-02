@@ -230,7 +230,7 @@ def test_cli_init_pins_the_version_it_runs(
 
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
-    assert payload["status"] == "ok"
+    assert (payload["data"]["status"], payload["data"]["effect"]) == ("ok", "created")
     assert payload["data"]["project"]["name"] == "fleet"
     assert payload["data"]["project"]["version"] == installed
     assert payload["data"]["project"]["git"] == "initialized"
@@ -253,28 +253,28 @@ def test_cli_init_accepts_a_description(
 
     exit_code = main(["init", str(tmp_path / "other"), "--description", " "])
 
-    payload = json.loads(capsys.readouterr().err)
+    payload = json.loads(capsys.readouterr().out)
     assert exit_code == 2
-    assert payload["error"]["code"] == "invalid_argument"
+    assert payload["error"]["code"] == "ARG_ERROR"
 
 
 def test_cli_init_reports_errors_as_json(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    with pytest.raises(SystemExit) as exit_info:
-        main(["init", str(tmp_path), "--rev", "abc"])
+    exit_code = main(["init", str(tmp_path), "--rev", "abc"])
 
-    payload = json.loads(capsys.readouterr().err)
-    assert exit_info.value.code == 2
-    assert payload["error"]["code"] == "invalid_argument"
-    assert "--rev" in payload["error"]["message"]
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 2
+    assert payload["error"]["code"] == "ARG_ERROR"
+    assert "--rev" in json.dumps(payload["error"])
 
     (tmp_path / "x").write_text("", encoding="utf-8")
     exit_code = main(["init", str(tmp_path)])
 
-    payload = json.loads(capsys.readouterr().err)
-    assert exit_code == 2
-    assert payload["error"]["code"] == "project_directory_not_empty"
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 4
+    assert payload["error"]["code"] == "PRECONDITION"
+    assert payload["error"]["context"]["code"] == "project_directory_not_empty"
 
 
 def test_fresh_project_validates_as_empty(tmp_path: Path) -> None:

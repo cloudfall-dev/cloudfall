@@ -80,6 +80,19 @@ Notable changes to Cloudfall. The format follows
   A missing playbook, inventory, or role directory exits 2 before Ansible
   starts. `playbook run --check` is now `--dry-run`; Ansible's play log
   streams to stderr. `cloudfall-engine manifest` describes every command
+- **Breaking:** six more `cloudfall` commands run on treaty: `init`,
+  `add ssh-key`, `add server-type`, `add server`, `dashboard build` and
+  `services inspect`. Their answer is the treaty envelope described below,
+  with the same `data` keys plus `effect` (`created`, or `updated` for a
+  dashboard written over an older one), which treaty requires of every
+  command that writes. Failures: 6 `CONFLICT` for a resource that already
+  exists (was 2), 7 `PERMISSION_DENIED` for a read-only project or path
+  (was 1 or 2), 4 `PRECONDITION` for a non-empty `init` directory (was 2),
+  5 `NOT_FOUND` for a missing key file, 2 `ARG_ERROR` for a bad id, name or
+  address; the old code is in `error.context.code`. `init` runs git through
+  treaty, so `cloudfall doctor` checks for git 2.24. `observe`,
+  `secrets render` and the two `import` commands stay on argparse until
+  treaty can carry their camelCase keys on a command that writes (#183)
 - **Breaking:** nine read-only `cloudfall` commands run on treaty, the
   first step of moving the CLI off argparse: `config validate`,
   `inventory show`, `operations list`, `operations show`,
