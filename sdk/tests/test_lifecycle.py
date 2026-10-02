@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import subprocess
 import tarfile
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,7 @@ from cloudfall.lifecycle import (
     DeployOptions,
     EngineContext,
     LifecycleError,
+    build_release_artifact,
     deploy,
     plan_deploy,
     plan_health,
@@ -322,3 +325,55 @@ def test_cli_data_migration_plan_checks_the_source_url_file(
     assert payload["status"] == "plan"
     assert payload["data"]["service"] == "postgresql-main"
     assert "u:p@" not in json.dumps(payload)
+
+
+def _git(*arguments: str) -> None:
+    subprocess.run(  # noqa: S603 - fixture repository setup.
+        [
+            shutil.which("git") or "git",
+            "-c",
+            "user.email=test@example.test",
+            "-c",
+            "user.name=Cloudfall Test",
+            *arguments,
+        ],
+        capture_output=True,
+        check=True,
+    )
+
+
+def test_release_artifact_build_reads_the_engine_envelope(tmp_path: Path) -> None:
+    """The real engine answers a treaty envelope; the release id is under data.
+
+    PR #4 moved the engine to treaty and ``migrate --build`` read the release
+    from the top level, so every build step failed with no release id.
+    """
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git("-C", str(repository), "-c", "init.defaultBranch=main", "init", "--quiet")
+    (repository / "app.py").write_text("print('crm')\n", encoding="utf-8")
+    _git("-C", str(repository), "add", ".")
+    _git("-C", str(repository), "commit", "--quiet", "--message", "initial")
+    project = tmp_path / "project"
+    shutil.copytree(EXAMPLES, project)
+    component = project / "components" / "crm-backend.yaml"
+    component.write_text(
+        component.read_text(encoding="utf-8").replace(
+            "https://github.com/example/crm-backend.git", f"file://{repository}"
+        ),
+        encoding="utf-8",
+    )
+    context = EngineContext(
+        project_directory=project,
+        schema_directory=SCHEMAS,
+        engine_directory=ENGINE,
+        inventory_file=tmp_path / "inventory.json",
+    )
+
+    built = build_release_artifact(
+        context, ResourceId("crm-backend"), "main", tmp_path / "artifacts"
+    )
+
+    assert built["status"] == "ok"
+    assert isinstance(built["release"], str)
+    assert Path(str(built["archive"])).is_file()

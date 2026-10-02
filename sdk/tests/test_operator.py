@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from unittest.mock import ANY
 
 import pytest
 from cloudfall.audit import AuditCheck, AuditReport, AuditStatus, ServerAudit
@@ -32,7 +31,6 @@ from cloudfall.operator import (
     parse_prometheus_alerts,
     run_once,
 )
-from cloudfall.output import RESPONSE_META
 from cloudfall.validation import SchemaCatalog, validate_config
 from jsonschema import Draft202012Validator
 
@@ -451,15 +449,14 @@ def test_cli_operator_list_emits_structured_output(
     )
 
     captured = capsys.readouterr()
+    document = json.loads(captured.out)
     assert exit_code == 0
-    assert json.loads(captured.out) == {
-        "ok": True,
-        "status": "ok",
-        "error": None,
-        "data": {"proposals": []},
-        "meta": {**RESPONSE_META.as_dict(), "request_id": ANY, "duration_ms": ANY},
-        "warnings": [],
-    }
+    assert (document["ok"], document["error"], document["warnings"]) == (
+        True,
+        None,
+        [],
+    )
+    assert document["data"] == {"status": "ok", "proposals": []}
 
 
 def _operator_show(tmp_path: Path, proposal: str) -> list[str]:
@@ -488,15 +485,9 @@ def test_cli_operator_show_wraps_the_proposal_in_the_result_envelope(
     captured = capsys.readouterr()
     assert exit_code == 0
     document = json.loads(captured.out)
-    assert document == {
-        "ok": True,
+    assert document["data"] == {
         "status": "ok",
-        "error": None,
-        "data": {
-            "proposal": store.load(ResourceId.from_boundary(proposal_id)).as_document()
-        },
-        "meta": {**RESPONSE_META.as_dict(), "request_id": ANY, "duration_ms": ANY},
-        "warnings": [],
+        "proposal": store.load(ResourceId.from_boundary(proposal_id)).as_document(),
     }
     contract = next(c for c in CLI_COMMANDS if c.name == "operator show")
     validator = Draft202012Validator(contract.output_schema())
@@ -508,13 +499,11 @@ def test_cli_operator_errors_use_the_shared_error_envelope(
 ) -> None:
     exit_code = main(_operator_show(tmp_path, "ghost"))
 
-    captured = capsys.readouterr()
-    assert exit_code == 2
-    assert captured.out == ""
-    document = json.loads(captured.err)
-    assert document["status"] == "error"
-    assert document["error"]["code"] == "operator_proposal_missing"
-    assert "code" not in document
+    document = json.loads(capsys.readouterr().out)
+    assert exit_code == 5
+    assert (document["ok"], document["data"]) == (False, None)
+    assert document["error"]["code"] == "NOT_FOUND"
+    assert document["error"]["context"]["code"] == "operator_proposal_missing"
 
 
 def _policied_inventory() -> PlatformInventory:

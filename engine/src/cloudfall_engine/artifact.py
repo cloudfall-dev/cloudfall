@@ -6,7 +6,6 @@ import hashlib
 import json
 import re
 import shutil
-import subprocess
 import tarfile
 import tempfile
 from dataclasses import dataclass
@@ -22,10 +21,18 @@ from cloudfall.validation import (
 from jsonschema.exceptions import ValidationError
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
     from cloudfall.inventory import ComponentInventory, PlatformInventory
+    from treaty import Completed
+
+    Runner = Callable[[Sequence[str]], Completed]
+    """Runs one git argv to completion without raising on a non-zero exit"""
 
 _ARTIFACT_SCHEMA = "artifact.schema.json"
 GIT_TIMEOUT_SECONDS = 600
+GIT_MINIMUM_VERSION = "2.24.0"
+"""The first git with ``--end-of-options``, which ref resolution passes"""
 _SHORT_COMMIT_LENGTH = 7
 GIT_REF_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@^~-]{0,199}")
 _ERROR_COMPONENT_MISSING = "artifact_component_missing"
@@ -33,7 +40,6 @@ _ERROR_SUBDIRECTORY_MISSING = "artifact_subdirectory_missing"
 _ERROR_REF_INVALID = "artifact_ref_invalid"
 _ERROR_GIT_MISSING = "artifact_git_missing"
 _ERROR_GIT_FAILED = "artifact_git_failed"
-_ERROR_GIT_TIMEOUT = "artifact_git_timeout"
 
 
 class ArtifactBuildError(RuntimeError):
@@ -83,28 +89,43 @@ class BuiltArtifact:
         }
 
 
-def build_artifact(
+def build_artifact(  # noqa: PLR0913 - the build inputs plus its git runner.
     inventory: PlatformInventory,
     component_id: str,
     git_ref: str,
     output_directory: Path,
     schema_directory: Path,
+    *,
+    run: Runner,
 ) -> BuiltArtifact:
-    """Clone the component repository at a ref and package a release."""
+    """Clone the component repository at a ref and package a release.
+
+    ``run`` starts git: the CLI passes ``ctx.run``, so treaty owns its time
+    limit, locale, and cancellation.
+    """
     component = _component(inventory, component_id)
     _validate_ref(git_ref)
     built_at = datetime.now(tz=UTC)
     built_at_text = built_at.strftime("%Y-%m-%dT%H:%M:%SZ")
     with tempfile.TemporaryDirectory(prefix="cloudfall-artifact-") as workdir:
         checkout = Path(workdir) / "source"
-        _run_git("clone", "--quiet", component.repository.url.value, str(checkout))
+        _run_git(
+            run, "clone", "--quiet", component.repository.url.value, str(checkout)
+        )
         # A fresh clone has local branches only for the default branch, and
         # bare branch names trigger git's remote-branch DWIM, which conflicts
         # with --detach. Resolving the ref to a commit first supports
         # branches, tags, and commits uniformly.
-        commit = _resolve_ref_commit(checkout, git_ref)
+        commit = _resolve_ref_commit(run, checkout, git_ref)
         _run_git(
-            "-C", str(checkout), "checkout", "--quiet", "--detach", commit, "--"
+            run,
+            "-C",
+            str(checkout),
+            "checkout",
+            "--quiet",
+            "--detach",
+            commit,
+            "--",
         )
         source_root = checkout
         if component.repository.subdirectory is not None:
@@ -197,11 +218,12 @@ def _validate_ref(git_ref: str) -> None:
         raise ArtifactBuildError(_ERROR_REF_INVALID, detail)
 
 
-def _resolve_ref_commit(checkout: Path, git_ref: str) -> str:
+def _resolve_ref_commit(run: Runner, checkout: Path, git_ref: str) -> str:
     candidates = (git_ref, f"origin/{git_ref}")
     for candidate in candidates:
         try:
             return _run_git(
+                run,
                 "-C",
                 str(checkout),
                 "rev-parse",
@@ -217,30 +239,17 @@ def _resolve_ref_commit(checkout: Path, git_ref: str) -> str:
     raise ArtifactBuildError(_ERROR_GIT_FAILED, detail)
 
 
-def _run_git(*arguments: str) -> str:
+def _run_git(run: Runner, *arguments: str) -> str:
     binary = shutil.which("git")
     if binary is None:
         detail = "git is not installed on the build host"
         raise ArtifactBuildError(_ERROR_GIT_MISSING, detail)
-    try:
-        completed = subprocess.run(  # noqa: S603 - fixed binary, validated args.
-            [binary, *arguments],
-            capture_output=True,
-            check=True,
-            text=True,
-            timeout=GIT_TIMEOUT_SECONDS,
-        )
-    except subprocess.CalledProcessError as error:
+    completed = run((binary, *arguments))
+    if completed.returncode != 0:
         detail = (
-            f"git {' '.join(arguments[:2])} failed: {error.stderr.strip()}"
+            f"git {' '.join(arguments[:2])} failed: {completed.stderr.strip()}"
         )
-        raise ArtifactBuildError(_ERROR_GIT_FAILED, detail) from error
-    except subprocess.TimeoutExpired as error:
-        detail = (
-            f"git {' '.join(arguments[:2])} exceeded "
-            f"{GIT_TIMEOUT_SECONDS} seconds"
-        )
-        raise ArtifactBuildError(_ERROR_GIT_TIMEOUT, detail) from error
+        raise ArtifactBuildError(_ERROR_GIT_FAILED, detail)
     return completed.stdout
 
 

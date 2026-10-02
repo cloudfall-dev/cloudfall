@@ -59,10 +59,21 @@ def test_abbreviated_secret_file_flag_is_rejected_without_echo(
     assert "hunter2" not in json.dumps(payload)
 
 
+def _treaty_usage_error(
+    argv: list[str], capsys: pytest.CaptureFixture[str]
+) -> dict[str, object]:
+    """Run a command that moved to treaty: a usage error is exit 2 on stdout."""
+    assert main(argv) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert isinstance(payload, dict)
+    assert payload["ok"] is False
+    return payload
+
+
 def test_unrecognized_option_values_are_not_echoed(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    payload = _usage_error(
+    payload = _treaty_usage_error(
         [
             "config",
             "validate",
@@ -75,7 +86,7 @@ def test_unrecognized_option_values_are_not_echoed(
         capsys,
     )
 
-    message = str(payload["error"])
+    message = json.dumps(payload["error"])
     assert "--token" in message
     assert "--debug" in message
     assert "secret" not in message
@@ -97,7 +108,6 @@ def test_missing_required_argument_is_a_json_usage_error(
     [
         ["health", "Bad ID!"],
         ["rollback", "crm-backend", "--release", "r1"],
-        ["operator", "show", "../ghost"],
         ["backup", "run", "acme%2Fdb"],
     ],
 )
@@ -112,6 +122,19 @@ def test_invalid_identifiers_fail_before_dispatch(
     assert isinstance(error, dict)
     assert error["code"] == "invalid_argument"
     assert "invalid" in str(error["message"])
+
+
+def test_an_invalid_identifier_fails_before_a_treaty_command_runs(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload = _treaty_usage_error(
+        ["operator", "show", "../ghost", "--project", str(EXAMPLES)], capsys
+    )
+
+    error = payload["error"]
+    assert isinstance(error, dict)
+    assert error["code"] == "ARG_ERROR"
+    assert "proposal" in str(error["message"])
 
 
 def test_import_render_rejects_an_invalid_application_id(

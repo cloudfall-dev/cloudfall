@@ -80,6 +80,36 @@ Notable changes to Cloudfall. The format follows
   A missing playbook, inventory, or role directory exits 2 before Ansible
   starts. `playbook run --check` is now `--dry-run`; Ansible's play log
   streams to stderr. `cloudfall-engine manifest` describes every command
+- **Breaking:** nine read-only `cloudfall` commands run on treaty, the
+  first step of moving the CLI off argparse: `config validate`,
+  `inventory show`, `operations list`, `operations show`,
+  `operations decisions`, `operator list`, `operator show`, `audit` and
+  `services status`. `cloudfall manifest` lists them; every other command,
+  root `--help` and `--version` stay on argparse for now. Their answer is a
+  treaty envelope (`ok`, `data`, `error`, `meta`, `warnings`): the verdict
+  moves from the top-level `status` to `data.status`, and the other `data`
+  keys are unchanged. `inventory show` writes `data.ansible` as `{}` for a
+  project. Failures are an envelope on stdout with their own exit codes:
+  79 `PROJECT_INVALID`, 80 `CONFIG_INVALID` (resources or evidence files),
+  85 `INVENTORY_UNREADABLE`, 86 `RECORD_INVALID`, 5 `NOT_FOUND` for an
+  undeclared operation or a missing proposal, 2 `ARG_ERROR` for bad input;
+  the old snake_case code is in `error.context.code`. `audit` exits 83
+  `DRIFT` (was 1) or 84 `UNKNOWN` (was 3) with the report in `data`; until
+  treaty #181 is fixed, that report's lists come back sorted rather than in
+  the order the servers and checks were declared. Pick
+  the format with `--format json`: `--output` after one of these commands
+  is refused, since treaty's `--output` names a file. Relative paths still
+  resolve against the project, without changing the working directory
+- `cloudfall-engine` runs Ansible and git through treaty's `ctx.run`
+  (treaty 1.0.0rc10), so `--timeout` and Ctrl-C stop the whole process
+  group, and secrets are redacted from the play log. The play log streams
+  to stderr at a terminal; elsewhere, such as under an agent or in CI, it
+  shows only with `-v`, one JSON line per log line. A failed playbook
+  carries the last 4096 characters of the log in `error.context.output`.
+  `playbook run` reports `meta.dry_run: true` under `--dry-run`. A git step
+  that runs past its 600-second limit now exits 10 `TIMEOUT`, not 81 with
+  `artifact_git_timeout`. `cloudfall-engine doctor` checks for
+  ansible-playbook 2.21 and git 2.24
 - Every JSON document has the same six top-level keys: `ok` (true exactly
   when the exit code is 0), `status` (the command's verdict, such as `ok`,
   `plan`, `drift` or `unhealthy`), `data` (the command's payload, which
@@ -111,6 +141,11 @@ Notable changes to Cloudfall. The format follows
 
 ### Fixed
 
+- `migrate --build` and the `cloudfall-mcp` `build_artifact` tool read the
+  release from the engine's treaty envelope, under `data`. Since the engine
+  moved to treaty every build step failed with "artifact builder returned no
+  release id". `build_artifact` now returns the engine's `data` keys
+  (`git_ref`, `archive_sha256`, ...) beside `status`
 - The time baseline accepts a host whose clock another daemon keeps
   (ntp, ntpsec, chrony). `timedatectl set-ntp` drives systemd-timesyncd
   only, so on such hosts check mode reported "Would enable network time

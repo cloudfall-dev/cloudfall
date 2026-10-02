@@ -40,7 +40,8 @@ _ERROR_FEED_UNREACHABLE = "operator_feed_unreachable"
 _ERROR_FEED_INVALID = "operator_feed_invalid"
 _ERROR_GATEWAY_MATERIAL_INVALID = "operator_gateway_material_invalid"
 _ERROR_PROPOSAL_EXISTS = "operator_proposal_exists"
-_ERROR_PROPOSAL_MISSING = "operator_proposal_missing"
+ERROR_PROPOSAL_MISSING = "operator_proposal_missing"
+"""Code of the error ``ProposalStore`` raises for an id it holds no receipt for."""
 _ERROR_PROPOSAL_NOT_OPEN = "operator_proposal_not_open"
 _ERROR_OPERATION_UNSUPPORTED = "operator_operation_unsupported"
 _ERROR_GATEWAY_UNDECLARED = "operator_gateway_undeclared"
@@ -488,7 +489,7 @@ class ProposalStore:
         path = self._path(proposal.resource_id)
         if not path.exists():
             message = f"proposal does not exist: {path}"
-            raise OperatorError(_ERROR_PROPOSAL_MISSING, message)
+            raise OperatorError(ERROR_PROPOSAL_MISSING, message)
         return self._write(path, proposal)
 
     def load(self, proposal_id: ResourceId) -> OperatorProposal:
@@ -496,7 +497,7 @@ class ProposalStore:
         path = self._path(proposal_id)
         if not path.is_file():
             message = f"proposal does not exist: {path}"
-            raise OperatorError(_ERROR_PROPOSAL_MISSING, message)
+            raise OperatorError(ERROR_PROPOSAL_MISSING, message)
         document = cast(
             "dict[str, object]", json.loads(path.read_text(encoding="utf-8"))
         )

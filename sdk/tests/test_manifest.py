@@ -80,14 +80,19 @@ def _documents(argv: list[str], capsys: pytest.CaptureFixture[str]) -> list[obje
     documents = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     # `ok` is the exit code as a boolean, on every document the command wrote.
     assert [document["ok"] for document in documents] == [code == 0] * len(documents)
-    top = {"ok", "status", "data", "error", "meta", "warnings"}
-    assert all(set(document) == top for document in documents)
-    # An error on stdout names the code the process exits with.
-    assert all(
-        document["error"]["exit_code"] == code
-        for document in documents
-        if document["error"] is not None
-    )
+    for document in documents:
+        assert isinstance(document, dict)
+        if "status" in document:
+            # The argparse envelope: an error on stdout names its exit code.
+            top = {"ok", "status", "data", "error", "meta", "warnings"}
+            assert set(document) == top
+            if document["error"] is not None:
+                assert document["error"]["exit_code"] == code
+        else:
+            # treaty's envelope, for a command that moved; `_conforms` checks
+            # which envelope the contract declares.
+            assert set(document) == {"ok", "data", "error", "meta", "warnings"}
+            assert document["meta"]["exit_code"] == code
     return documents
 
 

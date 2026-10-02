@@ -395,13 +395,16 @@ def build_release_artifact(
         environment={},
     )
     output = _execute_step_with_output(step)
+    # The engine answers one treaty envelope: the build is under ``data``.
     parsed = cast("object", json.loads(output))
-    if not isinstance(parsed, dict) or not all(
-        isinstance(key, str) for key in parsed
-    ):
+    if not isinstance(parsed, dict) or parsed.get("ok") is not True:
+        detail = "artifact builder returned no successful envelope"
+        raise LifecycleError(_ERROR_EXECUTION_FAILED, detail)
+    data = cast("object", parsed.get("data"))
+    if not isinstance(data, dict) or not all(isinstance(key, str) for key in data):
         detail = "artifact builder returned a non-object payload"
         raise LifecycleError(_ERROR_EXECUTION_FAILED, detail)
-    return cast("dict[str, object]", parsed)
+    return {"status": "ok", **cast("dict[str, object]", data)}
 
 
 def _execute_steps(steps: tuple[ExecutionStep, ...]) -> None:
