@@ -194,6 +194,9 @@ Notable changes to Cloudfall. The format follows
 
 ### Fixed
 
+- `migrate --env-file NAME=PATH` and `--data NAME=PATH` resolve a relative
+  path against the project again, as every other path does; since the
+  move to treaty they resolved against the current directory
 - `migrate --build` and the `cloudfall-mcp` `build_artifact` tool read the
   release from the engine's treaty envelope, under `data`. Since the engine
   moved to treaty every build step failed with "artifact builder returned no

@@ -2078,12 +2078,13 @@ class MigrateArgs(EngineArgs):
             plan_file=fleet.path(self.plan_file),
             builds=_pairs(self.build, "build"),
             releases=_pairs(self.release, "release"),
+            # Relative to the project, as every other path here is.
             environment_files={
-                component: Path(value)
+                component: fleet.path(Path(value))
                 for component, value in _pairs(self.env_file, "env-file").items()
             },
             data_migrations={
-                database: Path(value)
+                database: fleet.path(Path(value))
                 for database, value in _pairs(self.data, "data").items()
             },
             execute=self.yes,

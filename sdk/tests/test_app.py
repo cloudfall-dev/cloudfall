@@ -7,13 +7,16 @@ import shutil
 from pathlib import Path
 
 import pytest
-from cloudfall.app import app
+from cloudfall.app import Fleet, MigrateArgs, app
 from cloudfall.cli import main
 from cloudfall.commands import CLI_COMMANDS
+from cloudfall.resources import default_schema_directory
+from cloudfall.validation import validate_config
 
 ROOT = Path(__file__).parents[2]
 EXAMPLES = ROOT / "config" / "examples"
 COMPLIANT = ROOT / "config" / "tests" / "observed" / "compliant"
+SCHEMAS = default_schema_directory()
 
 
 def test_the_contract_marks_exactly_the_commands_treaty_runs() -> None:
@@ -84,3 +87,21 @@ def test_a_drift_report_keeps_the_order_the_checks_ran_in(
     report = json.loads(capsys.readouterr().out)["data"]
     assert code == 83
     assert report["servers"][0]["checks"][0]["check"] == "server_type.id"
+
+
+def test_migrate_resolves_env_and_data_files_against_the_project(
+    tmp_path: Path,
+) -> None:
+    """The argparse CLI ran migrate inside the project; relative paths meant it."""
+    fleet = Fleet(EXAMPLES, validate_config(EXAMPLES, SCHEMAS))
+    args = MigrateArgs(
+        env_file=("crm-backend=tmp/env/crm.env",),
+        data=(f"crm={tmp_path / 'source.url'}",),
+    )
+
+    options = args.options(fleet)
+
+    assert options.environment_files == {
+        "crm-backend": EXAMPLES / "tmp/env/crm.env"
+    }
+    assert options.data_migrations == {"crm": tmp_path / "source.url"}
