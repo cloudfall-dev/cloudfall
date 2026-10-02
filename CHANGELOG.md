@@ -103,9 +103,8 @@ Notable changes to Cloudfall. The format follows
   #179): the page is drawn from the answer's JSON document, as before. Its
   verdict moves to `data.status`; a bad `--since` or `--until` is 2
   `ARG_ERROR` with `why_instant_invalid` in `error.context.code`, and a
-  record that cannot be read 86 `RECORD_INVALID`. treaty offers a custom
-  format on every command (#209), so `--format html` on any other treaty
-  command renders its `data` as a page of JSON
+  record that cannot be read 86 `RECORD_INVALID`. `--format html` is a
+  `why` format only; other commands refuse it
 - **Breaking:** seven commands that run Ansible move to treaty: `health`,
   `backup run`, `backup verify`, `operations propose`, `operations approve`,
   `operator approve` and `migrate`. Ansible runs through treaty in the
@@ -155,7 +154,7 @@ Notable changes to Cloudfall. The format follows
   is refused, since treaty's `--output` names a file. Relative paths still
   resolve against the project, without changing the working directory
 - `cloudfall-engine` runs Ansible and git through treaty's `ctx.run`
-  (treaty 1.0.0rc13), so `--timeout` and Ctrl-C stop the whole process
+  (treaty 1.0.0rc14), so `--timeout` and Ctrl-C stop the whole process
   group, and secrets are redacted from the play log. The play log streams
   to stderr as plain text, as before, terminal or not; `--quiet` silences
   it. A failed playbook carries the last 4096 characters of the log in

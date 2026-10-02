@@ -15,12 +15,10 @@ such as drift, exits with its own code and keeps the report in ``data``.
 from __future__ import annotations
 
 import errno
-import json
 import os
 import shutil
 from dataclasses import dataclass
 from functools import partial
-from html import escape
 from http import HTTPStatus
 from importlib.metadata import version
 from pathlib import Path
@@ -33,6 +31,7 @@ from treaty import (
     Excludes,
     Exit,
     Flag,
+    FormatRenderer,
     Out,
     ParseError,
     SideEffect,
@@ -269,19 +268,6 @@ app.exit_code(
 )
 
 
-def _html_page(data: object) -> str:
-    """Render any command's data as a page of its JSON, for ``--format html``.
-
-    Only ``why`` has a page of its own; treaty offers a format on every
-    command once one has it (treaty #209), so the others answer this.
-    """
-    body = escape(json.dumps(data, indent=2, sort_keys=True))
-    return f'<!doctype html>\n<meta charset="utf-8">\n<pre>{body}</pre>\n'
-
-
-app.format("html", render=_html_page, media_type="text/html")
-
-
 class Payload:
     """A command's flat payload, written as ``data`` under its declared keys.
 
@@ -419,22 +405,18 @@ class Fleet:
 
     @classmethod
     def acquire(cls, args: ProjectArgs, _ctx: Ctx) -> Self:
-        """Resolve and validate the fleet before the handler runs."""
+        """Resolve and validate the project before the handler runs."""
+        return cls._project(args)
+
+    @classmethod
+    def _project(cls, args: ProjectArgs) -> Self:
         try:
-            source = _inventory_source(args)
-            if source is not None:
-                read = read_fleet(read_inventory(source), args.schemas)
-                return cls(Path.cwd(), read.config, read, source)
             directory = resolve_project_directory(
                 args.project, os.environ, Path.cwd()
             )
             return cls(directory, validate_config(directory, args.schemas))
         except ProjectError as error:
             raise Exit.PROJECT_INVALID(
-                error.detail, context={"code": error.code}
-            ) from error
-        except AnsibleReadError as error:
-            raise Exit.INVENTORY_UNREADABLE(
                 error.detail, context={"code": error.code}
             ) from error
         except ConfigValidationError as error:
@@ -450,15 +432,40 @@ class Fleet:
         return PlatformInventory.from_state(self.state)
 
 
-def _inventory_source(args: ProjectArgs) -> InventorySource | None:
+@dataclass(frozen=True, slots=True)
+class InventoryFleet(Fleet):
+    """A fleet a command may also read from a team's own Ansible inventory.
+
+    Only the commands that declare ``--inventory`` take it, so only they can
+    fail on an unreadable inventory.
+    """
+
+    @classmethod
+    # Narrower than Fleet.acquire on purpose: only --inventory commands take it.
+    def acquire(  # type: ignore[override]
+        cls, args: FleetArgs, _ctx: Ctx
+    ) -> Self:
+        """Read the team's inventory when one applies, else the project."""
+        try:
+            source = _inventory_source(args)
+            if source is None:
+                return cls._project(args)
+            read = read_fleet(read_inventory(source), args.schemas)
+        except AnsibleReadError as error:
+            raise Exit.INVENTORY_UNREADABLE(
+                error.detail, context={"code": error.code}
+            ) from error
+        except ConfigValidationError as error:
+            raise _config_invalid(error) from error
+        return cls(Path.cwd(), read.config, read, source)
+
+
+def _inventory_source(args: FleetArgs) -> InventorySource | None:
     """Return the Ansible inventory this run reads, if any.
 
     Precedence: ``--inventory``, then an ``ansible.cfg`` in the current
     directory when no project was asked for and the directory is no project.
-    Only a command that declares ``--inventory`` reads one.
     """
-    if not isinstance(args, FleetArgs):
-        return None
     if args.inventory is not None:
         return InventorySource.from_boundary(args.inventory)
     if args.project is not None or os.environ.get(PROJECT_DIRECTORY_VARIABLE):
@@ -472,11 +479,14 @@ def _config_invalid(error: ConfigValidationError) -> Exception:
     return Exit.CONFIG_INVALID(error.issue.message, context=error.issue.as_dict())
 
 
-def _record_invalid(error: DecisionError | OperatorError) -> Exception:
-    message = error.detail if isinstance(error, DecisionError) else error.message
-    if isinstance(error, OperatorError) and error.code == ERROR_PROPOSAL_MISSING:
-        return Exit.NOT_FOUND(message, context={"code": error.code})
-    return Exit.RECORD_INVALID(message, context={"code": error.code})
+def _record_invalid(error: DecisionError) -> Exception:
+    return Exit.RECORD_INVALID(error.detail, context={"code": error.code})
+
+
+def _proposal_failed(error: OperatorError) -> Exception:
+    if error.code == ERROR_PROPOSAL_MISSING:
+        return Exit.NOT_FOUND(error.message, context={"code": error.code})
+    return Exit.RECORD_INVALID(error.message, context={"code": error.code})
 
 
 # config validate, inventory show
@@ -531,7 +541,9 @@ class InventoryPayload(Payload):
         ),
     ],
 )
-def inventory_show(_args: FleetArgs, _ctx: Ctx, fleet: Fleet) -> InventoryPayload:
+def inventory_show(
+    _args: FleetArgs, _ctx: Ctx, fleet: InventoryFleet
+) -> InventoryPayload:
     """Answer the inventory the fleet declares."""
     body: dict[str, object] = {
         "status": "ok",
@@ -746,7 +758,7 @@ def operator_list(args: ProposalArgs, _ctx: Ctx, fleet: Fleet) -> ProposalsPaylo
     try:
         proposals = [proposal.as_document() for proposal in args.store(fleet).list()]
     except OperatorError as error:
-        raise _record_invalid(error) from error
+        raise _proposal_failed(error) from error
     return ProposalsPayload({"status": "ok", "proposals": proposals})
 
 
@@ -762,7 +774,7 @@ def operator_show(args: ShowProposalArgs, _ctx: Ctx, fleet: Fleet) -> ProposalPa
     try:
         proposal = args.store(fleet).load(args.proposal)
     except OperatorError as error:
-        raise _record_invalid(error) from error
+        raise _proposal_failed(error) from error
     return ProposalPayload({"status": "ok", "proposal": proposal.as_document()})
 
 
@@ -818,7 +830,7 @@ class AuditPayload(Payload):
         ),
     ],
 )
-def audit(args: AuditArgs, _ctx: Ctx, fleet: Fleet) -> AuditPayload:
+def audit(args: AuditArgs, _ctx: Ctx, fleet: InventoryFleet) -> AuditPayload:
     """Answer the audit report; a negative verdict is its own exit code."""
     try:
         observations = load_observations(fleet.path(args.observed), args.schemas)
@@ -1963,7 +1975,7 @@ def operator_approve(
             ApproveOptions(verify_timeout_seconds=args.verify_timeout),
         )
     except OperatorError as error:
-        raise _record_invalid(error) from error
+        raise _proposal_failed(error) from error
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error
     verified = proposal.status is ProposalStatus.VERIFIED
@@ -2230,7 +2242,7 @@ class WhyPayload(Payload):
     ),
     danger_level="safe",
     exit_codes=["RECORD_INVALID"],
-    renderers={"html": render_why_document},
+    renderers={"html": FormatRenderer(render_why_document, media_type="text/html")},
     examples=[
         ("Ask about one host", "cloudfall why --host h1"),
         ("One page for a person", "cloudfall why --since 2026-10-01 --format html"),
@@ -2332,7 +2344,7 @@ def _playbook_runner(
     supports_raw_payload=True,
     examples=[("Snapshot every server", "cloudfall observe")],
 )
-def observe(args: ObserveArgs, ctx: Ctx, fleet: Fleet) -> ObservedPayload:
+def observe(args: ObserveArgs, ctx: Ctx, fleet: InventoryFleet) -> ObservedPayload:
     """Inspect every declared server and write one snapshot each."""
     sources = (
         (fleet.source.value,)
