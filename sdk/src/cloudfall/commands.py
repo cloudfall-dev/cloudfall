@@ -113,7 +113,7 @@ class OutputShape:
         """Return the JSON Schema of this shape in treaty's envelope.
 
         ``status`` moves into ``data`` beside the other keys, every key is
-        written on every answer (an optional one as an empty object), and a
+        written on every answer (an optional one as ``null``), and a
         failed run keeps ``data`` only for a verdict such as drift. A command
         treaty runs as mutating also writes ``effect`` (REQ-C-003).
         """
@@ -220,13 +220,22 @@ class CommandContract:
 
     def output_schema(self) -> dict[str, object]:
         """Return the JSON Schema of the command's stdout documents."""
-        schemas = [
-            shape.treaty_schema() if self.treaty else shape.json_schema()
-            for shape in self.output
-        ]
+        if self.treaty:
+            return self._treaty_shape().treaty_schema()
+        schemas = [shape.json_schema() for shape in self.output]
         if len(schemas) == 1:
             return schemas[0]
         return {"oneOf": schemas}
+
+    def _treaty_shape(self) -> OutputShape:
+        """Merge the shapes: treaty writes one object, a missing key as null."""
+        keys: dict[str, OutputKey] = {}
+        for shape in self.output:
+            for key in shape.keys:
+                keys.setdefault(key.name, key)
+        if len(self.output) == 1:
+            return self.output[0]
+        return OutputShape(keys=tuple(keys.values()))
 
 
 _YES = "`--yes`; without it the command validates and prints the plan only"
@@ -385,6 +394,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
                 when="`--format json`, the default; `--format html` is not JSON",
             ),
         ),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -403,6 +413,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
                 when="`detail`, the end of Ansible's output, when the playbook failed",
             ),
         ),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -467,6 +478,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.READ,
         "map a `render.yaml` blueprint onto config fragments under `tmp/`",
         output=_IMPORTED,
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -474,6 +486,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.READ,
         "map a live Render workspace onto config fragments under `tmp/`",
         output=_IMPORTED,
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -492,6 +505,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
                 "receipt",
             ),
         ),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -542,6 +556,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
             _plan("component", "release"),
             _shape(*_EXECUTED, "release", "receipt", when="with `--yes`"),
         ),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -553,6 +568,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
             _plan("component", "release"),
             _shape(*_EXECUTED, "release", when="with `--yes`"),
         ),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -561,6 +577,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "restart one component behind its health check",
         gate=_YES,
         output=(_plan("component"), _shape(*_EXECUTED, when="with `--yes`")),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",
@@ -581,6 +598,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
                 when="with `--yes`",
             ),
         ),
+        treaty=True,
     ),
     CommandContract(
         "cloudfall",

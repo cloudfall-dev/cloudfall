@@ -30,11 +30,11 @@ if TYPE_CHECKING:
     from cloudfall.inventory import ComponentInventory, SecretReference
     from cloudfall.lifecycle import EngineContext
 
-_ERROR_SOPS_MISSING = "secrets_sops_missing"
+ERROR_SOPS_MISSING = "secrets_sops_missing"
 _ERROR_SOURCE_MISSING = "secrets_source_missing"
 _ERROR_SOURCE_INVALID = "secrets_source_invalid"
 _ERROR_COMPONENT_UNKNOWN = "secrets_component_unknown"
-_ERROR_DECRYPT_FAILED = "secrets_decrypt_failed"
+ERROR_DECRYPT_FAILED = "secrets_decrypt_failed"
 _ERROR_KEY_CONFLICT = "secrets_key_conflict"
 _RECEIPT_SCHEMA = "environment-receipt.schema.json"
 _KEY_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -230,7 +230,7 @@ def _sops_decrypt(source: Path) -> str:
             "the sops binary is not installed; install sops and age, and "
             "set SOPS_AGE_KEY_FILE to your age key"
         )
-        raise SecretsError(_ERROR_SOPS_MISSING, message)
+        raise SecretsError(ERROR_SOPS_MISSING, message)
     completed = subprocess.run(  # noqa: S603 - fixed binary, declared file
         [binary, "--decrypt", str(source)],
         capture_output=True,
@@ -242,7 +242,7 @@ def _sops_decrypt(source: Path) -> str:
             f"sops could not decrypt {source}: "
             f"{completed.stderr.strip()[:300]}"
         )
-        raise SecretsError(_ERROR_DECRYPT_FAILED, message)
+        raise SecretsError(ERROR_DECRYPT_FAILED, message)
     return completed.stdout
 
 

@@ -68,8 +68,11 @@ def test_results_and_errors_carry_the_same_meta_and_warnings(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     ok, result, _ = _run(["changelog"], capsys)
-    failed, _, error = _run(["observe", "--project", str(ROOT / "missing")], capsys)
-    usage_code, _, usage = _run(["deploy"], capsys)
+    failed, _, error = _run(
+        ["dashboard", "serve", "--project", str(ROOT / "missing"), "--observed", "x"],
+        capsys,
+    )
+    usage_code, _, usage = _run(["dashboard", "serve"], capsys)
 
     assert (ok, failed, usage_code) == (0, 2, 2)
     for document in (json.loads(result), json.loads(error), json.loads(usage)):
@@ -329,10 +332,10 @@ def test_writing_outside_an_invocation_is_a_bug() -> None:
 def test_help_goes_to_stderr_when_stdout_is_not_a_terminal(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    code, out, err = _run(["observe", "--help"], capsys)
+    code, out, err = _run(["dashboard", "serve", "--help"], capsys)
 
     assert (code, out) == (0, "")
-    assert err.startswith("usage: cloudfall observe")
+    assert err.startswith("usage: cloudfall dashboard serve")
 
 
 def test_quiet_silences_help_off_a_terminal(
@@ -373,8 +376,14 @@ def test_help_stays_on_stdout_for_a_person_at_a_terminal() -> None:
 @pytest.mark.parametrize(
     "argv",
     [
-        ["--quiet", "observe", "--project", str(ROOT / "missing")],
-        ["observe", "--project", str(ROOT / "missing"), "--quiet"],
+        [
+            *("--quiet", "dashboard", "serve"),
+            *("--project", str(ROOT / "missing"), "--observed", "x"),
+        ],
+        [
+            *("dashboard", "serve", "--project", str(ROOT / "missing")),
+            *("--observed", "x", "--quiet"),
+        ],
         ["--quiet", "dashboard", "shoe"],
     ],
 )
@@ -423,7 +432,7 @@ def test_warnings_as_errors_leaves_a_clean_result_alone(
     assert (json.loads(out)["ok"], json.loads(out)["error"]) == (True, None)
 
 
-@pytest.mark.parametrize("argv", [["--help"], ["observe", "--help"]])
+@pytest.mark.parametrize("argv", [["--help"], ["dashboard", "serve", "--help"]])
 def test_help_ends_with_every_exit_code(
     argv: list[str], capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -440,8 +449,14 @@ def test_the_error_carries_the_code_the_process_exits_with(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     cases = [
-        (_run(["deploy"], capsys), 2),
-        (_run(["observe", "--project", str(tmp_path)], capsys), 2),
+        (_run(["dashboard", "serve"], capsys), 2),
+        (
+            _run(
+                ["dashboard", "serve", "--project", str(tmp_path), "--observed", "x"],
+                capsys,
+            ),
+            2,
+        ),
     ]
 
     for (code, _, err), expected in cases:

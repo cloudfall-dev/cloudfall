@@ -173,7 +173,7 @@ def test_the_cli_answers_in_json_without_a_catalog(
 
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
-    assert payload["status"] == "ok"
+    assert payload["data"]["status"] == "ok"
     assert payload["data"]["query"] == {"host": "web-1"}
     assert payload["data"]["count"] == 1
     entry = payload["data"]["answers"][0]
@@ -212,9 +212,10 @@ def test_the_cli_reports_a_bad_window_as_json(
 
     exit_code = main(["why", "--repository", str(repository), "--since", "yesterday"])
 
-    payload = json.loads(capsys.readouterr().err)
+    payload = json.loads(capsys.readouterr().out)
     assert exit_code == 2
-    assert payload["error"]["code"] == "why_instant_invalid"
+    assert payload["error"]["code"] == "ARG_ERROR"
+    assert payload["error"]["context"]["code"] == "why_instant_invalid"
 
 
 def test_an_empty_record_renders_an_empty_page(tmp_path: Path) -> None:

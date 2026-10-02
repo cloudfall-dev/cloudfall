@@ -15,9 +15,13 @@ such as drift, exits with its own code and keeps the report in ``data``.
 from __future__ import annotations
 
 import errno
+import json
 import os
+import shutil
 from dataclasses import dataclass
 from functools import partial
+from html import escape
+from http import HTTPStatus
 from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Self, cast
@@ -83,24 +87,47 @@ from cloudfall.domain import (
     ConnectionAddress,
     Hostname,
     LinuxUser,
+    ReleaseId,
     ResourceId,
     TcpPort,
+)
+from cloudfall.importer import (
+    ImportTargets,
+    RenderImportError,
+    import_render_blueprint,
 )
 from cloudfall.inventory import PlatformInventory
 from cloudfall.lifecycle import (
     ERROR_EXECUTION_FAILED,
     STEP_TIMEOUT_SECONDS,
+    DeployOptions,
     EngineContext,
     ExecutionStep,
     LifecycleError,
+    LifecyclePreview,
     StepRun,
     StepRunner,
     backup_service,
+    deploy,
     health,
+    migrate_data,
+    preview_data_migration,
+    preview_deploy,
+    preview_restart,
+    preview_rollback,
+    restart,
+    rollback,
     verify_backup,
 )
 from cloudfall.migrate import MigrateError, MigrateOptions, execute_migration
 from cloudfall.observation import load_observations
+from cloudfall.observe import (
+    ObservationRequest,
+    ObserveError,
+    PlaybookRun,
+    collect_observations,
+    team_configuration,
+)
 from cloudfall.operations import FleetOperations, UtcTimestamp, build_operations_view
 from cloudfall.operator import (
     ERROR_PROPOSAL_MISSING,
@@ -130,8 +157,21 @@ from cloudfall.project import (
     resolve_installed_version,
     resolve_project_directory,
 )
+from cloudfall.render_api import (
+    ERROR_API_UNREACHABLE,
+    HttpRenderApiClient,
+    import_render_api,
+    read_api_key,
+)
 from cloudfall.resources import default_engine_directory, default_schema_directory
-from cloudfall.secrets import load_environment_receipts
+from cloudfall.secrets import (
+    ERROR_DECRYPT_FAILED,
+    ERROR_SOPS_MISSING,
+    SecretsError,
+    SopsSecretProvider,
+    load_environment_receipts,
+    render_environment,
+)
 from cloudfall.service_evidence import (
     DeploymentReceiptSet,
     DomainObservationSet,
@@ -147,9 +187,10 @@ from cloudfall.validation import (
     ValidatedConfig,
     validate_config,
 )
+from cloudfall.why import WhyError, WhyQuery, answer, render_why_document
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
 app = App(
     "cloudfall",
@@ -224,16 +265,31 @@ app.exit_code(
 )
 
 
+def _html_page(data: object) -> str:
+    """Render any command's data as a page of its JSON, for ``--format html``.
+
+    Only ``why`` has a page of its own; treaty offers a format on every
+    command once one has it (treaty #209), so the others answer this.
+    """
+    body = escape(json.dumps(data, indent=2, sort_keys=True))
+    return f'<!doctype html>\n<meta charset="utf-8">\n<pre>{body}</pre>\n'
+
+
+app.format("html", render=_html_page, media_type="text/html")
+
+
 class Payload:
     """A command's flat payload, written as ``data`` under its declared keys.
 
     ``command`` names the command in the operating contract; its output
     shape is this payload's schema. A key the shape marks optional is
-    written as an empty object when the command has nothing for it, since
+    written as ``null`` when the command has nothing for it, since
     treaty writes every key of a schema on every answer.
     """
 
     command: ClassVar[str]
+    writes: ClassVar[bool] = False
+    """The command changes state, so the payload carries ``effect`` (REQ-C-003)."""
 
     def __init__(self, body: Mapping[str, object]) -> None:
         """Keep the payload as the domain serialized it."""
@@ -247,12 +303,32 @@ def _shape_keys(command: str) -> tuple[tuple[str, bool], ...]:
         for entry in CLI_COMMANDS
         if entry.program == "cloudfall" and entry.name == command
     )
-    (shape,) = contract.output
-    return tuple((key.name, key.optional) for key in shape.keys if key.name != "error")
+    # A command with two shapes (a plan without --yes, a result with it)
+    # writes one object: a key not in every shape is optional, so null.
+    names: list[str] = []
+    for shape in contract.output:
+        names.extend(
+            key.name
+            for key in shape.keys
+            if key.name != "error" and key.name not in names
+        )
+    return tuple(
+        (
+            name,
+            any(
+                all(key.name != name for key in shape.keys)
+                or any(key.name == name and key.optional for key in shape.keys)
+                for shape in contract.output
+            ),
+        )
+        for name in names
+    )
 
 
 def _payload_schema(cls: type[Payload]) -> dict[str, object]:
     names = [name for name, _ in _shape_keys(cls.command)]
+    if cls.writes:
+        names.append("effect")
     return {
         "type": "object",
         # The domain writes each array in the order it means: a ranking, a
@@ -267,7 +343,7 @@ def _payload_document(payload: Payload) -> dict[str, object]:
     document = dict(payload.body)
     for name, optional in _shape_keys(payload.command):
         if optional and name not in document:
-            document[name] = {}
+            document[name] = None
     return document
 
 
@@ -334,6 +410,8 @@ class Fleet:
     directory: Path
     state: ValidatedConfig
     read: FleetRead | None = None
+    source: InventorySource | None = None
+    """The team's Ansible inventory the fleet was read from, if any."""
 
     @classmethod
     def acquire(cls, args: ProjectArgs, _ctx: Ctx) -> Self:
@@ -342,7 +420,7 @@ class Fleet:
             source = _inventory_source(args)
             if source is not None:
                 read = read_fleet(read_inventory(source), args.schemas)
-                return cls(Path.cwd(), read.config, read)
+                return cls(Path.cwd(), read.config, read, source)
             directory = resolve_project_directory(
                 args.project, os.environ, Path.cwd()
             )
@@ -432,7 +510,7 @@ class InventoryPayload(Payload):
     "show",
     description=(
         "Show the typed, secret-free platform inventory; data.ansible says "
-        "how it was read from an Ansible inventory, empty for a project"
+        "how it was read from an Ansible inventory, null for a project"
     ),
     danger_level="safe",
     exit_codes=[
@@ -656,7 +734,7 @@ class ProposalPayload(Payload):
     "list",
     description="List proposal receipts, oldest first",
     danger_level="safe",
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "RECORD_INVALID"],
+    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "RECORD_INVALID", "NOT_FOUND"],
     examples=[("List the operator's proposals", "cloudfall operator list")],
 )
 def operator_list(args: ProposalArgs, _ctx: Ctx, fleet: Fleet) -> ProposalsPayload:
@@ -1092,6 +1170,7 @@ _ADD_EXIT_CODES = [
     "CONFLICT",
     "PERMISSION_DENIED",
     "PRECONDITION",
+    "NOT_FOUND",
 ]
 
 
@@ -1101,7 +1180,7 @@ _ADD_EXIT_CODES = [
     danger_level="mutating",
     timeout=30,
     supports_raw_payload=True,
-    exit_codes=[*_ADD_EXIT_CODES, "NOT_FOUND"],
+    exit_codes=_ADD_EXIT_CODES,
     examples=[
         (
             "Declare your own key",
@@ -1440,6 +1519,7 @@ class HealthPayload(Payload):
         "PROJECT_INVALID",
         "CONFIG_INVALID",
         "PRECONDITION",
+        "ENGINE_STEP_FAILED",
         "UNHEALTHY",
     ],
     timeout=None,
@@ -2090,3 +2170,758 @@ def migrate(args: MigrateArgs, ctx: Ctx, fleet: Fleet) -> Migration:
         message = f"the migration failed at {migration.step}"
         raise Exit.ENGINE_STEP_FAILED(message, context=cause, data=migration)
     return migration
+
+
+# why
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WhyArgs(DecisionsArgs):
+    """Arguments of ``why``."""
+
+    host: str | None = Flag(
+        default=None, description="Only decisions whose record names this host"
+    )
+    operation: ResourceId | None = Flag(
+        default=None, description="Only decisions of this declared operation"
+    )
+    since: str | None = Flag(
+        default=None,
+        description=(
+            "Only decisions with a moment at or after this ISO 8601 time or date"
+        ),
+    )
+    until: str | None = Flag(
+        default=None,
+        description=(
+            "Only decisions with a moment at or before this ISO 8601 time or date"
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        """Refuse a time the question cannot be asked with."""
+        DecisionsArgs.__post_init__(self)
+        try:
+            self.query()
+        except WhyError as error:
+            raise ParseError(error.detail, context={"code": error.code}) from error
+
+    def query(self) -> WhyQuery:
+        """Return the question, as the record is filtered by it."""
+        return WhyQuery.from_boundary(
+            host=self.host,
+            operation=self.operation.value if self.operation is not None else None,
+            since=self.since,
+            until=self.until,
+        )
+
+
+class WhyPayload(Payload):
+    """``why``: each decision the question is about, told from its record."""
+
+    command = "why"
+
+
+@app.command(
+    "why",
+    description=(
+        "Answer why the agent did that, from the record, for a host, an operation "
+        "or a time window; --format html renders one page"
+    ),
+    danger_level="safe",
+    exit_codes=["RECORD_INVALID"],
+    renderers={"html": render_why_document},
+    examples=[
+        ("Ask about one host", "cloudfall why --host h1"),
+        ("One page for a person", "cloudfall why --since 2026-10-01 --format html"),
+    ],
+)
+def why(args: WhyArgs, _ctx: Ctx) -> WhyPayload:
+    """Answer from the record alone: no catalog, no fleet."""
+    store = DecisionStore(
+        directory=args.root / args.decisions, catalog=SchemaCatalog(args.schemas)
+    )
+    try:
+        result = answer(store, args.query())
+    except (DecisionError, WhyError) as error:
+        raise Exit.RECORD_INVALID(error.detail, context={"code": error.code}) from error
+    return WhyPayload(result.as_dict())
+
+
+# observe, secrets render, import render, import render-api: payloads with
+# camelCase keys, written through the adapter now that it may carry effect.
+
+
+app.exit_code(
+    "INCOMPLETE",
+    91,
+    description=(
+        "Some servers produced no snapshot or Ansible failed; data says which"
+    ),
+    retryable=True,
+    # The hosts are only read; a retry rewrites the snapshots it wrote.
+    side_effects="none",
+    suggestion="read data.missing and data.detail, fix the hosts, then observe again",
+)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ObserveArgs(FleetArgs):
+    """Arguments of ``observe``."""
+
+    output_dir: Path = Flag(
+        default=Path("tmp/observed"),
+        description="Snapshot directory to write (default: tmp/observed)",
+    )
+    limit: str | None = Flag(
+        default=None, description="Ansible host pattern to inspect a subset"
+    )
+    engine: Path = Flag(
+        default=default_engine_directory(),
+        description="Engine directory holding the playbooks (default: bundled)",
+    )
+
+    def __post_init__(self) -> None:
+        """Keep a relative output path inside the project."""
+        _inside_project(self.output_dir, "output-dir")
+
+
+class ObservedPayload(Payload):
+    """``observe``: which servers produced a snapshot."""
+
+    command = "observe"
+    writes = True
+
+
+def _playbook_runner(
+    ctx: Ctx, directory: Path
+) -> Callable[[Sequence[str], Mapping[str, str]], PlaybookRun]:
+    """Run the inspection through ``ctx.run``, keeping its output for a failure."""
+
+    def run(argv: Sequence[str], environment: Mapping[str, str]) -> PlaybookRun:
+        done = ctx.run(list(argv), env=environment, cwd=directory, check=False)
+        return PlaybookRun(exit_code=done.returncode, output=done.stdout + done.stderr)
+
+    return run
+
+
+@app.command(
+    "observe",
+    description=(
+        "Collect read-only server snapshots from the fleet; servers without one "
+        "exit non-zero with the run in data"
+    ),
+    danger_level="mutating",
+    exit_codes=[
+        "PROJECT_INVALID",
+        "CONFIG_INVALID",
+        "INVENTORY_UNREADABLE",
+        "PRECONDITION",
+        "INCOMPLETE",
+    ],
+    requires=[ONE_FLEET],
+    timeout=None,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0"},
+    supports_raw_payload=True,
+    examples=[("Snapshot every server", "cloudfall observe")],
+)
+def observe(args: ObserveArgs, ctx: Ctx, fleet: Fleet) -> ObservedPayload:
+    """Inspect every declared server and write one snapshot each."""
+    sources = (
+        (fleet.source.value,)
+        if fleet.source is not None
+        else (fleet.directory / "tmp/ansible-inventory.json",)
+    )
+    output = fleet.path(args.output_dir)
+    effect = "updated" if output.exists() else "created"
+    try:
+        request = ObservationRequest(
+            inventory_sources=sources,
+            output_directory=output.resolve(),
+            engine_directory=args.engine,
+            limit=args.limit,
+            configuration=(
+                team_configuration(Path.cwd()) if fleet.source is not None else None
+            ),
+        )
+        result = collect_observations(
+            fleet.inventory,
+            request,
+            fleet.path(Path("tmp/cloudfall")),
+            _playbook_runner(ctx, fleet.directory),
+        )
+    except ObserveError as error:
+        raise Exit.PRECONDITION(error.detail, context={"code": error.code}) from error
+    payload = ObservedPayload({**result.as_dict(), "effect": effect})
+    if not result.complete:
+        message = f"{len(result.missing)} server(s) produced no snapshot"
+        raise Exit.INCOMPLETE(message, data=payload)
+    return payload
+
+
+# secrets render
+
+
+secrets = app.group("secrets", description="Resolve declared secret references")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SecretsRenderArgs(EngineArgs):
+    """Arguments of ``secrets render``."""
+
+    component: ResourceId = Arg(description="Component whose references to render")
+    secrets_dir: Path = Flag(
+        default=Path("secrets"),
+        description="sops-encrypted secrets directory (default: secrets)",
+        secret=False,
+    )
+    output_file: Path | None = Flag(
+        default=None,
+        description="Environment file to write (default: tmp/env/<component>.env)",
+    )
+    receipts: Path = Flag(
+        default=Path("tmp/env-receipts"),
+        description="Environment receipt directory (default: tmp/env-receipts)",
+    )
+
+    def __post_init__(self) -> None:
+        """Keep relative paths inside the project."""
+        EngineArgs.__post_init__(self)
+        _inside_project(self.secrets_dir, "secrets-dir")
+        _inside_project(self.receipts, "receipts")
+        if self.output_file is not None:
+            _inside_project(self.output_file, "output-file")
+
+
+class RenderedSecretsPayload(Payload):
+    """``secrets render``: names and hashes of what was written, never values."""
+
+    command = "secrets render"
+    writes = True
+
+
+def _sops_decrypt(ctx: Ctx) -> Callable[[Path], str]:
+    """Decrypt one sops file through ``ctx.run``."""
+
+    def decrypt(source: Path) -> str:
+        binary = shutil.which("sops")
+        if binary is None:
+            message = (
+                "the sops binary is not installed; install sops and age, and "
+                "set SOPS_AGE_KEY_FILE to your age key"
+            )
+            raise SecretsError(ERROR_SOPS_MISSING, message)
+        done = ctx.run([binary, "--decrypt", str(source)], check=False)
+        if done.returncode != 0:
+            message = f"sops could not decrypt {source}: {done.stderr.strip()[:300]}"
+            raise SecretsError(ERROR_DECRYPT_FAILED, message)
+        return done.stdout
+
+    return decrypt
+
+
+@secrets.command(
+    "render",
+    description=(
+        "Render one component's secret references into its 0600 environment "
+        "file; the answer names keys and hashes, never values"
+    ),
+    danger_level="mutating",
+    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PRECONDITION"],
+    timeout=120,
+    subprocess=Subprocess("sops"),
+    required_tools={"sops": "3.8.0"},
+    supports_raw_payload=True,
+    examples=[("Render one component", "cloudfall secrets render crm-backend")],
+)
+def secrets_render(
+    args: SecretsRenderArgs, ctx: Ctx, fleet: Fleet
+) -> RenderedSecretsPayload:
+    """Decrypt the component's fragments and write its environment file."""
+    output = fleet.path(
+        args.output_file
+        if args.output_file is not None
+        else Path("tmp/env") / f"{args.component}.env"
+    )
+    effect = "updated" if output.exists() else "created"
+    provider = SopsSecretProvider(
+        secrets_directory=fleet.path(args.secrets_dir), decrypt=_sops_decrypt(ctx)
+    )
+    try:
+        body = render_environment(
+            args.context(fleet, ctx),
+            args.component,
+            provider,
+            output,
+            receipt_directory=fleet.path(args.receipts),
+        )
+    except SecretsError as error:
+        raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
+    return RenderedSecretsPayload({**body, "effect": effect})
+
+
+# import render, render-api
+
+
+imports = app.group("import", description="Import external platform definitions")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ImportArgs(ProjectArgs):
+    """Options both importers share."""
+
+    application: ResourceId = Flag(
+        description="Cloudfall application id (also the application's Linux user)"
+    )
+    server: ResourceId = Flag(
+        description="Declared server id that receives every imported resource"
+    )
+    output_dir: Path = Flag(
+        default=Path("tmp/import/config"),
+        description="Config fragment output directory (default: tmp/import/config)",
+    )
+    env_dir: Path = Flag(
+        default=Path("tmp/import/env"),
+        description="Environment file output directory (default: tmp/import/env)",
+    )
+
+    def __post_init__(self) -> None:
+        """Keep relative output paths inside the project."""
+        _inside_project(self.output_dir, "output-dir")
+        _inside_project(self.env_dir, "env-dir")
+
+    def targets(self, project: ProjectDirectory) -> ImportTargets:
+        """Return where the imported resources land."""
+        return ImportTargets(
+            application_id=self.application,
+            server_id=self.server,
+            project_directory=project.path / self.output_dir,
+            environment_directory=project.path / self.env_dir,
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ImportBlueprintArgs(ImportArgs):
+    """Arguments of ``import render``."""
+
+    blueprint: Path = Arg(description="render.yaml blueprint, relative to the project")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ImportApiArgs(ImportArgs):
+    """Arguments of ``import render-api``."""
+
+    api_key_file: Path = Flag(
+        description="File containing only the Render API key",
+        # The flag names a file; the key itself never reaches argv.
+        secret=False,
+    )
+    api_url: str = Flag(
+        default="https://api.render.com/v1",
+        description="Render API base URL (default: https://api.render.com/v1)",
+    )
+
+
+class ImportedPayload(Payload):
+    """``import render``: the resources written and what could not be mapped."""
+
+    command = "import render"
+    writes = True
+
+
+class ImportedApiPayload(Payload):
+    """``import render-api``: the resources written from the live workspace."""
+
+    command = "import render-api"
+    writes = True
+
+
+_IMPORT_EXIT_CODES = [
+    "PROJECT_INVALID",
+    "CONFIG_INVALID",
+    "PRECONDITION",
+    "PERMISSION_DENIED",
+]
+
+
+@imports.command(
+    "render",
+    description="Map a render.yaml blueprint onto Cloudfall config fragments",
+    danger_level="mutating",
+    exit_codes=_IMPORT_EXIT_CODES,
+    timeout=60,
+    supports_raw_payload=True,
+    examples=[
+        (
+            "Import a blueprint for one server",
+            "cloudfall import render render.yaml --application crm --server h1",
+        ),
+    ],
+)
+def import_render(
+    args: ImportBlueprintArgs, _ctx: Ctx, project: ProjectDirectory
+) -> ImportedPayload:
+    """Write config fragments and environment files from the blueprint."""
+    try:
+        result = import_render_blueprint(
+            project.path / args.blueprint, args.targets(project), args.schemas
+        )
+    except RenderImportError as error:
+        raise Exit.PRECONDITION(error.detail, context={"code": error.code}) from error
+    except ConfigValidationError as error:
+        raise _config_invalid(error) from error
+    except OSError as error:
+        if error.errno not in _NOT_WRITABLE:
+            raise
+        raise _not_writable(error) from error
+    return ImportedPayload({**result.as_dict(), "effect": "created"})
+
+
+def _render_transport(ctx: Ctx) -> Callable[[str, str], object]:
+    """Fetch one Render API page through ``ctx.http``."""
+
+    def get(url: str, api_key: str) -> object:
+        response = ctx.http.get(
+            url,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/json",
+            },
+        )
+        if response.status != HTTPStatus.OK:
+            message = f"Render API answered {response.status} for {url}"
+            raise RenderImportError(ERROR_API_UNREACHABLE, message)
+        return response.json()
+
+    return get
+
+
+@imports.command(
+    "render-api",
+    description="Map a live Render workspace onto Cloudfall config via the API",
+    danger_level="mutating",
+    exit_codes=_IMPORT_EXIT_CODES,
+    timeout=300,
+    has_network_io=True,
+    # Service names, URLs and settings in the answer come from the workspace.
+    external=True,
+    supports_raw_payload=True,
+    examples=[
+        (
+            "Import a workspace",
+            "cloudfall import render-api --api-key-file render.key "
+            "--application crm --server h1",
+        ),
+    ],
+)
+def import_render_api_command(
+    args: ImportApiArgs, ctx: Ctx, project: ProjectDirectory
+) -> ImportedApiPayload:
+    """Read the workspace page by page and write config fragments from it."""
+    try:
+        client = HttpRenderApiClient(
+            api_key=read_api_key(project.path / args.api_key_file),
+            base_url=args.api_url,
+            transport=_render_transport(ctx),
+        )
+        result = import_render_api(client, args.targets(project), args.schemas)
+    except RenderImportError as error:
+        raise Exit.PRECONDITION(error.detail, context={"code": error.code}) from error
+    except ConfigValidationError as error:
+        raise _config_invalid(error) from error
+    except OSError as error:
+        if error.errno not in _NOT_WRITABLE:
+            raise
+        raise _not_writable(error) from error
+    return ImportedApiPayload({**result.as_dict(), "effect": "created"})
+
+
+# deploy, rollback, restart, data migrate: --yes runs them; without it they
+# validate the request and answer the plan.
+
+
+app.scalar(
+    ReleaseId,
+    parse=ReleaseId.from_boundary,
+    pattern=r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,40}",
+)
+
+_PLAN_INSTRUCTION = "review the plan and re-run with --yes to execute it"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ComponentArgs(EngineArgs):
+    """Options of a command that acts on one component's servers."""
+
+    component: ResourceId = Arg(description="Component to act on")
+    yes: bool = Flag(
+        default=False,
+        description=(
+            "Change the servers; without it the command validates the request "
+            "and only shows what it would do"
+        ),
+    )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DeployArgs(ComponentArgs):
+    """Arguments of ``deploy``."""
+
+    release: ReleaseId = Flag(
+        description="Release id produced by cloudfall-engine artifact build"
+    )
+    artifacts: Path = Flag(
+        default=Path("tmp/artifacts"),
+        description="Artifact directory (default: tmp/artifacts)",
+    )
+    env_file: Path | None = Flag(
+        default=None,
+        description="Optional controller-side environment file for the component",
+    )
+    receipts: Path = Flag(
+        default=Path("tmp/releases"),
+        description="Release receipt directory (default: tmp/releases)",
+    )
+
+    def __post_init__(self) -> None:
+        """Keep relative paths inside the project."""
+        ComponentArgs.__post_init__(self)
+        _inside_project(self.artifacts, "artifacts")
+        _inside_project(self.receipts, "receipts")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RollbackArgs(ComponentArgs):
+    """Arguments of ``rollback``."""
+
+    release: ReleaseId = Flag(description="Existing release id to activate")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DataMigrateArgs(EngineArgs):
+    """Arguments of ``data migrate``."""
+
+    service: ResourceId = Arg(description="Declared service to restore into")
+    database: str = Flag(description="Declared database name inside the service")
+    source_url_file: Path = Flag(
+        description=(
+            "Controller-side file whose only content is the source database "
+            "connection URL"
+        ),
+        # The flag names a file; the URL with its password never reaches argv.
+        secret=False,
+    )
+    receipts: Path = Flag(
+        default=Path("tmp/data-migrations"),
+        description="Migration receipt directory (default: tmp/data-migrations)",
+    )
+    yes: bool = Flag(
+        default=False,
+        description=(
+            "Change the servers; without it the command validates the request "
+            "and only shows what it would do"
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        """Keep relative paths inside the project."""
+        EngineArgs.__post_init__(self)
+        _inside_project(self.receipts, "receipts")
+
+
+class DeployPayload(Payload):
+    """``deploy``: the plan without --yes, the deployed release with it."""
+
+    command = "deploy"
+    writes = True
+
+
+class RollbackPayload(Payload):
+    """``rollback``: the plan without --yes, the release switched to with it."""
+
+    command = "rollback"
+    writes = True
+
+
+class RestartPayload(Payload):
+    """``restart``: the plan without --yes, the health-gated restart with it."""
+
+    command = "restart"
+    writes = True
+
+
+class DataMigratePayload(Payload):
+    """``data migrate``: the plan without --yes, the verified restore with it."""
+
+    command = "data migrate"
+    writes = True
+
+
+def _plan(preview: LifecyclePreview) -> dict[str, object]:
+    # Nothing ran: noop, as treaty reads would_* only from its own dry run
+    # (treaty #197).
+    return {**preview.as_dict(), "instruction": _PLAN_INSTRUCTION, "effect": "noop"}
+
+
+_LIFECYCLE_EXIT_CODES = [
+    "PROJECT_INVALID",
+    "CONFIG_INVALID",
+    "PRECONDITION",
+    "ENGINE_STEP_FAILED",
+]
+
+
+@app.command(
+    "deploy",
+    description=(
+        "Deploy one built component release behind its health gate; without "
+        "--yes it shows the plan"
+    ),
+    danger_level="mutating",
+    exit_codes=_LIFECYCLE_EXIT_CODES,
+    timeout=None,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0"},
+    supports_raw_payload=True,
+    examples=[
+        (
+            "Show the plan",
+            "cloudfall deploy crm-backend --release 20260101T000000Z-abcdef0",
+        ),
+        (
+            "Deploy it",
+            "cloudfall deploy crm-backend --release 20260101T000000Z-abcdef0 --yes",
+        ),
+    ],
+)
+def deploy_command(args: DeployArgs, ctx: Ctx, fleet: Fleet) -> DeployPayload:
+    """Activate the release on the component's servers, or show the plan."""
+    context = args.context(fleet, ctx)
+    artifacts = fleet.path(args.artifacts)
+    try:
+        if not args.yes:
+            return DeployPayload(
+                _plan(preview_deploy(context, args.component, args.release, artifacts))
+            )
+        result = deploy(
+            context,
+            args.component,
+            args.release,
+            artifacts,
+            DeployOptions(
+                environment_file=(
+                    fleet.path(args.env_file) if args.env_file is not None else None
+                ),
+                receipt_directory=fleet.path(args.receipts),
+            ),
+        )
+    except LifecycleError as error:
+        raise _lifecycle_failed(error) from error
+    return DeployPayload({**result.as_dict(), "effect": "updated"})
+
+
+@app.command(
+    "rollback",
+    description=(
+        "Switch one component back to an existing release; without --yes it "
+        "shows the plan"
+    ),
+    danger_level="mutating",
+    exit_codes=_LIFECYCLE_EXIT_CODES,
+    timeout=None,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0"},
+    supports_raw_payload=True,
+    examples=[
+        (
+            "Show the plan",
+            "cloudfall rollback crm-backend --release 20260101T000000Z-abcdef0",
+        ),
+    ],
+)
+def rollback_command(args: RollbackArgs, ctx: Ctx, fleet: Fleet) -> RollbackPayload:
+    """Switch the component back to the release, or show the plan."""
+    context = args.context(fleet, ctx)
+    try:
+        if not args.yes:
+            return RollbackPayload(
+                _plan(preview_rollback(context, args.component, args.release))
+            )
+        result = rollback(context, args.component, args.release)
+    except LifecycleError as error:
+        raise _lifecycle_failed(error) from error
+    return RollbackPayload({**result.as_dict(), "effect": "updated"})
+
+
+@app.command(
+    "restart",
+    description=(
+        "Restart one component behind its health check; without --yes it shows "
+        "the plan"
+    ),
+    danger_level="mutating",
+    exit_codes=_LIFECYCLE_EXIT_CODES,
+    timeout=None,
+    supports_raw_payload=True,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0"},
+    examples=[
+        ("Show the plan", "cloudfall restart crm-backend"),
+        ("Restart it", "cloudfall restart crm-backend --yes"),
+    ],
+)
+def restart_command(args: ComponentArgs, ctx: Ctx, fleet: Fleet) -> RestartPayload:
+    """Restart the component, or show the plan."""
+    context = args.context(fleet, ctx)
+    try:
+        if not args.yes:
+            return RestartPayload(_plan(preview_restart(context, args.component)))
+        result = restart(context, args.component)
+    except LifecycleError as error:
+        raise _lifecycle_failed(error) from error
+    return RestartPayload({**result.as_dict(), "effect": "updated"})
+
+
+data = app.group("data", description="Migrate data into declared services")
+
+
+@data.command(
+    "migrate",
+    description=(
+        "Dump an external PostgreSQL database and restore it into a declared "
+        "service with row-count verification; without --yes it shows the plan"
+    ),
+    danger_level="mutating",
+    exit_codes=_LIFECYCLE_EXIT_CODES,
+    timeout=None,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0"},
+    supports_raw_payload=True,
+    examples=[
+        (
+            "Show the plan",
+            "cloudfall data migrate postgresql-main --database crm "
+            "--source-url-file source.url",
+        ),
+    ],
+)
+def data_migrate(
+    args: DataMigrateArgs, ctx: Ctx, fleet: Fleet
+) -> DataMigratePayload:
+    """Restore the source database into the service, or show the plan."""
+    context = args.context(fleet, ctx)
+    source = fleet.path(args.source_url_file)
+    try:
+        if not args.yes:
+            return DataMigratePayload(
+                _plan(
+                    preview_data_migration(context, args.service, args.database, source)
+                )
+            )
+        body = migrate_data(
+            context, args.service, args.database, source, fleet.path(args.receipts)
+        )
+    except LifecycleError as error:
+        raise _lifecycle_failed(error) from error
+    return DataMigratePayload({**body, "effect": "updated"})

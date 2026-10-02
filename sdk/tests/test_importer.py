@@ -222,12 +222,12 @@ def test_cli_import_render_emits_structured_output(
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert exit_code == 0
-    assert payload["status"] == "ok"
+    assert (payload["data"]["status"], payload["data"]["effect"]) == ("ok", "created")
     assert payload["data"]["components"] == ["acme-api", "acme-worker"]
     assert payload["data"]["report"].endswith("IMPORT-REPORT.md")
 
 
-def test_an_argparse_command_reports_a_read_only_path_as_json(
+def test_import_reports_a_read_only_path_as_json(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     blueprint = tmp_path / "render.yaml"
@@ -247,9 +247,8 @@ def test_an_argparse_command_reports_a_read_only_path_as_json(
     finally:
         read_only.chmod(0o755)
 
-    captured = capsys.readouterr()
-    assert (code, captured.out) == (1, "")
-    document = json.loads(captured.err)
-    assert document["error"]["code"] == "path_not_writable"
-    assert document["error"]["exit_code"] == 1
+    document = json.loads(capsys.readouterr().out)
+    assert code == 7
+    assert document["error"]["code"] == "PERMISSION_DENIED"
+    assert document["error"]["context"]["code"] == "path_not_writable"
     assert str(read_only) in document["error"]["message"]

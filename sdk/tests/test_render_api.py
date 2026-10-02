@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -261,9 +262,9 @@ def test_cli_render_api_reports_missing_key_file(
         ]
     )
 
-    captured = capsys.readouterr()
-    assert exit_code == 2
-    assert "render_api_key_missing" in captured.err
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 4
+    assert payload["error"]["context"]["code"] == "render_api_key_missing"
 
 
 def test_import_refuses_an_empty_workspace_with_a_structured_error(

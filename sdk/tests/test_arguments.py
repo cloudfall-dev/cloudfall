@@ -36,7 +36,7 @@ def _usage_error(
 def test_abbreviated_secret_file_flag_is_rejected_without_echo(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    payload = _usage_error(
+    payload = _treaty_usage_error(
         [
             "data",
             "migrate",
@@ -51,11 +51,10 @@ def test_abbreviated_secret_file_flag_is_rejected_without_echo(
         capsys,
     )
 
-    assert payload["status"] == "error"
     error = payload["error"]
     assert isinstance(error, dict)
-    assert error["code"] == "invalid_argument"
-    assert "--source-url" in str(error["message"])
+    assert error["code"] == "ARG_ERROR"
+    assert "--source-url" in json.dumps(error)
     assert "hunter2" not in json.dumps(payload)
 
 
@@ -95,31 +94,14 @@ def test_unrecognized_option_values_are_not_echoed(
 def test_missing_required_argument_is_a_json_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    payload = _usage_error(["deploy", "--project", str(EXAMPLES)], capsys)
-
-    error = payload["error"]
-    assert isinstance(error, dict)
-    assert error["code"] == "invalid_argument"
-    assert "required" in str(error["message"])
-
-
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["rollback", "crm-backend", "--release", "r1"],
-    ],
-)
-def test_invalid_identifiers_fail_before_dispatch(
-    argv: list[str], capsys: pytest.CaptureFixture[str]
-) -> None:
-    payload = _usage_error(
-        [*argv, "--project", str(EXAMPLES), "--schemas", str(SCHEMAS)], capsys
+    payload = _treaty_usage_error(
+        ["deploy", "crm-backend", "--project", str(EXAMPLES)], capsys
     )
 
     error = payload["error"]
     assert isinstance(error, dict)
-    assert error["code"] == "invalid_argument"
-    assert "invalid" in str(error["message"])
+    assert error["code"] == "ARG_ERROR"
+    assert "release" in json.dumps(error)
 
 
 @pytest.mark.parametrize(
@@ -128,6 +110,7 @@ def test_invalid_identifiers_fail_before_dispatch(
         (["operator", "show", "../ghost"], "proposal"),
         (["health", "Bad ID!"], "component"),
         (["backup", "run", "acme%2Fdb"], "service"),
+        (["rollback", "crm-backend", "--release", "r1"], "release"),
     ],
 )
 def test_an_invalid_identifier_fails_before_a_treaty_command_runs(
@@ -147,7 +130,7 @@ def test_import_render_rejects_an_invalid_application_id(
     blueprint = tmp_path / "render.yaml"
     blueprint.write_text("services: []\n", encoding="utf-8")
 
-    payload = _usage_error(
+    payload = _treaty_usage_error(
         [
             "import",
             "render",
@@ -162,7 +145,7 @@ def test_import_render_rejects_an_invalid_application_id(
         capsys,
     )
 
-    assert "invalid resource id" in str(payload["error"])
+    assert "application" in json.dumps(payload["error"])
 
 
 def test_json_documents_are_flushed_when_stdout_is_a_pipe(tmp_path: Path) -> None:

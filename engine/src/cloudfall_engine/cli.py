@@ -3,7 +3,7 @@
 Built on treaty: every run answers one JSON envelope on stdout, a failure
 carries a declared exit code, and ``cloudfall-engine manifest`` describes
 each command. Ansible and git run through ``ctx.run``; Ansible's play log
-streams to stderr on a terminal or under ``-v``.
+streams to stderr as plain text.
 """
 
 import json
@@ -23,7 +23,18 @@ from cloudfall.project import (
 )
 from cloudfall.resources import default_engine_directory, default_schema_directory
 from cloudfall.validation import ConfigValidationError, validate_config
-from treaty import App, Arg, Ctx, Exit, Flag, Out, ParseError, Subprocess, Timeout
+from treaty import (
+    App,
+    Arg,
+    Ctx,
+    Exit,
+    External,
+    Flag,
+    Out,
+    ParseError,
+    Subprocess,
+    Timeout,
+)
 
 from cloudfall_engine.ansible_inventory import render_ansible_inventory
 from cloudfall_engine.artifact import (
@@ -88,8 +99,8 @@ app.exit_code(
     retryable=False,
     side_effects="partial",
     suggestion=(
-        "read the end of the Ansible log in error.context.output, or run "
-        "again with -v to stream all of it; fix the failing task, and run again"
+        "read the Ansible log on stderr, or its end in error.context.output; "
+        "fix the failing task, and run again"
     ),
 )
 
@@ -392,13 +403,14 @@ class Played:
     "run",
     description=(
         "Run one bundled or project playbook against the inventory; "
-        "the Ansible log streams to stderr at a terminal or under -v"
+        "the Ansible log streams to stderr"
     ),
     danger_level="mutating",
     exit_codes=["PRECONDITION", "PLAYBOOK_FAILED"],
     timeout=None,
     subprocess=Subprocess("ansible-playbook"),
     required_tools={"ansible-playbook": ANSIBLE_MINIMUM_VERSION},
+    child_log=True,
     external=False,
     supports_raw_payload=True,
     examples=[
@@ -423,9 +435,10 @@ def run_playbook(args: RunArgs, ctx: Ctx) -> Played:
             error.detail, context={"code": error.code}
         ) from error
     # Stdout belongs to the envelope, so treaty streams Ansible's play log to
-    # stderr line by line, redacted, and keeps its tail for a failure.
+    # stderr as plain text, redacted, terminal or not (a timer's journal or a
+    # CI log keeps it), and keeps its tail for a failure.
     completed = ctx.run(
-        command.argv, env=command.environment, check=False, stream=True
+        command.argv, env=command.environment, check=False, stream="always"
     )
     if completed.returncode != 0:
         returncode = completed.returncode
@@ -435,7 +448,8 @@ def run_playbook(args: RunArgs, ctx: Ctx) -> Played:
             context={
                 "returncode": returncode,
                 "playbook": str(run.playbook),
-                "output": completed.stdout,
+                # The hosts wrote this text: the agent gets it marked untrusted.
+                "output": External(completed.stdout),
             },
         )
     return Played(_effect(args), run.playbook, run.inventory_file)
