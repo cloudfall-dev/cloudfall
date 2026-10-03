@@ -10,8 +10,42 @@ Each entry's output shapes name the keys its ``data`` carries.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
+
+_LOWER_CAMEL = re.compile(r"[a-z][a-z0-9]*(?:[A-Z][a-z0-9]*)+")
+_HUMP = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def snake_case(name: str) -> str:
+    """Return a lowerCamel output key in snake_case; any other name as it is.
+
+    Only lowerCamel names are field names. A resource kind (``AlertRule``),
+    an environment variable (``DATABASE_URL``) or an id (``crm-backend``)
+    used as a map key is data, and keeps its spelling.
+    """
+    if not _LOWER_CAMEL.fullmatch(name):
+        return name
+    return _HUMP.sub("_", name).lower()
+
+
+def snake_case_keys(value: object) -> object:
+    """Return ``value`` with its field names in snake_case, at every depth.
+
+    A dict carrying ``apiVersion`` is a schema-validated document, a record
+    or a resource as it is stored, and is returned as it is.
+    """
+    if isinstance(value, dict):
+        if "apiVersion" in value:
+            return value
+        return {
+            snake_case(key) if isinstance(key, str) else key: snake_case_keys(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list | tuple):
+        return [snake_case_keys(item) for item in value]
+    return value
 
 
 class CommandEffect(Enum):
@@ -33,8 +67,47 @@ class OutputKey:
     """One key of a command's ``data``, as the command writes it."""
 
     name: str
+    type: str
+    """The JSON type of its value: string, integer, boolean, array or object."""
     optional: bool = False
     """Written only under some conditions, such as a flag or a result."""
+
+
+KEY_TYPES: dict[str, str] = {
+    **dict.fromkeys(
+        (
+            "action", "application", "component", "database", "detail",
+            "directory", "environmentFile", "health", "instruction", "output",
+            "pass", "path", "project", "receipt", "release", "report",
+            "service", "sha256", "status", "step", "verification", "wouldRun",
+        ),
+        "string",
+    ),
+    **dict.fromkeys(
+        ("completed", "count", "exitCode", "openProposals", "resources", "tasks"),
+        "integer",
+    ),
+    "healthy": "boolean",
+    **dict.fromkeys(
+        (
+            "added", "answers", "components", "decisions", "declaredKeys",
+            "domains", "environmentFiles", "executed", "files", "gaps", "keys",
+            "missing", "next", "observations", "observed", "operations",
+            "proposals", "proposed", "references", "requested", "servers",
+            "services", "skipped", "steps", "unmatchedObservations", "withheld",
+            "written",
+        ),
+        "array",
+    ),
+    **dict.fromkeys(
+        (
+            "ansible", "byKind", "byRisk", "dashboard", "decision", "error",
+            "inventory", "operation", "proposal", "query", "summary",
+        ),
+        "object",
+    ),
+}
+"""The JSON type of each output key, by name; a shape overrides one as ``name:type``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,12 +119,14 @@ class OutputShape:
 
 
 def _shape(*keys: str, when: str | None = None) -> OutputShape:
-    """Declare a shape from key names: ``name?`` is optional."""
-    return OutputShape(
-        keys=tuple(
-            OutputKey(key.rstrip("?"), optional=key.endswith("?")) for key in keys
-        ),
-        when=when,
+    """Declare a shape from keys: ``name?`` is optional, ``name:type`` typed here."""
+    return OutputShape(keys=tuple(_key(key) for key in keys), when=when)
+
+
+def _key(declared: str) -> OutputKey:
+    name, _, json_type = declared.rstrip("?").partition(":")
+    return OutputKey(
+        name, json_type or KEY_TYPES[name], optional=declared.endswith("?")
     )
 
 
@@ -63,7 +138,7 @@ class CommandContract:
     """Entry point: ``cloudfall`` or ``cloudfall-engine``."""
 
     name: str
-    """Space-joined subcommand path, such as ``data migrate``."""
+    """Space-joined subcommand path, such as ``data copy``."""
 
     effect: CommandEffect
 
@@ -99,7 +174,7 @@ _IMPORTED = (
     ),
 )
 _PROPOSAL = (_shape("status", "proposal"),)
-_BACKUP = (_shape("status", "receipt", "path"),)
+_BACKUP = (_shape("status", "receipt:object", "path"),)
 _EXECUTED = ("status", "action", "component", "servers", "healthy")
 
 
@@ -122,7 +197,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "init",
         CommandEffect.PROJECT,
         "lay out a new project directory",
-        output=(_shape("status", "project", "files", "next"),),
+        output=(_shape("status", "project:object", "files", "next"),),
     ),
     CommandContract(
         "cloudfall",
@@ -189,7 +264,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
     ),
     CommandContract(
         "cloudfall",
-        "operations approve",
+        "decisions approve",
         CommandEffect.SERVERS,
         "approve one recorded proposal, run it for real, and verify it",
         gate=_YES,
@@ -200,10 +275,17 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
     ),
     CommandContract(
         "cloudfall",
-        "operations decisions",
+        "decisions list",
         CommandEffect.READ,
         "list what was proposed, what check mode showed, and who approved",
         output=(_shape("status", "directory", "decisions"),),
+    ),
+    CommandContract(
+        "cloudfall",
+        "decisions show",
+        CommandEffect.READ,
+        "show one decision record: the proposal, its check-mode diff, and its outcome",
+        output=(_shape("status", "decision"),),
     ),
     CommandContract(
         "cloudfall",
@@ -248,7 +330,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
     ),
     CommandContract(
         "cloudfall",
-        "services inspect",
+        "services observe",
         CommandEffect.READ,
         "probe DNS, TLS, origin, and public routes into evidence",
         output=(_shape("status", "observations"),),
@@ -399,7 +481,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
     ),
     CommandContract(
         "cloudfall",
-        "data migrate",
+        "data copy",
         CommandEffect.SERVERS,
         "dump an external database and restore it into a declared service",
         gate=_YES,
@@ -428,14 +510,14 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
                 "status",
                 "steps",
                 "completed",
-                "next?",
+                "next:string?",
                 when="`plan` without `--yes`; `ok` when every step is done",
             ),
             _shape(
                 "status",
                 "steps",
                 "completed",
-                "next?",
+                "next:string?",
                 "step",
                 "error",
                 when="`paused` (exit 3) or `error` (exit 1) at `step`",

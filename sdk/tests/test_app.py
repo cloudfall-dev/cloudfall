@@ -11,16 +11,13 @@ import subprocess
 import sys
 import urllib.request
 from pathlib import Path
-from typing import TYPE_CHECKING
 
+import pytest
 from cloudfall.app import Fleet, MigrateArgs
 from cloudfall.cli import main
 from cloudfall.commands import CLI_COMMANDS
 from cloudfall.resources import default_schema_directory
 from cloudfall.validation import validate_config
-
-if TYPE_CHECKING:
-    import pytest
 
 ROOT = Path(__file__).parents[2]
 EXAMPLES = ROOT / "config" / "examples"
@@ -53,7 +50,7 @@ def test_root_schema_lists_every_cataloged_command(
 def test_a_command_keeps_its_keys_with_status_under_data(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    code = main(["operations", "decisions", "--repository", str(EXAMPLES)])
+    code = main(["decisions", "list", "--repository", str(EXAMPLES)])
 
     document = json.loads(capsys.readouterr().out)
     assert code == 0
@@ -87,7 +84,7 @@ def test_migrate_resolves_env_and_data_files_against_the_project(
     """Relative env and data paths name files inside the project."""
     fleet = Fleet(EXAMPLES, validate_config(EXAMPLES, SCHEMAS))
     args = MigrateArgs(
-        env_file=("crm-backend=tmp/env/crm.env",),
+        component_env_file=("crm-backend=tmp/env/crm.env",),
         data=(f"crm={tmp_path / 'source.url'}",),
     )
 
@@ -153,3 +150,31 @@ def test_dashboard_serve_names_a_port_it_cannot_listen_on(
     closing = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert code == 4
     assert closing["error"]["context"]["code"] == "dashboard_listen_failed"
+
+
+def test_decisions_show_says_when_there_is_no_such_record(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code = main(["decisions", "show", "ghost", "--repository", str(EXAMPLES)])
+
+    document = json.loads(capsys.readouterr().out)
+    assert code == 5
+    assert document["error"]["context"]["code"] == "decision_missing"
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        (["operations", "decisions"], "cloudfall decisions list"),
+        (["services", "inspect"], "cloudfall services observe"),
+        (["data", "migrate", "postgresql-main"], "cloudfall data copy postgresql-main"),
+    ],
+)
+def test_a_renamed_command_names_its_new_path(
+    old: list[str], new: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(old)
+
+    document = json.loads(capsys.readouterr().out)
+    assert code == 13
+    assert document["error"]["redirect"]["command"] == new

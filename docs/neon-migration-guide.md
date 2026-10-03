@@ -14,7 +14,7 @@ restorable, and the always-on operator watches the database with the
 evidence attached to every decision. Managed PostgreSQL is mostly
 insurance; this keeps the coverage and makes the proof yours.
 
-> **Status:** the guided data migration (`cloudfall data migrate`) is
+> **Status:** the guided data migration (`cloudfall data copy`) is
 > proven live against an external managed PostgreSQL — dump, restore,
 > per-table row-count verification, refusal guards, and a
 > `DataMigrationReceipt` (see the
@@ -152,9 +152,9 @@ after the dump starts are lost. Put the application into maintenance
 mode or stop its writers, then:
 
 ```console
-uv run cloudfall data migrate postgresql-main \
+uv run cloudfall data copy postgresql-main \
   --database app --source-url-file tmp/neon-app-url
-uv run cloudfall data migrate postgresql-main \
+uv run cloudfall data copy postgresql-main \
   --database app --source-url-file tmp/neon-app-url --yes
 ```
 

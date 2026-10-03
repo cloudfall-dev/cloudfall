@@ -57,7 +57,7 @@ uv run cloudfall restart --project config/examples crm-backend --yes
 uv run cloudfall health --project config/examples crm-backend
 ```
 
-`deploy`, `rollback`, `restart`, and `data migrate` change servers only with
+`deploy`, `rollback`, `restart`, and `data copy` change servers only with
 `--yes`. Without it they run every controller-side check (declared component,
 verified artifact, declared database, source URL file) and print a `plan`
 naming the target servers, exit `0`, so a request can be reviewed before it
@@ -80,8 +80,8 @@ fleet over stdio, and its tools are Cloudfall's own commands. The fleet,
 the schema and engine directories, and every directory a tool writes are
 fixed when the server starts, so a tool call cannot point at another
 project, schema directory or engine, or write outside the project. Read-only commands (`config_validate`, `inventory_show`, `audit`,
-`services_status`, `health`, `observe`, `services_inspect`) carry read-only
-annotations. `deploy`, `rollback`, `restart`, `migrate` and `data_migrate`
+`services_status`, `health`, `observe`, `services_observe`) carry read-only
+annotations. `deploy`, `rollback`, `restart`, `migrate` and `data_copy`
 return their plan until called again with `yes: true`. Four tools have no
 command of their own: `build_artifact`, and `converge_baseline`,
 `converge_services` and `converge_domains`, which are destructive and run
@@ -90,7 +90,7 @@ only with `confirm_destructive: true`.
 The fleet-declaring tools `add_ssh-key`, `add_server-type` and `add_server`
 are `cloudfall add`: they write schema-validated resource files into the
 project and never overwrite an existing resource. `cloudfall init`,
-`operations approve`, `operator run` and `dashboard serve` are never tools:
+`decisions approve`, `operator run` and `dashboard serve` are never tools:
 the server starts inside an existing project, approving a recorded
 operation is a person's command, and the loops run until stopped.
 

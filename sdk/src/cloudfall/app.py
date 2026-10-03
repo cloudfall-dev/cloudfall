@@ -87,7 +87,7 @@ from cloudfall.catalog import (
     RiskLevel,
     load_catalog,
 )
-from cloudfall.commands import CLI_COMMANDS
+from cloudfall.commands import CLI_COMMANDS, snake_case, snake_case_keys
 from cloudfall.dashboard import RefreshInterval, build_dashboard
 from cloudfall.dashboard_server import (
     DashboardHTTPServer,
@@ -351,8 +351,8 @@ class Payload:
         self.body = dict(body)
 
 
-def _shape_keys(command: str) -> tuple[tuple[str, bool], ...]:
-    """Return each data key of the command's output shape and if it is optional."""
+def _shape_keys(command: str) -> tuple[tuple[str, str, bool], ...]:
+    """Return each data key of the command's output: name, JSON type, optional."""
     contract = next(
         entry
         for entry in CLI_COMMANDS
@@ -360,49 +360,56 @@ def _shape_keys(command: str) -> tuple[tuple[str, bool], ...]:
     )
     # A command with two shapes (a plan without --yes, a result with it)
     # writes one object: a key not in every shape is optional, so null.
-    names: list[str] = []
+    keys: dict[str, tuple[str, bool]] = {}
     for shape in contract.output:
-        names.extend(
-            key.name
-            for key in shape.keys
-            if key.name != "error" and key.name not in names
-        )
-    return tuple(
-        (
-            name,
-            any(
-                all(key.name != name for key in shape.keys)
-                or any(key.name == name and key.optional for key in shape.keys)
-                for shape in contract.output
-            ),
-        )
-        for name in names
-    )
+        for key in shape.keys:
+            name = snake_case(key.name)
+            if key.name == "error" or name in keys:
+                continue
+            optional = any(
+                all(other.name != key.name for other in candidate.keys)
+                or any(
+                    other.name == key.name and other.optional
+                    for other in candidate.keys
+                )
+                for candidate in contract.output
+            )
+            keys[name] = (key.type, optional)
+    return tuple((name, kind, optional) for name, (kind, optional) in keys.items())
 
 
 def _payload_schema(cls: type[Payload]) -> dict[str, object]:
-    names = [name for name, _ in _shape_keys(cls.command)]
+    properties: dict[str, object] = {}
+    for name, kind, optional in _shape_keys(cls.command):
+        schema: dict[str, object] = {"type": [kind, "null"] if optional else kind}
+        if kind in {"array", "object"}:
+            # The domain writes each array in the order it means: a ranking,
+            # a timeline, the order checks ran in, and a stored record keeps
+            # its own. treaty would sort them, nested ones included.
+            schema["x-ordered"] = True
+        properties[name] = schema
     if cls.writes:
-        names.append("effect")
+        properties["effect"] = {"type": "string"}
     return {
         "type": "object",
-        # The domain writes each array in the order it means: a ranking, a
-        # timeline, the order checks ran in. treaty would sort them.
-        "properties": {name: {"x-ordered": True} for name in names},
-        "required": names,
+        "properties": properties,
+        "required": list(properties),
         "additionalProperties": False,
     }
 
 
 def _payload_document(payload: Payload) -> dict[str, object]:
-    document = dict(payload.body)
-    for name, optional in _shape_keys(payload.command):
+    # Field names are snake_case, as treaty's own envelope keys are.
+    document = cast("dict[str, object]", snake_case_keys(dict(payload.body)))
+    for name, _kind, optional in _shape_keys(payload.command):
         if optional and name not in document:
             document[name] = None
     return document
 
 
-app.output_adapter(Payload, schema=_payload_schema, dump=_payload_document)
+app.output_adapter(
+    Payload, schema=_payload_schema, dump=_payload_document, none_as_empty=True
+)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -625,6 +632,10 @@ def inventory_show(
 operations = app.group(
     "operations", description="Read the catalog of operations an agent may run"
 )
+decisions = app.group(
+    "decisions",
+    description="Read the decision records and approve the proposed ones",
+)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -678,7 +689,7 @@ class ShowOperationArgs(CatalogArgs):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DecisionsArgs(RepositoryArgs):
-    """Arguments of ``operations decisions``."""
+    """Options of a command that reads the decision records."""
 
     decisions: Path = Flag(
         default=Path(DECISION_DIRECTORY),
@@ -690,6 +701,12 @@ class DecisionsArgs(RepositoryArgs):
     def __post_init__(self) -> None:
         """Keep a relative record directory inside the repository."""
         _inside_project(self.decisions, "decisions")
+
+    def store(self) -> DecisionStore:
+        """Open the decision records under the repository."""
+        return DecisionStore(
+            directory=self.root / self.decisions, catalog=SchemaCatalog(self.schemas)
+        )
 
 
 class CatalogPayload(Payload):
@@ -705,9 +722,22 @@ class OperationPayload(Payload):
 
 
 class DecisionsPayload(Payload):
-    """``operations decisions``: every decision record, oldest first."""
+    """``decisions list``: every decision record, oldest first."""
 
-    command = "operations decisions"
+    command = "decisions list"
+
+
+class DecisionPayload(Payload):
+    """``decisions show``: one decision record."""
+
+    command = "decisions show"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ShowDecisionArgs(DecisionsArgs):
+    """Arguments of ``decisions show``."""
+
+    decision: ResourceId = Arg(description="Decision id")
 
 
 @operations.command(
@@ -742,25 +772,41 @@ def operations_show(args: ShowOperationArgs, _ctx: Ctx) -> OperationPayload:
     return OperationPayload({"status": "ok", "operation": operation.as_dict()})
 
 
-@operations.command(
-    "decisions",
-    description="List the decision records this repository holds",
+@decisions.command(
+    "list",
+    description="List the decision records this repository holds, oldest first",
     danger_level="safe",
     exit_codes=["RECORD_INVALID"],
-    examples=[("List the decision records", "cloudfall operations decisions")],
+    examples=[("List the decision records", "cloudfall decisions list")],
 )
-def operations_decisions(args: DecisionsArgs, _ctx: Ctx) -> DecisionsPayload:
+def decisions_list(args: DecisionsArgs, _ctx: Ctx) -> DecisionsPayload:
     """Answer every decision record: the record outlives the catalog."""
-    store = DecisionStore(
-        directory=args.root / args.decisions, catalog=SchemaCatalog(args.schemas)
-    )
+    store = args.store()
     try:
-        decisions = [decision.as_document() for decision in store.list()]
+        documents = [decision.as_document() for decision in store.list()]
     except DecisionError as error:
         raise _record_invalid(error) from error
     return DecisionsPayload(
-        {"status": "ok", "directory": str(store.directory), "decisions": decisions}
+        {"status": "ok", "directory": str(store.directory), "decisions": documents}
     )
+
+
+@decisions.command(
+    "show",
+    description="Show one decision record",
+    danger_level="safe",
+    exit_codes=["NOT_FOUND", "RECORD_INVALID"],
+    examples=[("Show one decision", "cloudfall decisions show restart-nginx-20260101")],
+)
+def decisions_show(args: ShowDecisionArgs, _ctx: Ctx) -> DecisionPayload:
+    """Answer one decision record, or say there is none."""
+    try:
+        decision = args.store().load(args.decision)
+    except DecisionError as error:
+        if error.code == ERROR_DECISION_MISSING:
+            raise Exit.NOT_FOUND(error.detail, context={"code": error.code}) from error
+        raise _record_invalid(error) from error
+    return DecisionPayload({"status": "ok", "decision": decision.as_document()})
 
 
 # operator list, show
@@ -851,7 +897,10 @@ class AuditArgs(FleetArgs):
     """Arguments of ``audit``."""
 
     observed: Path = Flag(
-        description="Directory containing observed-server JSON snapshots"
+        default=Path("tmp/observed"),
+        description=(
+            "Server snapshot directory, as observe writes it (default: tmp/observed)"
+        ),
     )
     env_receipts: Path = Flag(
         default=Path("tmp/env-receipts"),
@@ -925,7 +974,10 @@ class EvidenceArgs(ProjectArgs):
     """Options of a command that reads the evidence a fleet's view is built from."""
 
     observed: Path = Flag(
-        description="Directory containing observed-server JSON snapshots"
+        default=Path("tmp/observed"),
+        description=(
+            "Server snapshot directory, as observe writes it (default: tmp/observed)"
+        ),
     )
     service_observed: Path = Flag(
         default=Path("tmp/observed-services"),
@@ -1098,7 +1150,7 @@ def init(args: InitArgs, ctx: Ctx) -> Scaffolded:
     return Scaffolded(
         effect="created",
         status="ok",
-        project=dict(cast("Mapping[str, object]", body["project"])),
+        project=cast("dict[str, object]", snake_case_keys(body["project"])),
         files=list(scaffold.files),
         next=list(cast("list[str]", body["next"])),
     )
@@ -1232,7 +1284,7 @@ def _added(result: AddResult) -> Added:
         effect="created",
         status="ok",
         project=str(result.project),
-        added=list(cast("list[dict[str, object]]", body["added"])),
+        added=cast("list[dict[str, object]]", snake_case_keys(body["added"])),
     )
 
 
@@ -1337,7 +1389,7 @@ def add_server_command(
         raise _config_invalid(error) from error
 
 
-# dashboard build, services inspect
+# dashboard build, services observe
 
 
 dashboard = app.group("dashboard", description="Build operations dashboard artifacts")
@@ -1511,7 +1563,7 @@ def dashboard_serve(
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ServicesInspectArgs(ProjectArgs):
-    """Arguments of ``services inspect``."""
+    """Arguments of ``services observe``."""
 
     service_observed: Path = Flag(
         default=Path("tmp/observed-services"),
@@ -1524,13 +1576,13 @@ class ServicesInspectArgs(ProjectArgs):
 
 
 class InspectedPayload(Payload):
-    """``services inspect``: the domain observation files written."""
+    """``services observe``: the domain observation files written."""
 
-    command = "services inspect"
+    command = "services observe"
 
 
 @services.command(
-    "inspect",
+    "observe",
     description="Collect DNS, TLS, origin, and public route evidence",
     danger_level="safe",
     # DNS, TLS, and HTTP probes of every declared domain, one after another.
@@ -1540,9 +1592,9 @@ class InspectedPayload(Payload):
         SideEffect("{project_root}/tmp/observed-services/", "output")
     ],
     exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PERMISSION_DENIED"],
-    examples=[("Probe every declared domain", "cloudfall services inspect")],
+    examples=[("Probe every declared domain", "cloudfall services observe")],
 )
-def services_inspect(
+def services_observe(
     args: ServicesInspectArgs, _ctx: Ctx, fleet: Fleet
 ) -> InspectedPayload:
     """Probe each declared domain and write one observation per domain."""
@@ -1876,7 +1928,7 @@ class ProposeArgs(CatalogArgs):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ApproveDecisionArgs(DecisionsArgs):
-    """Arguments of ``operations approve``."""
+    """Arguments of ``decisions approve``."""
 
     decision: ResourceId = Arg(description="Decision id from `operations propose`")
     approver: str | None = Flag(
@@ -1963,7 +2015,7 @@ def operations_propose(args: ProposeArgs, ctx: Ctx) -> Decided:
     return decided
 
 
-@operations.command(
+@decisions.command(
     "approve",
     # A person approves; no agent tool stands in for it.
     mcp=False,
@@ -1978,11 +2030,11 @@ def operations_propose(args: ProposeArgs, ctx: Ctx) -> Decided:
     subprocess=Subprocess("ansible-playbook"),
     required_tools={"ansible-playbook": "2.21.0"},
     examples=[
-        ("Review a proposal", "cloudfall operations approve restart-nginx-20260101"),
-        ("Run it", "cloudfall operations approve restart-nginx-20260101 --yes"),
+        ("Review a proposal", "cloudfall decisions approve restart-nginx-20260101"),
+        ("Run it", "cloudfall decisions approve restart-nginx-20260101 --yes"),
     ],
 )
-def operations_approve(args: ApproveDecisionArgs, ctx: Ctx) -> Decided:
+def decisions_approve(args: ApproveDecisionArgs, ctx: Ctx) -> Decided:
     """Run what was proposed, as recorded, and record how it ended."""
     store = DecisionStore(
         directory=args.root / args.decisions, catalog=SchemaCatalog(args.schemas)
@@ -2038,10 +2090,10 @@ class OperatorEngineArgs(ProposalArgs):
         description="Rendered inventory path (default: tmp/ansible-inventory.json)",
     )
     observed: Path = Flag(
-        default=Path("tmp/operator/observed"),
+        default=Path("tmp/observed"),
         description=(
-            "Observation directory for drift checks and their verification "
-            "(default: tmp/operator/observed)"
+            "Server snapshot directory drift checks refresh and verify against "
+            "(default: tmp/observed)"
         ),
     )
     gateway_url: str | None = Flag(
@@ -2376,11 +2428,11 @@ class MigrateArgs(EngineArgs):
         default=(),
         description="Build a component from a git ref, as COMPONENT=REF (repeatable)",
     )
-    release: tuple[str, ...] = Flag(
+    component_release: tuple[str, ...] = Flag(
         default=(),
         description="Deploy an existing release, as COMPONENT=RELEASE (repeatable)",
     )
-    env_file: tuple[str, ...] = Flag(
+    component_env_file: tuple[str, ...] = Flag(
         default=(),
         description="Environment file for a component, as COMPONENT=PATH (repeatable)",
     )
@@ -2417,8 +2469,8 @@ class MigrateArgs(EngineArgs):
             _inside_project(getattr(self, flag), flag.replace("_", "-"))
         for option, entries in (
             ("build", self.build),
-            ("release", self.release),
-            ("env-file", self.env_file),
+            ("component-release", self.component_release),
+            ("component-env-file", self.component_env_file),
             ("data", self.data),
         ):
             _pairs(entries, option)
@@ -2428,11 +2480,13 @@ class MigrateArgs(EngineArgs):
         return MigrateOptions(
             plan_file=fleet.path(self.plan_file),
             builds=_pairs(self.build, "build"),
-            releases=_pairs(self.release, "release"),
+            releases=_pairs(self.component_release, "component-release"),
             # Relative to the project, as every other path here is.
             environment_files={
                 component: fleet.path(Path(value))
-                for component, value in _pairs(self.env_file, "env-file").items()
+                for component, value in _pairs(
+                    self.component_env_file, "component-env-file"
+                ).items()
             },
             data_migrations={
                 database: fleet.path(Path(value))
@@ -2517,7 +2571,7 @@ def migrate(args: MigrateArgs, ctx: Ctx, fleet: Fleet) -> Migration:
         # A plan is the dry run --yes confirms.
         effect="would_update" if status == "plan" else "updated",
         status=status,
-        steps=list(cast("list[dict[str, object]]", result["steps"])),
+        steps=cast("list[dict[str, object]]", snake_case_keys(result["steps"])),
         completed=int(cast("int", result["completed"])),
         next=cast("str | None", result.get("next")),
         step=cast("str | None", result.get("step")),
@@ -3006,7 +3060,7 @@ def import_render_api_command(
     return ImportedApiPayload({**result.as_dict(), "effect": "created"})
 
 
-# deploy, rollback, restart, data migrate: --yes runs them; without it they
+# deploy, rollback, restart, data copy: --yes runs them; without it they
 # validate the request and answer the plan.
 
 
@@ -3070,7 +3124,7 @@ class RollbackArgs(ComponentArgs):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DataMigrateArgs(EngineArgs):
-    """Arguments of ``data migrate``."""
+    """Arguments of ``data copy``."""
 
     service: ResourceId = Arg(description="Declared service to restore into")
     database: str = Flag(description="Declared database name inside the service")
@@ -3123,9 +3177,9 @@ class RestartPayload(Payload):
 
 
 class DataMigratePayload(Payload):
-    """``data migrate``: the plan without --yes, the verified restore with it."""
+    """``data copy``: the plan without --yes, the verified restore with it."""
 
-    command = "data migrate"
+    command = "data copy"
     writes = True
 
 
@@ -3261,7 +3315,7 @@ data = app.group("data", description="Migrate data into declared services")
 
 
 @data.command(
-    "migrate",
+    "copy",
     description=(
         "Dump an external PostgreSQL database and restore it into a declared "
         "service with row-count verification; without --yes it shows the plan"
@@ -3275,12 +3329,12 @@ data = app.group("data", description="Migrate data into declared services")
     examples=[
         (
             "Show the plan",
-            "cloudfall data migrate postgresql-main --database crm "
+            "cloudfall data copy postgresql-main --database crm "
             "--source-url-file source.url",
         ),
     ],
 )
-def data_migrate(
+def data_copy(
     args: DataMigrateArgs, ctx: Ctx, fleet: Fleet
 ) -> DataMigratePayload:
     """Restore the source database into the service, or show the plan."""
@@ -3469,7 +3523,9 @@ def _engine_tools(args: McpServeArgs, root: ServerRoot, ctx: Ctx) -> list[McpToo
             )
         except LifecycleError as error:
             raise _lifecycle_failed(error) from error
-        return ArtifactBuilt(status="ok", artifact=built)
+        return ArtifactBuilt(
+            status="ok", artifact=cast("dict[str, object]", snake_case_keys(built))
+        )
 
     def converge(
         action: str,
@@ -3561,3 +3617,10 @@ def _engine_tools(args: McpServeArgs, root: ServerRoot, ctx: Ctx) -> list[McpToo
             exit_codes=_ENGINE_EXIT_CODES,
         ),
     ]
+
+
+# Renamed commands keep answering at their old paths, naming the new one.
+app.redirect("operations.decisions", to="decisions.list")
+app.redirect("operations.approve", to="decisions.approve")
+app.redirect("services.inspect", to="services.observe")
+app.redirect("data.migrate", to="data.copy")

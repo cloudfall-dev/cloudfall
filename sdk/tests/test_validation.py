@@ -278,7 +278,7 @@ def test_cli_emits_structured_success(
     assert document["data"] == {
         "status": "ok",
         "resources": 12,
-        "byKind": {
+        "by_kind": {
             "AlertRule": 1,
             "OperatorPolicy": 1,
             "Component": 1,

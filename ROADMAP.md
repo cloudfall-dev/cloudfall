@@ -126,7 +126,7 @@ records an explicit origin skip when origin and proxy share a host.
   unmappable ✔
   (blueprint files; the Render API and cron jobs are pending)
 - Data migration: managed-Postgres dump and restore with verification ✔
-  (`cloudfall data migrate`, the `--data` step of `cloudfall migrate`, and
+  (`cloudfall data copy`, the `--data` step of `cloudfall migrate`, and
   the confirm-gated `migrate_database` MCP tool: per-table row-count
   verification, a non-empty-target refusal guard, secret-file hygiene, and
   a `DataMigrationReceipt`; proven live in the

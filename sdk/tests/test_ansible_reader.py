@@ -328,7 +328,7 @@ def test_the_cli_finds_the_inventory_an_ansible_cfg_names(
 
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
-    assert payload["data"]["ansible"]["inProcess"] is True
+    assert payload["data"]["ansible"]["in_process"] is True
     assert [server["id"] for server in payload["data"]["inventory"]["servers"]] == [
         "web-1",
         "web-2",

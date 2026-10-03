@@ -481,7 +481,7 @@ def test_agent_contract_classifies_every_command_by_effect(tmp_path: Path) -> No
         "deploy",
         "rollback",
         "restart",
-        "data migrate",
+        "data copy",
         "migrate",
         "backup run",
         "backup verify",

@@ -65,7 +65,7 @@ tasks:
       - validate
     cmds:
       - >-
-        uv run cloudfall services inspect --project {{ .CONFIG_DIR }}
+        uv run cloudfall services observe --project {{ .CONFIG_DIR }}
         --schemas {{ .SCHEMA_DIR }} --service-observed {{ .SERVICE_OBSERVATION_DIR }}
 
   services:status:

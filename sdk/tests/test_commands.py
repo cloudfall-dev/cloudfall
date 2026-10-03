@@ -11,6 +11,8 @@ from cloudfall.commands import (
     ENGINE_COMMANDS,
     CommandEffect,
     commands_with_effect,
+    snake_case,
+    snake_case_keys,
 )
 from cloudfall_engine.cli import app as engine_app
 
@@ -61,9 +63,9 @@ def test_every_yes_gated_command_is_classified_as_changing_servers() -> None:
         "deploy",
         "rollback",
         "restart",
-        "data migrate",
+        "data copy",
         "migrate",
-        "operations approve",
+        "decisions approve",
     }
     assert gated <= changing
     for command in commands_with_effect(CommandEffect.SERVERS):
@@ -82,5 +84,29 @@ def test_only_server_changing_commands_carry_a_gate() -> None:
 def test_invocation_is_the_canonical_project_command() -> None:
     by_name = {command.name: command for command in COMMANDS}
 
-    assert by_name["data migrate"].invocation == "uv run cloudfall data migrate"
+    assert by_name["data copy"].invocation == "uv run cloudfall data copy"
     assert by_name["playbook run"].invocation == "uv run cloudfall-engine playbook run"
+
+
+def test_output_field_names_are_snake_case_and_data_keys_keep_their_spelling() -> None:
+    record = {"apiVersion": "cloudfall/v1", "spec": {"proposedAt": "now"}}
+
+    converted = snake_case_keys(
+        {
+            "openProposals": 1,
+            "byKind": {"AlertRule": 1},
+            "environment": {"DATABASE_URL": "x"},
+            "servers": [{"serverType": "web", "crm-backend": True}],
+            "decision": record,
+        }
+    )
+
+    assert converted == {
+        "open_proposals": 1,
+        "by_kind": {"AlertRule": 1},
+        "environment": {"DATABASE_URL": "x"},
+        "servers": [{"server_type": "web", "crm-backend": True}],
+        "decision": record,
+    }
+    assert snake_case("unmatchedObservations") == "unmatched_observations"
+    assert snake_case("status") == "status"

@@ -550,3 +550,17 @@ def test_no_environment_receipts_means_no_environment_checks() -> None:
             check.check.startswith("environment.file")
             for check in server.checks
         )
+
+
+def test_audit_reads_the_snapshots_observe_writes_by_default(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = tmp_path / "project"
+    shutil.copytree(EXAMPLES, project)
+    shutil.copytree(COMPLIANT, project / "tmp" / "observed")
+
+    code = main(["audit", "--project", str(project)])
+
+    report = json.loads(capsys.readouterr().out)["data"]
+    assert code == 0
+    assert report["status"] == "compliant"
