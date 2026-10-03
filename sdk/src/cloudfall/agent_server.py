@@ -117,6 +117,8 @@ class McpServeArgs:
     secrets_dir: Path = Flag(
         default=Path("secrets"),
         description="sops-encrypted secrets directory (default: secrets)",
+        # A directory of encrypted files; the name is no secret.
+        secret=False,
     )
     operations: Path = Flag(
         default=Path(CATALOG_DIRECTORY),

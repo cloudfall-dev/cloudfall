@@ -285,6 +285,30 @@ def test_a_project_call_cannot_send_a_file_elsewhere_or_write_secrets_out(
     assert secret.read_text(encoding="utf-8") == "not-a-render-key\n"
 
 
+def test_a_project_server_takes_its_secrets_directory(tmp_path: Path) -> None:
+    done = subprocess.run(  # noqa: S603 - fixed interpreter and arguments.
+        [
+            sys.executable,
+            *SERVE,
+            "--project",
+            str(EXAMPLES),
+            "--secrets-dir",
+            "private/secrets",
+            "--list-tools",
+        ],
+        cwd=tmp_path,
+        stdin=subprocess.PIPE,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert done.returncode == 0, done.stderr
+    tools = {tool["name"] for tool in json.loads(done.stdout)["tools"]}
+    assert "secrets_render" in tools
+
+
 def test_no_fleet_to_serve_fails_before_serving(tmp_path: Path) -> None:
     done = subprocess.run(  # noqa: S603 - fixed interpreter and arguments.
         [sys.executable, *SERVE],
