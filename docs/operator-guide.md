@@ -70,7 +70,7 @@ operator do that" without anyone writing a note:
 - **What it saw**: the alert labels or the drifted checks that triggered it
 - **What it proposed**: the diagnosis and the exact engine operation
 - **Who approved**: a human through `operator approve`, an agent through
-  the MCP confirm handshake, or a declared `OperatorPolicy`
+  the `operator_approve` tool, or a declared `OperatorPolicy`
   (`approval.mode: autonomous` with the policy id)
 - **What happened**: `verified` or `failed`, with timestamps, from the
   verify step below, never from the playbook's exit code
@@ -192,6 +192,6 @@ above.
 The agent is the brain here and the operator is the record. The agent can
 watch, read, relay the diagnosis and decide to approve; the tools are
 annotated so the client gates the mutating one with its own permission
-mode, and nothing mutates a server without the explicit confirm. Whichever
+mode; the server adds no confirm step of its own. Whichever
 way a proposal is approved, the receipt is the same, so an agent-approved
 remediation is as explainable afterwards as a human-approved one.
