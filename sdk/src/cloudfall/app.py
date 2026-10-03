@@ -87,7 +87,7 @@ from cloudfall.catalog import (
     RiskLevel,
     load_catalog,
 )
-from cloudfall.commands import CLI_COMMANDS
+from cloudfall.commands import CLI_COMMANDS, snake_case, snake_case_keys
 from cloudfall.dashboard import RefreshInterval, build_dashboard
 from cloudfall.dashboard_server import (
     DashboardHTTPServer,
@@ -363,16 +363,19 @@ def _shape_keys(command: str) -> tuple[tuple[str, bool], ...]:
     names: list[str] = []
     for shape in contract.output:
         names.extend(
-            key.name
+            snake_case(key.name)
             for key in shape.keys
-            if key.name != "error" and key.name not in names
+            if key.name != "error" and snake_case(key.name) not in names
         )
     return tuple(
         (
             name,
             any(
-                all(key.name != name for key in shape.keys)
-                or any(key.name == name and key.optional for key in shape.keys)
+                all(snake_case(key.name) != name for key in shape.keys)
+                or any(
+                    snake_case(key.name) == name and key.optional
+                    for key in shape.keys
+                )
                 for shape in contract.output
             ),
         )
@@ -395,7 +398,8 @@ def _payload_schema(cls: type[Payload]) -> dict[str, object]:
 
 
 def _payload_document(payload: Payload) -> dict[str, object]:
-    document = dict(payload.body)
+    # Field names are snake_case, as treaty's own envelope keys are.
+    document = cast("dict[str, object]", snake_case_keys(dict(payload.body)))
     for name, optional in _shape_keys(payload.command):
         if optional and name not in document:
             document[name] = None
@@ -1143,7 +1147,7 @@ def init(args: InitArgs, ctx: Ctx) -> Scaffolded:
     return Scaffolded(
         effect="created",
         status="ok",
-        project=dict(cast("Mapping[str, object]", body["project"])),
+        project=cast("dict[str, object]", snake_case_keys(body["project"])),
         files=list(scaffold.files),
         next=list(cast("list[str]", body["next"])),
     )
@@ -1277,7 +1281,7 @@ def _added(result: AddResult) -> Added:
         effect="created",
         status="ok",
         project=str(result.project),
-        added=list(cast("list[dict[str, object]]", body["added"])),
+        added=cast("list[dict[str, object]]", snake_case_keys(body["added"])),
     )
 
 
@@ -2564,7 +2568,7 @@ def migrate(args: MigrateArgs, ctx: Ctx, fleet: Fleet) -> Migration:
         # A plan is the dry run --yes confirms.
         effect="would_update" if status == "plan" else "updated",
         status=status,
-        steps=list(cast("list[dict[str, object]]", result["steps"])),
+        steps=cast("list[dict[str, object]]", snake_case_keys(result["steps"])),
         completed=int(cast("int", result["completed"])),
         next=cast("str | None", result.get("next")),
         step=cast("str | None", result.get("step")),
@@ -3516,7 +3520,9 @@ def _engine_tools(args: McpServeArgs, root: ServerRoot, ctx: Ctx) -> list[McpToo
             )
         except LifecycleError as error:
             raise _lifecycle_failed(error) from error
-        return ArtifactBuilt(status="ok", artifact=built)
+        return ArtifactBuilt(
+            status="ok", artifact=cast("dict[str, object]", snake_case_keys(built))
+        )
 
     def converge(
         action: str,

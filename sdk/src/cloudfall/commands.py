@@ -10,8 +10,42 @@ Each entry's output shapes name the keys its ``data`` carries.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
+
+_LOWER_CAMEL = re.compile(r"[a-z][a-z0-9]*(?:[A-Z][a-z0-9]*)+")
+_HUMP = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def snake_case(name: str) -> str:
+    """Return a lowerCamel output key in snake_case; any other name as it is.
+
+    Only lowerCamel names are field names. A resource kind (``AlertRule``),
+    an environment variable (``DATABASE_URL``) or an id (``crm-backend``)
+    used as a map key is data, and keeps its spelling.
+    """
+    if not _LOWER_CAMEL.fullmatch(name):
+        return name
+    return _HUMP.sub("_", name).lower()
+
+
+def snake_case_keys(value: object) -> object:
+    """Return ``value`` with its field names in snake_case, at every depth.
+
+    A dict carrying ``apiVersion`` is a schema-validated document, a record
+    or a resource as it is stored, and is returned as it is.
+    """
+    if isinstance(value, dict):
+        if "apiVersion" in value:
+            return value
+        return {
+            snake_case(key) if isinstance(key, str) else key: snake_case_keys(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list | tuple):
+        return [snake_case_keys(item) for item in value]
+    return value
 
 
 class CommandEffect(Enum):

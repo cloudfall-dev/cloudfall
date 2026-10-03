@@ -258,7 +258,7 @@ def test_cli_server_changes_show_a_plan_without_yes(
     assert payload["data"]["action"] == action
     assert payload["data"]["component"] == "crm-backend"
     assert payload["data"]["servers"]
-    assert "Id(" not in str(payload["data"]["wouldRun"])
+    assert "Id(" not in str(payload["data"]["would_run"])
     assert "--yes" in str(payload["data"]["instruction"])
     assert not (tmp_path / "inventory.json").exists()
 
@@ -286,7 +286,7 @@ def test_cli_deploy_plan_verifies_the_artifact(
     assert payload["data"]["effect"] == "would_update"
     assert payload["meta"]["dry_run"] is True
     assert payload["data"]["release"] == RELEASE
-    would_run = str(payload["data"]["wouldRun"])
+    would_run = str(payload["data"]["would_run"])
     assert f"release {RELEASE} of component crm-backend" in would_run
     assert not (tmp_path / "inventory.json").exists()
 

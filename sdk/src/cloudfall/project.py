@@ -710,8 +710,10 @@ command's verdict in `data.status` (`ok`, `plan`, `drift`, `unhealthy`,
 names the command and the request. Branch on the exit code first, then on
 the snake_case code in `error.context.code`, never on the message. A
 negative verdict such as drift exits non-zero and keeps its report in
-`data`. `operator run` and `dashboard serve` stream: one envelope line per
-event, then a closing line with `meta.end`.
+`data`. Field names are snake_case; a record or resource inside `data`
+(anything with an `apiVersion`) keeps the form it is stored in. `operator
+run` and `dashboard serve` stream: one envelope line per event, then a
+closing line with `meta.end`.
 
 `uv run cloudfall --schema` prints every command with its flags, output
 schema, and exit codes; `uv run cloudfall <command> --schema` prints one.
