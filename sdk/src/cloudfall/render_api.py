@@ -63,12 +63,16 @@ class RenderApiClient(Protocol):
         ...
 
 
+RENDER_API_URL = "https://api.render.com/v1"
+"""The Render API an import reads; an MCP call cannot point it elsewhere."""
+
+
 @dataclass(frozen=True, slots=True)
 class HttpRenderApiClient:
     """Bearer-authenticated client for the Render REST API."""
 
     api_key: str
-    base_url: str = "https://api.render.com/v1"
+    base_url: str = RENDER_API_URL
     timeout_seconds: float = 30.0
     transport: Callable[[str, str], object] | None = None
 

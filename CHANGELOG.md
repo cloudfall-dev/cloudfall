@@ -109,8 +109,11 @@ Notable changes to Cloudfall. The format follows
     and engine directories, and the evidence directories commands share
     (snapshots, deployments, artifacts, proposals, secrets) are fixed for
     the run: they leave the tool schemas, and a call that passes one is
-    refused, so no call reaches another fleet or engine. A command's own
-    output paths, such as `receipts`, stay arguments
+    refused, so no call reaches another fleet or engine. So are the Render
+    API URL `import_render-api` sends its key file to, the env file
+    `secrets_render` writes, and the alert gateway `operator_approve`
+    verifies against. A command's own output paths, such as `receipts`,
+    stay arguments
   - On a project, `deploy`, `rollback`, `restart`, `migrate` and
     `data_migrate` return their plan until called with `yes: true`, as on
     the CLI; the old `confirm=true` handshake is gone. `build_artifact` and

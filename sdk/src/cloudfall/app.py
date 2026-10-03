@@ -195,6 +195,7 @@ from cloudfall.project import (
 )
 from cloudfall.render_api import (
     ERROR_API_UNREACHABLE,
+    RENDER_API_URL,
     HttpRenderApiClient,
     import_render_api,
     read_api_key,
@@ -2884,7 +2885,7 @@ class ImportApiArgs(ImportArgs):
         secret=False,
     )
     api_url: str = Flag(
-        default="https://api.render.com/v1",
+        default=RENDER_API_URL,
         description="Render API base URL (default: https://api.render.com/v1)",
     )
 

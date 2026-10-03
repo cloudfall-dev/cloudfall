@@ -39,6 +39,7 @@ from cloudfall.project import (
     is_project,
     resolve_project_directory,
 )
+from cloudfall.render_api import RENDER_API_URL
 from cloudfall.resources import default_engine_directory, default_schema_directory
 
 if TYPE_CHECKING:
@@ -355,15 +356,21 @@ def bound_arguments(args: McpServeArgs) -> dict[str, object]:
         "env_receipts": str(args.env_receipts),
         "proposals": str(args.proposals),
         "secrets_dir": str(args.secrets_dir),
+        # A chosen URL would send any file the call names as the key to it.
+        "api_url": RENDER_API_URL,
+        # Decrypted values are written where the server puts them, in the project.
+        "output_file": None,
+        # A chosen gateway would answer the verification of its own approval.
+        "gateway_url": args.gateway_url,
     }
     gateway = {
-        "gateway_url": args.gateway_url,
         "gateway_ca": args.gateway_ca,
         "gateway_cert": args.gateway_cert,
         "gateway_key": args.gateway_key,
     }
-    # Gateway material is bound only when the server was given it; otherwise
-    # an alert-triggered approval names the flags it needs.
+    # TLS material is bound only when the server was given it; otherwise an
+    # alert-triggered approval names the flags it needs, and the gateway it
+    # reaches is still the declared one (or the server's --gateway-url).
     bound.update({name: str(value) for name, value in gateway.items() if value})
     return bound
 

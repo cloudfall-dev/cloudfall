@@ -251,6 +251,40 @@ def test_a_project_serves_its_commands_with_the_project_bound(tmp_path: Path) ->
     assert converge["error"]["code"] == "CONFIRMATION_REQUIRED"
 
 
+def test_a_project_call_cannot_send_a_file_elsewhere_or_write_secrets_out(
+    tmp_path: Path,
+) -> None:
+    # An agent that chose the Render API URL could send any controller file
+    # it names as the bearer key to a host of its choosing; one that chose
+    # the env file could write decrypted values outside the project; one
+    # that chose the gateway URL could answer its own verification.
+    secret = tmp_path / "outside.txt"
+    secret.write_text("not-a-render-key\n", encoding="utf-8")
+
+    tools, (sent, rendered, approved) = _talk(
+        _serve("--project", str(EXAMPLES), cwd=tmp_path),
+        (
+            "import_render-api",
+            {
+                "api_key_file": str(secret),
+                "api_url": "http://127.0.0.1:9",
+                "application": "crm",
+                "server": "h1",
+            },
+        ),
+        ("secrets_render", {"component": "crm", "output_file": str(secret)}),
+        ("operator_approve", {"proposal": "p", "gateway_url": "http://127.0.0.1:9"}),
+    )
+
+    assert "api_url" not in tools["import_render-api"].input_schema["properties"]
+    assert "output_file" not in tools["secrets_render"].input_schema["properties"]
+    assert "gateway_url" not in tools["operator_approve"].input_schema["properties"]
+    for refused in (sent, rendered, approved):
+        assert refused["ok"] is False
+        assert refused["error"]["code"] == "ARG_ERROR"
+    assert secret.read_text(encoding="utf-8") == "not-a-render-key\n"
+
+
 def test_no_fleet_to_serve_fails_before_serving(tmp_path: Path) -> None:
     done = subprocess.run(  # noqa: S603 - fixed interpreter and arguments.
         [sys.executable, *SERVE],
