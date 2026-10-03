@@ -6,6 +6,7 @@ import json
 import select
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import urllib.request
@@ -133,3 +134,22 @@ def test_dashboard_serve_streams_where_it_listens_until_stopped(
     assert listening["meta"]["seq"] == 1
     assert listening["data"]["status"] == "ok"
     assert closing["error"]["code"] == "CANCELLED"
+
+
+def test_dashboard_serve_names_a_port_it_cannot_listen_on(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen()
+        port = taken.getsockname()[1]
+        code = main(
+            [
+                *("dashboard", "serve", "--project", str(EXAMPLES)),
+                *("--observed", str(COMPLIANT), "--port", str(port)),
+            ]
+        )
+
+    closing = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert code == 4
+    assert closing["error"]["context"]["code"] == "dashboard_listen_failed"

@@ -90,9 +90,10 @@ from cloudfall.catalog import (
 from cloudfall.commands import CLI_COMMANDS
 from cloudfall.dashboard import RefreshInterval, build_dashboard
 from cloudfall.dashboard_server import (
+    DashboardHTTPServer,
     EvidenceSources,
     ListenEndpoint,
-    create_dashboard_server,
+    warm_snapshot_cache,
 )
 from cloudfall.decision import (
     CHECK_TIMEOUT_SECONDS,
@@ -1477,14 +1478,15 @@ def dashboard_serve(
     )
     refresh = RefreshInterval.from_boundary(args.refresh)
     try:
-        server = create_dashboard_server(
-            sources,
-            args.endpoint(),
-            refresh,
-            request_log=lambda line: ctx.log("request", line=line),
-        )
+        cache = warm_snapshot_cache(sources, refresh)
     except ConfigValidationError as error:
         raise _config_invalid(error) from error
+    try:
+        server = DashboardHTTPServer(
+            args.endpoint(),
+            cache,
+            request_log=lambda line: ctx.log("request", line=line),
+        )
     except OSError as error:
         message = f"cannot listen on {args.host}:{args.port}: {error.strerror}"
         raise Exit.PRECONDITION(
@@ -1511,14 +1513,14 @@ def dashboard_serve(
 class ServicesInspectArgs(ProjectArgs):
     """Arguments of ``services inspect``."""
 
-    output_dir: Path = Flag(
+    service_observed: Path = Flag(
         default=Path("tmp/observed-services"),
         description="Service observation directory (default: tmp/observed-services)",
     )
 
     def __post_init__(self) -> None:
         """Keep a relative output path inside the project."""
-        _inside_project(self.output_dir, "output-dir")
+        _inside_project(self.service_observed, "service-observed")
 
 
 class InspectedPayload(Payload):
@@ -1547,7 +1549,7 @@ def services_inspect(
     try:
         paths = inspect_domains(
             fleet.inventory,
-            fleet.path(args.output_dir),
+            fleet.path(args.service_observed),
             SocketDomainNetworkClient(),
             observed_at=EvidenceTimestamp.now(),
         )
@@ -1735,7 +1737,7 @@ class BackupArgs(EngineArgs):
     """Arguments of ``backup run`` and ``backup verify``."""
 
     service: ResourceId = Arg(description="Declared service to back up")
-    receipts: Path = Flag(
+    backups: Path = Flag(
         default=Path("tmp/backups"),
         description="Backup receipt directory (default: tmp/backups)",
     )
@@ -1743,7 +1745,7 @@ class BackupArgs(EngineArgs):
     def __post_init__(self) -> None:
         """Keep relative paths inside the project."""
         EngineArgs.__post_init__(self)
-        _inside_project(self.receipts, "receipts")
+        _inside_project(self.backups, "backups")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1788,7 +1790,7 @@ def backup_run(args: BackupArgs, ctx: Ctx, fleet: Fleet) -> BackedUp:
     """Run the backup playbook for the service."""
     try:
         body = backup_service(
-            args.context(fleet, ctx), args.service, fleet.path(args.receipts)
+            args.context(fleet, ctx), args.service, fleet.path(args.backups)
         )
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error
@@ -1815,7 +1817,7 @@ def backup_verify(args: BackupArgs, ctx: Ctx, fleet: Fleet) -> BackedUp:
     """Restore the newest backup into scratch and keep the proof."""
     try:
         body = verify_backup(
-            args.context(fleet, ctx), args.service, fleet.path(args.receipts)
+            args.context(fleet, ctx), args.service, fleet.path(args.backups)
         )
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error
@@ -2358,7 +2360,7 @@ class MigrateArgs(EngineArgs):
         default=Path("tmp/deployments"),
         description="Deployment receipt directory (default: tmp/deployments)",
     )
-    receipts: Path = Flag(
+    releases: Path = Flag(
         default=Path("tmp/releases"),
         description="Release receipt directory (default: tmp/releases)",
     )
@@ -2408,7 +2410,7 @@ class MigrateArgs(EngineArgs):
             "observed",
             "service_observed",
             "deployments",
-            "receipts",
+            "releases",
             "artifacts",
             "plan_file",
         ):
@@ -2450,7 +2452,7 @@ class MigrateArgs(EngineArgs):
             observed_directory=fleet.path(self.observed),
             service_observed_directory=fleet.path(self.service_observed),
             deployments_directory=fleet.path(self.deployments),
-            releases_directory=fleet.path(self.receipts),
+            releases_directory=fleet.path(self.releases),
             artifacts_directory=fleet.path(self.artifacts),
             run=_step_runner(ctx, fleet.directory),
         )
@@ -2631,7 +2633,7 @@ app.exit_code(
 class ObserveArgs(FleetArgs):
     """Arguments of ``observe``."""
 
-    output_dir: Path = Flag(
+    observed: Path = Flag(
         default=Path("tmp/observed"),
         description="Snapshot directory to write (default: tmp/observed)",
     )
@@ -2645,7 +2647,7 @@ class ObserveArgs(FleetArgs):
 
     def __post_init__(self) -> None:
         """Keep a relative output path inside the project."""
-        _inside_project(self.output_dir, "output-dir")
+        _inside_project(self.observed, "observed")
 
 
 class ObservedPayload(Payload):
@@ -2701,7 +2703,7 @@ def observe(args: ObserveArgs, ctx: Ctx, fleet: InventoryFleet) -> ObservedPaylo
         if fleet.source is not None
         else (fleet.directory / "tmp/ansible-inventory.json",)
     )
-    output = fleet.path(args.output_dir)
+    output = fleet.path(args.observed)
     try:
         request = ObservationRequest(
             inventory_sources=sources,
@@ -2747,7 +2749,7 @@ class SecretsRenderArgs(EngineArgs):
         default=None,
         description="Environment file to write (default: tmp/env/<component>.env)",
     )
-    receipts: Path = Flag(
+    env_receipts: Path = Flag(
         default=Path("tmp/env-receipts"),
         description="Environment receipt directory (default: tmp/env-receipts)",
     )
@@ -2756,7 +2758,7 @@ class SecretsRenderArgs(EngineArgs):
         """Keep relative paths inside the project."""
         EngineArgs.__post_init__(self)
         _inside_project(self.secrets_dir, "secrets-dir")
-        _inside_project(self.receipts, "receipts")
+        _inside_project(self.env_receipts, "env-receipts")
         if self.output_file is not None:
             _inside_project(self.output_file, "output-file")
 
@@ -2821,7 +2823,7 @@ def secrets_render(
             args.component,
             provider,
             output,
-            receipt_directory=fleet.path(args.receipts),
+            receipt_directory=fleet.path(args.env_receipts),
         )
     except SecretsError as error:
         raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
@@ -3047,7 +3049,7 @@ class DeployArgs(ComponentArgs):
         default=None,
         description="Optional controller-side environment file for the component",
     )
-    receipts: Path = Flag(
+    releases: Path = Flag(
         default=Path("tmp/releases"),
         description="Release receipt directory (default: tmp/releases)",
     )
@@ -3056,7 +3058,7 @@ class DeployArgs(ComponentArgs):
         """Keep relative paths inside the project."""
         ComponentArgs.__post_init__(self)
         _inside_project(self.artifacts, "artifacts")
-        _inside_project(self.receipts, "receipts")
+        _inside_project(self.releases, "releases")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -3080,7 +3082,7 @@ class DataMigrateArgs(EngineArgs):
         # The flag names a file; the URL with its password never reaches argv.
         secret=False,
     )
-    receipts: Path = Flag(
+    data_migrations: Path = Flag(
         default=Path("tmp/data-migrations"),
         description="Migration receipt directory (default: tmp/data-migrations)",
     )
@@ -3096,7 +3098,7 @@ class DataMigrateArgs(EngineArgs):
     def __post_init__(self) -> None:
         """Keep relative paths inside the project."""
         EngineArgs.__post_init__(self)
-        _inside_project(self.receipts, "receipts")
+        _inside_project(self.data_migrations, "data-migrations")
 
 
 class DeployPayload(Payload):
@@ -3185,7 +3187,7 @@ def deploy_command(args: DeployArgs, ctx: Ctx, fleet: Fleet) -> DeployPayload:
                 environment_file=(
                     fleet.path(args.env_file) if args.env_file is not None else None
                 ),
-                receipt_directory=fleet.path(args.receipts),
+                receipt_directory=fleet.path(args.releases),
             ),
         )
     except LifecycleError as error:
@@ -3292,7 +3294,11 @@ def data_migrate(
                 )
             )
         body = migrate_data(
-            context, args.service, args.database, source, fleet.path(args.receipts)
+            context,
+            args.service,
+            args.database,
+            source,
+            fleet.path(args.data_migrations),
         )
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error

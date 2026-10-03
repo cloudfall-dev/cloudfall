@@ -309,6 +309,44 @@ def test_a_project_server_takes_its_secrets_directory(tmp_path: Path) -> None:
     assert "secrets_render" in tools
 
 
+def test_a_project_call_cannot_write_outside_the_project(tmp_path: Path) -> None:
+    # Snapshots, receipts, import output and the migrate plan are the
+    # server's; an absolute path would land wherever the agent named.
+    outside = tmp_path / "outside"
+    written = {
+        "observed",
+        "service_observed",
+        "releases",
+        "backups",
+        "data_migrations",
+        "env_receipts",
+        "output_dir",
+        "env_dir",
+        "plan_file",
+        "receipts",
+    }
+
+    tools, (snapshot, imported) = _talk(
+        _serve("--project", str(EXAMPLES), cwd=tmp_path),
+        ("observe", {"observed": str(outside)}),
+        (
+            "import_render",
+            {
+                "blueprint": str(EXAMPLES / "render.yaml"),
+                "application": "crm",
+                "server": "h1",
+                "env_dir": str(outside),
+            },
+        ),
+    )
+
+    for tool in tools.values():
+        assert not written & set(tool.input_schema.get("properties", {})), tool.name
+    for refused in (snapshot, imported):
+        assert refused["error"]["code"] == "ARG_ERROR"
+    assert not outside.exists()
+
+
 def test_no_fleet_to_serve_fails_before_serving(tmp_path: Path) -> None:
     done = subprocess.run(  # noqa: S603 - fixed interpreter and arguments.
         [sys.executable, *SERVE],

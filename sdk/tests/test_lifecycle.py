@@ -204,7 +204,7 @@ def test_cli_deploy_reports_a_missing_artifact(
             str(tmp_path / "artifacts"),
             "--inventory-file",
             str(tmp_path / "inventory.json"),
-            "--receipts",
+            "--releases",
             str(tmp_path / "releases"),
         ]
     )

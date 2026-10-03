@@ -104,6 +104,18 @@ class McpServeArgs:
         default=Path("tmp/artifacts"),
         description="Release artifact directory (default: tmp/artifacts)",
     )
+    releases: Path = Flag(
+        default=Path("tmp/releases"),
+        description="Release receipt directory (default: tmp/releases)",
+    )
+    backups: Path = Flag(
+        default=Path("tmp/backups"),
+        description="Backup receipt directory (default: tmp/backups)",
+    )
+    data_migrations: Path = Flag(
+        default=Path("tmp/data-migrations"),
+        description="Data migration receipt directory (default: tmp/data-migrations)",
+    )
     env_receipts: Path = Flag(
         default=Path("tmp/env-receipts"),
         description=(
@@ -319,6 +331,11 @@ def served_commands(args: McpServeArgs) -> frozenset[str]:
     return PROJECT_COMMANDS
 
 
+_IMPORT_CONFIG = "tmp/import/config"
+_IMPORT_ENV = "tmp/import/env"
+_MIGRATE_PLAN = "tmp/migrate/plan.json"
+
+
 def bound_arguments(args: McpServeArgs) -> dict[str, object]:
     """Return the arguments every tool call runs with, fixed for the run.
 
@@ -341,7 +358,6 @@ def bound_arguments(args: McpServeArgs) -> dict[str, object]:
             "project": None,
             "inventory": str(root.inventory.value),
             "observed": observed,
-            "output_dir": observed,
             "env_receipts": str(root.path(args.env_receipts)),
             "operations": str(args.operations),
             "decisions": str(args.decisions),
@@ -355,7 +371,15 @@ def bound_arguments(args: McpServeArgs) -> dict[str, object]:
         "service_observed": str(args.service_observed),
         "deployments": str(args.deployments),
         "artifacts": str(args.artifacts),
+        "releases": str(args.releases),
+        "backups": str(args.backups),
+        "data_migrations": str(args.data_migrations),
         "env_receipts": str(args.env_receipts),
+        # What an import writes, and where migrate keeps its plan, stay in the
+        # project: an import's env files hold the application's real values.
+        "output_dir": _IMPORT_CONFIG,
+        "env_dir": _IMPORT_ENV,
+        "plan_file": _MIGRATE_PLAN,
         "proposals": str(args.proposals),
         "secrets_dir": str(args.secrets_dir),
         # A chosen URL would send any file the call names as the key to it.

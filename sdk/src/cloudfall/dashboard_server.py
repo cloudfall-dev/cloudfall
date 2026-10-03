@@ -212,6 +212,16 @@ def create_dashboard_server(
     request_log: Callable[[str], None] | None = None,
 ) -> DashboardHTTPServer:
     """Build one snapshot eagerly (fail fast), then bind the HTTP server."""
+    cache = warm_snapshot_cache(sources, refresh, clock)
+    return DashboardHTTPServer(endpoint, cache, request_log=request_log)
+
+
+def warm_snapshot_cache(
+    sources: EvidenceSources,
+    refresh: RefreshInterval,
+    clock: Callable[[], float] = time.monotonic,
+) -> SnapshotCache:
+    """Return a cache holding its first snapshot, so bad evidence fails first."""
     cache = SnapshotCache(sources=sources, refresh=refresh, clock=clock)
     cache.current()
-    return DashboardHTTPServer(endpoint, cache, request_log=request_log)
+    return cache

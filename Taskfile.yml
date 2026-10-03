@@ -66,7 +66,7 @@ tasks:
     cmds:
       - >-
         uv run cloudfall services inspect --project {{ .CONFIG_DIR }}
-        --schemas {{ .SCHEMA_DIR }} --output-dir {{ .SERVICE_OBSERVATION_DIR }}
+        --schemas {{ .SCHEMA_DIR }} --service-observed {{ .SERVICE_OBSERVATION_DIR }}
 
   services:status:
     desc: Show evidence-derived service lifecycle status
@@ -152,7 +152,7 @@ tasks:
         uv run cloudfall deploy --project {{ .CONFIG_DIR }} {{ .COMPONENT }}
         --release {{ .RELEASE }} --schemas {{ .SCHEMA_DIR }}
         --artifacts {{ .ARTIFACT_DIR | default "tmp/artifacts" }}
-        --receipts {{ .ROOT_DIR }}/tmp/releases
+        --releases {{ .ROOT_DIR }}/tmp/releases
         {{ if .ENV_FILE }}--env-file {{ .ENV_FILE }}{{ end }} --yes
 
   rollback:

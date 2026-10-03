@@ -77,9 +77,9 @@ guessing silently.
 
 `cloudfall mcp serve` (requires the `cloudfall[mcp]` extra) serves one
 fleet over stdio, and its tools are Cloudfall's own commands. The fleet,
-the schema and engine directories, and the evidence directories commands
-share are fixed when the server starts, so a tool call cannot point at
-another project, schema directory or engine. Read-only commands (`config_validate`, `inventory_show`, `audit`,
+the schema and engine directories, and every directory a tool writes are
+fixed when the server starts, so a tool call cannot point at another
+project, schema directory or engine, or write outside the project. Read-only commands (`config_validate`, `inventory_show`, `audit`,
 `services_status`, `health`, `observe`, `services_inspect`) carry read-only
 annotations. `deploy`, `rollback`, `restart`, `migrate` and `data_migrate`
 return their plan until called again with `yes: true`. Four tools have no

@@ -106,14 +106,14 @@ Notable changes to Cloudfall. The format follows
   configs change from `cloudfall-mcp …` to `cloudfall mcp serve …`
   - The server serves one fleet, chosen as before: `--project`, or
     `--repository` for a team's Ansible repository. The fleet, the schema
-    and engine directories, and the evidence directories commands share
-    (snapshots, deployments, artifacts, proposals, secrets) are fixed for
-    the run: they leave the tool schemas, and a call that passes one is
-    refused, so no call reaches another fleet or engine. So are the Render
-    API URL `import_render-api` sends its key file to, the env file
-    `secrets_render` writes, and the alert gateway `operator_approve`
-    verifies against. A command's own output paths, such as `receipts`,
-    stay arguments
+    and engine directories, and every directory a tool writes (snapshots,
+    receipts, artifacts, proposals, import output, the migrate plan) are
+    fixed for the run: they leave the tool schemas, and a call that passes
+    one is refused, so no call reaches another fleet or engine or writes
+    outside the project. So are the Render API URL `import_render-api`
+    sends its key file to, the env file `secrets_render` writes, and the
+    alert gateway `operator_approve` verifies against. Files a tool reads
+    as input (a blueprint, a key file, an env file) stay arguments
   - On a project, `deploy`, `rollback`, `restart`, `migrate` and
     `data_migrate` return their plan until called with `yes: true`, as on
     the CLI; the old `confirm=true` handshake is gone. `build_artifact` and
@@ -128,11 +128,23 @@ Notable changes to Cloudfall. The format follows
     records a proposal and answers with the approval command in
     `data.next`; a destructive operation's tool asks for
     `confirm_destructive` even to preview
+  - Each directory has one flag name across the commands that read and
+    write it, so a server can fix it once and a non-default one reaches
+    them all: `observe --output-dir` is `--observed` (as `audit` reads it),
+    `services inspect --output-dir` is `--service-observed` (as `services
+    status` reads it), and `--receipts` is `--releases` on `deploy` and
+    `migrate`, `--backups` on `backup run|verify`, `--data-migrations` on
+    `data migrate` and `--env-receipts` on `secrets render` (as `audit`
+    reads it). `mcp serve` takes `--releases`, `--backups` and
+    `--data-migrations` too
   - `init`, `operations approve`, `operator run` and `dashboard serve` are
     never MCP tools (`mcp=False`), on this server or `treaty-mcp`
   - A fleet that cannot be read stops the server before a client connects,
     with the envelope on stderr: 79 `PROJECT_INVALID`, 80 `CONFIG_INVALID`,
     85 `INVENTORY_UNREADABLE`. `--list-tools` prints the tool list
+  - `dashboard serve` reports a port it cannot bind as 4 `PRECONDITION`
+    with `dashboard_listen_failed`; an unreadable evidence file is no
+    longer reported as a listen failure
 - **Breaking:** `cloudfall-engine` runs on [treaty](https://github.com/romamo/treaty).
   Every command answers one JSON envelope on stdout (`ok`, `data`, `error`,
   `warnings`, `meta`), errors included, which used to go to stderr in their
