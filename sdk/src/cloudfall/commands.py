@@ -67,8 +67,47 @@ class OutputKey:
     """One key of a command's ``data``, as the command writes it."""
 
     name: str
+    type: str
+    """The JSON type of its value: string, integer, boolean, array or object."""
     optional: bool = False
     """Written only under some conditions, such as a flag or a result."""
+
+
+KEY_TYPES: dict[str, str] = {
+    **dict.fromkeys(
+        (
+            "action", "application", "component", "database", "detail",
+            "directory", "environmentFile", "health", "instruction", "output",
+            "pass", "path", "project", "receipt", "release", "report",
+            "service", "sha256", "status", "step", "verification", "wouldRun",
+        ),
+        "string",
+    ),
+    **dict.fromkeys(
+        ("completed", "count", "exitCode", "openProposals", "resources", "tasks"),
+        "integer",
+    ),
+    "healthy": "boolean",
+    **dict.fromkeys(
+        (
+            "added", "answers", "components", "decisions", "declaredKeys",
+            "domains", "environmentFiles", "executed", "files", "gaps", "keys",
+            "missing", "next", "observations", "observed", "operations",
+            "proposals", "proposed", "references", "requested", "servers",
+            "services", "skipped", "steps", "unmatchedObservations", "withheld",
+            "written",
+        ),
+        "array",
+    ),
+    **dict.fromkeys(
+        (
+            "ansible", "byKind", "byRisk", "dashboard", "decision", "error",
+            "inventory", "operation", "proposal", "query", "summary",
+        ),
+        "object",
+    ),
+}
+"""The JSON type of each output key, by name; a shape overrides one as ``name:type``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,12 +119,14 @@ class OutputShape:
 
 
 def _shape(*keys: str, when: str | None = None) -> OutputShape:
-    """Declare a shape from key names: ``name?`` is optional."""
-    return OutputShape(
-        keys=tuple(
-            OutputKey(key.rstrip("?"), optional=key.endswith("?")) for key in keys
-        ),
-        when=when,
+    """Declare a shape from keys: ``name?`` is optional, ``name:type`` typed here."""
+    return OutputShape(keys=tuple(_key(key) for key in keys), when=when)
+
+
+def _key(declared: str) -> OutputKey:
+    name, _, json_type = declared.rstrip("?").partition(":")
+    return OutputKey(
+        name, json_type or KEY_TYPES[name], optional=declared.endswith("?")
     )
 
 
@@ -133,7 +174,7 @@ _IMPORTED = (
     ),
 )
 _PROPOSAL = (_shape("status", "proposal"),)
-_BACKUP = (_shape("status", "receipt", "path"),)
+_BACKUP = (_shape("status", "receipt:object", "path"),)
 _EXECUTED = ("status", "action", "component", "servers", "healthy")
 
 
@@ -156,7 +197,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "init",
         CommandEffect.PROJECT,
         "lay out a new project directory",
-        output=(_shape("status", "project", "files", "next"),),
+        output=(_shape("status", "project:object", "files", "next"),),
     ),
     CommandContract(
         "cloudfall",
@@ -469,14 +510,14 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
                 "status",
                 "steps",
                 "completed",
-                "next?",
+                "next:string?",
                 when="`plan` without `--yes`; `ok` when every step is done",
             ),
             _shape(
                 "status",
                 "steps",
                 "completed",
-                "next?",
+                "next:string?",
                 "step",
                 "error",
                 when="`paused` (exit 3) or `error` (exit 1) at `step`",

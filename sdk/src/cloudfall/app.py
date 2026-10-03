@@ -351,8 +351,8 @@ class Payload:
         self.body = dict(body)
 
 
-def _shape_keys(command: str) -> tuple[tuple[str, bool], ...]:
-    """Return each data key of the command's output shape and if it is optional."""
+def _shape_keys(command: str) -> tuple[tuple[str, str, bool], ...]:
+    """Return each data key of the command's output: name, JSON type, optional."""
     contract = next(
         entry
         for entry in CLI_COMMANDS
@@ -360,39 +360,40 @@ def _shape_keys(command: str) -> tuple[tuple[str, bool], ...]:
     )
     # A command with two shapes (a plan without --yes, a result with it)
     # writes one object: a key not in every shape is optional, so null.
-    names: list[str] = []
+    keys: dict[str, tuple[str, bool]] = {}
     for shape in contract.output:
-        names.extend(
-            snake_case(key.name)
-            for key in shape.keys
-            if key.name != "error" and snake_case(key.name) not in names
-        )
-    return tuple(
-        (
-            name,
-            any(
-                all(snake_case(key.name) != name for key in shape.keys)
+        for key in shape.keys:
+            name = snake_case(key.name)
+            if key.name == "error" or name in keys:
+                continue
+            optional = any(
+                all(other.name != key.name for other in candidate.keys)
                 or any(
-                    snake_case(key.name) == name and key.optional
-                    for key in shape.keys
+                    other.name == key.name and other.optional
+                    for other in candidate.keys
                 )
-                for shape in contract.output
-            ),
-        )
-        for name in names
-    )
+                for candidate in contract.output
+            )
+            keys[name] = (key.type, optional)
+    return tuple((name, kind, optional) for name, (kind, optional) in keys.items())
 
 
 def _payload_schema(cls: type[Payload]) -> dict[str, object]:
-    names = [name for name, _ in _shape_keys(cls.command)]
+    properties: dict[str, object] = {}
+    for name, kind, optional in _shape_keys(cls.command):
+        schema: dict[str, object] = {"type": [kind, "null"] if optional else kind}
+        if kind in {"array", "object"}:
+            # The domain writes each array in the order it means: a ranking,
+            # a timeline, the order checks ran in, and a stored record keeps
+            # its own. treaty would sort them, nested ones included.
+            schema["x-ordered"] = True
+        properties[name] = schema
     if cls.writes:
-        names.append("effect")
+        properties["effect"] = {"type": "string"}
     return {
         "type": "object",
-        # The domain writes each array in the order it means: a ranking, a
-        # timeline, the order checks ran in. treaty would sort them.
-        "properties": {name: {"x-ordered": True} for name in names},
-        "required": names,
+        "properties": properties,
+        "required": list(properties),
         "additionalProperties": False,
     }
 
@@ -400,13 +401,15 @@ def _payload_schema(cls: type[Payload]) -> dict[str, object]:
 def _payload_document(payload: Payload) -> dict[str, object]:
     # Field names are snake_case, as treaty's own envelope keys are.
     document = cast("dict[str, object]", snake_case_keys(dict(payload.body)))
-    for name, optional in _shape_keys(payload.command):
+    for name, _kind, optional in _shape_keys(payload.command):
         if optional and name not in document:
             document[name] = None
     return document
 
 
-app.output_adapter(Payload, schema=_payload_schema, dump=_payload_document)
+app.output_adapter(
+    Payload, schema=_payload_schema, dump=_payload_document, none_as_empty=True
+)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
