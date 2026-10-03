@@ -279,7 +279,7 @@ def requested_servers(
 
 def _run_playbook(argv: Sequence[str], environment: Mapping[str, str]) -> PlaybookRun:
     # Captured, never inherited: the CLI's stdout carries one JSON document
-    # and cloudfall-mcp's carries the protocol, so Ansible may write to neither.
+    # and `mcp serve`'s carries the protocol, so Ansible may write to neither.
     completed = subprocess.run(  # noqa: S603 - resolved binary, built argv.
         tuple(argv),
         env={**os.environ, **environment},

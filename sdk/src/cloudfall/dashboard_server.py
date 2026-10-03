@@ -145,12 +145,16 @@ class DashboardHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(
-        self, endpoint: ListenEndpoint, cache: SnapshotCache, *, quiet: bool = False
+        self,
+        endpoint: ListenEndpoint,
+        cache: SnapshotCache,
+        *,
+        request_log: Callable[[str], None] | None = None,
     ) -> None:
         """Bind the endpoint and expose the cache to request handlers."""
         self.cache = cache
-        self.quiet = quiet
-        """``--quiet``: handlers log no request line to stderr."""
+        self.request_log = request_log
+        """Receives each request line; ``None`` logs none."""
         super().__init__((endpoint.host, endpoint.port), _DashboardRequestHandler)
 
 
@@ -177,11 +181,10 @@ class _DashboardRequestHandler(BaseHTTPRequestHandler):
         self._respond(HTTPStatus.OK, "text/html; charset=utf-8", snapshot.html)
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002 - base signature
-        """Log the request line to stderr unless the server runs ``--quiet``."""
+        """Hand the request line to the server's request log, if it has one."""
         server = self.server
-        if isinstance(server, DashboardHTTPServer) and server.quiet:
-            return
-        super().log_message(format, *args)
+        if isinstance(server, DashboardHTTPServer) and server.request_log is not None:
+            server.request_log(format % args)
 
     def _cache(self) -> SnapshotCache:
         server = self.server
@@ -206,9 +209,9 @@ def create_dashboard_server(
     refresh: RefreshInterval,
     clock: Callable[[], float] = time.monotonic,
     *,
-    quiet: bool = False,
+    request_log: Callable[[str], None] | None = None,
 ) -> DashboardHTTPServer:
     """Build one snapshot eagerly (fail fast), then bind the HTTP server."""
     cache = SnapshotCache(sources=sources, refresh=refresh, clock=clock)
     cache.current()
-    return DashboardHTTPServer(endpoint, cache, quiet=quiet)
+    return DashboardHTTPServer(endpoint, cache, request_log=request_log)

@@ -70,6 +70,66 @@ Notable changes to Cloudfall. The format follows
 
 ### Changed
 
+- **Breaking:** argparse is gone: the last three `cloudfall` commands
+  move to treaty, and so do root `--help`, `--version` and `--schema`.
+  - `operator run` streams one envelope line per pass as it ends, with
+    `data.pass` (`alerts`, `drift`, `autonomy`) and `data.effect`:
+    `created` for a pass that wrote proposals, `updated` for one that ran
+    licensed proposals, `noop` otherwise. Stopping it ends the stream with a
+    `CANCELLED` line and exit 130 (SIGINT) or 143 (SIGTERM), so a systemd
+    unit needs `SuccessExitStatus=143` (the
+    [operator guide](docs/operator-guide.md) has it). A gateway it cannot
+    use (none declared, or a missing or unreadable certificate) is 4
+    `PRECONDITION`, an unreachable one 12 `UNAVAILABLE`. `--interval` and `--drift-interval` must be above 0. The
+    operating contract now lists it with the commands that change servers,
+    since a declared `OperatorPolicy` lets it run proposals
+  - `dashboard serve` streams one line once the server listens, then serves
+    until stopped, ending like `operator run`. Its request lines are info
+    log lines on stderr, shown at a terminal or with `--verbose`
+  - `changelog` is treaty's: it lists interface changes per release from
+    the packaged `schema-changelog.json`, which `treaty changelog-add
+    cloudfall.app:app` writes, and `--since` takes a release version
+  - `operator approve` reports such a gateway as 4 `PRECONDITION` (was 86
+    `RECORD_INVALID`) and an unreachable one as 12 `UNAVAILABLE`
+  - The argparse-era output contract added earlier in this release is
+    gone: the six-key document with a top-level `status`, `--output json`,
+    `--schema-version MAJOR` against that contract, the parser-built
+    `--schema`, the `--help` exit-code table and exit codes 0 to 3. Every
+    command answers treaty's envelope, and `cloudfall --schema` lists every
+    command's flags, output schema and exit codes. The `AGENTS.md` that
+    `cloudfall init` writes describes this contract
+- **Breaking:** `cloudfall-mcp` is gone; the agent server is `cloudfall mcp
+  serve` (treaty 1.0.0rc29, from issues #239, #240, #281 and #285 filed for
+  it). Its tools are Cloudfall's own commands, answering with the CLI's
+  envelope, and tool names follow the commands (`list_operations` is
+  `operations_list`, `validate_config` is `config_validate`). MCP client
+  configs change from `cloudfall-mcp …` to `cloudfall mcp serve …`
+  - The server serves one fleet, chosen as before: `--project`, or
+    `--repository` for a team's Ansible repository. The fleet, the schema
+    and engine directories, and the evidence directories commands share
+    (snapshots, deployments, artifacts, proposals, secrets) are fixed for
+    the run: they leave the tool schemas, and a call that passes one is
+    refused, so no call reaches another fleet or engine. A command's own
+    output paths, such as `receipts`, stay arguments
+  - On a project, `deploy`, `rollback`, `restart`, `migrate` and
+    `data_migrate` return their plan until called with `yes: true`, as on
+    the CLI; the old `confirm=true` handshake is gone. `build_artifact` and
+    the `converge_baseline`, `converge_services` and `converge_domains`
+    tools stay, the converges destructive and run only with
+    `confirm_destructive: true`. `operator_approve`, `backup_run` and
+    `backup_verify` run in one call, as their commands do (they were
+    confirm-gated in `cloudfall-mcp`), and `operator_watch` is gone: the
+    watch loop runs as a service
+  - On a repository, the tools are the read-only fleet commands and one
+    `operation_*` tool per declared operation, which runs check mode,
+    records a proposal and answers with the approval command in
+    `data.next`; a destructive operation's tool asks for
+    `confirm_destructive` even to preview
+  - `init`, `operations approve`, `operator run` and `dashboard serve` are
+    never MCP tools (`mcp=False`), on this server or `treaty-mcp`
+  - A fleet that cannot be read stops the server before a client connects,
+    with the envelope on stderr: 79 `PROJECT_INVALID`, 80 `CONFIG_INVALID`,
+    85 `INVENTORY_UNREADABLE`. `--list-tools` prints the tool list
 - **Breaking:** `cloudfall-engine` runs on [treaty](https://github.com/romamo/treaty).
   Every command answers one JSON envelope on stdout (`ok`, `data`, `error`,
   `warnings`, `meta`), errors included, which used to go to stderr in their
@@ -97,8 +157,7 @@ Notable changes to Cloudfall. The format follows
   from outside. Failures that were exit 2 are 4 `PRECONDITION` with the
   old code in `error.context.code`. A key a command writes only sometimes
   is `null` when absent, so `inventory show` writes `data.ansible` as
-  `null` for a project. Still on argparse: `changelog`, `operator run`
-  (treaty #175) and `dashboard serve`
+  `null` for a project
 - **Breaking:** `why` runs on treaty, `--format html` included (treaty
   #179): the page is drawn from the answer's JSON document, as before. Its
   verdict moves to `data.status`; a bad `--since` or `--until` is 2

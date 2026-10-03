@@ -125,15 +125,15 @@ receipt, and the audit proves the new file reached the server.
 
 ## Through an agent
 
-`cloudfall-mcp` exposes `render_secrets` (started with `--secrets-dir` and
-`--env-dir`). The agent sees key names and hashes only; the decrypted file
+`cloudfall mcp serve` exposes `secrets_render`, with the secrets directory
+fixed by the server's `--secrets-dir`. The agent sees key names and hashes only; the decrypted file
 stays on the controller. Rotation is a git commit in the private
 repository — which means rotation has history.
 
 The agent is the brain and it decides when to render and deploy; it is
-never a party to the values. `render_secrets` is a mutating tool behind
-the confirmation handshake because it writes a file, and its envelope is
-what lands in the record. Nothing an agent can call returns a secret, and
+never a party to the values. `secrets_render` is annotated as a mutating
+tool because it writes a file, and its envelope is what lands in the
+record. Nothing an agent can call returns a secret, and
 a tool that did would be a bug against the [manifesto](../MANIFESTO.md).
 
 ## Other backends

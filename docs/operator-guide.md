@@ -49,6 +49,13 @@ observations under `--observed`, and audit them; drifted checks become
 proposals split by remediation: service checks propose `services.yml`,
 everything else proposes `baseline.yml`.
 
+Each pass is one JSON line on stdout, written as the pass ends:
+`data.pass` says which pass it was (`alerts`, `drift`, `autonomy`) and
+`data.effect` what it did (`created` when it wrote proposals, `updated` when
+it ran licensed ones, `noop` otherwise). A one-pass run ends with a closing
+line carrying `meta.end`; stopping a watcher (Ctrl-C or SIGTERM) ends it
+with a `CANCELLED` line and exit 130 or 143.
+
 Every proposal is a schema-validated receipt in `--proposals`
 (default `tmp/operator/proposals`): the trigger evidence (alert labels or
 drifted checks), a diagnosis, the exact operation, and later its outcome.
@@ -91,6 +98,8 @@ ExecStart=/usr/local/bin/uv run cloudfall operator run \
   --gateway-ca certs/ca.crt --gateway-cert certs/operator.crt \
   --gateway-key certs/operator.key --interval 30 --drift-interval 900
 Restart=on-failure
+# `systemctl stop` sends SIGTERM, which the operator answers with exit 143.
+SuccessExitStatus=143
 
 [Install]
 WantedBy=multi-user.target
@@ -163,21 +172,22 @@ proposals it executed and which it withheld, with reasons.
 
 ## Through an agent
 
-`cloudfall-mcp` exposes the same surface with the standard confirmation
-handshake — start it with the gateway material to enable the watch tool:
+`cloudfall mcp serve` exposes the record and the approval; start it with
+the gateway material so an alert-triggered approval can verify:
 
 ```sh
-uv run cloudfall-mcp \
+uv run cloudfall mcp serve \
   --gateway-ca certs/ca.crt --gateway-cert certs/operator.crt \
   --gateway-key certs/operator.key
 ```
 
-- `operator_proposals` (read-only) — list receipts with trigger, diagnosis,
-  and outcome
-- `operator_watch` (read-only; `drift=true` adds an audited drift pass) —
-  one watch pass
-- `operator_approve` — previews the exact command and diagnosis, then
-  requires `confirm=true` to execute and verify
+- `operator_list` and `operator_show` (read-only): the receipts with
+  trigger, diagnosis, and outcome
+- `operator_approve`: executes one proposal and verifies its trigger
+  resolved, in one call, as `cloudfall operator approve` does
+
+The watch loop itself is not a tool: it runs until stopped, as the service
+above.
 
 The agent is the brain here and the operator is the record. The agent can
 watch, read, relay the diagnosis and decide to approve; the tools are

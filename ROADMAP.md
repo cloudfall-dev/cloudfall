@@ -354,7 +354,7 @@ against a Cloudfall project first and re-rooted in M16.
   row-count checks are re-expressed as verify steps
 - **`cloudfall why`** — the question "why did the agent do that" answered
   from the record for any host, operation or time window, in JSON and as a
-  page ✔ (also the `why` tool on `cloudfall-mcp --repository`)
+  page ✔ (also the `why` tool on `cloudfall mcp serve --repository`)
 
 Exit: an agent drives a declared mutating operation through the MCP server
 on a proving host, the client gates it from the annotation alone, the run

@@ -14,9 +14,14 @@ such as drift, exits with its own code and keeps the report in ``data``.
 
 from __future__ import annotations
 
+import dataclasses
 import errno
 import os
 import shutil
+
+# treaty reads a handler's annotations at registration, so a streaming
+# handler's Iterator and a provided MCP tool's Mapping must exist at runtime.
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from functools import partial
 from http import HTTPStatus
@@ -32,6 +37,8 @@ from treaty import (
     Exit,
     Flag,
     FormatRenderer,
+    McpServe,
+    McpTool,
     Out,
     ParseError,
     SideEffect,
@@ -39,6 +46,18 @@ from treaty import (
     Timeout,
 )
 
+from cloudfall.agent_server import (
+    APPROVAL_COMMAND,
+    McpServeArgs,
+    ServerMode,
+    ServerRoot,
+    bound_arguments,
+    operation_tool_description,
+    operation_tool_name,
+    resolve_root,
+    served_commands,
+    server_instructions,
+)
 from cloudfall.agent_tools import AgentConfig
 from cloudfall.ansible_api import (
     AnsibleReadError,
@@ -65,10 +84,16 @@ from cloudfall.catalog import (
     CATALOG_DIRECTORY,
     ERROR_OPERATION_UNDECLARED,
     OperationCatalog,
+    RiskLevel,
     load_catalog,
 )
 from cloudfall.commands import CLI_COMMANDS
-from cloudfall.dashboard import build_dashboard
+from cloudfall.dashboard import RefreshInterval, build_dashboard
+from cloudfall.dashboard_server import (
+    EvidenceSources,
+    ListenEndpoint,
+    create_dashboard_server,
+)
 from cloudfall.decision import (
     CHECK_TIMEOUT_SECONDS,
     DECISION_DIRECTORY,
@@ -109,6 +134,7 @@ from cloudfall.lifecycle import (
     StepRun,
     StepRunner,
     backup_service,
+    build_release_artifact,
     deploy,
     health,
     migrate_data,
@@ -118,6 +144,7 @@ from cloudfall.lifecycle import (
     preview_rollback,
     restart,
     rollback,
+    run_engine_playbook,
     verify_backup,
 )
 from cloudfall.migrate import MigrateError, MigrateOptions, execute_migration
@@ -131,18 +158,26 @@ from cloudfall.observe import (
 )
 from cloudfall.operations import FleetOperations, UtcTimestamp, build_operations_view
 from cloudfall.operator import (
+    ERROR_FEED_INVALID,
+    ERROR_FEED_UNREACHABLE,
+    ERROR_GATEWAY_MATERIAL_INVALID,
+    ERROR_GATEWAY_UNDECLARED,
     ERROR_PROPOSAL_MISSING,
     AlertFeed,
     ApproveOptions,
+    DriftCheck,
     OperatorError,
+    PassKind,
     ProposalStatus,
     ProposalStore,
     TriggerKind,
     alert_resolution_verifier,
+    autonomous_pass,
     drift_resolution_verifier,
     engine_auditor,
     engine_executor,
     gateway_feed,
+    watch,
 )
 from cloudfall.operator import approve as approve_proposal
 from cloudfall.project import (
@@ -191,7 +226,23 @@ from cloudfall.validation import (
 from cloudfall.why import WhyError, WhyQuery, answer, render_why_document
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Sequence
+
+    from cloudfall.audit import AuditReport
+    from cloudfall.catalog import Operation
+    from cloudfall.operator import OperatorProposal
+
+def _serve_setup(args: McpServeArgs, _ctx: Ctx) -> None:
+    """Check the served fleet before ``mcp serve`` accepts a client."""
+    # The check and the tools are defined at the end of the module, after the
+    # commands they reuse; App(mcp=...) needs these entry points first.
+    _check_served_fleet(args)
+
+
+def _serve_tools(args: McpServeArgs, ctx: Ctx) -> list[McpTool]:
+    """Return the tools ``mcp serve`` provides beside the commands."""
+    return _provided_tools(args, ctx)
+
 
 app = App(
     "cloudfall",
@@ -199,6 +250,18 @@ app = App(
     description=(
         "Run a fleet from validated config, and keep the record of what an "
         "agent did to it"
+    ),
+    # `treaty changelog-add cloudfall.app:app` records each release's
+    # interface changes here, beside the manifest snapshot it diffs against.
+    schema_changelog=Path(__file__).with_name("schema-changelog.json"),
+    mcp=McpServe(
+        args=McpServeArgs,
+        setup=_serve_setup,
+        tools=_serve_tools,
+        commands=served_commands,
+        bind=bound_arguments,
+        instructions=server_instructions,
+        exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "INVENTORY_UNREADABLE"],
     ),
 )
 app.scalar(
@@ -990,6 +1053,8 @@ class Scaffolded:
 
 @app.command(
     "init",
+    # Lays out a project elsewhere; the server is confined to the one it serves.
+    mcp=False,
     description="Create a new project: fleet, applications, and operations",
     danger_level="mutating",
     # Two git steps of up to GIT_TIMEOUT_SECONDS each, then local files.
@@ -1332,6 +1397,113 @@ def dashboard_build(
             "dashboard": artifacts.as_dict(),
         }
     )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DashboardServeArgs(EvidenceArgs):
+    """Arguments of ``dashboard serve``."""
+
+    host: str = Flag(
+        default="127.0.0.1",
+        description=(
+            "Listen address; use the VPS address to expose it (default: 127.0.0.1)"
+        ),
+    )
+    port: int = Flag(
+        default=8100, description="Listen port; 0 picks a free port (default: 8100)"
+    )
+    refresh: int = Flag(
+        default=10, description="Evidence refresh interval in seconds (default: 10)"
+    )
+    inspect_services: bool = Flag(
+        default=False,
+        description="Probe DNS, TLS, origin, and public routes on every refresh",
+    )
+
+    def __post_init__(self) -> None:
+        """Keep relative evidence paths inside the project; check the endpoint."""
+        EvidenceArgs.__post_init__(self)
+        for flag, check in (
+            ("host", self.endpoint),
+            ("refresh", partial(RefreshInterval.from_boundary, self.refresh)),
+        ):
+            try:
+                check()
+            except ValueError as error:
+                raise ParseError(str(error), context={"flag": flag}) from error
+
+    def endpoint(self) -> ListenEndpoint:
+        """Return the address the server binds."""
+        return ListenEndpoint(host=self.host, port=self.port)
+
+
+class ServingPayload(Payload):
+    """``dashboard serve``: where the dashboard is served."""
+
+    command = "dashboard serve"
+
+
+@dashboard.command(
+    "serve",
+    # Serves until stopped; a tool call would never answer.
+    mcp=False,
+    description=(
+        "Serve the read-only dashboard over HTTP until stopped; one event once "
+        "the server listens"
+    ),
+    danger_level="safe",
+    streaming=True,
+    timeout=None,
+    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PRECONDITION"],
+    examples=[
+        (
+            "Serve the dashboard on the default port",
+            "cloudfall dashboard serve --observed tmp/observed",
+        ),
+    ],
+)
+def dashboard_serve(
+    args: DashboardServeArgs, ctx: Ctx, fleet: Fleet
+) -> Iterator[ServingPayload]:
+    """Bind the server, say where it listens, then serve until stopped."""
+    sources = EvidenceSources(
+        project_directory=fleet.directory,
+        schema_directory=args.schemas,
+        observed_directory=fleet.path(args.observed),
+        service_observed_directory=fleet.path(args.service_observed),
+        deployments_directory=fleet.path(args.deployments),
+        inspect_services=args.inspect_services,
+    )
+    refresh = RefreshInterval.from_boundary(args.refresh)
+    try:
+        server = create_dashboard_server(
+            sources,
+            args.endpoint(),
+            refresh,
+            request_log=lambda line: ctx.log("request", line=line),
+        )
+    except ConfigValidationError as error:
+        raise _config_invalid(error) from error
+    except OSError as error:
+        message = f"cannot listen on {args.host}:{args.port}: {error.strerror}"
+        raise Exit.PRECONDITION(
+            message, context={"code": "dashboard_listen_failed"}
+        ) from error
+    try:
+        port = int(server.server_address[1])
+        yield ServingPayload(
+            {
+                "status": "ok",
+                "dashboard": {
+                    "url": f"http://{args.host}:{port}/",
+                    "refreshSeconds": refresh.seconds,
+                    "inspectServices": args.inspect_services,
+                },
+            }
+        )
+        server.serve_forever()
+    finally:
+        server.server_close()
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -1790,6 +1962,8 @@ def operations_propose(args: ProposeArgs, ctx: Ctx) -> Decided:
 
 @operations.command(
     "approve",
+    # A person approves; no agent tool stands in for it.
+    mcp=False,
     description=(
         "Approve one recorded proposal, run it, and verify it; without --yes it "
         "shows the proposal and runs nothing"
@@ -1849,10 +2023,9 @@ def operations_approve(args: ApproveDecisionArgs, ctx: Ctx) -> Decided:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class OperatorApproveArgs(ProposalArgs):
-    """Arguments of ``operator approve``."""
+class OperatorEngineArgs(ProposalArgs):
+    """Options of an operator command that runs engine playbooks."""
 
-    proposal: ResourceId = Arg(description="Proposal id")
     engine: Path = Flag(
         default=default_engine_directory(),
         description="Engine directory containing ansible contracts (default: bundled)",
@@ -1864,24 +2037,13 @@ class OperatorApproveArgs(ProposalArgs):
     observed: Path = Flag(
         default=Path("tmp/operator/observed"),
         description=(
-            "Observation directory for drift verification "
+            "Observation directory for drift checks and their verification "
             "(default: tmp/operator/observed)"
         ),
-    )
-    verify_timeout: float = Flag(
-        default=180.0,
-        description="Seconds to wait for the trigger to resolve (default: 180)",
     )
     gateway_url: str | None = Flag(
         default=None,
         description="Alerts endpoint (default: derived from the declared gateway)",
-    )
-    gateway_ca: Path | None = Flag(default=None, description="Gateway CA file")
-    gateway_cert: Path | None = Flag(
-        default=None, description="Client certificate for the gateway"
-    )
-    gateway_key: Path | None = Flag(
-        default=None, description="Client key for the gateway", secret=False
     )
 
     def __post_init__(self) -> None:
@@ -1900,6 +2062,44 @@ class OperatorApproveArgs(ProposalArgs):
             run=_step_runner(ctx, fleet.directory),
         )
 
+    def auditor(self, fleet: Fleet, ctx: Ctx) -> Callable[[], AuditReport]:
+        """Return the audited drift check over the operator's observations."""
+        return engine_auditor(
+            self.context(fleet, ctx), fleet.inventory, fleet.path(self.observed)
+        )
+
+    def verifier_for(
+        self, fleet: Fleet, ctx: Ctx, feed: Callable[[], AlertFeed]
+    ) -> Callable[[OperatorProposal], Callable[[OperatorProposal], bool]]:
+        """Return how a proposal's resolution is verified, by its trigger."""
+
+        def verifier(
+            proposal: OperatorProposal,
+        ) -> Callable[[OperatorProposal], bool]:
+            if proposal.trigger_kind is TriggerKind.ALERT:
+                return alert_resolution_verifier(feed())
+            return drift_resolution_verifier(self.auditor(fleet, ctx))
+
+        return verifier
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OperatorApproveArgs(OperatorEngineArgs):
+    """Arguments of ``operator approve``."""
+
+    proposal: ResourceId = Arg(description="Proposal id")
+    verify_timeout: float = Flag(
+        default=180.0,
+        description="Seconds to wait for the trigger to resolve (default: 180)",
+    )
+    gateway_ca: Path | None = Flag(default=None, description="Gateway CA file")
+    gateway_cert: Path | None = Flag(
+        default=None, description="Client certificate for the gateway"
+    )
+    gateway_key: Path | None = Flag(
+        default=None, description="Client key for the gateway", secret=False
+    )
+
     def feed(self, fleet: Fleet) -> AlertFeed:
         """Return the gateway's alert feed, which an alert proposal needs."""
         if (
@@ -1914,13 +2114,39 @@ class OperatorApproveArgs(ProposalArgs):
             raise Exit.PRECONDITION(
                 message, context={"code": "operator_gateway_material_missing"}
             )
+        return _gateway_feed(
+            fleet,
+            self.gateway_ca,
+            self.gateway_cert,
+            self.gateway_key,
+            self.gateway_url,
+        )
+
+
+def _gateway_feed(
+    fleet: Fleet, ca: Path, cert: Path, key: Path, url: str | None
+) -> AlertFeed:
+    try:
         return gateway_feed(
             fleet.inventory,
-            ca_path=self.gateway_ca,
-            certificate_path=self.gateway_cert,
-            key_path=self.gateway_key,
-            url_override=self.gateway_url,
+            ca_path=ca,
+            certificate_path=cert,
+            key_path=key,
+            url_override=url,
         )
+    except OperatorError as error:
+        raise _operator_failed(error) from error
+
+
+def _operator_failed(error: OperatorError) -> Exception:
+    context = {"code": error.code}
+    if error.code == ERROR_FEED_UNREACHABLE:
+        return Exit.UNAVAILABLE(error.message, context=context)
+    if error.code in {ERROR_GATEWAY_UNDECLARED, ERROR_GATEWAY_MATERIAL_INVALID}:
+        return Exit.PRECONDITION(error.message, context=context)
+    if error.code == ERROR_FEED_INVALID:
+        return Exit.GENERAL_ERROR(error.message, context=context)
+    return _proposal_failed(error)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1941,6 +2167,7 @@ class Approved:
         "CONFIG_INVALID",
         "NOT_FOUND",
         "PRECONDITION",
+        "UNAVAILABLE",
         "RECORD_INVALID",
         "ENGINE_STEP_FAILED",
         "NOT_VERIFIED",
@@ -1958,24 +2185,17 @@ def operator_approve(
 ) -> Approved:
     """Run the proposal's operation, then wait for its trigger to resolve."""
     store = args.store(fleet)
-    context = args.context(fleet, ctx)
+    verifier_for = args.verifier_for(fleet, ctx, partial(args.feed, fleet))
     try:
-        pending = store.load(args.proposal)
-        if pending.trigger_kind is TriggerKind.ALERT:
-            verifier = alert_resolution_verifier(args.feed(fleet))
-        else:
-            verifier = drift_resolution_verifier(
-                engine_auditor(context, fleet.inventory, fleet.path(args.observed))
-            )
         proposal = approve_proposal(
             store,
             args.proposal,
-            engine_executor(context),
-            verifier,
+            engine_executor(args.context(fleet, ctx)),
+            verifier_for(store.load(args.proposal)),
             ApproveOptions(verify_timeout_seconds=args.verify_timeout),
         )
     except OperatorError as error:
-        raise _proposal_failed(error) from error
+        raise _operator_failed(error) from error
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error
     verified = proposal.status is ProposalStatus.VERIFIED
@@ -1988,6 +2208,134 @@ def operator_approve(
         message = "the run finished but its trigger did not resolve"
         raise Exit.NOT_VERIFIED(message, data=approved)
     return approved
+
+
+# operator run
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OperatorRunArgs(OperatorEngineArgs):
+    """Arguments of ``operator run``."""
+
+    gateway_ca: Path = Flag(description="Gateway CA file")
+    gateway_cert: Path = Flag(description="Client certificate for the gateway")
+    gateway_key: Path = Flag(description="Client key for the gateway", secret=False)
+    interval: float | None = Flag(
+        default=None,
+        description="Seconds between watch passes (default: one pass, then exit)",
+    )
+    drift_interval: float | None = Flag(
+        default=None,
+        description=(
+            "Seconds between audited drift checks (default: no drift checks; "
+            "a single pass runs one when set)"
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        """Keep relative paths inside the project; intervals are positive."""
+        OperatorEngineArgs.__post_init__(self)
+        for flag, value in (
+            ("interval", self.interval),
+            ("drift-interval", self.drift_interval),
+        ):
+            if value is not None and value <= 0:
+                message = f"--{flag} is a number of seconds above 0"
+                raise ParseError(message, context={"flag": flag, "value": value})
+
+    def feed(self, fleet: Fleet) -> AlertFeed:
+        """Return the gateway's alert feed."""
+        return _gateway_feed(
+            fleet,
+            self.gateway_ca,
+            self.gateway_cert,
+            self.gateway_key,
+            self.gateway_url,
+        )
+
+
+class OperatorPassPayload(Payload):
+    """``operator run``: one watch pass and what it proposed or executed."""
+
+    command = "operator run"
+    writes = True
+
+
+@operator.command(
+    "run",
+    # A watch loop that acts until stopped; it runs as a service.
+    mcp=False,
+    description=(
+        "Watch declared alerts and drift, write proposal receipts, and run the "
+        "proposals a declared policy licenses; one event per pass"
+    ),
+    danger_level="mutating",
+    streaming=True,
+    timeout=None,
+    supports_raw_payload=True,
+    exit_codes=[
+        "PROJECT_INVALID",
+        "CONFIG_INVALID",
+        "NOT_FOUND",
+        "PRECONDITION",
+        "UNAVAILABLE",
+        "RECORD_INVALID",
+        "ENGINE_STEP_FAILED",
+    ],
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0"},
+    examples=[
+        (
+            "Watch every minute, checking drift every ten",
+            "cloudfall operator run --gateway-ca ca.pem --gateway-cert operator.pem "
+            "--gateway-key operator.key --interval 60 --drift-interval 600",
+        ),
+    ],
+)
+def operator_run(
+    args: OperatorRunArgs, ctx: Ctx, fleet: Fleet
+) -> Iterator[OperatorPassPayload]:
+    """Run watch passes until stopped, or one round without ``--interval``."""
+    store = args.store(fleet)
+    feed = args.feed(fleet)
+    autonomy = None
+    if fleet.inventory.operator_policies:
+        autonomy = partial(
+            autonomous_pass,
+            store,
+            fleet.inventory,
+            engine_executor(args.context(fleet, ctx)),
+            args.verifier_for(fleet, ctx, lambda: feed),
+        )
+    drift = None
+    if args.drift_interval is not None:
+        drift = DriftCheck(args.auditor(fleet, ctx), args.drift_interval)
+    passes = watch(
+        feed,
+        fleet.inventory,
+        store,
+        drift=drift,
+        autonomy=autonomy,
+        interval_seconds=args.interval,
+    )
+    try:
+        for report in passes:
+            effect = _PASS_EFFECTS[report.kind] if report.changed else "noop"
+            yield OperatorPassPayload(
+                {"status": "ok", "effect": effect, **report.as_dict()}
+            )
+    except OperatorError as error:
+        raise _operator_failed(error) from error
+    except LifecycleError as error:
+        raise _lifecycle_failed(error) from error
+
+
+_PASS_EFFECTS: Mapping[PassKind, str] = {
+    PassKind.ALERTS: "created",
+    PassKind.DRIFT: "created",
+    PassKind.AUTONOMY: "updated",
+}
+"""What a pass that changed something did: wrote proposals, or executed them."""
 
 
 # migrate
@@ -2948,3 +3296,261 @@ def data_migrate(
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error
     return DataMigratePayload({**body, "effect": "updated"})
+
+
+# mcp serve: the fleet check before serving, and the tools beside the commands
+
+
+def _check_served_fleet(args: McpServeArgs) -> None:
+    """Refuse to serve a fleet that cannot be read, before any client connects."""
+    root = resolve_root(args)
+    if root.mode is ServerMode.PROJECT:
+        try:
+            validate_config(root.directory, args.schemas)
+        except ConfigValidationError as error:
+            raise _config_invalid(error) from error
+        return
+    if root.inventory is None:
+        message = "a repository is served with its inventory"
+        raise TypeError(message)
+    try:
+        read_fleet(read_inventory(root.inventory), args.schemas)
+    except AnsibleReadError as error:
+        raise Exit.INVENTORY_UNREADABLE(
+            error.detail, context={"code": error.code}
+        ) from error
+    except ConfigValidationError as error:
+        raise _config_invalid(error) from error
+    _served_catalog(args, root)
+
+
+def _served_catalog(args: McpServeArgs, root: ServerRoot) -> OperationCatalog:
+    try:
+        return load_catalog(
+            root.directory, args.schemas, root.path(args.operations)
+        )
+    except ConfigValidationError as error:
+        raise _config_invalid(error) from error
+
+
+def _provided_tools(args: McpServeArgs, ctx: Ctx) -> list[McpTool]:
+    """Return the tools Cloudfall serves beside its commands, for this fleet."""
+    root = resolve_root(args)
+    if root.mode is ServerMode.FLEET:
+        return [
+            _operation_tool(args, root, operation)
+            for operation in _served_catalog(args, root).operations
+        ]
+    return _engine_tools(args, root, ctx)
+
+
+_PROPOSE_EXIT_CODES = ("CONFIG_INVALID", "NOT_FOUND", "PRECONDITION", "CHECK_FAILED")
+
+
+def _operation_tool(
+    args: McpServeArgs, root: ServerRoot, operation: Operation
+) -> McpTool:
+    """One declared operation as a tool: calling it previews and records it.
+
+    It is read-only in effect, since it runs check mode; the destructive
+    hint says what approving it would mean.
+    """
+    declared = {
+        declared_input.name.value: {"type": "string"}
+        for declared_input in operation.inputs
+    }
+    required = [
+        declared_input.name.value
+        for declared_input in operation.inputs
+        if declared_input.required
+    ]
+    schema: dict[str, object] = {
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "description": (
+                    "Host or group the operation runs against, as its target "
+                    f"scope ({operation.targets.value}) requires"
+                ),
+            },
+            "inputs": {
+                "type": "object",
+                "properties": declared,
+                "required": required,
+                "additionalProperties": False,
+            },
+        },
+        "required": ["inputs"] if required else [],
+        "additionalProperties": False,
+    }
+
+    def propose_operation(arguments: Mapping[str, object], ctx: Ctx) -> Decided:
+        inputs = cast("Mapping[str, str]", arguments.get("inputs", {}))
+        target = arguments.get("target")
+        decided = operations_propose(
+            ProposeArgs(
+                repository=root.directory,
+                schemas=args.schemas,
+                operations=args.operations,
+                operation=operation.operation_id,
+                target=None if target is None else str(target),
+                input=tuple(f"{name}={value}" for name, value in inputs.items()),
+                observed=root.path(args.observed),
+                decisions=args.decisions,
+            ),
+            ctx,
+        )
+        record = cast("Mapping[str, Mapping[str, object]]", decided.decision)
+        approve = f"{APPROVAL_COMMAND} {record['metadata']['id']} --yes"
+        return dataclasses.replace(decided, next=[approve])
+
+    return McpTool(
+        name=operation_tool_name(operation),
+        description=operation_tool_description(operation),
+        input_schema=schema,
+        handler=propose_operation,
+        danger_level="mutating",
+        read_only=True,
+        destructive=operation.risk is RiskLevel.DESTRUCTIVE,
+        exit_codes=_PROPOSE_EXIT_CODES,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactBuilt:
+    """``build_artifact``: the release artifact and its hash."""
+
+    status: str
+    artifact: dict[str, object] = Out(ordered=True)
+
+
+@dataclass(frozen=True, slots=True)
+class Converged:
+    """A ``converge_*`` tool: the engine playbook that ran on every server."""
+
+    status: str
+    action: str
+    playbook: str
+
+
+_ENGINE_EXIT_CODES = ("PRECONDITION", "ENGINE_STEP_FAILED")
+_COMPONENT_PATTERN = r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+
+
+def _engine_tools(args: McpServeArgs, root: ServerRoot, ctx: Ctx) -> list[McpTool]:
+    """Return the engine work no ``cloudfall`` command covers, as tools."""
+    del ctx  # each call brings its own
+
+    def context(call: Ctx) -> EngineContext:
+        return EngineContext(
+            project_directory=root.directory,
+            schema_directory=args.schemas,
+            engine_directory=args.engine,
+            inventory_file=root.path(args.inventory_file),
+            run=_step_runner(call, root.directory),
+        )
+
+    def build_artifact(arguments: Mapping[str, object], call: Ctx) -> ArtifactBuilt:
+        component = ResourceId.from_boundary(arguments["component"])
+        try:
+            built = build_release_artifact(
+                context(call),
+                component,
+                str(arguments["git_ref"]),
+                root.path(args.artifacts),
+            )
+        except LifecycleError as error:
+            raise _lifecycle_failed(error) from error
+        return ArtifactBuilt(status="ok", artifact=built)
+
+    def converge(
+        action: str,
+        playbook: str,
+        extra_vars: Callable[[Mapping[str, object]], dict[str, object]],
+    ) -> Callable[[Mapping[str, object], Ctx], Converged]:
+        def run(arguments: Mapping[str, object], call: Ctx) -> Converged:
+            try:
+                run_engine_playbook(context(call), playbook, extra_vars(arguments))
+            except LifecycleError as error:
+                raise _lifecycle_failed(error) from error
+            return Converged(status="ok", action=action, playbook=playbook)
+
+        run.__annotations__ = {
+            "arguments": Mapping[str, object],
+            "call": Ctx,
+            "return": Converged,
+        }
+        return run
+
+    def domain_vars(arguments: Mapping[str, object]) -> dict[str, object]:
+        return {
+            "cloudfall_domains_issue_certificates": bool(
+                arguments.get("issue_certificates", False)
+            ),
+            "cloudfall_domains_receipt_directory": str(root.path(args.deployments)),
+        }
+
+    no_inputs: dict[str, object] = {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    }
+    return [
+        McpTool(
+            name="build_artifact",
+            description=(
+                "Clone, package, and hash one component release under the "
+                "artifacts directory, for deploy to ship"
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "component": {"type": "string", "pattern": _COMPONENT_PATTERN},
+                    "git_ref": {"type": "string", "minLength": 1},
+                },
+                "required": ["component", "git_ref"],
+                "additionalProperties": False,
+            },
+            handler=build_artifact,
+            danger_level="mutating",
+            exit_codes=_ENGINE_EXIT_CODES,
+        ),
+        McpTool(
+            name="converge_baseline",
+            description=(
+                "Run baseline.yml on every declared server: bootstrap, UTC, SSH "
+                "hardening, unattended upgrades, and the declared firewall"
+            ),
+            input_schema=no_inputs,
+            handler=converge("converge-baseline", "baseline.yml", lambda _: {}),
+            danger_level="destructive",
+            exit_codes=_ENGINE_EXIT_CODES,
+        ),
+        McpTool(
+            name="converge_services",
+            description=(
+                "Run services.yml on every declared server: install and configure "
+                "every declared infrastructure service"
+            ),
+            input_schema=no_inputs,
+            handler=converge("converge-services", "services.yml", lambda _: {}),
+            danger_level="destructive",
+            exit_codes=_ENGINE_EXIT_CODES,
+        ),
+        McpTool(
+            name="converge_domains",
+            description=(
+                "Run domains.yml: render every declared domain route, and issue "
+                "missing certificates when issue_certificates is true"
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"issue_certificates": {"type": "boolean"}},
+                "additionalProperties": False,
+            },
+            handler=converge("converge-domains", "domains.yml", domain_vars),
+            danger_level="destructive",
+            exit_codes=_ENGINE_EXIT_CODES,
+        ),
+    ]

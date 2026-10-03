@@ -32,7 +32,7 @@ Human / AI agent ──runs───► CLI / MCP / Python API ──► Gate �
 
 The config is a store, not a pipeline stage: humans and agents edit it
 directly, the CLI validates and reads it, and the engine converges servers
-to it. The agent operates through a stable CLI, the `cloudfall-mcp` server
+to it. The agent operates through a stable CLI, the `cloudfall mcp serve` server
 and a Python API instead of inventing shell commands or discovering
 infrastructure over SSH. Every mutating operation goes through the engine's
 explicit playbook contracts, waits behind a gate the agent does not control

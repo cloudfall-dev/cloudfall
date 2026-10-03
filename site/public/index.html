@@ -298,7 +298,7 @@
         data and a real TTL-lowered DNS flip on an owned domain, resuming to byte-identical
         responses from the Cloudfall host, with a deliberately bad release rolled back
         automatically along the way — the entire run driven by an AI agent through
-        <code>cloudfall-mcp</code> alone. The operator then remediated an induced failure
+        its MCP server alone. The operator then remediated an induced failure
         with a single approval, remediated the next identical failure autonomously under
         declared policy in 2m06s, proved a real backup restorable in a timer-driven drill,
         and delivered an alert to a second machine across the public network, receipts
@@ -349,8 +349,8 @@
           <h3>Autonomy earned, never assumed</h3>
           <p>
             The always-on operator diagnoses from evidence and proposes fixes
-            you approve through the <code>cloudfall-mcp</code> confirmation
-            handshake. Autonomy is granted per operation class, licensed by
+            you approve, from the CLI or through
+            <code>cloudfall mcp serve</code>. Autonomy is granted per operation class, licensed by
             declared policy and earned receipt history; DNS cutover, data
             deletion, and promotion always require your confirmation.
           </p>
@@ -436,7 +436,7 @@
             <li>Let's Encrypt TLS and nginx routes from declared domains</li>
             <li>Render blueprint and live-API importers with guided data migration</li>
             <li>Resumable migrate with a real DNS cutover on an owned domain</li>
-            <li><code>cloudfall-mcp</code> agent server with confirm-gated writes</li>
+            <li><code>cloudfall mcp serve</code> agent server with confirm-gated writes</li>
             <li>sops/age secret references rendered to per-component env files</li>
             <li>Always-on operator: receipted proposals, policy-bounded autonomy</li>
           </ul>

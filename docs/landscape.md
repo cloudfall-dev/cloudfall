@@ -68,7 +68,7 @@ and treats the PaaS column as the place workloads come from.
 | PagerDuty, Opsgenie | Operations | Replaces at this scale | The operator remediates what its receipts prove reversible and pages you only for what it cannot undo |
 | Devopness | Operations SaaS | Competes | The closest operational twin: closed SaaS, imperative dashboard; Cloudfall is AGPL with typed state the user owns |
 | AI SRE agents (generic) | Operations | Alternative | Agents bolted onto imperative tools; their log says a tool was called. Cloudfall keeps the record of what the fleet looked like, what was proposed, who approved and what verify reported, and grants autonomy per operation class from it |
-| Claude Code, Codex, any MCP client | Agent surface | Complements | The brain. They drive Cloudfall through `cloudfall-mcp`, gate on its tool annotations with their own permission modes, and leave the record to Cloudfall; read-only tools free, mutating tools behind a confirmation handshake |
+| Claude Code, Codex, any MCP client | Agent surface | Complements | The brain. They drive Cloudfall through `cloudfall mcp serve`, gate on its tool annotations with their own permission modes, and leave the record to Cloudfall; read-only tools free, server changes previewed until confirmed |
 
 ## What Cloudfall adds and what it replaces
 
@@ -134,8 +134,8 @@ with Cloudfall on running and reacting, not on knowing what to run:
 | `cloudfall operator approve` | Approval nodes in Automation Controller workflows |
 | Timer-driven jobs such as restore drills | Scheduled job templates |
 | Receipts | Job history and logs: a record that a job ran, not proof of its result |
-| Agent surface through `cloudfall-mcp` | The AAP MCP server (jobs, inventory queries, monitoring through the controller API; a read-only mode, and a read-write mode that launches jobs; technology preview in AAP 2.6.4); the Lightspeed coding assistant and the ADT MCP server help write playbooks |
-| `cloudfall-mcp` as the agent's view of the fleet | The Lightspeed intelligent assistant, a chat in the controller UI; it answers from Red Hat docs and, as a technology preview, can query live AAP data through the AAP MCP server |
+| Agent surface through `cloudfall mcp serve` | The AAP MCP server (jobs, inventory queries, monitoring through the controller API; a read-only mode, and a read-write mode that launches jobs; technology preview in AAP 2.6.4); the Lightspeed coding assistant and the ADT MCP server help write playbooks |
+| `cloudfall mcp serve` as the agent's view of the fleet | The Lightspeed intelligent assistant, a chat in the controller UI; it answers from Red Hat docs and, as a technology preview, can query live AAP data through the AAP MCP server |
 | Read-only operations dashboard | Controller web UI, which also launches jobs |
 
 What AAP does not provide, and a team would have to write themselves:
@@ -170,7 +170,7 @@ For the wedge use case, the full toolchain is:
 - Cloudflare or your registrar holds DNS; Cloudfall verifies the flip, it
   does not perform it
 - An MCP client such as Claude Code drives the whole migration through
-  `cloudfall-mcp`, confirming each server-changing step
+  `cloudfall mcp serve`, confirming each server-changing step
 - The Cloudfall operator runs afterwards on a small always-on management
   host, watching alerts and audits
 

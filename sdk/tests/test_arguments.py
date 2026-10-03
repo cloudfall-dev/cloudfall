@@ -3,16 +3,10 @@
 from __future__ import annotations
 
 import json
-import os
-import select
-import subprocess
-import sys
 from pathlib import Path
-from unittest.mock import ANY
 
 import pytest
 from cloudfall.cli import main
-from cloudfall.output import RESPONSE_META
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -20,23 +14,10 @@ EXAMPLES = ROOT / "config" / "examples"
 SECRET = "postgresql://migrator:hunter2@db.example.test/crm"  # noqa: S105 - fake
 
 
-def _usage_error(
-    argv: list[str], capsys: pytest.CaptureFixture[str]
-) -> dict[str, object]:
-    with pytest.raises(SystemExit) as exit_info:
-        main(argv)
-    assert exit_info.value.code == 2
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    payload = json.loads(captured.err)
-    assert isinstance(payload, dict)
-    return payload
-
-
 def test_abbreviated_secret_file_flag_is_rejected_without_echo(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    payload = _treaty_usage_error(
+    payload = _usage_error(
         [
             "data",
             "migrate",
@@ -58,10 +39,10 @@ def test_abbreviated_secret_file_flag_is_rejected_without_echo(
     assert "hunter2" not in json.dumps(payload)
 
 
-def _treaty_usage_error(
+def _usage_error(
     argv: list[str], capsys: pytest.CaptureFixture[str]
 ) -> dict[str, object]:
-    """Run a command that moved to treaty: a usage error is exit 2 on stdout."""
+    """Run a command: a usage error is exit 2, as an envelope on stdout."""
     assert main(argv) == 2
     payload = json.loads(capsys.readouterr().out)
     assert isinstance(payload, dict)
@@ -72,7 +53,7 @@ def _treaty_usage_error(
 def test_unrecognized_option_values_are_not_echoed(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    payload = _treaty_usage_error(
+    payload = _usage_error(
         [
             "config",
             "validate",
@@ -94,7 +75,7 @@ def test_unrecognized_option_values_are_not_echoed(
 def test_missing_required_argument_is_a_json_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    payload = _treaty_usage_error(
+    payload = _usage_error(
         ["deploy", "crm-backend", "--project", str(EXAMPLES)], capsys
     )
 
@@ -113,10 +94,10 @@ def test_missing_required_argument_is_a_json_usage_error(
         (["rollback", "crm-backend", "--release", "r1"], "release"),
     ],
 )
-def test_an_invalid_identifier_fails_before_a_treaty_command_runs(
+def test_an_invalid_identifier_fails_before_the_command_runs(
     argv: list[str], field: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    payload = _treaty_usage_error([*argv, "--project", str(EXAMPLES)], capsys)
+    payload = _usage_error([*argv, "--project", str(EXAMPLES)], capsys)
 
     error = payload["error"]
     assert isinstance(error, dict)
@@ -130,7 +111,7 @@ def test_import_render_rejects_an_invalid_application_id(
     blueprint = tmp_path / "render.yaml"
     blueprint.write_text("services: []\n", encoding="utf-8")
 
-    payload = _treaty_usage_error(
+    payload = _usage_error(
         [
             "import",
             "render",
@@ -148,53 +129,13 @@ def test_import_render_rejects_an_invalid_application_id(
     assert "application" in json.dumps(payload["error"])
 
 
-def test_json_documents_are_flushed_when_stdout_is_a_pipe(tmp_path: Path) -> None:
-    script = (
-        "import sys, time\n"
-        "from cloudfall.output import begin_invocation, write_result\n"
-        "begin_invocation()\n"
-        "write_result({'status': 'ok'})\n"
-        "sys.stderr.write('written\\n')\n"
-        "sys.stderr.flush()\n"
-        "time.sleep(30)\n"
-    )
-    environment = {
-        key: value for key, value in os.environ.items() if key != "PYTHONUNBUFFERED"
-    }
-    process = subprocess.Popen(  # noqa: S603 - fixed interpreter and script.
-        [sys.executable, "-c", script],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=tmp_path,
-        env=environment,
-    )
-    try:
-        assert process.stderr is not None
-        assert process.stdout is not None
-        assert process.stderr.readline() == b"written\n"
-        readable, _, _ = select.select([process.stdout], [], [], 5)
-        assert readable, "the JSON document stayed in the stdout buffer"
-        assert json.loads(process.stdout.readline()) == {
-            "ok": True,
-            "status": "ok",
-            "error": None,
-            "data": {},
-            "meta": {**RESPONSE_META.as_dict(), "request_id": ANY, "duration_ms": ANY},
-            "warnings": [],
-        }
-    finally:
-        process.kill()
-        process.wait()
-
-
 def test_relative_output_leaving_the_project_is_rejected(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     observed = tmp_path / "observed"
     observed.mkdir()
 
-    payload = _treaty_usage_error(
+    payload = _usage_error(
         [
             "dashboard",
             "build",

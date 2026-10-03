@@ -47,6 +47,19 @@ uv run ansible-lint engine/ansible
 Keep changes scoped to one concern. Include tests for behavior changes and
 update the relevant README when a workflow changes.
 
+## Releases
+
+After bumping `version` in `pyproject.toml`, record the release's interface
+changes, which `cloudfall changelog` serves:
+
+```console
+uv run treaty changelog-add cloudfall.app:app
+```
+
+It diffs the manifest against the snapshot beside
+`sdk/src/cloudfall/schema-changelog.json` and appends one entry; commit both
+files with the release.
+
 ## Licensing of contributions
 
 Cloudfall is dual-licensed: AGPL-3.0-or-later for everyone, with commercial

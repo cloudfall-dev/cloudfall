@@ -75,31 +75,36 @@ guessing silently.
 
 ## MCP server
 
-`cloudfall-mcp` (requires the `cloudfall[mcp]` extra) exposes the agent
-toolset over stdio. Read-only evidence tools — validate, inventory, audit,
-service status, health probes, and both inspection collectors — are exposed
-freely with read-only annotations. Everything that changes servers
-(deploy, rollback, restart, and the baseline, services, and domains
-convergers) is annotated destructive and demands a two-step handshake: the
-first call returns a `confirmation-required` preview describing exactly what
-would run; only a second call with `confirm=true` executes. Deployments
-through MCP always write release receipts.
+`cloudfall mcp serve` (requires the `cloudfall[mcp]` extra) serves one
+fleet over stdio, and its tools are Cloudfall's own commands. The fleet,
+the schema and engine directories, and the evidence directories commands
+share are fixed when the server starts, so a tool call cannot point at
+another project, schema directory or engine. Read-only commands (`config_validate`, `inventory_show`, `audit`,
+`services_status`, `health`, `observe`, `services_inspect`) carry read-only
+annotations. `deploy`, `rollback`, `restart`, `migrate` and `data_migrate`
+return their plan until called again with `yes: true`. Four tools have no
+command of their own: `build_artifact`, and `converge_baseline`,
+`converge_services` and `converge_domains`, which are destructive and run
+only with `confirm_destructive: true`.
 
-The fleet-declaring tools `add_ssh_key`, `add_server_type`, and `add_server`
-mirror `cloudfall add`: they write schema-validated resource files into the
-project, re-validate the whole project, remove what they wrote when that
-validation fails, and never overwrite an existing resource. They are
-annotated neither read-only nor destructive, since they change the project
-and not a server. `cloudfall init` stays CLI-only on purpose: the server
-starts inside an existing project and confines every path to it, so an
-agent lays out the project first and then connects.
+The fleet-declaring tools `add_ssh-key`, `add_server-type` and `add_server`
+are `cloudfall add`: they write schema-validated resource files into the
+project and never overwrite an existing resource. `cloudfall init`,
+`operations approve`, `operator run` and `dashboard serve` are never tools:
+the server starts inside an existing project, approving a recorded
+operation is a person's command, and the loops run until stopped.
 
 ```console
-uv run cloudfall-mcp --project config/examples
+uv run cloudfall mcp serve --project config/examples
+uv run cloudfall mcp serve --repository ../fleet-ansible
+uv run cloudfall mcp serve --project config/examples --list-tools
 ```
 
-Every tool returns a structured JSON envelope, including errors, so agents
-never need to parse free-form failures. An agent connected to this server
+With `--repository` the server serves a team's own Ansible repository
+instead: the read-only fleet commands, and one tool per declared operation,
+which runs check mode and records a proposal for a person to approve.
+Every tool answers with the same JSON envelope as the CLI, errors included,
+so agents never need to parse free-form failures. An agent connected to this server
 can drive the full migration path — import a blueprint, build artifacts,
 converge the baseline, services, and domains, deploy with automatic
 rollback, and audit the result — without shell access to any server.

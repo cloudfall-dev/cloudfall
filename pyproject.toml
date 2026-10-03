@@ -20,7 +20,7 @@ dependencies = [
     "ansible-core>=2.21,<2.22",
     "jsonschema[format]>=4.23,<5",
     "pyyaml>=6,<7",
-    "treaty==1.0.0rc18",
+    "treaty==1.0.0rc29",
 ]
 
 [project.urls]
@@ -37,7 +37,6 @@ mcp = [
 [project.scripts]
 cloudfall = "cloudfall.cli:run"
 cloudfall-engine = "cloudfall_engine.cli:run"
-cloudfall-mcp = "cloudfall.mcp_server:run"
 
 [build-system]
 requires = ["hatchling>=1.27"]

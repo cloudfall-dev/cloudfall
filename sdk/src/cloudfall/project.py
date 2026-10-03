@@ -25,7 +25,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from cloudfall.commands import EXIT_CODES, CommandEffect, commands_with_effect
+from cloudfall.commands import CommandEffect, commands_with_effect
 from cloudfall.domain import ResourceKind
 
 if TYPE_CHECKING:
@@ -481,7 +481,7 @@ requires-python = ">=3.14"
 # Cloudfall is an installed package: the schema catalog and the Ansible engine
 # ship inside the wheel. Bump this version to move the project to a newer
 # Cloudfall, then run `uv sync`. Add the `mcp` extra (`cloudfall[mcp]`) to run
-# the `cloudfall-mcp` agent server.
+# the `cloudfall mcp serve` agent server.
 dependencies = ["cloudfall=={options.version}"]
 
 [tool.uv]
@@ -637,9 +637,6 @@ def _agent_contract(options: InitOptions) -> str:
     reads = _command_rows(CommandEffect.READ)
     writes = _command_rows(CommandEffect.PROJECT)
     mutations = _command_rows(CommandEffect.SERVERS, with_gate=True)
-    exit_rows = "\n".join(
-        f"| `{exit_code.code}` | {exit_code.meaning} |" for exit_code in EXIT_CODES
-    )
     return f"""# Agent operating contract
 
 This is a [Cloudfall](https://cloudfall.dev) project: `{options.name}`.
@@ -706,31 +703,20 @@ no hand-written playbook run outside `cloudfall-engine playbook run`.
 
 ## Output contract
 
-Every command prints one JSON document on stdout and nothing else, with the
-same top level whatever the command: `ok` is true exactly when the exit
-code is 0, `status` is the command's verdict (`ok`, `plan`, `drift`,
-`unhealthy`, `paused`, `failed`), `data` holds the result, and `error` is
-`null`. A failure prints `{{"ok": false, "status": "error", "data": null,
-"error": {{"code": …, "message": …, "exit_code": …}}}}` on stderr, with the
-code the process exits with; the `code` is stable: branch on it, not on
-the message. A failed `migrate` step is the one
-failure on stdout, with its steps under `data`. `--output json` is accepted
-and changes nothing; `--quiet` writes nothing to stderr, not even the error,
-and `--warnings-as-errors` fails a result that carries a warning. `--help`
-is not JSON: use `cloudfall --schema` for the interface. Read the exit code
-first:
+Every command prints a JSON envelope on stdout, a failure included: `ok` is
+true exactly when the exit code is 0, `data` holds the result with the
+command's verdict in `data.status` (`ok`, `plan`, `drift`, `unhealthy`,
+`paused`, `failed`), `error` is `null` or says what failed, and `meta`
+names the command and the request. Branch on the exit code first, then on
+the snake_case code in `error.context.code`, never on the message. A
+negative verdict such as drift exits non-zero and keeps its report in
+`data`. `operator run` and `dashboard serve` stream: one envelope line per
+event, then a closing line with `meta.end`.
 
-| Exit | Meaning |
-|---|---|
-{exit_rows}
-
-`cloudfall` is moving to the treaty contract a command at a time; the
-commands `cloudfall manifest` lists have moved. Their envelope has no
-top-level `status`: the verdict is `data.status`, beside the keys described
-above. A failure is an envelope on stdout too, the exit code is the one
-`cloudfall manifest` declares (a negative verdict such as drift keeps its
-report in `data`), and the snake_case code is in `error.context.code`. Pick
-the format with `--format json`; `--output` names a file there.
+`uv run cloudfall --schema` prints every command with its flags, output
+schema, and exit codes; `uv run cloudfall <command> --schema` prints one.
+`uv run cloudfall changelog` lists what changed in that interface by
+release. `--help` is for people.
 
 `cloudfall-engine` keeps its own contract: its envelope has no `status`, a
 failure is an envelope on stdout too, and its codes are listed by
