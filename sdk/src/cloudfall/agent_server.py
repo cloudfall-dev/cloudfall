@@ -9,7 +9,7 @@ On a project, the tools are the commands an agent may run there, with the
 server-changing ones previewing until called with ``yes``. On a repository,
 they are the read-only fleet commands and one tool per declared operation,
 whose call runs check mode and records a proposal; approving it is
-``cloudfall operations approve``, which no tool can stand in for.
+``cloudfall decisions approve``, which no tool can stand in for.
 
 Nothing here imports ``cloudfall.app``: ``App(mcp=...)`` needs these at
 construction. The tools Cloudfall provides beside its commands, which use
@@ -45,7 +45,7 @@ from cloudfall.resources import default_engine_directory, default_schema_directo
 if TYPE_CHECKING:
     from cloudfall.catalog import Operation
 
-APPROVAL_COMMAND = "cloudfall operations approve"
+APPROVAL_COMMAND = "cloudfall decisions approve"
 """The command a person runs to approve a proposal; no tool stands in for it."""
 
 ERROR_INVENTORY_UNDECLARED = "fleet_inventory_undeclared"
@@ -287,7 +287,7 @@ PROJECT_COMMANDS = frozenset(
         "inventory.show",
         "audit",
         "services.status",
-        "services.inspect",
+        "services.observe",
         "health",
         "observe",
         "add.ssh-key",
@@ -299,7 +299,7 @@ PROJECT_COMMANDS = frozenset(
         "deploy",
         "rollback",
         "restart",
-        "data.migrate",
+        "data.copy",
         "migrate",
         "backup.run",
         "backup.verify",
@@ -317,7 +317,8 @@ FLEET_COMMANDS = frozenset(
         "audit",
         "operations.list",
         "operations.show",
-        "operations.decisions",
+        "decisions.list",
+        "decisions.show",
         "why",
     }
 )
@@ -427,7 +428,7 @@ _PROJECT_INSTRUCTIONS = """\
 Cloudfall manages declarative infrastructure for dedicated Debian servers,
 in the one project this server was started for. Read-only tools validate
 the project and derive evidence. deploy, rollback, restart, migrate and
-data_migrate change servers: called without yes they only return the plan;
+data_copy change servers: called without yes they only return the plan;
 review it, then call again with yes: true. The converge_* tools converge
 every declared server and are destructive: they run only with
 confirm_destructive: true. Every change writes receipts; nothing reports

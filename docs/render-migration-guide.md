@@ -141,7 +141,7 @@ Save the Render database's connection URL alone into a local file, then
 either run the data migration directly or add it to the plan:
 
 ```console
-uv run cloudfall data migrate acme-postgresql --database acme --source-url-file ~/.render/acme-db.url
+uv run cloudfall data copy acme-postgresql --database acme --source-url-file ~/.render/acme-db.url
 uv run cloudfall migrate --build acme-api=main --data acme=~/.render/acme-db.url --yes
 ```
 

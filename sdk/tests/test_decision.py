@@ -386,7 +386,7 @@ def test_the_cli_proposes_and_then_lists_the_record(
         "check-then-approve"
     )
 
-    listed = main(["operations", "decisions", "--repository", str(repository)])
+    listed = main(["decisions", "list", "--repository", str(repository)])
 
     payload = json.loads(capsys.readouterr().out)
     assert listed == 0
@@ -427,7 +427,7 @@ def test_the_record_is_readable_without_a_catalog(
         path.unlink()
     (repository / "operations").rmdir()
 
-    exit_code = main(["operations", "decisions", "--repository", str(repository)])
+    exit_code = main(["decisions", "list", "--repository", str(repository)])
 
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
@@ -615,7 +615,7 @@ def test_the_cli_shows_the_proposal_before_it_runs_anything(
 
     exit_code = main(
         [
-            "operations",
+            "decisions",
             "approve",
             proposed.decision_id.value,
             "--repository",

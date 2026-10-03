@@ -63,7 +63,7 @@ class CommandContract:
     """Entry point: ``cloudfall`` or ``cloudfall-engine``."""
 
     name: str
-    """Space-joined subcommand path, such as ``data migrate``."""
+    """Space-joined subcommand path, such as ``data copy``."""
 
     effect: CommandEffect
 
@@ -189,7 +189,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
     ),
     CommandContract(
         "cloudfall",
-        "operations approve",
+        "decisions approve",
         CommandEffect.SERVERS,
         "approve one recorded proposal, run it for real, and verify it",
         gate=_YES,
@@ -200,10 +200,17 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
     ),
     CommandContract(
         "cloudfall",
-        "operations decisions",
+        "decisions list",
         CommandEffect.READ,
         "list what was proposed, what check mode showed, and who approved",
         output=(_shape("status", "directory", "decisions"),),
+    ),
+    CommandContract(
+        "cloudfall",
+        "decisions show",
+        CommandEffect.READ,
+        "show one decision record: the proposal, its check-mode diff, and its outcome",
+        output=(_shape("status", "decision"),),
     ),
     CommandContract(
         "cloudfall",
@@ -248,7 +255,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
     ),
     CommandContract(
         "cloudfall",
-        "services inspect",
+        "services observe",
         CommandEffect.READ,
         "probe DNS, TLS, origin, and public routes into evidence",
         output=(_shape("status", "observations"),),
@@ -399,7 +406,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
     ),
     CommandContract(
         "cloudfall",
-        "data migrate",
+        "data copy",
         CommandEffect.SERVERS,
         "dump an external database and restore it into a declared service",
         gate=_YES,

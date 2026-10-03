@@ -172,7 +172,8 @@ def test_a_repository_serves_its_catalog_and_no_approval(tmp_path: Path) -> None
         "audit",
         "inventory_show",
         "observe",
-        "operations_decisions",
+        "decisions_list",
+        "decisions_show",
         "operations_list",
         "operations_show",
         "why",
@@ -183,7 +184,7 @@ def test_a_repository_serves_its_catalog_and_no_approval(tmp_path: Path) -> None
     purge = tools["operation_purge"].annotations
     assert (marker.read_only_hint, marker.destructive_hint) == (True, False)
     assert (purge.read_only_hint, purge.destructive_hint) == (True, True)
-    assert "cloudfall operations approve" in tools["operation_write_marker"].description
+    assert "cloudfall decisions approve" in tools["operation_write_marker"].description
 
 
 def test_an_operation_tool_records_a_proposal_and_changes_nothing(
@@ -197,7 +198,7 @@ def test_an_operation_tool_records_a_proposal_and_changes_nothing(
             "operation_write_marker",
             {"target": "web-1", "inputs": {"version": "2.0.0"}},
         ),
-        ("operations_decisions", {}),
+        ("decisions_list", {}),
         ("why", {"operation": "write-marker"}),
     )
 
@@ -206,7 +207,7 @@ def test_an_operation_tool_records_a_proposal_and_changes_nothing(
     assert decision["spec"]["status"] == "proposed"
     assert decision["spec"]["inputs"] == {"version": "2.0.0"}
     assert proposed["data"]["next"] == [
-        f"cloudfall operations approve {decision['metadata']['id']} --yes"
+        f"cloudfall decisions approve {decision['metadata']['id']} --yes"
     ]
     assert not (repository / "marker.txt").exists()
     recorded = decisions["data"]["decisions"]
@@ -221,7 +222,7 @@ def test_a_call_cannot_reach_another_fleet_or_approve(tmp_path: Path) -> None:
     _, (redirected, approved) = _talk(
         _serve("--repository", str(repository), cwd=tmp_path),
         ("operations_list", {"repository": str(other)}),
-        ("operations_approve", {"decision": "anything", "yes": True}),
+        ("decisions_approve", {"decision": "anything", "yes": True}),
     )
 
     assert redirected["ok"] is False
@@ -238,7 +239,7 @@ def test_a_project_serves_its_commands_with_the_project_bound(tmp_path: Path) ->
     assert {"deploy", "audit", "operator_approve", "build_artifact"} <= set(tools)
     assert not {
         "init",
-        "operations_approve",
+        "decisions_approve",
         "operator_run",
         "dashboard_serve",
         "cleanup",

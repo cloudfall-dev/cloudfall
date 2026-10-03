@@ -112,7 +112,7 @@ acceptable if the following hold:
 | 6 | Failover on demand | `availability` block, formation mode | Designed, not implemented (demand-gated) |
 | 7 | One-command node setup | Baseline over SSH from config | In place for installed Debian; provisioning (installimage, RAID) out of band |
 | 8 | Resource limits | systemd resource control from declared envelopes | Missing |
-| 9 | Data movement verb | `data migrate` + file-storage move + receipts | Partial: databases yes, file storage no |
+| 9 | Data movement verb | `data copy` + file-storage move + receipts | Partial: databases yes, file storage no |
 | 10 | Routing follows placement | Domain re-render on convergence | Partial: rendering exists, not wired to placement change |
 | 11 | Drain / decommission | Evacuation procedure over 9 + 10 | Missing |
 | 12 | Declared operations with verify | `Operation` catalog, MCP annotations, verify playbook | Partial: MCP tools are annotated, server changes preview until confirmed, and approval stays a person's command; deploys, backups and migrations verify; no catalog over arbitrary playbooks, no declared verify step |

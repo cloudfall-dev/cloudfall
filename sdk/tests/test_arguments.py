@@ -20,7 +20,7 @@ def test_abbreviated_secret_file_flag_is_rejected_without_echo(
     payload = _usage_error(
         [
             "data",
-            "migrate",
+            "copy",
             "postgresql-main",
             "--project",
             str(EXAMPLES),

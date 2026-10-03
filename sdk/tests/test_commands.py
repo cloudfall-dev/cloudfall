@@ -61,9 +61,9 @@ def test_every_yes_gated_command_is_classified_as_changing_servers() -> None:
         "deploy",
         "rollback",
         "restart",
-        "data migrate",
+        "data copy",
         "migrate",
-        "operations approve",
+        "decisions approve",
     }
     assert gated <= changing
     for command in commands_with_effect(CommandEffect.SERVERS):
@@ -82,5 +82,5 @@ def test_only_server_changing_commands_carry_a_gate() -> None:
 def test_invocation_is_the_canonical_project_command() -> None:
     by_name = {command.name: command for command in COMMANDS}
 
-    assert by_name["data migrate"].invocation == "uv run cloudfall data migrate"
+    assert by_name["data copy"].invocation == "uv run cloudfall data copy"
     assert by_name["playbook run"].invocation == "uv run cloudfall-engine playbook run"

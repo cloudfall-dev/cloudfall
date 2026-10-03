@@ -590,7 +590,7 @@ def _import_databases(
         _CATEGORY_ACTION,
         _POSTGRES_SERVICE_ID,
         "before cutover, save the Render database connection URL into a "
-        "local file and migrate the data with: cloudfall data migrate "
+        "local file and migrate the data with: cloudfall data copy "
         f"{_POSTGRES_SERVICE_ID} --database <name> --source-url-file <file> "
         "--yes (or pass --data <name>=<file> to cloudfall migrate)",
     )

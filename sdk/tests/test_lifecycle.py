@@ -308,7 +308,7 @@ def test_cli_data_migration_plan_checks_the_source_url_file(
     source_url_file = tmp_path / "source.url"
     argv = [
         "data",
-        "migrate",
+        "copy",
         "postgresql-main",
         "--database",
         "crm",

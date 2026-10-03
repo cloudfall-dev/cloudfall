@@ -287,7 +287,7 @@ routes. Progress persists after every step, so a failed step or the DNS
 pause resumes exactly where it stopped.
 
 Managed-database contents follow the same guided path: save the source
-connection URL into a local file and either run `cloudfall data migrate`
+connection URL into a local file and either run `cloudfall data copy`
 directly (it shows the plan until you add `--yes`) or add `--data <database>=<url-file>` to the migration plan. The
 engine dumps on the target host, restores over the peer-authenticated
 socket, refuses non-empty target databases, verifies per-table row counts,
