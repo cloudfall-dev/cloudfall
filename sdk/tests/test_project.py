@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 from cloudfall.cli import main
-from cloudfall.commands import COMMANDS, EXIT_CODES, CommandEffect
+from cloudfall.commands import COMMANDS, CommandEffect
 from cloudfall.domain import ResourceKind
 from cloudfall.project import (
     GitSetup,
@@ -435,10 +435,10 @@ def test_init_writes_the_agent_contract_and_the_claude_pointer(
     assert "Ask the human what this project manages" in _section(
         contract, "What this project manages"
     )
-    assert '`{"ok": false, "status": "error",' in _section(contract, "Output contract")
-    for exit_code in EXIT_CODES:
-        row = f"| `{exit_code.code}` | {exit_code.meaning} |"
-        assert row in _section(contract, "Output contract")
+    output = _section(contract, "Output contract")
+    assert "`data.status`" in output
+    assert "`uv run cloudfall --schema`" in output
+    assert "`uv run cloudfall changelog`" in output
     assert "`secretRefs`" in _section(contract, "Secrets")
     assert "`tmp/`" in _section(contract, "Evidence")
     assert "`.venv/`" in _section(contract, "Git")

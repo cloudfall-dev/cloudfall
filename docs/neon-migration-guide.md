@@ -172,7 +172,7 @@ The row-count check is the verify step and the receipt is the record's
 entry for the migration. The restore is not done because `pg_restore`
 exited zero; it is done because every table's count matches, and the
 receipt is what you show when asked whether anything was lost. An agent
-driving this through `cloudfall-mcp` gets the same receipt and the same
+driving this through `cloudfall mcp serve` gets the same receipt and the same
 refusal guards, and cannot skip either.
 
 One database at a time; repeat per declared database. If the application

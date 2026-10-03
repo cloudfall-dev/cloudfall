@@ -26,7 +26,7 @@ from cloudfall.lifecycle import LifecycleError, run_engine_playbook
 from cloudfall.observation import load_observations
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Iterator, Mapping
     from pathlib import Path
 
     from cloudfall.audit import AuditReport
@@ -36,15 +36,15 @@ if TYPE_CHECKING:
 
 _PROPOSAL_SCHEMA = "operator-proposal.schema.json"
 _FINGERPRINT_LENGTH = 16
-_ERROR_FEED_UNREACHABLE = "operator_feed_unreachable"
-_ERROR_FEED_INVALID = "operator_feed_invalid"
-_ERROR_GATEWAY_MATERIAL_INVALID = "operator_gateway_material_invalid"
+ERROR_FEED_UNREACHABLE = "operator_feed_unreachable"
+ERROR_FEED_INVALID = "operator_feed_invalid"
+ERROR_GATEWAY_MATERIAL_INVALID = "operator_gateway_material_invalid"
 _ERROR_PROPOSAL_EXISTS = "operator_proposal_exists"
 ERROR_PROPOSAL_MISSING = "operator_proposal_missing"
 """Code of the error ``ProposalStore`` raises for an id it holds no receipt for."""
 _ERROR_PROPOSAL_NOT_OPEN = "operator_proposal_not_open"
 _ERROR_OPERATION_UNSUPPORTED = "operator_operation_unsupported"
-_ERROR_GATEWAY_UNDECLARED = "operator_gateway_undeclared"
+ERROR_GATEWAY_UNDECLARED = "operator_gateway_undeclared"
 _SERVICE_CHECK_PREFIXES = ("services.bind[", "alerting.rules[")
 _OUTCOME_DETAIL_MAX = 1000
 """``spec.outcome.detail`` ``maxLength`` in the proposal schema."""
@@ -282,7 +282,7 @@ class GatewayAlertFeed:
                 f"(ca {self.ca_path}, certificate {self.certificate_path}, "
                 f"key {self.key_path}): {error}"
             )
-            raise OperatorError(_ERROR_GATEWAY_MATERIAL_INVALID, message) from error
+            raise OperatorError(ERROR_GATEWAY_MATERIAL_INVALID, message) from error
         request = urllib.request.Request(self.url)  # noqa: S310 - declared https gateway
         try:
             with urllib.request.urlopen(  # noqa: S310 - declared https gateway
@@ -291,7 +291,7 @@ class GatewayAlertFeed:
                 body = response.read()
         except OSError as error:
             message = f"alert feed unreachable: {self.url}: {error}"
-            raise OperatorError(_ERROR_FEED_UNREACHABLE, message) from error
+            raise OperatorError(ERROR_FEED_UNREACHABLE, message) from error
         return parse_prometheus_alerts(body.decode("utf-8"))
 
 
@@ -301,14 +301,14 @@ def parse_prometheus_alerts(raw: str) -> tuple[OperatorAlert, ...]:
         payload = cast("object", json.loads(raw))
     except json.JSONDecodeError as error:
         message = f"alert feed returned invalid JSON: {error.msg}"
-        raise OperatorError(_ERROR_FEED_INVALID, message) from error
+        raise OperatorError(ERROR_FEED_INVALID, message) from error
     if not isinstance(payload, dict) or payload.get("status") != "success":
         message = "alert feed returned a non-success payload"
-        raise OperatorError(_ERROR_FEED_INVALID, message)
+        raise OperatorError(ERROR_FEED_INVALID, message)
     data = payload.get("data")
     if not isinstance(data, dict) or not isinstance(data.get("alerts"), list):
         message = "alert feed payload is missing data.alerts"
-        raise OperatorError(_ERROR_FEED_INVALID, message)
+        raise OperatorError(ERROR_FEED_INVALID, message)
     alerts: list[OperatorAlert] = []
     for item in cast("list[object]", data["alerts"]):
         if not isinstance(item, dict):
@@ -1102,7 +1102,7 @@ def gateway_feed(
                 "no LoggingStack declares alerting; pass an explicit "
                 "gateway URL or declare an alerting block"
             )
-            raise OperatorError(_ERROR_GATEWAY_UNDECLARED, message)
+            raise OperatorError(ERROR_GATEWAY_UNDECLARED, message)
         url = (
             f"https://{stack.gateway.server_name.value}:"
             f"{stack.gateway.port.value}/api/v1/alerts"
@@ -1113,6 +1113,71 @@ def gateway_feed(
         certificate_path=certificate_path,
         key_path=key_path,
     )
+
+
+class PassKind(StrEnum):
+    """What one pass of the watch loop looked at."""
+
+    ALERTS = "alerts"
+    DRIFT = "drift"
+    AUTONOMY = "autonomy"
+
+
+@dataclass(frozen=True, slots=True)
+class PassReport:
+    """One pass of the watch loop and what it found or did."""
+
+    kind: PassKind
+    report: RunReport | AutonomyReport
+
+    @property
+    def changed(self) -> bool:
+        """The pass wrote a proposal or executed one."""
+        if isinstance(self.report, AutonomyReport):
+            return bool(self.report.executed)
+        return bool(self.report.proposed)
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize for structured run output."""
+        return {"pass": self.kind.value, **self.report.as_dict()}
+
+
+@dataclass(frozen=True, slots=True)
+class DriftCheck:
+    """An audited drift pass, run at most once per ``interval_seconds``."""
+
+    auditor: Callable[[], AuditReport]
+    interval_seconds: float
+
+
+def watch(  # noqa: PLR0913 - the loop's whole schedule is its boundary.
+    feed: AlertFeed,
+    inventory: PlatformInventory,
+    store: ProposalStore,
+    *,
+    drift: DriftCheck | None,
+    autonomy: Callable[[], AutonomyReport] | None,
+    interval_seconds: float | None,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Iterator[PassReport]:
+    """Run watch passes until stopped, one report per pass.
+
+    Each round runs the alerts pass, then the drift pass when it is due
+    (the first round always runs it), then the autonomy pass when one is
+    given. Without ``interval_seconds`` the loop stops after one round.
+    """
+    drift_due = clock()
+    while True:
+        yield PassReport(PassKind.ALERTS, run_once(feed, inventory, store))
+        if drift is not None and clock() >= drift_due:
+            yield PassReport(PassKind.DRIFT, drift_pass(drift.auditor, store))
+            drift_due = clock() + drift.interval_seconds
+        if autonomy is not None:
+            yield PassReport(PassKind.AUTONOMY, autonomy())
+        if interval_seconds is None:
+            return
+        sleep(interval_seconds)
 
 
 def _utc_now() -> str:

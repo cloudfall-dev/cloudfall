@@ -12,7 +12,8 @@ built yet), and a team leaving a PaaS gets a fleet this way. Either way the
 result is the same: every step below leaves a receipt, the migration ends
 with an audit rather than a green light, and the always-on operator takes
 over afterwards with a record of everything it does. An agent can drive
-the whole guide through `cloudfall-mcp`; the proving run did.
+the whole guide through `cloudfall mcp serve`; the proving run did, through
+its predecessor `cloudfall-mcp`.
 
 > **Status:** proven live. An application actually hosted on Render was
 > cut over with its data and a real DNS flip on an owned domain, driven by

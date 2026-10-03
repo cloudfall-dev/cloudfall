@@ -23,6 +23,7 @@ from cloudfall.lifecycle import (
     plan_health,
     verify_artifact,
 )
+from cloudfall.validation import SchemaCatalog
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -203,7 +204,7 @@ def test_cli_deploy_reports_a_missing_artifact(
             str(tmp_path / "artifacts"),
             "--inventory-file",
             str(tmp_path / "inventory.json"),
-            "--receipts",
+            "--releases",
             str(tmp_path / "releases"),
         ]
     )
@@ -381,3 +382,25 @@ def test_release_artifact_build_reads_the_engine_envelope(tmp_path: Path) -> Non
     assert built["status"] == "ok"
     assert isinstance(built["release"], str)
     assert Path(str(built["archive"])).is_file()
+
+
+def test_backup_receipt_schema_accepts_the_playbook_shape() -> None:
+    receipt = {
+        "apiVersion": "cloudfall/v1",
+        "kind": "BackupReceipt",
+        "metadata": {
+            "id": "postgresql-main-restore-check",
+            "description": "Backup operation receipt written by backup.yml",
+        },
+        "spec": {
+            "service": "postgresql-main",
+            "server": "h1",
+            "action": "restore-check",
+            "executedAt": "2026-09-11T10:00:00Z",
+            "summary": "restore check passed for crm: latest.dump",
+        },
+    }
+
+    SchemaCatalog(SCHEMAS).validate_named(
+        "backup-receipt.schema.json", receipt
+    )

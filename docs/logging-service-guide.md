@@ -186,9 +186,9 @@ records:
 - **The operator**: watches that route, writes a proposal receipt per
   firing alert with the alert labels as its trigger evidence, and verifies
   a remediation by seeing the alert stop
-- **The agent**: reads the same route through `cloudfall-mcp` and the
-  `operator_watch` tool; it never queries Loki or Prometheus directly, and
-  the gateway does not let it
+- **The agent**: reads what the operator recorded from that route through
+  `cloudfall mcp serve` (`operator_list`, `operator_show`); it never queries
+  Loki or Prometheus directly, and the gateway does not let it
 - **The audit**: the running units, pinned versions and listener bindings
   declared here are checked by `cloudfall audit` like any other service,
   so the stack that produces the evidence is itself evidence

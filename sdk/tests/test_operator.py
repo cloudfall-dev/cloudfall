@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,15 +10,17 @@ from pathlib import Path
 import pytest
 from cloudfall.audit import AuditCheck, AuditReport, AuditStatus, ServerAudit
 from cloudfall.cli import main
-from cloudfall.commands import CLI_COMMANDS
 from cloudfall.domain import ResourceId
 from cloudfall.inventory import PlatformInventory
 from cloudfall.lifecycle import LifecycleError
 from cloudfall.operator import (
     ApproveOptions,
+    AutonomyReport,
+    DriftCheck,
     GatewayAlertFeed,
     OperatorAlert,
     OperatorError,
+    PassKind,
     ProposalStatus,
     ProposalStore,
     RunReport,
@@ -30,9 +33,9 @@ from cloudfall.operator import (
     fingerprint_of,
     parse_prometheus_alerts,
     run_once,
+    watch,
 )
 from cloudfall.validation import SchemaCatalog, validate_config
-from jsonschema import Draft202012Validator
 
 _FAST_APPROVE = ApproveOptions(
     verify_timeout_seconds=2.0,
@@ -489,9 +492,6 @@ def test_cli_operator_show_wraps_the_proposal_in_the_result_envelope(
         "status": "ok",
         "proposal": store.load(ResourceId.from_boundary(proposal_id)).as_document(),
     }
-    contract = next(c for c in CLI_COMMANDS if c.name == "operator show")
-    validator = Draft202012Validator(contract.output_schema())
-    assert [error.message for error in validator.iter_errors(document)] == []
 
 
 def test_cli_operator_errors_use_the_shared_error_envelope(
@@ -504,6 +504,111 @@ def test_cli_operator_errors_use_the_shared_error_envelope(
     assert (document["ok"], document["data"]) == (False, None)
     assert document["error"]["code"] == "NOT_FOUND"
     assert document["error"]["context"]["code"] == "operator_proposal_missing"
+
+
+def test_watch_without_an_interval_runs_one_round(tmp_path: Path) -> None:
+    feed = FakeFeed(payloads=[_alerts_payload()])
+    slept: list[float] = []
+
+    passes = list(
+        watch(
+            feed,
+            _inventory(),
+            _store(tmp_path),
+            drift=None,
+            autonomy=None,
+            interval_seconds=None,
+            sleep=slept.append,
+        )
+    )
+
+    assert [report.kind for report in passes] == [PassKind.ALERTS]
+    assert passes[0].changed
+    assert passes[0].as_dict()["pass"] == PassKind.ALERTS.value
+    assert (feed.fetches, slept) == (1, [])
+
+
+def test_watch_runs_drift_when_due_and_autonomy_every_round(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    audits: list[int] = []
+
+    def auditor() -> AuditReport:
+        audits.append(len(audits))
+        return _audit_report(("os.distribution", AuditStatus.COMPLIANT))
+
+    ticks = itertools.count()
+    passes = watch(
+        FakeFeed(payloads=[_alerts_payload()]),
+        _inventory(),
+        store,
+        drift=DriftCheck(auditor, interval_seconds=2),
+        autonomy=lambda: AutonomyReport(executed=(), withheld=()),
+        interval_seconds=1,
+        clock=lambda: float(next(ticks)),
+        sleep=lambda _: None,
+    )
+
+    kinds = [report.kind for report in itertools.islice(passes, 8)]
+
+    assert kinds[:3] == [PassKind.ALERTS, PassKind.DRIFT, PassKind.AUTONOMY]
+    assert kinds.count(PassKind.AUTONOMY) == kinds.count(PassKind.ALERTS)
+    assert 1 < len(audits) < kinds.count(PassKind.ALERTS)
+
+
+def test_cli_operator_run_refuses_unreadable_gateway_material(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing = tmp_path / "missing.pem"
+
+    exit_code = main(
+        [
+            "operator",
+            "run",
+            "--project",
+            str(EXAMPLES),
+            "--schemas",
+            str(SCHEMAS),
+            "--proposals",
+            str(tmp_path / "proposals"),
+            "--gateway-url",
+            "https://127.0.0.1:9/api/v1/alerts",
+            "--gateway-ca",
+            str(missing),
+            "--gateway-cert",
+            str(missing),
+            "--gateway-key",
+            str(missing),
+        ]
+    )
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert exit_code == 4
+    assert lines[-1]["error"]["code"] == "PRECONDITION"
+    assert (
+        lines[-1]["error"]["context"]["code"] == "operator_gateway_material_invalid"
+    )
+
+
+@pytest.mark.parametrize("flag", ["--interval", "--drift-interval"])
+def test_cli_operator_run_refuses_a_non_positive_interval(
+    flag: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    exit_code = main(
+        [
+            "operator",
+            "run",
+            "--project",
+            str(EXAMPLES),
+            *("--gateway-ca", "ca.pem", "--gateway-cert", "c.pem"),
+            *("--gateway-key", "k.pem", flag, "0"),
+            "--proposals",
+            str(tmp_path / "proposals"),
+        ]
+    )
+
+    document = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert exit_code == 2
+    assert flag.removeprefix("--") in json.dumps(document["error"])
 
 
 def _policied_inventory() -> PlatformInventory:

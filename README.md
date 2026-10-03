@@ -31,7 +31,7 @@ That design is written up and not yet built; see
 > with a single human approval and then autonomously under declared policy,
 > a timer-driven drill proved a real backup restorable, and an alert crossed
 > the public network to a second machine. The entire migration was driven by
-> an AI agent through `cloudfall-mcp` alone. Full reports:
+> an AI agent through the MCP server alone. Full reports:
 > [proving-runs](docs/proving-runs/). The one layer not yet exercised live
 > is bare-metal RAID/storage provisioning (see the [roadmap](ROADMAP.md))
 
@@ -52,8 +52,9 @@ That design is written up and not yet built; see
   can't be undone
 - **AI-agent native.** Agents operate through a stable CLI and Python API
   with structured JSON results instead of inventing shell commands over SSH.
-  The `cloudfall-mcp` server exposes read-only evidence tools freely and
-  gates every server-changing tool behind an explicit confirmation handshake
+  `cloudfall mcp serve` exposes read-only evidence tools freely; a deploy,
+  rollback, restart or migration only returns its plan until called again
+  with `yes`, and approving a recorded operation stays a person's command
 - **The bill buys computers, not margins.** A steady $1,000/mo cloud bill is
   mostly margin on commodity compute and managed databases. On servers you
   own, that difference becomes runway, every year
@@ -111,7 +112,7 @@ live on disposable Debian targets:
   evidence-derived operations dashboard
 - Render blueprint and live-API importers, guided data migration, and the
   resumable `cloudfall migrate` orchestrator with explicit cutover steps
-- The `cloudfall-mcp` agent server and the always-on operator with receipted
+- The `cloudfall mcp serve` agent server and the always-on operator with receipted
   proposals and policy-bounded autonomy
 
 The one implemented layer not yet validated live is bare-metal RAID/storage
@@ -238,7 +239,7 @@ before the bundled roles. To move a project to a newer Cloudfall commit, bump
 Humans and AI agents both edit the resources and both run the CLI, with a
 human approving anything that changes a server. `cloudfall init` writes
 that arrangement down as the project's `AGENTS.md`, the operating contract
-an agent started in the directory (Claude Code, Codex, or `cloudfall-mcp`)
+an agent started in the directory (Claude Code, Codex, or `cloudfall mcp serve`)
 reads first: the canonical `uv run cloudfall` invocation and project
 resolution, every command sorted by effect (changes nothing on servers,
 writes project files, changes servers) with the gate each server-changing
@@ -351,7 +352,8 @@ and public routes on every refresh, so service health is live. Server
 hardware evidence still comes from observation snapshots: schedule
 `task inspect` (cron or a timer) on the management host to keep it fresh.
 The server binds `127.0.0.1:8100` by default; set `DASHBOARD_HOST`,
-`DASHBOARD_PORT`, and `DASHBOARD_REFRESH` to override. The projection stays
+`DASHBOARD_PORT`, and `DASHBOARD_REFRESH` to override. Once it listens it
+prints one JSON line with its URL, then serves until stopped. The projection stays
 strictly read-only either way.
 
 ## Always-on operator

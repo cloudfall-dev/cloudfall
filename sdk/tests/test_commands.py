@@ -1,10 +1,10 @@
-"""The command catalog matches the command trees it classifies."""
+"""The command catalog matches the commands the treaty apps register."""
 
 from __future__ import annotations
 
-import argparse
+import dataclasses
 
-from cloudfall.cli import _parser as cloudfall_parser
+from cloudfall.app import app
 from cloudfall.commands import (
     CLI_COMMANDS,
     COMMANDS,
@@ -15,31 +15,21 @@ from cloudfall.commands import (
 from cloudfall_engine.cli import app as engine_app
 
 
-def _leaves(parser: argparse.ArgumentParser, prefix: str = "") -> dict[str, set[str]]:
-    """Map every leaf command path to the long options it accepts."""
-    subparsers = [
-        action
-        for action in parser._actions  # noqa: SLF001 - argparse has no public walk.
-        if isinstance(action, argparse._SubParsersAction)  # noqa: SLF001
-    ]
-    if not subparsers:
-        options = {
-            option
-            for action in parser._actions  # noqa: SLF001
-            for option in action.option_strings
+def _leaves() -> dict[str, set[str]]:
+    """Map every ``cloudfall`` command path to the fields its arguments take."""
+    return {
+        str(path).replace(".", " "): {
+            field.name for field in dataclasses.fields(command.args_type)
         }
-        return {prefix.strip(): options}
-    leaves: dict[str, set[str]] = {}
-    for action in subparsers:
-        for name, child in action.choices.items():
-            leaves.update(_leaves(child, f"{prefix} {name}"))
-    return leaves
+        for path, command in app.commands.items()
+        if path not in app.builtins
+    }
 
 
 def test_catalog_names_every_cli_leaf_command_once() -> None:
     cataloged = [command.name for command in CLI_COMMANDS]
 
-    assert sorted(cataloged) == sorted(_leaves(cloudfall_parser()))
+    assert sorted(cataloged) == sorted(_leaves())
     assert len(cataloged) == len(set(cataloged))
     assert all(command.program == "cloudfall" for command in CLI_COMMANDS)
 
@@ -60,8 +50,8 @@ def test_catalog_names_every_engine_leaf_command_once() -> None:
 def test_every_yes_gated_command_is_classified_as_changing_servers() -> None:
     gated = {
         name
-        for name, options in _leaves(cloudfall_parser()).items()
-        if "--yes" in options
+        for name, fields in _leaves().items()
+        if "yes" in fields
     }
     changing = {
         command.name for command in commands_with_effect(CommandEffect.SERVERS)

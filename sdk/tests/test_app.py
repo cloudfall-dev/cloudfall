@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 import json
+import select
 import shutil
+import signal
+import socket
+import subprocess
+import sys
+import urllib.request
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import pytest
-from cloudfall.app import Fleet, MigrateArgs, app
+from cloudfall.app import Fleet, MigrateArgs
 from cloudfall.cli import main
 from cloudfall.commands import CLI_COMMANDS
 from cloudfall.resources import default_schema_directory
 from cloudfall.validation import validate_config
+
+if TYPE_CHECKING:
+    import pytest
 
 ROOT = Path(__file__).parents[2]
 EXAMPLES = ROOT / "config" / "examples"
@@ -19,33 +28,29 @@ COMPLIANT = ROOT / "config" / "tests" / "observed" / "compliant"
 SCHEMAS = default_schema_directory()
 
 
-def test_the_contract_marks_exactly_the_commands_treaty_runs() -> None:
-    marked = {
-        contract.name
-        for contract in CLI_COMMANDS
-        if contract.program == "cloudfall" and contract.treaty
-    }
-    routed = {
-        contract.name
-        for contract in CLI_COMMANDS
-        if contract.program == "cloudfall" and app.resolves(contract.name.split())
-    }
+def test_root_help_lists_the_commands(capsys: pytest.CaptureFixture[str]) -> None:
+    code = main(["--help"])
 
-    assert marked == routed
-    assert "audit" in marked
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "audit" in captured.out + captured.err
 
 
-def test_root_help_still_lists_a_command_that_moved(
+def test_root_schema_lists_every_cataloged_command(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    with pytest.raises(SystemExit) as exit_info:
-        main(["--help"])
+    code = main(["--schema"])
 
-    assert exit_info.value.code == 0
-    assert "audit" in capsys.readouterr().err
+    manifest = json.loads(capsys.readouterr().out)["data"]
+    listed = set(manifest["commands"])
+    assert code == 0
+    assert {
+        contract.name.replace(" ", ".")
+        for contract in CLI_COMMANDS
+    } <= listed
 
 
-def test_a_moved_command_keeps_its_keys_with_status_under_data(
+def test_a_command_keeps_its_keys_with_status_under_data(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     code = main(["operations", "decisions", "--repository", str(EXAMPLES)])
@@ -55,19 +60,6 @@ def test_a_moved_command_keeps_its_keys_with_status_under_data(
     assert "status" not in document
     assert document["data"]["status"] == "ok"
     assert set(document["data"]) == {"status", "directory", "decisions"}
-
-
-def test_a_half_moved_group_sends_the_rest_to_argparse(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """`operator list` runs on treaty; `operator run` is still argparse's."""
-    with pytest.raises(SystemExit) as exit_info:
-        main(["operator", "run", "--project", str(EXAMPLES)])
-
-    error = json.loads(capsys.readouterr().err)
-    assert exit_info.value.code == 2
-    assert error["status"] == "error"
-    assert "--gateway-ca" in error["error"]["message"]
 
 
 def test_a_drift_report_keeps_the_order_the_checks_ran_in(
@@ -92,7 +84,7 @@ def test_a_drift_report_keeps_the_order_the_checks_ran_in(
 def test_migrate_resolves_env_and_data_files_against_the_project(
     tmp_path: Path,
 ) -> None:
-    """The argparse CLI ran migrate inside the project; relative paths meant it."""
+    """Relative env and data paths name files inside the project."""
     fleet = Fleet(EXAMPLES, validate_config(EXAMPLES, SCHEMAS))
     args = MigrateArgs(
         env_file=("crm-backend=tmp/env/crm.env",),
@@ -105,3 +97,59 @@ def test_migrate_resolves_env_and_data_files_against_the_project(
         "crm-backend": EXAMPLES / "tmp/env/crm.env"
     }
     assert options.data_migrations == {"crm": tmp_path / "source.url"}
+
+
+def test_dashboard_serve_streams_where_it_listens_until_stopped(
+    tmp_path: Path,
+) -> None:
+    command = [
+        sys.executable,
+        "-c",
+        "from cloudfall.cli import run; run()",
+        *("dashboard", "serve", "--project", str(EXAMPLES)),
+        *("--observed", str(COMPLIANT), "--port", "0"),
+    ]
+    process = subprocess.Popen(  # noqa: S603 - fixed interpreter and arguments.
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        cwd=tmp_path,
+    )
+    try:
+        assert process.stdout is not None
+        readable, _, _ = select.select([process.stdout], [], [], 30)
+        assert readable, "the listening event never arrived"
+        listening = json.loads(process.stdout.readline())
+        url = listening["data"]["dashboard"]["url"]
+        with urllib.request.urlopen(f"{url}operations.json", timeout=10) as response:  # noqa: S310 - local server
+            assert response.status == 200
+        process.send_signal(signal.SIGTERM)
+        closing = json.loads(process.stdout.read().splitlines()[-1])
+        assert process.wait(timeout=10) == 143
+    finally:
+        process.kill()
+        process.wait()
+
+    assert listening["meta"]["seq"] == 1
+    assert listening["data"]["status"] == "ok"
+    assert closing["error"]["code"] == "CANCELLED"
+
+
+def test_dashboard_serve_names_a_port_it_cannot_listen_on(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen()
+        port = taken.getsockname()[1]
+        code = main(
+            [
+                *("dashboard", "serve", "--project", str(EXAMPLES)),
+                *("--observed", str(COMPLIANT), "--port", str(port)),
+            ]
+        )
+
+    closing = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert code == 4
+    assert closing["error"]["context"]["code"] == "dashboard_listen_failed"
