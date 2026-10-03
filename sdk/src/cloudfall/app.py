@@ -851,7 +851,10 @@ class AuditArgs(FleetArgs):
     """Arguments of ``audit``."""
 
     observed: Path = Flag(
-        description="Directory containing observed-server JSON snapshots"
+        default=Path("tmp/observed"),
+        description=(
+            "Server snapshot directory, as observe writes it (default: tmp/observed)"
+        ),
     )
     env_receipts: Path = Flag(
         default=Path("tmp/env-receipts"),
@@ -925,7 +928,10 @@ class EvidenceArgs(ProjectArgs):
     """Options of a command that reads the evidence a fleet's view is built from."""
 
     observed: Path = Flag(
-        description="Directory containing observed-server JSON snapshots"
+        default=Path("tmp/observed"),
+        description=(
+            "Server snapshot directory, as observe writes it (default: tmp/observed)"
+        ),
     )
     service_observed: Path = Flag(
         default=Path("tmp/observed-services"),
@@ -2038,10 +2044,10 @@ class OperatorEngineArgs(ProposalArgs):
         description="Rendered inventory path (default: tmp/ansible-inventory.json)",
     )
     observed: Path = Flag(
-        default=Path("tmp/operator/observed"),
+        default=Path("tmp/observed"),
         description=(
-            "Observation directory for drift checks and their verification "
-            "(default: tmp/operator/observed)"
+            "Server snapshot directory drift checks refresh and verify against "
+            "(default: tmp/observed)"
         ),
     )
     gateway_url: str | None = Flag(
