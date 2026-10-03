@@ -100,7 +100,7 @@ uv run cloudfall secrets render crm-backend \
 This writes `tmp/env/crm-backend.env` with mode `0600` and prints an
 envelope carrying the key **names**, the file hash, and the resolved
 references — never a value. Pass that file to `cloudfall deploy --yes
---env-file` or map it in `cloudfall migrate`; the deploy role installs it
+--env-file` or map it with `cloudfall migrate --component-env-file`; the deploy role installs it
 into the release owned by the application user and the systemd unit loads it
 with `EnvironmentFile=`.
 

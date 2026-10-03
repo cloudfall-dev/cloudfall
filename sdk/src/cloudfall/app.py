@@ -2382,11 +2382,11 @@ class MigrateArgs(EngineArgs):
         default=(),
         description="Build a component from a git ref, as COMPONENT=REF (repeatable)",
     )
-    release: tuple[str, ...] = Flag(
+    component_release: tuple[str, ...] = Flag(
         default=(),
         description="Deploy an existing release, as COMPONENT=RELEASE (repeatable)",
     )
-    env_file: tuple[str, ...] = Flag(
+    component_env_file: tuple[str, ...] = Flag(
         default=(),
         description="Environment file for a component, as COMPONENT=PATH (repeatable)",
     )
@@ -2423,8 +2423,8 @@ class MigrateArgs(EngineArgs):
             _inside_project(getattr(self, flag), flag.replace("_", "-"))
         for option, entries in (
             ("build", self.build),
-            ("release", self.release),
-            ("env-file", self.env_file),
+            ("component-release", self.component_release),
+            ("component-env-file", self.component_env_file),
             ("data", self.data),
         ):
             _pairs(entries, option)
@@ -2434,11 +2434,13 @@ class MigrateArgs(EngineArgs):
         return MigrateOptions(
             plan_file=fleet.path(self.plan_file),
             builds=_pairs(self.build, "build"),
-            releases=_pairs(self.release, "release"),
+            releases=_pairs(self.component_release, "component-release"),
             # Relative to the project, as every other path here is.
             environment_files={
                 component: fleet.path(Path(value))
-                for component, value in _pairs(self.env_file, "env-file").items()
+                for component, value in _pairs(
+                    self.component_env_file, "component-env-file"
+                ).items()
             },
             data_migrations={
                 database: fleet.path(Path(value))

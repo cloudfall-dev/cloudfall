@@ -87,7 +87,7 @@ def test_migrate_resolves_env_and_data_files_against_the_project(
     """Relative env and data paths name files inside the project."""
     fleet = Fleet(EXAMPLES, validate_config(EXAMPLES, SCHEMAS))
     args = MigrateArgs(
-        env_file=("crm-backend=tmp/env/crm.env",),
+        component_env_file=("crm-backend=tmp/env/crm.env",),
         data=(f"crm={tmp_path / 'source.url'}",),
     )
 
