@@ -70,6 +70,30 @@ Notable changes to Cloudfall. The format follows
 
 ### Changed
 
+- **Breaking:** the CLI follows one name per meaning, and its output is
+  typed:
+  - Decision records have their own group: `decisions list` (was
+    `operations decisions`), `decisions approve` (was `operations
+    approve`), and a new `decisions show`. `operations` keeps the catalog:
+    `list`, `show`, `propose`
+  - `data migrate` is `data copy`, no longer read as `migrate`, and
+    `services inspect` is `services observe`, as `observe` collects server
+    evidence. Each old path answers 13 `REDIRECTED` with the new command in
+    `error.redirect.command`
+  - `migrate --release` and `--env-file` are `--component-release` and
+    `--component-env-file`: they take `COMPONENT=VALUE` pairs, where
+    `deploy`'s take one value
+  - `--observed` defaults to `tmp/observed` on every command, where
+    `observe` writes: `audit`, `services status` and `dashboard` required
+    it, and the operator's drift checks used `tmp/operator/observed`
+  - Field names in `data` are snake_case at every depth, as treaty's own
+    envelope keys are (`openProposals` is `open_proposals`, `wouldRun` is
+    `would_run`). Map keys that are data keep their spelling (resource
+    kinds, environment variable names, ids), and a record or resource in
+    `data`, anything with an `apiVersion`, keeps its stored form
+  - Every command's output schema gives each `data` key its JSON type, and
+    an optional list or object is written empty rather than `null`
+    (`inventory show` writes `ansible` as `{}` for a project)
 - **Breaking:** argparse is gone: the last three `cloudfall` commands
   move to treaty, and so do root `--help`, `--version` and `--schema`.
   - `operator run` streams one envelope line per pass as it ends, with
