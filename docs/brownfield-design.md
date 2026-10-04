@@ -9,7 +9,7 @@ longer declared by Cloudfall, it is read from Ansible.
 
 ## The product
 
-Cloudfall is the operator's record for a small fleet run by an AI agent.
+Cloudfall is the operator's record for self-hosted servers run by an AI agent.
 
 Point your agent at the Ansible repository you already have. Cloudfall
 turns your playbooks into a tool list, checks every result, and keeps the

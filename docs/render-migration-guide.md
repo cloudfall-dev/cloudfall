@@ -6,14 +6,14 @@ what needs manual work, and the vocabulary differences between the two
 platforms.
 
 It is also the greenfield way into Cloudfall. Cloudfall is the operator's
-record for a fleet run by an AI agent; a team that already has servers and
-Ansible brings them (the [brownfield design](brownfield-design.md), not
-built yet), and a team leaving a PaaS gets a fleet this way. Either way the
-result is the same: every step below leaves a receipt, the migration ends
-with an audit rather than a green light, and the always-on operator takes
-over afterwards with a record of everything it does. An agent can drive
-the whole guide through `cloudfall mcp serve`; the proving run did, through
-its predecessor `cloudfall-mcp`.
+record for self-hosted servers run by an AI agent; a team that already has
+servers and Ansible brings them (the [brownfield
+design](brownfield-design.md), not built yet), and a team leaving a PaaS
+gets a fleet this way. Either way the result is the same: every step below
+leaves a receipt, the migration ends with an audit rather than a green
+light, and the always-on operator takes over afterwards with a record of
+everything it does. An agent can drive the whole guide through `cloudfall
+mcp serve`; the proving run did, through its predecessor `cloudfall-mcp`.
 
 > **Status:** proven live. An application actually hosted on Render was
 > cut over with its data and a real DNS flip on an owned domain, driven by

@@ -6,13 +6,13 @@ there is no blueprint to import: Neon hosts only your database, so the
 config is written by hand and the migration is a guided dump-and-restore
 with the same tooling the Render path uses.
 
-What you get in exchange for Neon's console is the record. Cloudfall is
-the operator's record for a fleet run by an AI agent: the migration ends
-with a receipt whose per-table row counts are the proof it worked, every
-backup afterwards writes a receipt and a timer-driven drill proves it
+What you get in exchange for Neon's console is the record. Cloudfall is the
+operator's record for self-hosted servers run by an AI agent: the migration
+ends with a receipt whose per-table row counts are the proof it worked,
+every backup afterwards writes a receipt and a timer-driven drill proves it
 restorable, and the always-on operator watches the database with the
-evidence attached to every decision. Managed PostgreSQL is mostly
-insurance; this keeps the coverage and makes the proof yours.
+evidence attached to every decision. Managed PostgreSQL is mostly insurance;
+this keeps the coverage and makes the proof yours.
 
 > **Status:** the guided data migration (`cloudfall data copy`) is
 > proven live against an external managed PostgreSQL — dump, restore,
