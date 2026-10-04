@@ -1,6 +1,6 @@
 # Architecture
 
-Cloudfall is the operator's record for a small fleet run by an AI agent.
+Cloudfall is the operator's record for self-hosted servers run by an AI agent.
 The agent decides, Ansible executes, and Cloudfall sits between them: it
 declares what the agent may do, checks every result, and keeps the evidence
 behind every decision. Ansible is the hand, the agent is the brain,

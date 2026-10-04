@@ -14,13 +14,13 @@ open no additional listening port; metrics are pushed through the same mTLS
 gateway to Prometheus's remote-write receiver on the backend host.
 
 This stack is where the operator's signals come from. Cloudfall is the
-operator's record for a fleet run by an AI agent, and the record needs
-evidence to act on: a declared `AlertRule` firing here is what triggers a
-proposal, the same gateway's read-only alerts route is what the operator
-and the agent read, and an alert that stops firing is how an approved
-remediation is verified (see the [operator guide](operator-guide.md)).
-Without this stack the operator has nothing to watch and nothing to verify
-against.
+operator's record for self-hosted servers run by an AI agent, and the record
+needs evidence to act on: a declared `AlertRule` firing here is what
+triggers a proposal, the same gateway's read-only alerts route is what the
+operator and the agent read, and an alert that stops firing is how an
+approved remediation is verified (see the [operator
+guide](operator-guide.md)). Without this stack the operator has nothing to
+watch and nothing to verify against.
 
 ## Safety boundary
 
