@@ -48,6 +48,20 @@ packages = ["sdk/src/cloudfall", "engine/src/cloudfall_engine"]
 # Installed wheels carry the schema catalog and the Ansible engine as package
 # data so a fleet repository needs nothing from this checkout; see
 # cloudfall.resources for how defaults resolve.
+# The sdist carries what builds and tests the package, not the repo's tooling,
+# evaluations or website.
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/.github",
+    "/.agents",
+    "/.claude",
+    "/uv.lock",
+    "/evaluations",
+    "/site",
+    "/tmp",
+    "/dist",
+]
+
 [tool.hatch.build.targets.wheel.force-include]
 "config/schemas" = "cloudfall/_bundled/schemas"
 "engine/ansible" = "cloudfall_engine/_bundled/ansible"

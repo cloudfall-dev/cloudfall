@@ -6,12 +6,20 @@ name: CI
     branches:
       - main
   pull_request:
+  # shipmill's release workflow and publish.yml run these checks on the commit they release
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
 
 jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       - uses: astral-sh/setup-uv@v10.1.0
         with:

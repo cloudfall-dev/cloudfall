@@ -1,0 +1,95 @@
+# shipmill reads this file on every run: https://github.com/shipmill/shipmill
+name = "cloudfall"
+
+# off: do nothing; dry-run: show the release commit it would make; release: release
+mode = "dry-run"
+branch = "main"
+
+# pyproject: [project] version in pyproject.toml and uv.lock; none: tags and CHANGELOG only
+version_files = "pyproject"
+
+# Commands run after the version is written, before the commit; a failure stops the release
+after_stamp = ["uv lock --check"]
+
+[changelog]
+path = "CHANGELOG.md"
+style = "keep-a-changelog"
+
+[bump]
+from = "headings"
+major = ["Breaking"]
+minor = ["Added", "Changed", "Deprecated", "Removed"]
+patch = ["Fixed", "Security"]
+
+[gates]
+# An open issue with this label holds the listed lanes
+blocker_label = "release-blocker"
+blocker_lanes = ["rc", "stable"]
+# Inclusive UTC date ranges when the listed lanes hold, such as "2026-12-24..2027-01-02"
+freeze = []
+freeze_lanes = ["dev", "rc", "stable"]
+
+# Each lane releases when one of its triggers is due and no gate holds it; every lane can
+# also be started by hand. One run releases one lane, in the order hotfix, stable, rc, dev.
+
+# [lanes.dev]                       # X.Y.Z.devN after every batch of merges
+# quiet_minutes = 30
+# dispatch = ["publish.yml"]
+
+[lanes.rc]                          # X.Y.ZrcN from main, after each batch of merges
+quiet_minutes = 30
+github_release = true
+dispatch = ["publish.yml"]
+
+# X.Y.Z, promoted from an rc soaked 3 days, once the milestone titled with the version
+# (0.6.0) has closed issues and none open: the milestone is the only trigger, so it gates
+[lanes.stable]
+promote_from = "rc"
+min_soak_days = 3
+milestone = true
+github_release = true
+dispatch = ["publish.yml"]
+
+[lanes.hotfix]                      # X.Y.(Z+1) from release/X.Y with chosen PRs, by hand only
+github_release = true
+dispatch = ["publish.yml"]
+
+# Environments a release deploys to. The workflow runs on workflow_dispatch with `tag` and
+# `environment` inputs, and its job sets `environment: ${{ inputs.environment }}`, so
+# GitHub records a deployment for each run. With from or health, run
+# `uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill init --operate`:
+# its workflow checks health every 10 minutes and promotes after the bake.
+# [environments.staging]
+# lane = "rc"                       # deploy every release of this lane when it lands
+# workflow = "deploy.yml"
+# health = "https://staging.example.com/health"
+#
+# [environments.production]
+# from = "staging"                  # promoted from staging once it baked there
+# workflow = "deploy.yml"
+# health = "https://example.com/health"
+# bake_minutes = 60                 # how long staging stays healthy before promotion
+
+# Lines a release rewrites besides the version files; each pattern matches exactly once.
+# The replacement can use {name}, {version}, {semver}, {minor} (X.Y), and {date}.
+# [[version_lines]]
+# file = "README.md"
+# pattern = 'cloudfall v\d+\.\d+\.\d+'
+# replace = "cloudfall v{version}"
+
+# How far shipmill goes by itself: observe (report only), propose (open an issue saying what
+# it would release; a person starts the lane), or act (the default). An open issue labelled
+# shipmill-hold turns every act into propose until it is closed.
+# [autonomy]
+# release = "act"
+
+# shipmill gate (launchd) starts a Claude Code session only when the repo needs one
+[agents]
+prompt = "/github-issue-triage {repo} triage the new issues and open a PR for each one to build; do not merge"
+prs = false        # true when the prompt lands PRs
+retry_hours = 24   # unchanged findings start a new session after this
+notify = true      # a desktop notification when a session waits on you
+remind_hours = 4   # repeat it while the session still waits
+max_wait_minutes = 15 # stop a session that waited this long; 0: never
+app_id = 5209412   # gated sessions write as shipmill-romamo[bot]
+mode = "headless" # nobody attaches: sessions ask on GitHub with needs-decision

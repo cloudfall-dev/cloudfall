@@ -74,6 +74,11 @@ Notable changes to Cloudfall. The format follows
   github.com/cloudfall-dev/cloudfall. The package metadata, the README,
   the site and `REPOSITORY_URL` point there; the old
   github.com/romamo/cloudfall address redirects
+- Releases are cut by [shipmill](https://github.com/shipmill/shipmill) from
+  this CHANGELOG: an rc (`0.6.0rc1`, ...) after each batch of merges, and a
+  stable release promoted from an rc that soaked 3 days once its milestone
+  closes. The source distribution leaves out the repository's tooling,
+  evaluations and website
 - **Breaking:** the CLI follows one name per meaning, and its output is
   typed:
   - Decision records have their own group: `decisions list` (was
@@ -336,7 +341,7 @@ Notable changes to Cloudfall. The format follows
   `failed` receipt, left the proposal `proposed` with no trace that it ran,
   and showed the caller a traceback
 
-## [0.5.1] — 2026-09-22
+## [0.5.1] - 2026-09-22
 
 ### Changed
 
@@ -357,9 +362,9 @@ Notable changes to Cloudfall. The format follows
   sees them rather than by absolute path, because a record is committed
   and one machine's home directory means nothing in anyone else's checkout
 
-## [0.5.0] — 2026-09-21
+## [0.5.0] - 2026-09-21
 
-## [0.4.0] — 2026-09-21
+## [0.4.0] - 2026-09-21
 
 ### Added
 
@@ -401,7 +406,7 @@ Notable changes to Cloudfall. The format follows
   mode and records a proposal, and no tool approves anything: that stays a
   command a person runs
 
-## [0.3.0] — 2026-09-20
+## [0.3.0] - 2026-09-20
 
 ### Removed
 
@@ -420,7 +425,7 @@ Notable changes to Cloudfall. The format follows
 - The quickstart and the Render migration guide install Cloudfall from the
   index rather than from git
 
-## [0.2.1] — 2026-09-20
+## [0.2.1] - 2026-09-20
 
 ### Fixed
 
@@ -444,7 +449,7 @@ Notable changes to Cloudfall. The format follows
 - `--rev` documents that it pins a commit from `--source`, which is now the
   explicit alternative to the default rather than the only mechanism
 
-## [0.2.0] — 2026-09-20
+## [0.2.0] - 2026-09-20
 
 ### Added
 
@@ -543,7 +548,7 @@ Notable changes to Cloudfall. The format follows
 - `cloudfall init` suggests `uv run cloudfall config validate` as the next
   step; the previous `config validate .` hint no longer parsed
 
-## [0.1.0] — 2026-09-08
+## [0.1.0] - 2026-09-08
 
 First public milestone: the Render-to-Hetzner wedge proven live end to end
 on disposable Hetzner Cloud Debian 13 servers (see
