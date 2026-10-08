@@ -1,0 +1,102 @@
+---
+name: Publish
+
+# shipmill's release workflow starts this on each tag it pushes (.github/shipmill.toml)
+"on":
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to publish, e.g. v0.6.0
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: refs/tags/${{ inputs.tag }}
+
+  build:
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          python-version: "3.14"
+
+      - name: Check the tag matches the project version
+        run: test "v$(uv version --short)" = "$TAG"
+
+      - run: uv build --out-dir dist
+
+      - name: Check the sdist leaves out tooling
+        run: |
+          if tar -tzf dist/*.tar.gz | grep -E '^[^/]+/(\.github|\.agents?|\.claude|uv\.lock)(/|$)'; then
+            exit 1
+          fi
+
+      # The wheel carries the schema catalog and the Ansible engine as package
+      # data; a project installed from PyPI has no checkout to fall back on, so
+      # an empty bundle must fail the release rather than ship.
+      - name: Check the wheel carries the bundled schemas and engine
+        run: |
+          uv run --no-project python - <<'PY'
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          wheel = next(Path("dist").glob("*.whl"))
+          names = zipfile.ZipFile(wheel).namelist()
+          for expected in ("cloudfall/_bundled/schemas/", "cloudfall_engine/_bundled/ansible/"):
+              if not any(name.startswith(expected) for name in names):
+                  sys.exit(f"{wheel.name} carries nothing under {expected}")
+          PY
+
+      # The published artifacts, exercised the way a user gets them: installed
+      # into an empty environment with no repository in sight.
+      - name: Smoke-test the wheel and the sdist
+        run: |
+          for dist in dist/*.whl dist/*.tar.gz; do
+            uv run --isolated --no-project --python 3.14 --with "$dist" \
+              cloudfall config validate --project config/examples
+            uv run --isolated --no-project --python 3.14 --with "$dist" \
+              cloudfall-engine inventory render --project config/examples
+          done
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # PyPI trusted publishing: the workflow proves its identity with a
+  # short-lived OIDC token, so no API token is stored anywhere.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/cloudfall/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@v1.14.2
