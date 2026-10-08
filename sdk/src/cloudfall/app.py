@@ -128,13 +128,18 @@ from cloudfall.importer import (
 from cloudfall.inventory import PlatformInventory
 from cloudfall.investigation import (
     DEFAULT_MAX_TURNS,
+    ERROR_MODEL_ANSWER_MALFORMED,
+    ERROR_MODEL_REFUSED,
+    ERROR_MODEL_UNREACHABLE,
     INVESTIGATION_DIRECTORY,
     AgentTool,
     ChatTransport,
+    Investigation,
     InvestigationError,
     InvestigationStatus,
     InvestigationStore,
     ModelEndpoint,
+    ModelUnavailableError,
     StepOutcome,
     ToolResult,
     host_text,
@@ -2119,7 +2124,8 @@ app.exit_code(
     side_effects="partial",
     suggestion=(
         "check the endpoint, the model name and the API key, then run again; "
-        "decisions already recorded stay"
+        "decisions already recorded stay, and the investigation that recorded "
+        "them is named in error.context.investigation"
     ),
 )
 app.exit_code(
@@ -2250,6 +2256,10 @@ def agent_investigate(args: InvestigateArgs, ctx: Ctx) -> Investigated:
     """Work the alert through the catalog and keep the record."""
     catalog = args.catalog()
     tools = [_agent_tool(args, operation, ctx) for operation in catalog.operations]
+    store = InvestigationStore(
+        directory=args.root / args.investigations,
+        catalog=SchemaCatalog(args.schemas),
+    )
     try:
         investigation = investigate(
             args.alert,
@@ -2258,18 +2268,18 @@ def agent_investigate(args: InvestigateArgs, ctx: Ctx) -> Investigated:
             _chat_transport(ctx, args.api_key),
             max_turns=args.max_turns,
         )
-    except InvestigationError as error:
+    except ModelUnavailableError as error:
+        # Earlier turns may have recorded decisions: the investigation that
+        # produced them is recorded too, then the model's failure is reported.
+        failed = _save_investigation(store, error.investigation)
         raise Exit.MODEL_UNAVAILABLE(
-            error.detail, context={"code": error.code}
+            error.detail,
+            context={
+                "code": error.code,
+                "investigation": failed.investigation_id.value,
+            },
         ) from error
-    try:
-        investigation = InvestigationStore(
-            directory=args.root / args.investigations,
-            catalog=SchemaCatalog(args.schemas),
-        ).save(investigation)
-    except InvestigationError as error:
-        # Recording failed, not the model: never MODEL_UNAVAILABLE.
-        raise Exit.PRECONDITION(error.detail, context={"code": error.code}) from error
+    investigation = _save_investigation(store, investigation)
     investigated = Investigated(
         effect="created",
         status=investigation.status.value,
@@ -2279,6 +2289,16 @@ def agent_investigate(args: InvestigateArgs, ctx: Ctx) -> Investigated:
         message = f"the investigation ended {investigation.status.value}"
         raise Exit.INVESTIGATION_INCOMPLETE(message, data=investigated)
     return investigated
+
+
+def _save_investigation(
+    store: InvestigationStore, investigation: Investigation
+) -> Investigation:
+    """Record the investigation; a failure to record it is never the model's."""
+    try:
+        return store.save(investigation)
+    except InvestigationError as error:
+        raise Exit.PRECONDITION(error.detail, context={"code": error.code}) from error
 
 
 def _agent_tool(args: InvestigateArgs, operation: Operation, ctx: Ctx) -> AgentTool:
@@ -2351,29 +2371,21 @@ def _chat_transport(ctx: Ctx, api_key: str) -> ChatTransport:
             # ctx.http's own exit says the command had no side effects, but
             # decisions of earlier turns may already be recorded.
             message = f"the model endpoint failed: {error.message}"
-            raise Exit.MODEL_UNAVAILABLE(
-                message, context={"code": "agent_model_unreachable"}
-            ) from error
+            raise InvestigationError(ERROR_MODEL_UNREACHABLE, message) from error
         if response.status != HTTPStatus.OK:
             message = (
                 f"the model endpoint answered {response.status}: "
                 f"{response.body[:300].decode('utf-8', errors='replace')}"
             )
-            raise Exit.MODEL_UNAVAILABLE(
-                message, context={"code": "agent_model_refused"}
-            )
+            raise InvestigationError(ERROR_MODEL_REFUSED, message)
         try:
             answer = response.json()
         except ValueError as error:
             message = "the model endpoint answered something that is not JSON"
-            raise Exit.MODEL_UNAVAILABLE(
-                message, context={"code": "agent_model_answer_malformed"}
-            ) from error
+            raise InvestigationError(ERROR_MODEL_ANSWER_MALFORMED, message) from error
         if not isinstance(answer, Mapping):
             message = "the model endpoint answered JSON that is not an object"
-            raise Exit.MODEL_UNAVAILABLE(
-                message, context={"code": "agent_model_answer_malformed"}
-            )
+            raise InvestigationError(ERROR_MODEL_ANSWER_MALFORMED, message)
         return cast("Mapping[str, object]", answer)
 
     return send

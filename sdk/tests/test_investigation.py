@@ -11,11 +11,13 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import pytest
 from cloudfall.cli import main
 from cloudfall.investigation import (
+    ERROR_MODEL_REFUSED,
     AgentTool,
     InvestigationError,
     InvestigationStatus,
     InvestigationStore,
     ModelEndpoint,
+    ModelUnavailableError,
     StepOutcome,
     ToolResult,
     investigate,
@@ -265,6 +267,54 @@ def test_a_malformed_model_answer_is_refused() -> None:
     assert error.value.code == "agent_model_answer_malformed"
 
 
+class _Failing(_Script):
+    """A model that answers from a list, then its endpoint refuses."""
+
+    def __call__(self, url: str, body: Mapping[str, object]) -> Mapping[str, object]:
+        if not self.replies:
+            message = "the model endpoint answered 500: overloaded"
+            raise InvestigationError(ERROR_MODEL_REFUSED, message)
+        return super().__call__(url, body)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        _Failing(_call("shop-logrotate", {})),
+        _Script(
+            _call("shop-logrotate", {}),
+            {"choices": [{"message": {"tool_calls": [{"id": "c2"}]}}]},
+        ),
+    ],
+    ids=["refused", "malformed-tool-call"],
+)
+def test_a_model_failing_mid_run_keeps_the_investigation_so_far(
+    tmp_path: Path, script: _Script
+) -> None:
+    report, rotate = _tools()
+
+    with pytest.raises(ModelUnavailableError) as error:
+        investigate("alert", _tool_list(report, rotate), ENDPOINT, script)
+
+    failed = error.value.investigation
+    assert failed.status is InvestigationStatus.MODEL_UNAVAILABLE
+    assert [step.decision for step in failed.steps] == [
+        "shop-logrotate-20261008152628"
+    ]
+    assert failed.turns == 2
+    assert (failed.usage.prompt, failed.usage.completion) == (100, 10)
+    assert failed.answer == ""
+    assert failed.finding is None
+    saved = InvestigationStore(
+        directory=tmp_path / "investigations",
+        catalog=SchemaCatalog(default_schema_directory()),
+    ).save(failed)
+    spec = saved.as_document()["spec"]
+    assert isinstance(spec, dict)
+    assert spec["status"] == "model-unavailable"
+    assert "finding" not in spec
+
+
 @pytest.mark.parametrize(
     "url", ["ftp://models.example/v1", "https://user:secret@models.example/v1"]
 )
@@ -276,9 +326,12 @@ def test_an_endpoint_must_be_plain_http(url: str) -> None:
 
 
 class _Model(BaseHTTPRequestHandler):
-    """An OpenAI-compatible endpoint answering from a class-level script."""
+    """An OpenAI-compatible endpoint answering from a class-level script.
 
-    replies: ClassVar[list[dict[str, object]]] = []
+    A reply is JSON sent with 200, or a status and the raw body to send.
+    """
+
+    replies: ClassVar[list[object]] = []
     seen: ClassVar[list[dict[str, Any]]] = []
 
     def do_POST(self) -> None:
@@ -286,8 +339,11 @@ class _Model(BaseHTTPRequestHandler):
         _Model.seen.append(
             {"auth": self.headers["Authorization"], "body": json.loads(body)}
         )
-        answer = json.dumps(_Model.replies.pop(0)).encode()
-        self.send_response(200)
+        reply = _Model.replies.pop(0)
+        status, answer = (
+            reply if isinstance(reply, tuple) else (200, json.dumps(reply).encode())
+        )
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(answer)))
         self.end_headers()
@@ -413,6 +469,63 @@ def test_an_answer_that_is_not_json_exits_model_unavailable(
 
 
 @pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        # The refusal echoes the request's key, as a debugging proxy might.
+        ((500, b"upstream failed for Bearer sk-test"), "agent_model_refused"),
+        ((200, b"<html>gateway</html>"), "agent_model_answer_malformed"),
+        ((200, b"[]"), "agent_model_answer_malformed"),
+        ({"choices": []}, "agent_model_answer_malformed"),
+        (
+            {"choices": [{"message": {"tool_calls": [{"id": "c2"}]}}]},
+            "agent_model_answer_malformed",
+        ),
+    ],
+    ids=["refused", "not-json", "not-an-object", "no-choices", "bad-tool-call"],
+)
+def test_a_model_failing_mid_run_records_the_investigation_and_exits_92(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    model_url: str,
+    failure: object,
+    code: str,
+) -> None:
+    repository = _repository(tmp_path)
+    (repository / "playbooks" / "facts.yml").write_text(
+        "---\n- hosts: localhost\n  connection: local\n  gather_facts: false\n"
+        "  tasks:\n    - name: Report\n      ansible.builtin.debug:\n"
+        "        msg: /var/log/shop holds 36G\n",
+        encoding="utf-8",
+    )
+    key = tmp_path / "model.key"
+    key.write_text("sk-test\n", encoding="utf-8")
+    _Model.seen.clear()
+    _Model.replies[:] = [_call("operation_facts", {}), failure]
+
+    exit_code = _investigate_against(repository, key, model_url)
+
+    out = capsys.readouterr()
+    assert "sk-test" not in out.out + out.err
+    payload = json.loads(out.out)
+    assert exit_code == 92, payload
+    context = payload["error"]["context"]
+    assert context["code"] == code
+    recorded = repository / "investigations" / f"{context['investigation']}.json"
+    text = recorded.read_text(encoding="utf-8")
+    assert "sk-test" not in text
+    spec = json.loads(text)["spec"]
+    assert spec["status"] == "model-unavailable"
+    assert spec["turns"] == 2
+    assert spec["tokens"] == {"prompt": 100, "completion": 10}
+    assert spec["answer"] == ""
+    assert "finding" not in spec
+    [step] = spec["steps"]
+    assert step["outcome"] == "ran"
+    decisions = list((repository / "decisions").glob(f"{step['decision']}*"))
+    assert decisions, "the decision of the first turn is recorded"
+
+
+@pytest.mark.parametrize(
     "url",
     [
         "https://models.example/v1?api-key=sk-leak",
@@ -505,4 +618,10 @@ def test_an_unreachable_endpoint_exits_model_unavailable(
 
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 92, payload
-    assert payload["error"]["context"]["code"] == "agent_model_unreachable"
+    context = payload["error"]["context"]
+    assert context["code"] == "agent_model_unreachable"
+    # The first request was sent: the run started, so it is recorded, empty.
+    recorded = repository / "investigations" / f"{context['investigation']}.json"
+    spec = json.loads(recorded.read_text(encoding="utf-8"))["spec"]
+    assert spec["status"] == "model-unavailable"
+    assert (spec["turns"], spec["steps"]) == (1, [])

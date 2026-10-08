@@ -46,6 +46,8 @@ MODEL_NAME_LIMIT = 256
 
 ERROR_ENDPOINT_INVALID = "agent_endpoint_invalid"
 ERROR_MODEL_ANSWER_MALFORMED = "agent_model_answer_malformed"
+ERROR_MODEL_REFUSED = "agent_model_refused"
+ERROR_MODEL_UNREACHABLE = "agent_model_unreachable"
 ERROR_INVESTIGATION_EXISTS = "agent_investigation_exists"
 
 SYSTEM_PROMPT = """\
@@ -89,6 +91,9 @@ class InvestigationStatus(StrEnum):
 
     TURN_LIMIT = "turn-limit"
     """The model was still calling tools when its turns ran out."""
+
+    MODEL_UNAVAILABLE = "model-unavailable"
+    """The endpoint failed mid-run; the record holds the steps before it."""
 
 
 class StepOutcome(StrEnum):
@@ -160,7 +165,10 @@ class AgentTool:
 
 
 ChatTransport = Callable[[str, Mapping[str, object]], Mapping[str, object]]
-"""Send one chat request body to a URL and return the answer's JSON."""
+"""Send one chat request body to a URL and return the answer's JSON.
+
+A failed request raises ``InvestigationError``.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,6 +272,19 @@ class Investigation:
         }
 
 
+class ModelUnavailableError(InvestigationError):
+    """The model endpoint failed after the run started.
+
+    It carries the investigation up to the failure, ended ``model-unavailable``,
+    so the steps that already recorded decisions are kept too.
+    """
+
+    def __init__(self, cause: InvestigationError, investigation: Investigation) -> None:
+        """Keep the cause's code and message beside the investigation so far."""
+        super().__init__(cause.code, cause.detail)
+        self.investigation = investigation
+
+
 @dataclass(frozen=True, slots=True)
 class InvestigationStore:
     """Schema-validated investigation records in one directory."""
@@ -305,7 +326,11 @@ def investigate(
     *,
     max_turns: int = DEFAULT_MAX_TURNS,
 ) -> Investigation:
-    """Let the model work the alert through the tools until it answers."""
+    """Let the model work the alert through the tools until it answers.
+
+    When the endpoint fails or answers malformed once the run started, this
+    raises ``ModelUnavailableError`` carrying the investigation so far.
+    """
     started = _utc_now()
     by_name = {tool.name: tool for tool in tools}
     messages: list[Mapping[str, object]] = [
@@ -319,53 +344,64 @@ def investigate(
     answer = ""
     status = InvestigationStatus.TURN_LIMIT
     turns = 0
-    while turns < max_turns:
-        turns += 1
-        reply = transport(
-            endpoint.chat_url,
-            {
-                "model": endpoint.model,
-                "messages": messages,
-                "tools": request_tools,
-                "temperature": 0.2,
-            },
+
+    def record(ending: InvestigationStatus, finding: Finding | None) -> Investigation:
+        return Investigation(
+            investigation_id=ResourceId.from_boundary(
+                f"investigation-{started.strftime('%Y%m%d%H%M%S')}"
+            ),
+            alert=alert,
+            endpoint=endpoint,
+            started_at=_timestamp(started),
+            finished_at=_timestamp(_utc_now()),
+            status=ending,
+            turns=turns,
+            usage=usage,
+            steps=tuple(steps),
+            answer=answer,
+            finding=finding,
         )
-        usage = usage.plus(reply)
-        message = _first_message(reply)
-        messages.append(message)
-        calls = message.get("tool_calls")
-        if not calls:
-            answer = str(message.get("content") or "").strip()
-            status = InvestigationStatus.UNSTRUCTURED
-            break
-        for call in cast("Sequence[Mapping[str, object]]", calls):
-            step, result = _run_call(call, by_name, seen)
-            steps.append(step)
-            messages.append(
+
+    try:
+        while turns < max_turns:
+            turns += 1
+            reply = transport(
+                endpoint.chat_url,
                 {
-                    "role": "tool",
-                    "tool_call_id": str(call.get("id", "")),
-                    "content": json.dumps(result.content, sort_keys=True),
-                }
+                    "model": endpoint.model,
+                    "messages": messages,
+                    "tools": request_tools,
+                    "temperature": 0.2,
+                },
             )
+            usage = usage.plus(reply)
+            message = _first_message(reply)
+            messages.append(message)
+            calls = message.get("tool_calls")
+            if not calls:
+                answer = str(message.get("content") or "").strip()
+                status = InvestigationStatus.UNSTRUCTURED
+                break
+            for call in cast("Sequence[Mapping[str, object]]", calls):
+                step, result = _run_call(call, by_name, seen)
+                steps.append(step)
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": str(call.get("id", "")),
+                        "content": json.dumps(result.content, sort_keys=True),
+                    }
+                )
+    except InvestigationError as error:
+        # The record names no error text: an endpoint's answer can echo the
+        # request, and the record is kept beside the decisions. The answer is
+        # still empty: the loop ends at the model's last words.
+        failed = record(InvestigationStatus.MODEL_UNAVAILABLE, None)
+        raise ModelUnavailableError(error, failed) from error
     finding = _finding(answer, steps) if answer else None
     if finding is not None:
         status = InvestigationStatus.ANSWERED
-    return Investigation(
-        investigation_id=ResourceId.from_boundary(
-            f"investigation-{started.strftime('%Y%m%d%H%M%S')}"
-        ),
-        alert=alert,
-        endpoint=endpoint,
-        started_at=_timestamp(started),
-        finished_at=_timestamp(_utc_now()),
-        status=status,
-        turns=turns,
-        usage=usage,
-        steps=tuple(steps),
-        answer=answer,
-        finding=finding,
-    )
+    return record(status, finding)
 
 
 def host_text(text: str) -> str:
