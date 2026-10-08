@@ -1,0 +1,7 @@
+id: postgresql-reinit
+description: Drop the PostgreSQL cluster with all its data and create an empty one
+playbook: playbooks/postgresql-reinit.yml
+risk: destructive
+targets: host
+verify:
+  playbook: playbooks/postgresql.yml

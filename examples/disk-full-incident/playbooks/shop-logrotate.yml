@@ -1,0 +1,31 @@
+- name: Rotate the shop worker logs and remove the oversized ones
+  hosts: all
+  gather_facts: false
+  tasks:
+    # Free space first: on a full disk Ansible cannot even create its remote
+    # temp directory, so the copy below would fail before anything was freed.
+    - name: Find rotated worker logs that were never removed
+      ansible.builtin.find:
+        paths: /var/log/shop
+        patterns: "*.log.*"
+      register: rotated
+    - name: Remove them
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ rotated.files }}"
+    - name: Truncate the live worker log
+      ansible.builtin.command: truncate -s 0 /var/log/shop/worker.log
+    - name: Install a logrotate rule for the worker
+      ansible.builtin.copy:
+        dest: /etc/logrotate.d/shop
+        content: |
+          /var/log/shop/*.log {
+            daily
+            rotate 7
+            maxsize 100M
+            compress
+            missingok
+            notifempty
+            copytruncate
+          }

@@ -1,0 +1,7 @@
+id: journal-vacuum
+description: Shrink the systemd journal to 100M
+playbook: playbooks/journal-vacuum.yml
+risk: mutating
+targets: host
+verify:
+  playbook: playbooks/disk-report.yml

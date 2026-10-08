@@ -1,0 +1,26 @@
+- name: Run the shop worker
+  hosts: db_servers
+  tasks:
+    - name: Create the worker log directory
+      ansible.builtin.file:
+        path: /var/log/shop
+        state: directory
+        mode: "0755"
+    - name: Install the worker unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/shop-worker.service
+        content: |
+          [Unit]
+          Description=Shop order worker
+          After=postgresql.service
+          [Service]
+          ExecStart=/bin/sh -c 'while true; do echo "$(date -Is) DEBUG order poll: no new orders" >> /var/log/shop/worker.log; sleep 5; done'
+          Restart=always
+          [Install]
+          WantedBy=multi-user.target
+    - name: Keep the worker running
+      ansible.builtin.systemd_service:
+        name: shop-worker
+        state: started
+        enabled: true
+        daemon_reload: true
