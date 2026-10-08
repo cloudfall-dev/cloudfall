@@ -8,6 +8,28 @@ Notable changes to Cloudfall. The format follows
 
 ### Added
 
+- `cloudfall agent investigate --alert TEXT --base-url URL --model NAME`
+  lets a model work an alert through the operations catalog, over any
+  OpenAI-compatible endpoint (the API key from `--api-key-from-env`,
+  `--api-key-from-file` or `CLOUDFALL_API_KEY`). The model sees the same
+  operation tools `mcp serve --repository` gives any client: a read
+  operation runs and returns what the hosts reported, any other operation is
+  proposed in check mode and recorded as a decision, and no tool approves
+  anything. A call repeated with the same arguments is answered from the
+  first result instead of running again. The investigation is recorded in
+  `investigations/` as an `AgentInvestigation`: the alert, the model, the
+  tokens, every call and how it ended, and the finding, with any decision id
+  the model named but never recorded kept apart under `unrecorded`. Exit 92
+  `MODEL_UNAVAILABLE` when the endpoint refuses, exit 93
+  `INVESTIGATION_INCOMPLETE` with the record when the model runs out of
+  `--max-turns` or does not answer in the asked-for shape. Proven on a
+  disposable host with Nemotron 3 Super on Nebius Token Factory: a full disk
+  behind a PostgreSQL alert was traced to unrotated application logs in five
+  turns, and the two proposals it recorded, once approved, brought the
+  database back
+- An operation tool of `mcp serve --repository` describes a read operation
+  as running and returning what the hosts reported, instead of saying it
+  runs check mode only
 - `operations propose` returns a read operation's play output in
   `data.output`, so an agent acts on what the operation reported without
   opening the decision's `.diff` file; the record keeps the file as before.

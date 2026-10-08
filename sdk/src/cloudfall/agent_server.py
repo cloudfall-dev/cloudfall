@@ -31,7 +31,7 @@ from cloudfall.ansible_api import (
     InventorySource,
     inventory_from_config,
 )
-from cloudfall.catalog import CATALOG_DIRECTORY
+from cloudfall.catalog import CATALOG_DIRECTORY, RiskLevel
 from cloudfall.decision import DECISION_DIRECTORY
 from cloudfall.project import (
     PROJECT_DIRECTORY_VARIABLE,
@@ -260,7 +260,10 @@ def operation_tool_description(operation: Operation) -> str:
         else f"Run the {operation.operation_id} operation",
         "",
         f"Risk: {operation.risk.value}. Targets: {operation.targets.value}.",
-        "Calling this runs check mode only and records what it would change; "
+        "Calling this runs it and returns what the hosts reported; nothing "
+        "changes and no approval is needed."
+        if operation.risk is RiskLevel.READ
+        else "Calling this runs check mode only and records what it would change; "
         f"a person approves the result with `{APPROVAL_COMMAND}`.",
     ]
     if operation.inputs:

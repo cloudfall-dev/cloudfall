@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cloudfall.internal/schemas/v1/agent-investigation.schema.json",
+  "title": "Cloudfall agent investigation",
+  "description": "One alert worked by one model through the operations catalog: every call, the tokens, and the finding.",
+  "type": "object",
+  "properties": {
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "kind": {
+      "const": "AgentInvestigation"
+    },
+    "metadata": {
+      "$ref": "common.schema.json#/$defs/metadata"
+    },
+    "spec": {
+      "type": "object",
+      "properties": {
+        "alert": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "model": {
+          "type": "object",
+          "properties": {
+            "endpoint": {
+              "type": "string",
+              "pattern": "^https?://",
+              "maxLength": 512
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "endpoint",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finishedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "enum": [
+            "answered",
+            "unstructured",
+            "turn-limit"
+          ]
+        },
+        "turns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tokens": {
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "completion": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "prompt",
+            "completion"
+          ],
+          "additionalProperties": false
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "arguments": {
+                "type": "object"
+              },
+              "outcome": {
+                "enum": [
+                  "ran",
+                  "proposed",
+                  "failed",
+                  "invalid",
+                  "repeated",
+                  "unknown-tool"
+                ]
+              },
+              "decision": {
+                "$ref": "common.schema.json#/$defs/resourceId"
+              }
+            },
+            "required": [
+              "tool",
+              "arguments",
+              "outcome"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "answer": {
+          "type": "string"
+        },
+        "finding": {
+          "type": "object",
+          "properties": {
+            "rootCause": {
+              "type": "string"
+            },
+            "proposed": {
+              "type": "array",
+              "items": {
+                "$ref": "common.schema.json#/$defs/resourceId"
+              }
+            },
+            "unrecorded": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "why": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "rootCause",
+            "proposed",
+            "unrecorded",
+            "why"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "alert",
+        "model",
+        "startedAt",
+        "finishedAt",
+        "status",
+        "turns",
+        "tokens",
+        "steps",
+        "answer"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "additionalProperties": false
+}
