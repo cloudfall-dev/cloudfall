@@ -14,7 +14,8 @@ Notable changes to Cloudfall. The format follows
   results recorded for the same playbook, target and inputs. Validation,
   the decision records and the gate work as they do live, the model is
   live, and no host is touched; a call the recording does not hold fails
-  and says so. The investigation record names the recording under
+  and says so, and a recording that is missing or holds no decision record
+  is refused before the model is asked. The investigation record names the recording under
   `replay`. An agent can be tried on a real incident again and again, for
   a demo or as a regression test. `examples/disk-full-incident/recordings`
   holds the disk-full incident recorded on a Hetzner cx23

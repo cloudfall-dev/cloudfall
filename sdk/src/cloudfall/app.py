@@ -215,7 +215,7 @@ from cloudfall.project import (
     resolve_installed_version,
     resolve_project_directory,
 )
-from cloudfall.recording import Recording
+from cloudfall.recording import Recording, RecordingError
 from cloudfall.render_api import (
     ERROR_API_UNREACHABLE,
     RENDER_API_URL,
@@ -2268,8 +2268,13 @@ class Investigated:
 def agent_investigate(args: InvestigateArgs, ctx: Ctx) -> Investigated:
     """Work the alert through the catalog and keep the record."""
     catalog = args.catalog()
-    replay = None if args.replay is None else Recording.load(args.root / args.replay)
-    run = _check_runner(ctx, args.root) if replay is None else replay.runner(args.root)
+    try:
+        replay = (
+            None if args.replay is None else Recording.load(args.root / args.replay)
+        )
+    except RecordingError as error:
+        raise Exit.PRECONDITION(error.detail, context={"code": error.code}) from error
+    run =_check_runner(ctx, args.root) if replay is None else replay.runner(args.root)
     tools = [_agent_tool(args, operation, run) for operation in catalog.operations]
     store = InvestigationStore(
         directory=args.root / args.investigations,

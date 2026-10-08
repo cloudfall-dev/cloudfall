@@ -26,7 +26,20 @@ if TYPE_CHECKING:
 NOT_RECORDED_EXIT = 3
 """The exit code of a call the recording does not hold."""
 
+ERROR_RECORDING_EMPTY = "recording_empty"
+"""The code of a recording that is not a directory or holds no runs."""
+
 _TREE_DIR_VARIABLE = "ANSIBLE_CALLBACK_TREE_DIR"
+
+
+class RecordingError(ValueError):
+    """A recording that cannot be played back."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        """Keep the machine-readable code beside the message."""
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +61,14 @@ class Recording:
 
     @classmethod
     def load(cls, directory: Path) -> Recording:
-        """Read every decision record in the directory; the first of a call wins."""
+        """Read every decision record in the directory; the first of a call wins.
+
+        A path that is not a directory, or a directory holding no decision
+        record, is refused: played back, it would fail every call.
+        """
+        if not directory.is_dir():
+            message = f"the recording {directory} is not a directory"
+            raise RecordingError(ERROR_RECORDING_EMPTY, message)
         runs: dict[str, RecordedRun] = {}
         for path in sorted(directory.glob("*.json")):
             document = cast(
@@ -78,6 +98,9 @@ class Recording:
                     unchanged=tuple(cast("Sequence[str]", check["unchanged"])),
                 ),
             )
+        if not runs:
+            message = f"the recording {directory} holds no decision record"
+            raise RecordingError(ERROR_RECORDING_EMPTY, message)
         return cls(directory=directory, runs=runs)
 
     def runner(self, repository: Path) -> CheckRunner:

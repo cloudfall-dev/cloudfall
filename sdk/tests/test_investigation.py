@@ -716,3 +716,37 @@ def test_a_replay_answers_from_the_recording_and_runs_no_playbook(
     assert "/var/log/shop holds 36G" in replies[0]
     assert "a replay must not run this" not in replies[0]
     assert "holds no run of playbooks/deploy.yml" in replies[1]
+
+
+@pytest.mark.parametrize("recording", ["missing", "empty"])
+def test_a_replay_of_no_recorded_run_is_refused_before_the_model(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], recording: str
+) -> None:
+    repository = _repository(tmp_path)
+    (repository / "empty").mkdir()
+    key = tmp_path / "model.key"
+    key.write_text("sk-test\n", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "agent",
+            "investigate",
+            "--repository",
+            str(repository),
+            "--alert",
+            "postgresql-main down on web-1",
+            "--base-url",
+            "http://127.0.0.1:9/v1",
+            "--model",
+            "nemotron",
+            "--api-key-from-file",
+            str(key),
+            "--replay",
+            recording,
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code != 0, payload
+    assert "recording_empty" in json.dumps(payload)
+    assert not (repository / "investigations").exists()
