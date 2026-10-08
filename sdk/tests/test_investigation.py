@@ -154,6 +154,23 @@ def test_the_same_call_twice_runs_once() -> None:
     assert done.steps[1].decision == "disk-report-1"
 
 
+def test_a_repeated_read_is_not_taken_for_a_proposal() -> None:
+    report = _Tool(
+        "disk-report",
+        ToolResult(StepOutcome.RAN, {"output": "36G"}, "disk-report-20261008152628"),
+    )
+    script = _Script(
+        _call("disk-report", {}),
+        _call("disk-report", {}, "c2"),
+        _say("ROOT CAUSE: disk\nPROPOSED: disk-report-20261008152628\nWHY: none."),
+    )
+
+    done = investigate("alert", _tool_list(report), ENDPOINT, script)
+
+    assert done.finding is not None
+    assert done.finding.proposed == ()
+
+
 def test_an_unknown_tool_or_bad_arguments_never_run_anything() -> None:
     report, rotate = _tools()
     script = _Script(

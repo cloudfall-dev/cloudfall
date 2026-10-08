@@ -450,11 +450,12 @@ def _finding(answer: str, steps: Sequence[Step]) -> Finding | None:
             fields[match.group(1).lower()] = match.group(2).strip().strip("*").strip()
     if set(fields) != {"root cause", "proposed", "why"}:
         return None
+    # A repeated step carries the decision of the call it repeats, which may
+    # be a read that ran; only the original proposal counts.
     recorded = {
         step.decision
         for step in steps
-        if step.decision is not None
-        and step.outcome in (StepOutcome.PROPOSED, StepOutcome.REPEATED)
+        if step.decision is not None and step.outcome is StepOutcome.PROPOSED
     }
     ran = {step.decision for step in steps if step.outcome is StepOutcome.RAN}
     named = list(dict.fromkeys(_DECISION_ID.findall(fields["proposed"])))
