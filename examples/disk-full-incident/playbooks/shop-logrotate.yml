@@ -16,16 +16,19 @@
       loop: "{{ rotated.files }}"
     - name: Truncate the live worker log
       ansible.builtin.command: truncate -s 0 /var/log/shop/worker.log
+    # A shell heredoc, not copy: copy transfers a file through a remote temp
+    # directory, which a disk with no free byte cannot hold, even in check mode.
     - name: Install a logrotate rule for the worker
-      ansible.builtin.copy:
-        dest: /etc/logrotate.d/shop
-        content: |
-          /var/log/shop/*.log {
-            daily
-            rotate 7
-            maxsize 100M
-            compress
-            missingok
-            notifempty
-            copytruncate
-          }
+      ansible.builtin.shell: |
+        cat > /etc/logrotate.d/shop <<'RULE'
+        /var/log/shop/*.log {
+          daily
+          rotate 7
+          maxsize 100M
+          compress
+          missingok
+          notifempty
+          copytruncate
+        }
+        RULE
+      changed_when: true

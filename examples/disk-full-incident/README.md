@@ -85,3 +85,7 @@ freeing space. Check mode passed, the real run failed because Ansible could
 not create its temp directory on the full disk, and Cloudfall recorded the
 decision `NOT_VERIFIED` instead of calling it a success. The playbook now
 frees space first.
+
+Once the worker takes the last free byte, even check mode needs care: a
+`copy` task stages its file in a remote temp directory and fails. The rule is
+written through `shell`, which needs none.

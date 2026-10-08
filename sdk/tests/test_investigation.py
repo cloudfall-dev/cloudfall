@@ -625,3 +625,23 @@ def test_an_unreachable_endpoint_exits_model_unavailable(
     spec = json.loads(recorded.read_text(encoding="utf-8"))["spec"]
     assert spec["status"] == "model-unavailable"
     assert (spec["turns"], spec["steps"]) == (1, [])
+
+
+def test_a_decision_whose_check_failed_is_not_unrecorded() -> None:
+    failed = _Tool(
+        "shop-logrotate",
+        ToolResult(StepOutcome.FAILED, {"ok": False}, "shop-logrotate-20261008170132"),
+    )
+    script = _Script(
+        _call("shop-logrotate", {}),
+        _say(
+            "ROOT CAUSE: disk full\nPROPOSED: shop-logrotate-20261008170132\n"
+            "WHY: its check failed, a person should look."
+        ),
+    )
+
+    done = investigate("alert", [failed.tool], ENDPOINT, script)
+
+    assert done.finding is not None
+    assert done.finding.proposed == ()
+    assert done.finding.unrecorded == ()
