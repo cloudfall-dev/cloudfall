@@ -976,7 +976,7 @@ if "url" in data and not data.get("opened", True):
 
 ### §71 — Non-Interactive Installation Absence  [Critical · 2/3]
 
-**Gap:** README documents `git clone … && uv sync` (and `uvx --from git+https://github.com/romamo/cloudfall.git cloudfall init`); `uv sync` with `CI=true` exit 0 twice (idempotent, 'Checked 70 packages'). Not 3: no AGENTS.md, and no verify command: `cloudfall --version` exits 2 ('the following arguments are required: command'). Fresh-clone install not re-run (existing checkout; `uvx` path needs network)
+**Gap:** README documents `git clone … && uv sync` (and `uvx --from git+https://github.com/cloudfall-dev/cloudfall.git cloudfall init`); `uv sync` with `CI=true` exit 0 twice (idempotent, 'Checked 70 packages'). Not 3: no AGENTS.md, and no verify command: `cloudfall --version` exits 2 ('the following arguments are required: command'). Fresh-clone install not re-run (existing checkout; `uvx` path needs network)
 
 **Workaround:**
 Before attempting installation, scan AGENTS.md and README for an explicit non-interactive install command. Prefer commands that include `-y`, `--yes`, `--non-interactive`, `DEBIAN_FRONTEND=noninteractive`, or equivalent flags.

@@ -40,7 +40,7 @@ _PROJECT_DESCRIPTION_MAX_LENGTH = 512
 _GIT_TIMEOUT_SECONDS = 30
 _GIT_NOT_A_REPOSITORY_EXIT_CODE = 128
 
-REPOSITORY_URL = "https://github.com/romamo/cloudfall"
+REPOSITORY_URL = "https://github.com/cloudfall-dev/cloudfall"
 """Location of the Cloudfall repository, for links to its files."""
 
 SECRETS_DIRECTORY = "secrets"

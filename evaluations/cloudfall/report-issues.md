@@ -381,7 +381,7 @@ These are not confirmed bugs but verified gaps — the CLI does not meet the bar
 
 ### §71 — Non-Interactive Installation Absence  [Critical · score 2/3]
 
-**What fails:** README documents `git clone … && uv sync` (and `uvx --from git+https://github.com/romamo/cloudfall.git cloudfall init`); `uv sync` with `CI=true` exit 0 twice (idempotent, 'Checked 70 packages'). Not 3: no AGENTS.md, and no verify command: `cloudfall --version` exits 2 ('the following arguments are required: command'). Fresh-clone install not re-run (existing checkout; `uvx` path needs network)
+**What fails:** README documents `git clone … && uv sync` (and `uvx --from git+https://github.com/cloudfall-dev/cloudfall.git cloudfall init`); `uv sync` with `CI=true` exit 0 twice (idempotent, 'Checked 70 packages'). Not 3: no AGENTS.md, and no verify command: `cloudfall --version` exits 2 ('the following arguments are required: command'). Fresh-clone install not re-run (existing checkout; `uvx` path needs network)
 **Frequency:** Common
 **Token/time cost when it triggers:** Token Spend: Low · Time: Critical
 **Workaround exists:** Partial
