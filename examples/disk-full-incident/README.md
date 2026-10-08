@@ -73,6 +73,21 @@ cloudfall why --host hz1 --format html > why.html
 The investigation is kept in `investigations/` (model, tokens, every call),
 the decisions in `decisions/`.
 
+## Without a host
+
+`recordings/disk-full` holds every check-mode run the evaluation made on
+the broken cx23. Played back, the model is live and the host is recorded:
+
+```console
+cloudfall agent investigate --replay recordings/disk-full \
+  --alert "ALERT postgresql-main DOWN on host hz1. The shop's orders API returns 500." \
+  --base-url https://api.tokenfactory.nebius.com/v1/ \
+  --model nvidia/nemotron-3-super-120b-a12b
+```
+
+A call the recording does not hold, such as the logs of a unit nobody asked
+for during the evaluation, fails and says so.
+
 ## What happened when we ran it
 
 On a Hetzner cx23 on 2026-10-08, Nemotron 3 Super read the PostgreSQL

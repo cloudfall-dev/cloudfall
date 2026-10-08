@@ -8,6 +8,19 @@ Notable changes to Cloudfall. The format follows
 
 ### Added
 
+- `agent investigate --replay DIR` plays a real run back instead of running
+  Ansible: DIR is the decisions directory of a run on real hosts, and each
+  check-mode call the model makes answers with the output and per-host
+  results recorded for the same playbook, target and inputs. Validation,
+  the decision records and the gate work as they do live, the model is
+  live, and no host is touched; a call the recording does not hold fails
+  and says so. The investigation record names the recording under
+  `replay`. An agent can be tried on a real incident again and again, for
+  a demo or as a regression test. `examples/disk-full-incident/recordings`
+  holds the disk-full incident recorded on a Hetzner cx23
+- A mutating operation whose check failed now hands the model the end of
+  its output, so the model sees why (such as `No space left on device`)
+  instead of only the exit code
 - `examples/disk-full-incident`: a one-host Ansible repository with an
   operations catalog, a destructive trap, and a scenario that fills the disk
   with unrotated logs so PostgreSQL goes down for a reason that is not the

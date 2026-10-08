@@ -1,0 +1,70 @@
+
+PLAY [Rotate the shop worker logs and remove the oversized ones] ***************
+
+TASK [Find rotated worker logs that were never removed] ************************
+ok: [hz1]
+
+TASK [Remove them] *************************************************************
+--- before
++++ after
+@@ -1,4 +1,4 @@
+ {
+     "path": "/var/log/shop/worker.log.1",
+-    "state": "file"
++    "state": "absent"
+ }
+
+changed: [hz1] => (item={'path': '/var/log/shop/worker.log.1', 'mode': '0644', 'isdir': False, 'ischr': False, 'isblk': False, 'isreg': True, 'isfifo': False, 'islnk': False, 'issock': False, 'uid': 0, 'gid': 0, 'size': 8589934592, 'inode': 259300, 'dev': 2049, 'nlink': 1, 'atime': 1791478500.6201622, 'mtime': 1791478500.6241622, 'ctime': 1791478500.6241622, 'gr_name': 'root', 'pw_name': 'root', 'wusr': True, 'rusr': True, 'xusr': False, 'wgrp': False, 'rgrp': True, 'xgrp': False, 'woth': False, 'roth': True, 'xoth': False, 'isuid': False, 'isgid': False, 'blocks': 16777224, 'disk_usage_bytes': 8589938688})
+--- before
++++ after
+@@ -1,4 +1,4 @@
+ {
+     "path": "/var/log/shop/worker.log.5",
+-    "state": "file"
++    "state": "absent"
+ }
+
+changed: [hz1] => (item={'path': '/var/log/shop/worker.log.5', 'mode': '0644', 'isdir': False, 'ischr': False, 'isblk': False, 'isreg': True, 'isfifo': False, 'islnk': False, 'issock': False, 'uid': 0, 'gid': 0, 'size': 3179606016, 'inode': 259304, 'dev': 2049, 'nlink': 1, 'atime': 1791478500.7081623, 'mtime': 1791478502.688162, 'ctime': 1791478502.688162, 'gr_name': 'root', 'pw_name': 'root', 'wusr': True, 'rusr': True, 'xusr': False, 'wgrp': False, 'rgrp': True, 'xgrp': False, 'woth': False, 'roth': True, 'xoth': False, 'isuid': False, 'isgid': False, 'blocks': 6210224, 'disk_usage_bytes': 3179634688})
+--- before
++++ after
+@@ -1,4 +1,4 @@
+ {
+     "path": "/var/log/shop/worker.log.4",
+-    "state": "file"
++    "state": "absent"
+ }
+
+changed: [hz1] => (item={'path': '/var/log/shop/worker.log.4', 'mode': '0644', 'isdir': False, 'ischr': False, 'isblk': False, 'isreg': True, 'isfifo': False, 'islnk': False, 'issock': False, 'uid': 0, 'gid': 0, 'size': 8589934592, 'inode': 259303, 'dev': 2049, 'nlink': 1, 'atime': 1791478500.7001622, 'mtime': 1791478500.7041621, 'ctime': 1791478500.7041621, 'gr_name': 'root', 'pw_name': 'root', 'wusr': True, 'rusr': True, 'xusr': False, 'wgrp': False, 'rgrp': True, 'xgrp': False, 'woth': False, 'roth': True, 'xoth': False, 'isuid': False, 'isgid': False, 'blocks': 16777224, 'disk_usage_bytes': 8589938688})
+--- before
++++ after
+@@ -1,4 +1,4 @@
+ {
+     "path": "/var/log/shop/worker.log.2",
+-    "state": "file"
++    "state": "absent"
+ }
+
+changed: [hz1] => (item={'path': '/var/log/shop/worker.log.2', 'mode': '0644', 'isdir': False, 'ischr': False, 'isblk': False, 'isreg': True, 'isfifo': False, 'islnk': False, 'issock': False, 'uid': 0, 'gid': 0, 'size': 8589934592, 'inode': 259301, 'dev': 2049, 'nlink': 1, 'atime': 1791478500.6481621, 'mtime': 1791478500.6521623, 'ctime': 1791478500.6521623, 'gr_name': 'root', 'pw_name': 'root', 'wusr': True, 'rusr': True, 'xusr': False, 'wgrp': False, 'rgrp': True, 'xgrp': False, 'woth': False, 'roth': True, 'xoth': False, 'isuid': False, 'isgid': False, 'blocks': 16777224, 'disk_usage_bytes': 8589938688})
+--- before
++++ after
+@@ -1,4 +1,4 @@
+ {
+     "path": "/var/log/shop/worker.log.3",
+-    "state": "file"
++    "state": "absent"
+ }
+
+changed: [hz1] => (item={'path': '/var/log/shop/worker.log.3', 'mode': '0644', 'isdir': False, 'ischr': False, 'isblk': False, 'isreg': True, 'isfifo': False, 'islnk': False, 'issock': False, 'uid': 0, 'gid': 0, 'size': 8589934592, 'inode': 259302, 'dev': 2049, 'nlink': 1, 'atime': 1791478500.6841621, 'mtime': 1791478500.6921623, 'ctime': 1791478500.6921623, 'gr_name': 'root', 'pw_name': 'root', 'wusr': True, 'rusr': True, 'xusr': False, 'wgrp': False, 'rgrp': True, 'xgrp': False, 'woth': False, 'roth': True, 'xoth': False, 'isuid': False, 'isgid': False, 'blocks': 16777224, 'disk_usage_bytes': 8589938688})
+
+TASK [Truncate the live worker log] ********************************************
+skipping: [hz1]
+
+TASK [Install a logrotate rule for the worker] *********************************
+skipping: [hz1]
+
+PLAY RECAP *********************************************************************
+hz1                        : ok=2    changed=1    unreachable=0    failed=0    skipped=2    rescued=0    ignored=0   
+
+[WARNING]: Deprecation warnings can be disabled by setting `deprecation_warnings=False` in ansible.cfg.
+[DEPRECATION WARNING]: The tree callback plugin is deprecated. This feature will be removed from ansible-core version 2.23.
+[WARNING]: Host 'hz1' is using the discovered Python interpreter at '/usr/bin/python3.13', but future installation of another Python interpreter could cause a different interpreter to be discovered. See https://docs.ansible.com/ansible-core/2.21/reference_appendices/interpreter_discovery.html for more information.

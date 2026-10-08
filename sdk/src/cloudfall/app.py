@@ -215,6 +215,7 @@ from cloudfall.project import (
     resolve_installed_version,
     resolve_project_directory,
 )
+from cloudfall.recording import Recording
 from cloudfall.render_api import (
     ERROR_API_UNREACHABLE,
     RENDER_API_URL,
@@ -2006,6 +2007,11 @@ def _decision_failed(error: DecisionError) -> Exception:
 )
 def operations_propose(args: ProposeArgs, ctx: Ctx) -> Decided:
     """Record a proposal with the diff check mode produced."""
+    return _propose(args, _check_runner(ctx, args.root))
+
+
+def _propose(args: ProposeArgs, run: CheckRunner) -> Decided:
+    """Propose one operation, running check mode through ``run``."""
     catalog = args.catalog()
     try:
         operation = catalog.get(args.operation)
@@ -2026,7 +2032,7 @@ def operations_propose(args: ProposeArgs, ctx: Ctx) -> Decided:
         directory=args.root / args.decisions, catalog=SchemaCatalog(args.schemas)
     )
     try:
-        decision = propose(request, store, run=_check_runner(ctx, args.root))
+        decision = propose(request, store, run=run)
     except DecisionError as error:
         raise _decision_failed(error) from error
     output = (
@@ -2182,6 +2188,13 @@ class InvestigateArgs(CatalogArgs):
             f"Directory holding the decision records (default: {DECISION_DIRECTORY})"
         ),
     )
+    replay: Path | None = Flag(
+        default=None,
+        description=(
+            "Decisions directory of a real run to play back instead of running "
+            "Ansible: the model is live, the hosts are recorded"
+        ),
+    )
     investigations: Path = Flag(
         default=Path(INVESTIGATION_DIRECTORY),
         description=(
@@ -2255,7 +2268,9 @@ class Investigated:
 def agent_investigate(args: InvestigateArgs, ctx: Ctx) -> Investigated:
     """Work the alert through the catalog and keep the record."""
     catalog = args.catalog()
-    tools = [_agent_tool(args, operation, ctx) for operation in catalog.operations]
+    replay = None if args.replay is None else Recording.load(args.root / args.replay)
+    run = _check_runner(ctx, args.root) if replay is None else replay.runner(args.root)
+    tools = [_agent_tool(args, operation, run) for operation in catalog.operations]
     store = InvestigationStore(
         directory=args.root / args.investigations,
         catalog=SchemaCatalog(args.schemas),
@@ -2267,6 +2282,7 @@ def agent_investigate(args: InvestigateArgs, ctx: Ctx) -> Investigated:
             args.endpoint(),
             _chat_transport(ctx, args.api_key),
             max_turns=args.max_turns,
+            replay=None if args.replay is None else args.replay.as_posix(),
         )
     except ModelUnavailableError as error:
         # Earlier turns may have recorded decisions: the investigation that
@@ -2301,7 +2317,9 @@ def _save_investigation(
         raise Exit.PRECONDITION(error.detail, context={"code": error.code}) from error
 
 
-def _agent_tool(args: InvestigateArgs, operation: Operation, ctx: Ctx) -> AgentTool:
+def _agent_tool(
+    args: InvestigateArgs, operation: Operation, run: CheckRunner
+) -> AgentTool:
     """One declared operation as a tool of the investigating model."""
 
     def call(arguments: Mapping[str, object]) -> ToolResult:
@@ -2318,10 +2336,10 @@ def _agent_tool(args: InvestigateArgs, operation: Operation, ctx: Ctx) -> AgentT
             decisions=args.decisions,
         )
         try:
-            return _tool_result(operations_propose(proposal, ctx), ok=True)
+            return _tool_result(_propose(proposal, run), ok=True)
         except CliExit as error:
             if isinstance(error.data, Decided):
-                failed = _tool_result(error.data, ok=False)
+                failed = _tool_result(error.data, ok=False, repository=args.root)
                 content = {**failed.content, "error": error.message}
                 return ToolResult(StepOutcome.FAILED, content, failed.decision)
             content = {"ok": False, "error": error.message, "code": error.code}
@@ -2335,7 +2353,10 @@ def _agent_tool(args: InvestigateArgs, operation: Operation, ctx: Ctx) -> AgentT
     )
 
 
-def _tool_result(decided: Decided, *, ok: bool) -> ToolResult:
+def _tool_result(
+    decided: Decided, *, ok: bool, repository: Path | None = None
+) -> ToolResult:
+    """Hand the model the decision; a failed check comes with its output."""
     record = cast("Mapping[str, Mapping[str, object]]", decided.decision)
     spec = cast("Mapping[str, Mapping[str, object]]", record["spec"])
     decision_id = str(record["metadata"]["id"])
@@ -2348,6 +2369,10 @@ def _tool_result(decided: Decided, *, ok: bool) -> ToolResult:
             "changed": spec["check"]["changed"],
         },
     }
+    if decided.output is None and repository is not None:
+        diff = cast("Mapping[str, object]", spec["check"]["diff"])
+        text = (repository / str(diff["path"])).read_text(encoding="utf-8")
+        content["output"] = host_text(text)
     if decided.output is None:
         return ToolResult(StepOutcome.PROPOSED, content, decision_id)
     content["output"] = host_text(decided.output)
