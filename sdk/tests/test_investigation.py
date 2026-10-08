@@ -381,6 +381,30 @@ def test_an_answer_that_is_not_json_exits_model_unavailable(
     assert payload["error"]["context"]["code"] == "agent_model_answer_malformed"
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://models.example/v1?api-key=sk-leak",
+        "https://models.example/v1#sk-leak",
+        "ftp://models.example/v1?api-key=sk-leak",
+    ],
+)
+def test_an_endpoint_with_a_query_or_fragment_is_refused_before_the_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], url: str
+) -> None:
+    repository = _repository(tmp_path)
+    key = tmp_path / "model.key"
+    key.write_text("sk-test\n", encoding="utf-8")
+
+    exit_code = _investigate_against(repository, key, url)
+
+    out = capsys.readouterr()
+    payload = json.loads(out.out)
+    assert exit_code == 2, payload
+    assert "sk-leak" not in out.out + out.err
+    assert not (repository / "investigations").exists()
+
+
 def test_a_made_up_long_tool_name_is_still_recorded(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], model_url: str
 ) -> None:

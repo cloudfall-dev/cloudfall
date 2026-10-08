@@ -110,6 +110,11 @@ class ModelEndpoint:
     def __post_init__(self) -> None:
         """Refuse a URL that is not plain http(s), or one carrying credentials."""
         parts = urlsplit(self.base_url)
+        if parts.query or parts.fragment or "?" in self.base_url:
+            # Checked first, and never echoed: a query can carry a key, and the
+            # base URL is written to the record.
+            message = "the model endpoint URL must not carry a query or fragment"
+            raise InvestigationError(ERROR_ENDPOINT_INVALID, message)
         if parts.scheme not in ("http", "https") or not parts.hostname:
             message = f"the model endpoint must be an http(s) URL: {self.base_url!r}"
             raise InvestigationError(ERROR_ENDPOINT_INVALID, message)
