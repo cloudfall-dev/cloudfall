@@ -15,131 +15,66 @@
 <meta property="og:image" content="https://cloudfall.dev/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Cloudfall — the record behind your self-hosted AI operator">
+<meta property="og:image:alt" content="Cloudfall: cut the cloud bill, keep your sleep">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="The Cloudfall Manifesto — principles behind the project">
 <meta name="twitter:description" content="Constraints we accept, not aspirations we advertise: the eight principles behind Cloudfall.">
 <meta name="twitter:image" content="https://cloudfall.dev/og.png">
-<meta name="theme-color" content="#0b1017">
+<meta name="theme-color" content="#dde8f1">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
 <link rel="manifest" href="/site.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Atkinson+Hyperlegible:wght@400;700&family=Martian+Mono:wght@400;500&display=swap">
 <style>
-  :root {
-    --bg: #0b1017;
-    --bg-raised: #101724;
-    --bg-card: #121a29;
-    --line: #1e2a3d;
-    --text: #dbe4f0;
-    --text-dim: #8b9bb3;
-    --accent: #67b7ff;
-    --accent-soft: rgba(103, 183, 255, 0.12);
-    --good: #4ad295;
-    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
-    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    line-height: 1.6;
-    -webkit-font-smoothing: antialiased;
-  }
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
-
-  /* Nav */
-  header {
-    position: sticky; top: 0; z-index: 10;
-    background: rgba(11, 16, 23, 0.85);
-    backdrop-filter: blur(10px);
-    border-bottom: 1px solid var(--line);
-  }
-  nav { display: flex; align-items: center; gap: 28px; height: 60px; }
-  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 17px; color: var(--text); letter-spacing: -0.01em; }
-  .brand:hover { text-decoration: none; }
-  .brand svg { width: 26px; height: 26px; }
-  nav .links { margin-left: auto; display: flex; gap: 22px; align-items: center; font-size: 14.5px; }
-  nav .links a { color: var(--text-dim); }
-  nav .links a:hover { color: var(--text); text-decoration: none; }
-  .btn {
-    display: inline-block; padding: 9px 18px; border-radius: 8px;
-    font-size: 14.5px; font-weight: 600; transition: background 0.15s, border-color 0.15s;
-  }
-  .btn-primary { background: var(--accent); color: #06111d; }
-  .btn-primary:hover { background: #85c6ff; text-decoration: none; }
-  .btn-ghost { border: 1px solid var(--line); color: var(--text); background: transparent; }
-  .btn-ghost:hover { border-color: var(--accent); text-decoration: none; }
-
-  /* Hero */
-  .hero { padding: 88px 0 28px; position: relative; overflow: hidden; }
-  .hero::before {
-    content: ""; position: absolute; inset: 0; pointer-events: none;
-    background: radial-gradient(ellipse 60% 45% at 50% 0%, rgba(103, 183, 255, 0.10), transparent 70%);
-  }
-  .hero .wrap { position: relative; max-width: 760px; }
-  .kicker {
-    font-family: var(--mono); font-size: 13px; letter-spacing: 0.08em;
-    text-transform: uppercase; color: var(--accent); margin-bottom: 14px;
-  }
-  h1 {
-    font-size: clamp(32px, 5vw, 52px);
-    line-height: 1.08; letter-spacing: -0.025em; font-weight: 800;
-  }
-  .hero p.sub {
-    margin: 22px 0 0; font-size: clamp(16px, 2vw, 18.5px);
-    color: var(--text-dim);
-  }
-  .hero p.sub strong { color: var(--text); }
-
-  /* Tenets */
-  .tenets { padding: 40px 0 72px; }
-  .tenets .wrap { max-width: 760px; }
-  .tenet { padding: 40px 0; border-bottom: 1px solid var(--line); }
-  .tenet:last-of-type { border-bottom: none; }
-  .tenet .num {
-    font-family: var(--mono); font-size: 13px; color: var(--accent);
-    border: 1px solid rgba(103, 183, 255, 0.35); border-radius: 999px;
-    width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
-    margin-bottom: 16px;
-  }
-  .tenet h2 { font-size: clamp(21px, 2.8vw, 26px); letter-spacing: -0.02em; line-height: 1.2; margin-bottom: 14px; }
-  .tenet p { color: var(--text-dim); font-size: 16px; }
-  .tenet p + p { margin-top: 12px; }
-  .tenet strong { color: var(--text); }
-  .tenet code {
-    font-family: var(--mono); font-size: 0.88em;
-    background: var(--accent-soft); color: var(--accent);
-    padding: 1.5px 6px; border-radius: 5px; white-space: nowrap;
-  }
-
-  /* Closing */
-  .closing { border-top: 1px solid var(--line); background: var(--bg-raised); text-align: center; padding: 64px 0 72px; }
-  .closing .wrap { max-width: 700px; }
-  .closing p {
-    font-size: clamp(17px, 2.2vw, 20px); color: var(--text);
-    letter-spacing: -0.01em;
-  }
-  .closing .cta { margin-top: 30px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
-
-  /* Footer */
-  footer { border-top: 1px solid var(--line); padding: 36px 0 44px; }
-  footer .wrap { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
-  footer .brand { font-size: 15px; }
-  footer .brand svg { width: 20px; height: 20px; }
-  footer .links { margin-left: auto; display: flex; gap: 20px; font-size: 14px; }
-  footer .links a { color: var(--text-dim); }
-  footer .links a:hover { color: var(--text); }
-  footer .license { width: 100%; color: var(--text-dim); font-size: 13px; margin-top: 6px; }
-
-  @media (max-width: 760px) {
-    nav .links a.hide-sm { display: none; }
-    .hero { padding-top: 64px; }
-  }
+/* Reading page in the landing's look: sky header band, numbered tenets on paper, the closing challenge in ink */
+:root {
+  --b-sky: #dde8f1; --b-paper: #f8fafc; --b-ink: #1a2940; --b-dim: #536279;
+  --b-blue: #2f5bd3; --b-sun: #ffd04d;
+  --b-display: "Bricolage Grotesque", "Avenir Next", sans-serif;
+  --b-body: "Atkinson Hyperlegible", system-ui, sans-serif;
+  --b-mono: "Martian Mono", ui-monospace, Menlo, monospace;
+  color-scheme: light;
+}
+* { box-sizing: border-box }
+html { background: var(--b-paper) }
+body { margin: 0; background: linear-gradient(180deg, var(--b-sky) 0, var(--b-paper) 520px); color: var(--b-ink); font: 17px/1.65 var(--b-body) }
+a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px }
+.wrap { max-width: 1200px; margin: 0 auto }
+.b-nav { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 24px; padding: 18px clamp(16px, 4vw, 40px) }
+.b-brand { font-family: var(--b-display); font-weight: 800; font-size: 1.3rem; letter-spacing: -.02em; display: flex; align-items: center; gap: 8px }
+.b-links { display: flex; flex-wrap: wrap; gap: 6px 22px; font-size: .95rem; color: var(--b-dim) }
+.b-links a { color: inherit; text-decoration: none }
+.b-links a:hover, .b-links a[aria-current] { color: var(--b-ink) }
+.b-links a[aria-current] { text-decoration: underline; text-decoration-color: var(--b-sun); text-decoration-thickness: 3px; text-underline-offset: 5px }
+main .wrap { max-width: 860px; padding-inline: clamp(16px, 4vw, 40px) }
+.hero { padding-block: clamp(32px, 6vw, 72px) 40px }
+.kicker { font: 500 12px var(--b-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--b-blue) }
+h1 { font-family: var(--b-display); font-weight: 800; font-size: clamp(2.3rem, 5.4vw, 4rem); line-height: 1; letter-spacing: -.035em; margin: 14px 0 22px; text-wrap: balance }
+.sub { font-size: 1.15rem; color: var(--b-dim); margin: 0; max-width: 60ch }
+.tenets .wrap { display: grid; gap: 0 }
+.tenet { display: grid; grid-template-columns: 4.2rem minmax(0, 1fr); gap: 4px 20px; padding-block: 30px; border-top: 2px dashed rgba(26, 41, 64, .2) }
+.tenet .num { grid-row: span 2; font-family: var(--b-display); font-weight: 800; font-size: 2.6rem; line-height: 1; width: 3.4rem; height: 3.4rem; display: grid; place-items: center; border: 2.5px solid var(--b-ink); border-radius: 14px; background: #ffffff; box-shadow: 4px 4px 0 var(--b-sun) }
+.tenet h2 { font-family: var(--b-display); font-weight: 700; font-size: clamp(1.4rem, 2.6vw, 1.8rem); letter-spacing: -.02em; line-height: 1.15; margin: 4px 0 6px; text-wrap: balance }
+.tenet p { margin: 0; color: #34445c; max-width: 64ch }
+.tenet strong { color: var(--b-ink); background: linear-gradient(transparent 60%, rgba(255, 208, 77, .7) 60%) }
+code { font: 500 .82em var(--b-mono); background: var(--b-sky); padding: 1px 5px; border-radius: 4px }
+.closing { padding-block: 24px clamp(40px, 6vw, 72px) }
+.closing .wrap > * { max-width: none }
+.closing .wrap { background: var(--b-ink); color: var(--b-paper); border-radius: 16px; padding: clamp(22px, 4vw, 36px); display: grid; gap: 20px; max-width: 860px }
+.closing p { margin: 0; font-size: 1.1rem; color: #dbe3ee }
+.cta { display: flex; flex-wrap: wrap; gap: 12px }
+.b-btn { display: inline-flex; align-items: center; padding: 12px 20px; border-radius: 12px; font-weight: 700; text-decoration: none; border: 2px solid #c3cddb; color: var(--b-paper) }
+.b-btn.primary { background: var(--b-sun); color: var(--b-ink); border-color: var(--b-sun) }
+footer { border-top: 2px dashed rgba(26, 41, 64, .2); padding: 28px clamp(16px, 4vw, 40px) 40px }
+footer .wrap { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 28px; color: var(--b-dim); font-size: .92rem }
+footer .links { display: flex; flex-wrap: wrap; gap: 6px 20px }
+footer a { color: inherit; text-decoration: none }
+footer a:hover { color: var(--b-ink) }
+footer .b-brand { color: var(--b-ink); font-size: 1.1rem }
+@media (max-width: 560px) { .tenet { grid-template-columns: minmax(0, 1fr) } .tenet .num { grid-row: auto } }
 </style>
 <script type="application/ld+json">
 {
@@ -171,23 +106,10 @@
 </head>
 <body>
 
-<header>
-  <div class="wrap">
-    <nav>
-      <a class="brand" href="/">
-        <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M9 20a6 6 0 1 1 1.2-11.9A8 8 0 0 1 25.7 11 5.5 5.5 0 0 1 24 21.8L9 22z" fill="#67b7ff"/><path d="M12 24v4m5-4v5m5-5v3" stroke="#67b7ff" stroke-width="2.2" stroke-linecap="round"/></svg>
-        Cloudfall
-      </a>
-      <div class="links">
-        <a class="hide-sm" href="/#why">Why</a>
-        <a class="hide-sm" href="/#how">How it works</a>
-        <a class="hide-sm" href="/#status">Status</a>
-        <a href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/render-migration-guide.md">Docs</a>
-        <a class="btn btn-ghost" href="https://github.com/cloudfall-dev/cloudfall">GitHub</a>
-      </div>
-    </nav>
-  </div>
-</header>
+<header><nav class="b-nav wrap">
+    <a class="b-brand" href="/" style="color:inherit;text-decoration:none"><svg width="26" height="20" viewBox="0 0 26 20" aria-hidden="true"><path d="M6 15 C1 15 1 9 5 8.5 C5 4 10 2 12.5 5 C14 1 21 1 21.5 6 C25 6 25.5 15 20 15 Z" fill="#ffffff" stroke="#1a2940" stroke-width="2" stroke-linejoin="round"/><path d="M9 17.5 l-1 2 M14 17.5 l-1 2 M19 17.5 l-1 2" stroke="#2f5bd3" stroke-width="2" stroke-linecap="round"/></svg>Cloudfall</a>
+    <div class="b-links"><a href="/#msp">For MSPs</a><a href="/#how-it-works">How it works</a><a href="/manifesto" aria-current="page">Manifesto</a><a href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/getting-started.md">Docs</a><a href="https://github.com/cloudfall-dev/cloudfall">GitHub</a></div>
+  </nav></header>
 
 <main>
   <div class="hero">
@@ -337,8 +259,8 @@
         this document. File it.
       </p>
       <div class="cta">
-        <a class="btn btn-primary" href="https://github.com/cloudfall-dev/cloudfall/issues">File an issue</a>
-        <a class="btn btn-ghost" href="https://github.com/cloudfall-dev/cloudfall/blob/main/MANIFESTO.md">Read it on GitHub</a>
+        <a class="b-btn primary" href="https://github.com/cloudfall-dev/cloudfall/issues">File an issue</a>
+        <a class="b-btn" href="https://github.com/cloudfall-dev/cloudfall/blob/main/MANIFESTO.md">Read it on GitHub</a>
       </div>
     </div>
   </div>
@@ -346,10 +268,7 @@
 
 <footer>
   <div class="wrap">
-    <a class="brand" href="/">
-      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M9 20a6 6 0 1 1 1.2-11.9A8 8 0 0 1 25.7 11 5.5 5.5 0 0 1 24 21.8L9 22z" fill="#67b7ff"/><path d="M12 24v4m5-4v5m5-5v3" stroke="#67b7ff" stroke-width="2.2" stroke-linecap="round"/></svg>
-      Cloudfall
-    </a>
+    <a class="b-brand" href="/"><svg width="26" height="20" viewBox="0 0 26 20" aria-hidden="true"><path d="M6 15 C1 15 1 9 5 8.5 C5 4 10 2 12.5 5 C14 1 21 1 21.5 6 C25 6 25.5 15 20 15 Z" fill="#ffffff" stroke="#1a2940" stroke-width="2" stroke-linejoin="round"/><path d="M9 17.5 l-1 2 M14 17.5 l-1 2 M19 17.5 l-1 2" stroke="#2f5bd3" stroke-width="2" stroke-linecap="round"/></svg>Cloudfall</a>
     <div class="links">
       <a href="https://github.com/cloudfall-dev/cloudfall">GitHub</a>
       <a href="/manifesto">Manifesto</a>
