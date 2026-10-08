@@ -1,0 +1,45 @@
+name: Pilot request
+description: Move an application off a PaaS onto servers you own, with help from the maintainers
+title: "Pilot: "
+labels: [pilot]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Pilots get hands-on help with a migration in exchange for feedback. This issue is public: describe your setup in general terms and leave out names, hostnames and credentials.
+  - type: dropdown
+    id: source
+    attributes:
+      label: Where it runs today
+      options:
+        - Render
+        - Heroku
+        - Fly.io
+        - Railway
+        - Vercel
+        - Own servers, managed by hand or Ansible
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: stack
+    attributes:
+      label: Stack
+      description: Services, databases, workers and cron jobs, roughly
+    validations:
+      required: true
+  - type: input
+    id: hosts
+    attributes:
+      label: Servers
+      description: How many servers you run, or expect to run after the move
+  - type: input
+    id: bill
+    attributes:
+      label: Monthly hosting bill
+      description: A rough range is enough
+  - type: input
+    id: contact
+    attributes:
+      label: How to reach you
+      description: Optional. Leave it empty and we will reply here

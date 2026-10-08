@@ -1,0 +1,42 @@
+name: Bug report
+description: Something Cloudfall did is wrong, or it reported success it could not prove
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Never paste real hostnames, addresses, credentials or secret values. Replace them with synthetic ones such as `h1` and `203.0.113.10`.
+  - type: input
+    id: version
+    attributes:
+      label: Cloudfall version
+      description: The output of `cloudfall --version`, or the commit you run
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact command you ran
+      render: console
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual
+      description: What happened instead. Include the JSON document Cloudfall printed and its exit code
+      render: json
+    validations:
+      required: true
+  - type: input
+    id: target
+    attributes:
+      label: Target
+      description: Debian version and provider of the server, if the bug involves one

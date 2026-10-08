@@ -1,11 +1,12 @@
 [project]
 name = "cloudfall"
 version = "0.5.1"
-description = "AI-native control plane for dedicated Debian application fleets"
+description = "The operator's record for self-hosted servers run by an AI agent: Ansible executes, Cloudfall gates, verifies and keeps the receipts"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.14"
+keywords = ["ai-agents", "ansible", "mcp", "self-hosted", "devops", "sre", "debian", "hetzner", "audit-log", "paas-alternative"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",

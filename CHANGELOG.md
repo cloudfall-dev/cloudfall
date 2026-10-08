@@ -70,6 +70,11 @@ Notable changes to Cloudfall. The format follows
 
 ### Changed
 
+- The README opens with what Cloudfall is, a diagram of the gate, a short
+  quickstart and a guide index; the long walkthroughs moved to
+  [docs/getting-started.md](docs/getting-started.md). The repository has issue
+  forms (bug, feature, pilot request), a pull request template, a support
+  page and a code of conduct, and the PyPI summary matches the project's description
 - The repository moved to the `cloudfall-dev` organization:
   github.com/cloudfall-dev/cloudfall. The package metadata, the README,
   the site and `REPOSITORY_URL` point there; the old
