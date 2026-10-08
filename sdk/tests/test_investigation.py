@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -305,3 +306,77 @@ def test_the_cli_investigates_and_records_it(
     recorded = list((repository / "investigations").glob("*.json"))
     assert len(recorded) == 1
     assert "sk-test" not in recorded[0].read_text(encoding="utf-8")
+
+
+def _investigate_against(repository: Path, key: Path, url: str) -> int:
+    return main(
+        [
+            "agent",
+            "investigate",
+            "--repository",
+            str(repository),
+            "--alert",
+            "postgresql-main down on web-1",
+            "--base-url",
+            url,
+            "--model",
+            "nemotron",
+            "--api-key-from-file",
+            str(key),
+        ]
+    )
+
+
+class _NotJson(BaseHTTPRequestHandler):
+    """An endpoint behind a proxy that answers 200 with an HTML page."""
+
+    def do_POST(self) -> None:
+        self.rfile.read(int(self.headers["Content-Length"]))
+        page = b"<html>gateway</html>"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(page)))
+        self.end_headers()
+        self.wfile.write(page)
+
+    def log_message(self, *_args: object) -> None:
+        return
+
+
+def test_an_answer_that_is_not_json_exits_model_unavailable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = _repository(tmp_path)
+    key = tmp_path / "model.key"
+    key.write_text("sk-test\n", encoding="utf-8")
+    server = HTTPServer(("127.0.0.1", 0), _NotJson)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        exit_code = _investigate_against(
+            repository, key, f"http://127.0.0.1:{server.server_address[1]}/v1"
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 92, payload
+    assert payload["error"]["context"]["code"] == "agent_model_answer_malformed"
+
+
+def test_an_unreachable_endpoint_exits_model_unavailable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = _repository(tmp_path)
+    key = tmp_path / "model.key"
+    key.write_text("sk-test\n", encoding="utf-8")
+    closed = socket.socket()
+    closed.bind(("127.0.0.1", 0))
+    port = closed.getsockname()[1]
+    closed.close()
+
+    exit_code = _investigate_against(repository, key, f"http://127.0.0.1:{port}/v1")
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 92, payload
+    assert payload["error"]["context"]["code"] == "agent_model_unreachable"

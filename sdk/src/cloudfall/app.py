@@ -2331,14 +2331,22 @@ def _chat_transport(ctx: Ctx, api_key: str) -> ChatTransport:
     """Send one chat request through ``ctx.http``."""
 
     def send(url: str, body: Mapping[str, object]) -> Mapping[str, object]:
-        response = ctx.http.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Accept": "application/json",
-            },
-            json=body,
-        )
+        try:
+            response = ctx.http.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Accept": "application/json",
+                },
+                json=body,
+            )
+        except CliExit as error:
+            # ctx.http's own exit says the command had no side effects, but
+            # decisions of earlier turns may already be recorded.
+            message = f"the model endpoint failed: {error.message}"
+            raise Exit.MODEL_UNAVAILABLE(
+                message, context={"code": "agent_model_unreachable"}
+            ) from error
         if response.status != HTTPStatus.OK:
             message = (
                 f"the model endpoint answered {response.status}: "
@@ -2347,7 +2355,13 @@ def _chat_transport(ctx: Ctx, api_key: str) -> ChatTransport:
             raise Exit.MODEL_UNAVAILABLE(
                 message, context={"code": "agent_model_refused"}
             )
-        answer = response.json()
+        try:
+            answer = response.json()
+        except ValueError as error:
+            message = "the model endpoint answered something that is not JSON"
+            raise Exit.MODEL_UNAVAILABLE(
+                message, context={"code": "agent_model_answer_malformed"}
+            ) from error
         if not isinstance(answer, Mapping):
             message = "the model endpoint answered JSON that is not an object"
             raise Exit.MODEL_UNAVAILABLE(
