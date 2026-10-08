@@ -2141,12 +2141,13 @@ app.exit_code(
     93,
     description=(
         "The model ran out of turns or did not answer in the asked-for shape; "
-        "data holds the record"
+        "the event before holds the record"
     ),
     retryable=True,
     side_effects="none",
     suggestion=(
-        "read data.investigation.spec.steps, then run again or raise --max-turns"
+        "read investigation.spec.steps of the event of kind investigation, "
+        "then run again or raise --max-turns"
     ),
 )
 

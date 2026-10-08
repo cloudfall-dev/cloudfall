@@ -797,3 +797,25 @@ def test_the_cli_streams_each_turn_and_call_then_the_record(
     assert "/var/log/shop holds 36G" in events[1]["result"]["output"]
     assert events[2]["text"].startswith("ROOT CAUSE")
     assert lines[-1]["meta"]["end"] is True
+
+
+def test_an_incomplete_investigation_ends_with_the_record_then_93(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], model_url: str
+) -> None:
+    repository = _repository(tmp_path)
+    key = tmp_path / "model.key"
+    key.write_text("sk-test\n", encoding="utf-8")
+    _Model.replies[:] = [_say("I am not sure what happened.")]
+
+    exit_code = _investigate_against(repository, key, model_url)
+
+    payload = _streamed(capsys.readouterr().out)
+    assert exit_code == 93, payload
+    assert payload["data"]["status"] == "unstructured"
+    assert payload["lines"][-2]["data"]["kind"] == "investigation"
+    assert len(list((repository / "investigations").glob("*.json"))) == 1
+    error = payload["error"]
+    assert error["code"] == "INVESTIGATION_INCOMPLETE"
+    # The error line holds no data: the record is the event before it.
+    assert "data.investigation" not in error["suggestion"]
+    assert "kind investigation" in error["suggestion"]
