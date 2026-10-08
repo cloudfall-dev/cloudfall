@@ -98,6 +98,7 @@ Notable changes to Cloudfall. The format follows
 
 ### Changed
 
+- The package is classified as Beta on PyPI instead of Alpha
 - The site's landing page is redesigned for technical founders leaving the
   cloud and for teams running servers for clients: a light, illustrated
   look, the hero's call to action rotating between moving off Render and
