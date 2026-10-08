@@ -105,6 +105,7 @@ from cloudfall.decision import (
     DecisionStatus,
     DecisionStore,
     ProposalRequest,
+    Requirement,
     Targets,
     approve,
     propose,
@@ -1947,12 +1948,17 @@ class ApproveDecisionArgs(DecisionsArgs):
 
 @dataclass(frozen=True, slots=True)
 class Decided:
-    """One decision record, and what to do next when it waits for approval."""
+    """One decision record, and what to do next when it waits for approval.
+
+    A read operation has run by the time it is recorded, so its play output
+    comes back with the record; it is the hosts' text, never trusted.
+    """
 
     effect: str
     status: str
     decision: dict[str, object] = Out(ordered=True)
     next: list[str] = Out(ordered=True)
+    output: str | None = Out(default=None, external=True)
 
 
 def _decision_failed(error: DecisionError) -> Exception:
@@ -2003,8 +2009,17 @@ def operations_propose(args: ProposeArgs, ctx: Ctx) -> Decided:
         decision = propose(request, store, run=_check_runner(ctx, args.root))
     except DecisionError as error:
         raise _decision_failed(error) from error
+    output = (
+        (args.root / decision.check.diff.path).read_text(encoding="utf-8")
+        if decision.requirement is Requirement.RUNS_FREELY
+        else None
+    )
     decided = Decided(
-        effect="created", status="ok", decision=decision.as_document(), next=[]
+        effect="created",
+        status="ok",
+        decision=decision.as_document(),
+        next=[],
+        output=output,
     )
     if decision.check.exit_code != 0:
         message = (
@@ -3462,6 +3477,8 @@ def _operation_tool(
             ),
             ctx,
         )
+        if operation.risk is RiskLevel.READ:
+            return decided
         record = cast("Mapping[str, Mapping[str, object]]", decided.decision)
         approve = f"{APPROVAL_COMMAND} {record['metadata']['id']} --yes"
         return dataclasses.replace(decided, next=[approve])

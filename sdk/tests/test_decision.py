@@ -394,6 +394,58 @@ def test_the_cli_proposes_and_then_lists_the_record(
     assert payload["data"]["decisions"][0]["spec"]["operation"]["id"] == "deploy"
 
 
+def test_the_cli_returns_what_a_read_operation_reported(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = _repository(tmp_path)
+    (repository / "playbooks" / "facts.yml").write_text(
+        "---\n- hosts: localhost\n  connection: local\n  gather_facts: false\n"
+        "  tasks:\n    - name: Report\n      ansible.builtin.debug:\n"
+        "        msg: /var/log/shop holds 36G\n",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        ["operations", "propose", "facts", "--repository", str(repository)]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert "/var/log/shop holds 36G" in payload["data"]["output"]
+    assert payload["data"]["_trusted"] is False
+    assert payload["data"]["next"] == []
+
+
+def test_the_cli_returns_no_output_for_a_proposed_change(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = _repository(tmp_path)
+    _observations(repository, "web-1")
+    (repository / "playbooks" / "deploy.yml").write_text(
+        "---\n- hosts: localhost\n  connection: local\n  gather_facts: false\n"
+        "  tasks:\n    - name: Nothing\n      ansible.builtin.debug:\n"
+        "        msg: nothing\n",
+        encoding="utf-8",
+    )
+
+    main(
+        [
+            "operations",
+            "propose",
+            "deploy",
+            "--repository",
+            str(repository),
+            "--target",
+            "localhost",
+            "--input",
+            "version=1.4.0",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["output"] is None
+
+
 def test_the_cli_reports_a_gate_refusal_as_json(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

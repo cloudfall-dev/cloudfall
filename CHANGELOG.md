@@ -8,6 +8,12 @@ Notable changes to Cloudfall. The format follows
 
 ### Added
 
+- `operations propose` returns a read operation's play output in
+  `data.output`, so an agent acts on what the operation reported without
+  opening the decision's `.diff` file; the record keeps the file as before.
+  The output is the hosts' text, so `data` carries `_trusted: false`.
+  A proposed change answers `output: null`, and the read operation's MCP
+  tool no longer suggests approving a run that needs no approval (#24)
 - `cloudfall why` answers "why did the agent do that" from the decision
   records alone, for a host (`--host`), an operation (`--operation`) or a
   time window (`--since`, `--until`, ISO 8601 or a bare date), as JSON or
