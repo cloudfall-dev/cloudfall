@@ -465,6 +465,17 @@ Notable changes to Cloudfall. The format follows
   `--gateway-url`, `--gateway-ca`, `--gateway-cert` and `--gateway-key`
   flags of `cloudfall mcp serve`, which only that tool used, are removed
   (#35)
+- `cloudfall operator approve <id>` asks the person to type the proposal id
+  at a terminal before it runs the playbook or the verify step, and no flag
+  answers that, `--yes` or `"yes": true` in `--raw-payload` included. Off a
+  terminal it exits 4 with `PERSON_REQUIRED`; a mistyped id exits 4 with
+  `ATTESTATION_MISMATCH`; either way the proposal stays `proposed`. Before,
+  any shell call ran it, so an agent could approve its own proposal.
+  `operator show` previews it. The receipt's approval records
+  `via: terminal`; a person's approval written before reads as
+  `via: unknown`, and a policy's has none. The field is optional in
+  `operator-proposal.schema.json`. Scripted approvals stop working; a
+  declared `OperatorPolicy` still licenses autonomous runs (#35)
 
 ## [0.5.1] - 2026-09-22
 

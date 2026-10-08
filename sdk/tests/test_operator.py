@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import io
 import itertools
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+from cloudfall.app import app
 from cloudfall.audit import AuditCheck, AuditReport, AuditStatus, ServerAudit
 from cloudfall.cli import main
+from cloudfall.decision import ApprovalChannel
 from cloudfall.domain import ResourceId
 from cloudfall.inventory import PlatformInventory
 from cloudfall.lifecycle import LifecycleError
@@ -36,6 +39,8 @@ from cloudfall.operator import (
     watch,
 )
 from cloudfall.validation import SchemaCatalog, validate_config
+from test_decision import _Terminal
+from treaty import CommandPath
 
 _FAST_APPROVE = ApproveOptions(
     verify_timeout_seconds=2.0,
@@ -43,6 +48,7 @@ _FAST_APPROVE = ApproveOptions(
     sleep=lambda _: None,
 )
 
+TERMINAL = ApprovalChannel.TERMINAL
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
 EXAMPLES = ROOT / "config" / "examples"
@@ -208,6 +214,7 @@ def test_approve_executes_and_verifies_resolution(tmp_path: Path) -> None:
         lambda proposal: executed.append(proposal.resource_id.value),
         alert_resolution_verifier(feed),
         _FAST_APPROVE,
+        via=TERMINAL,
     )
 
     assert executed == [report.proposed[0]]
@@ -229,6 +236,7 @@ def test_approve_marks_unresolved_alerts_failed(tmp_path: Path) -> None:
         lambda _proposal: None,
         alert_resolution_verifier(feed),
         _FAST_APPROVE,
+        via=TERMINAL,
     )
 
     assert result.status is ProposalStatus.FAILED
@@ -254,6 +262,7 @@ def test_approve_records_execution_failure(tmp_path: Path) -> None:
             _boom,
             alert_resolution_verifier(feed),
             _FAST_APPROVE,
+            via=TERMINAL,
         )
 
     failed = store.load(proposal_id)
@@ -281,6 +290,7 @@ def test_approve_records_a_long_engine_failure_by_its_tail(tmp_path: Path) -> No
             _boom,
             alert_resolution_verifier(feed),
             _FAST_APPROVE,
+            via=TERMINAL,
         )
 
     failed = store.load(proposal_id)
@@ -304,6 +314,7 @@ def test_approve_refuses_non_open_proposals(tmp_path: Path) -> None:
         lambda _proposal: None,
         alert_resolution_verifier(feed),
         _FAST_APPROVE,
+        via=TERMINAL,
     )
 
     with pytest.raises(OperatorError) as caught:
@@ -313,6 +324,7 @@ def test_approve_refuses_non_open_proposals(tmp_path: Path) -> None:
             lambda _proposal: None,
             alert_resolution_verifier(feed),
             _FAST_APPROVE,
+            via=TERMINAL,
         )
     assert caught.value.code == "operator_proposal_not_open"
 
@@ -409,6 +421,7 @@ def test_approve_drift_proposal_verifies_through_the_audit(
             )
         ),
         _FAST_APPROVE,
+        via=TERMINAL,
     )
 
     assert executed == ["converge-baseline"]
@@ -430,6 +443,7 @@ def test_approve_drift_proposal_fails_when_drift_persists(
         lambda _proposal: None,
         drift_resolution_verifier(auditor),
         _FAST_APPROVE,
+        via=TERMINAL,
     )
 
     assert result.status is ProposalStatus.FAILED
@@ -638,6 +652,7 @@ def _seed_verified_drift(
         lambda _proposal: None,
         lambda _proposal: True,
         _FAST_APPROVE,
+        via=TERMINAL,
     )
 
 
@@ -751,6 +766,7 @@ def test_autonomy_suspends_after_a_failed_receipt(tmp_path: Path) -> None:
         lambda _proposal: None,
         lambda _proposal: False,
         _FAST_APPROVE,
+        via=TERMINAL,
     )
     drift_pass(
         lambda: _audit_report(("packages.required[curl]", AuditStatus.DRIFT)),
@@ -824,3 +840,242 @@ def test_autonomy_enforces_the_rate_limit(tmp_path: Path) -> None:
     assert len(first.executed) == 1
     assert second.executed == ()
     assert "rate limit reached" in second.withheld[0][1]
+
+
+def _drift_proposal(tmp_path: Path) -> ResourceId:
+    report = drift_pass(
+        lambda: _audit_report(("packages.required[curl]", AuditStatus.DRIFT)),
+        _store(tmp_path),
+    )
+    return ResourceId.from_boundary(report.proposed[0])
+
+
+def _operator_approve(tmp_path: Path, proposal: str, *flags: str) -> list[str]:
+    return [
+        *("operator", "approve", proposal),
+        *("--project", str(EXAMPLES), "--schemas", str(SCHEMAS)),
+        *("--proposals", str(tmp_path / "proposals")),
+        *flags,
+    ]
+
+
+def _approve_at(
+    tmp_path: Path, proposal: str, typed: str, *, stdin_tty: bool, stdout_tty: bool
+) -> tuple[int, dict[str, object]]:
+    """Run ``operator approve`` with stdin and stdout each a terminal or not."""
+    stdout = _Terminal() if stdout_tty else io.StringIO()
+    stdin = _Terminal(f"{typed}\n") if stdin_tty else io.StringIO(f"{typed}\n")
+    exit_code = app.run(
+        _operator_approve(tmp_path, proposal, "--format", "json"),
+        stdin=stdin,
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+    return exit_code, json.loads(stdout.getvalue())
+
+
+def _still_proposed(tmp_path: Path, proposal_id: ResourceId) -> None:
+    loaded = _store(tmp_path).load(proposal_id)
+    assert loaded.status is ProposalStatus.PROPOSED
+    assert loaded.approval is None
+    assert loaded.outcome is None
+
+
+@pytest.mark.parametrize("flags", [["--yes"], []], ids=["yes", "bare"])
+def test_cli_operator_approve_off_a_terminal_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], flags: list[str]
+) -> None:
+    """An agent's shell call cannot approve its own proposal, ``--yes`` or not (#35)."""
+    proposal_id = _drift_proposal(tmp_path)
+
+    exit_code = main(_operator_approve(tmp_path, proposal_id.value, *flags))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 4
+    assert payload["error"]["code"] == "PERSON_REQUIRED"
+    assert payload["error"]["retryable"] is False
+    _still_proposed(tmp_path, proposal_id)
+
+
+def test_cli_operator_approve_raw_payload_cannot_approve_off_a_terminal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    proposal_id = _drift_proposal(tmp_path)
+    payload_in = {
+        "proposal": proposal_id.value,
+        "project": str(EXAMPLES),
+        "schemas": str(SCHEMAS),
+        "proposals": str(tmp_path / "proposals"),
+        "yes": True,
+    }
+
+    exit_code = main(["operator", "approve", "--raw-payload", json.dumps(payload_in)])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 4
+    assert payload["error"]["code"] == "PERSON_REQUIRED"
+    _still_proposed(tmp_path, proposal_id)
+
+
+@pytest.mark.parametrize(
+    ("stdin_tty", "stdout_tty"),
+    [(True, False), (False, True)],
+    ids=["stdin-only", "stdout-only"],
+)
+def test_cli_operator_approve_needs_a_whole_terminal(
+    tmp_path: Path, *, stdin_tty: bool, stdout_tty: bool
+) -> None:
+    proposal_id = _drift_proposal(tmp_path)
+
+    exit_code, payload = _approve_at(
+        tmp_path,
+        proposal_id.value,
+        proposal_id.value,
+        stdin_tty=stdin_tty,
+        stdout_tty=stdout_tty,
+    )
+
+    error = payload["error"]
+    assert isinstance(error, dict)
+    assert exit_code == 4
+    assert error["code"] == "PERSON_REQUIRED"
+    _still_proposed(tmp_path, proposal_id)
+
+
+def test_cli_operator_approve_with_a_mistyped_id_runs_nothing(tmp_path: Path) -> None:
+    proposal_id = _drift_proposal(tmp_path)
+
+    exit_code, payload = _approve_at(
+        tmp_path, proposal_id.value, "yes", stdin_tty=True, stdout_tty=True
+    )
+
+    error = payload["error"]
+    assert isinstance(error, dict)
+    assert exit_code == 4
+    assert error["code"] == "ATTESTATION_MISMATCH"
+    _still_proposed(tmp_path, proposal_id)
+
+
+def test_cli_operator_approve_runs_once_a_person_typed_the_id(tmp_path: Path) -> None:
+    """The typed id lets the playbook run, and the receipt says it came by terminal.
+
+    The example hosts do not resolve, so the run fails fast at the engine step;
+    what matters is that it ran and that the approval was recorded.
+    """
+    proposal_id = _drift_proposal(tmp_path)
+
+    exit_code, payload = _approve_at(
+        tmp_path, proposal_id.value, proposal_id.value, stdin_tty=True, stdout_tty=True
+    )
+
+    error = payload["error"]
+    assert isinstance(error, dict)
+    assert exit_code != 4
+    assert error["code"] == "ENGINE_STEP_FAILED"
+    loaded = _store(tmp_path).load(proposal_id)
+    assert loaded.status is ProposalStatus.FAILED
+    assert loaded.approval is not None
+    assert (loaded.approval.mode, loaded.approval.via) == ("human", TERMINAL)
+
+
+def test_cli_operator_approve_keeps_its_gateway_flags(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An alert proposal still names the gateway flags it needs, and takes them."""
+    run_once(FakeFeed(payloads=[_alerts_payload()]), _inventory(), _store(tmp_path))
+    (proposal,) = _store(tmp_path).list()
+    material = tmp_path / "material.pem"
+    material.write_text("not a certificate\n", encoding="utf-8")
+
+    missing = main(_operator_approve(tmp_path, proposal.resource_id.value))
+    refused = json.loads(capsys.readouterr().out)
+    given = main(
+        _operator_approve(
+            tmp_path,
+            proposal.resource_id.value,
+            *("--gateway-url", "https://127.0.0.1:9/api/v1/alerts"),
+            *("--gateway-ca", str(material), "--gateway-cert", str(material)),
+            *("--gateway-key", str(material)),
+        )
+    )
+    asked = json.loads(capsys.readouterr().out)
+
+    assert missing == 4
+    assert refused["error"]["context"]["code"] == "operator_gateway_material_missing"
+    assert given == 4
+    assert asked["error"]["code"] == "PERSON_REQUIRED"
+    _still_proposed(tmp_path, proposal.resource_id)
+
+
+def test_the_operator_approval_command_is_a_persons() -> None:
+    command = app.commands[CommandPath("operator.approve")]
+
+    assert command.requires_person is True
+    assert command.mcp is False
+
+
+def test_a_human_approval_records_that_it_came_through_a_terminal(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    proposal_id = _drift_proposal(tmp_path)
+
+    approve(
+        store,
+        proposal_id,
+        lambda _proposal: None,
+        lambda _proposal: True,
+        _FAST_APPROVE,
+        via=TERMINAL,
+    )
+
+    loaded = store.load(proposal_id)
+    assert loaded.approval is not None
+    assert (loaded.approval.mode, loaded.approval.via) == ("human", TERMINAL)
+    on_disk = json.loads(
+        (tmp_path / "proposals" / f"{proposal_id.value}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert on_disk["spec"]["approval"] == {"mode": "human", "via": "terminal"}
+
+
+def test_a_human_approval_written_before_the_channel_reads_as_unknown(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    proposal_id = _drift_proposal(tmp_path)
+    approve(
+        store,
+        proposal_id,
+        lambda _proposal: None,
+        lambda _proposal: True,
+        _FAST_APPROVE,
+        via=TERMINAL,
+    )
+    path = tmp_path / "proposals" / f"{proposal_id.value}.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    del document["spec"]["approval"]["via"]
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    loaded = store.load(proposal_id)
+
+    assert loaded.approval is not None
+    assert loaded.approval.via is ApprovalChannel.UNKNOWN
+
+
+def test_a_new_operator_approval_names_how_it_arrived(tmp_path: Path) -> None:
+    proposal_id = _drift_proposal(tmp_path)
+
+    with pytest.raises(OperatorError) as caught:
+        approve(
+            _store(tmp_path),
+            proposal_id,
+            lambda _proposal: None,
+            lambda _proposal: True,
+            _FAST_APPROVE,
+            via=ApprovalChannel.UNKNOWN,
+        )
+
+    assert caught.value.code == "operator_approval_channel_unknown"
+    _still_proposed(tmp_path, proposal_id)

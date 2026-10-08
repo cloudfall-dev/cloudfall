@@ -21,6 +21,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, cast
 
 from cloudfall.audit import AuditStatus, audit_inventory
+from cloudfall.decision import ApprovalChannel
 from cloudfall.domain import AlertSeverity, ResourceId
 from cloudfall.lifecycle import LifecycleError, run_engine_playbook
 from cloudfall.observation import load_observations
@@ -43,6 +44,7 @@ _ERROR_PROPOSAL_EXISTS = "operator_proposal_exists"
 ERROR_PROPOSAL_MISSING = "operator_proposal_missing"
 """Code of the error ``ProposalStore`` raises for an id it holds no receipt for."""
 _ERROR_PROPOSAL_NOT_OPEN = "operator_proposal_not_open"
+_ERROR_CHANNEL_UNKNOWN = "operator_approval_channel_unknown"
 _ERROR_OPERATION_UNSUPPORTED = "operator_operation_unsupported"
 ERROR_GATEWAY_UNDECLARED = "operator_gateway_undeclared"
 _SERVICE_CHECK_PREFIXES = ("services.bind[", "alerting.rules[")
@@ -144,16 +146,33 @@ class DriftTrigger:
 
 @dataclass(frozen=True, slots=True)
 class ApprovalRecord:
-    """Who licensed an execution: a human confirm or a declared policy."""
+    """Who licensed an execution: a person or a declared policy.
+
+    A person's approval says how it arrived (``via``); a policy's has no
+    channel, since no one typed anything.
+    """
 
     mode: str
     policy: ResourceId | None
+    via: ApprovalChannel | None = None
+
+    def __post_init__(self) -> None:
+        """Reject a person's approval without a channel, or a policy's with one."""
+        if (self.via is None) is (self.mode == "human"):
+            message = (
+                f"a {self.mode} approval "
+                f"{'names' if self.mode == 'human' else 'has no'} the channel it "
+                "arrived through"
+            )
+            raise ValueError(message)
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the approval for the proposal receipt."""
         result: dict[str, object] = {"mode": self.mode}
         if self.policy is not None:
             result["policy"] = self.policy.value
+        if self.via is not None:
+            result["via"] = self.via.value
         return result
 
 
@@ -567,11 +586,18 @@ def _proposal_from_document(document: Mapping[str, object]) -> OperatorProposal:
     approval = None
     if isinstance(raw_approval, dict):
         raw_policy = raw_approval.get("policy")
+        mode = cast("str", raw_approval["mode"])
         approval = ApprovalRecord(
-            mode=cast("str", raw_approval["mode"]),
+            mode=mode,
             policy=(
                 ResourceId.from_boundary(raw_policy)
                 if raw_policy is not None
+                else None
+            ),
+            # A person's approval written before the channel reads as unknown.
+            via=(
+                ApprovalChannel.from_record(raw_approval.get("via"))
+                if mode == "human"
                 else None
             ),
         )
@@ -803,14 +829,26 @@ class ApproveOptions:
     sleep: Callable[[float], None] = field(default=time.sleep)
 
 
-def approve(
+def approve(  # noqa: PLR0913 - the run's contract plus how the approval came.
     store: ProposalStore,
     proposal_id: ResourceId,
     executor: Callable[[OperatorProposal], None],
     verifier: Callable[[OperatorProposal], bool],
     options: ApproveOptions | None = None,
+    *,
+    via: ApprovalChannel,
 ) -> OperatorProposal:
-    """Execute a human-approved proposal and verify its trigger resolves."""
+    """Execute a human-approved proposal and verify its trigger resolves.
+
+    ``via`` is how the person's approval arrived; a new approval cannot be
+    of an unknown channel.
+    """
+    if via is ApprovalChannel.UNKNOWN:
+        message = (
+            "an approval records how it arrived; a new one cannot be of an "
+            "unknown channel"
+        )
+        raise OperatorError(_ERROR_CHANNEL_UNKNOWN, message)
     proposal = store.load(proposal_id)
     if proposal.status is not ProposalStatus.PROPOSED:
         message = (
@@ -823,7 +861,7 @@ def approve(
         proposal,
         executor,
         verifier,
-        ApprovalRecord(mode="human", policy=None),
+        ApprovalRecord(mode="human", policy=None, via=via),
         options,
     )
 

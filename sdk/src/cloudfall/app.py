@@ -2619,9 +2619,16 @@ class Approved:
 
 @operator.command(
     "approve",
-    # A person approves; no agent tool stands in for it.
+    # A person approves; no agent tool stands in for it. As with decisions
+    # approve, they type the proposal id at a terminal, which no flag
+    # answers, --yes included. requires_person keeps it off MCP too; mcp=False
+    # says so here as well.
     mcp=False,
-    description="Execute a proposal and verify its trigger resolves",
+    requires_person=True,
+    description=(
+        "Execute a proposal and verify its trigger resolves; a person types "
+        "the proposal id at a terminal, and `operator show` previews it"
+    ),
     danger_level="mutating",
     exit_codes=[
         "PROJECT_INVALID",
@@ -2638,22 +2645,36 @@ class Approved:
     subprocess=Subprocess("ansible-playbook"),
     required_tools={"ansible-playbook": "2.21.0"},
     examples=[
-        ("Approve one proposal", "cloudfall operator approve nginx-down-20260101"),
+        (
+            "Approve and run one proposal, typing its id at a terminal",
+            "cloudfall operator approve nginx-down-20260101",
+        ),
     ],
 )
 def operator_approve(
     args: OperatorApproveArgs, ctx: Ctx, fleet: Fleet
 ) -> Approved:
-    """Run the proposal's operation, then wait for its trigger to resolve."""
+    """Run the proposal's operation once a person typed its id, then verify it."""
     store = args.store(fleet)
     verifier_for = args.verifier_for(fleet, ctx, partial(args.feed, fleet))
     try:
+        recorded = store.load(args.proposal)
+        verifier = verifier_for(recorded)
+        # Off a terminal this ends with PERSON_REQUIRED, and a mistyped id with
+        # ATTESTATION_MISMATCH, before anything runs: --yes never approves.
+        attestation = ctx.attest(
+            f"{recorded.diagnosis_summary}. It runs "
+            f"{' '.join(recorded.command)}. Type the proposal id to approve "
+            f"{recorded.resource_id.value} and run it",
+            expected=recorded.resource_id.value,
+        )
         proposal = approve_proposal(
             store,
             args.proposal,
             engine_executor(args.context(fleet, ctx)),
-            verifier_for(store.load(args.proposal)),
+            verifier,
             ApproveOptions(verify_timeout_seconds=args.verify_timeout),
+            via=ApprovalChannel(attestation.channel),
         )
     except OperatorError as error:
         raise _operator_failed(error) from error

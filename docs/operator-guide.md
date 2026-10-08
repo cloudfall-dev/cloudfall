@@ -115,6 +115,16 @@ uv run cloudfall operator approve op-... \
   --gateway-key certs/operator.key
 ```
 
+`operator show` is the preview. `operator approve` asks you to type the
+proposal id at your terminal before it runs anything, and no flag answers
+that, `--yes` included. Off a terminal, as from an agent's shell, a script
+or a pipe, it exits 4 with `PERSON_REQUIRED`; a mistyped id exits 4 with
+`ATTESTATION_MISMATCH`. Either way the proposal stays `proposed`. The
+receipt records the approval as `approval.via: terminal`; a person's
+approval written before reads as `via: unknown`. This is a speed bump
+against an agent with a shell, not a boundary: a process running as the
+same OS user can fake a terminal.
+
 Approval executes the proposal's engine playbook and then verifies the
 trigger actually resolved: an alert-triggered proposal must see its alert
 stop firing, a drift-triggered proposal must see its drifted checks audit
