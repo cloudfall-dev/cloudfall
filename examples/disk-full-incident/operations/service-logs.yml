@@ -1,0 +1,10 @@
+id: service-logs
+description: Show the last 30 journal lines of one systemd unit
+playbook: playbooks/service-logs.yml
+risk: read
+targets: host
+inputs:
+  unit:
+    type: string
+    required: true
+    description: systemd unit name, such as postgresql@17-main

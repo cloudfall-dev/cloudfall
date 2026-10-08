@@ -102,6 +102,8 @@ extend-immutable-calls = ["treaty.Arg", "treaty.Flag", "treaty.Out"]
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["D103", "INP001", "PLR2004", "S101"]
+# Evaluation scripts run standalone, never imported as a package.
+"evaluations/**" = ["INP001"]
 
 [tool.mypy]
 python_version = "3.14"

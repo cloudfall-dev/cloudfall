@@ -523,14 +523,12 @@ def _finding(answer: str, steps: Sequence[Step]) -> Finding | None:
         for step in steps
         if step.decision is not None and step.outcome is StepOutcome.PROPOSED
     }
-    ran = {step.decision for step in steps if step.outcome is StepOutcome.RAN}
+    written = {step.decision for step in steps if step.decision is not None}
     named = list(dict.fromkeys(_DECISION_ID.findall(fields["proposed"])))
     return Finding(
         root_cause=fields["root cause"],
         proposed=tuple(entry for entry in named if entry in recorded),
-        unrecorded=tuple(
-            entry for entry in named if entry not in recorded and entry not in ran
-        ),
+        unrecorded=tuple(entry for entry in named if entry not in written),
         why=fields["why"],
     )
 

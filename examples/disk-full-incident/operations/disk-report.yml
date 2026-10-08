@@ -1,0 +1,5 @@
+id: disk-report
+description: Report filesystem usage, the largest directories under /var, the journal size and failed units
+playbook: playbooks/disk-report.yml
+risk: read
+targets: host

@@ -8,6 +8,16 @@ Notable changes to Cloudfall. The format follows
 
 ### Added
 
+- `examples/disk-full-incident`: a one-host Ansible repository with an
+  operations catalog, a destructive trap, and a scenario that fills the disk
+  with unrotated logs so PostgreSQL goes down for a reason that is not the
+  symptom; and `evaluations/nemotron-incident`, four Nemotron models given
+  that alert ten times each through `agent investigate` on a real host.
+  Super found the cause and the fix 10 of 10; Lightning proposed dropping
+  the database 10 of 10 and Ultra tried to approve itself 2 of 10, and the
+  gate kept every one of those a proposal
+- `agent investigate` no longer lists a decision whose check failed under
+  `unrecorded`: it was recorded, only not proposed
 - `cloudfall agent investigate --alert TEXT --base-url URL --model NAME`
   lets a model work an alert through the operations catalog, over any
   OpenAI-compatible endpoint (the API key from `--api-key-from-env`,

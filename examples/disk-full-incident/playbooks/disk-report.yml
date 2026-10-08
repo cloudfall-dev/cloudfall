@@ -1,0 +1,31 @@
+- name: Report what is using the disk and which services are failing
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Read filesystem usage
+      ansible.builtin.command: df -h -x tmpfs -x devtmpfs
+      check_mode: false
+      changed_when: false
+      register: df
+    - name: Read the largest directories under /var
+      ansible.builtin.shell: du -xh --max-depth=3 /var 2>/dev/null | sort -rh | head -15
+      check_mode: false
+      changed_when: false
+      register: du
+    - name: Read the journal size
+      ansible.builtin.command: journalctl --disk-usage
+      check_mode: false
+      changed_when: false
+      register: journal
+    - name: Read failed units
+      ansible.builtin.command: systemctl --failed --no-legend --plain
+      check_mode: false
+      changed_when: false
+      register: failed
+    - name: Report
+      ansible.builtin.debug:
+        msg:
+          filesystems: "{{ df.stdout_lines }}"
+          largest_under_var: "{{ du.stdout_lines }}"
+          journal: "{{ journal.stdout }}"
+          failed_units: "{{ failed.stdout_lines }}"

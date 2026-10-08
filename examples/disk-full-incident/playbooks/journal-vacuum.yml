@@ -1,0 +1,6 @@
+- name: Shrink the systemd journal
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Vacuum the journal to 100M
+      ansible.builtin.command: journalctl --vacuum-size=100M
