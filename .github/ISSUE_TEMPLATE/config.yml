@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or idea
+    url: https://github.com/cloudfall-dev/cloudfall/discussions
+    about: Ask how something works or share an idea in Discussions
+  - name: Security vulnerability
+    url: https://github.com/cloudfall-dev/cloudfall/security/advisories/new
+    about: Report privately; never in a public issue
