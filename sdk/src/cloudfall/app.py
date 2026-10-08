@@ -100,6 +100,7 @@ from cloudfall.decision import (
     CHECK_TIMEOUT_SECONDS,
     DECISION_DIRECTORY,
     ERROR_DECISION_MISSING,
+    ApprovalChannel,
     ApprovalRequest,
     CheckRunner,
     DecisionError,
@@ -1959,14 +1960,6 @@ class ApproveDecisionArgs(DecisionsArgs):
         default=None,
         description="Who is approving (default: the USER environment variable)",
     )
-    yes: bool = Flag(
-        default=False,
-        confirm=True,
-        description=(
-            "Change the servers; without it the command shows the recorded "
-            "proposal and runs nothing"
-        ),
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2060,11 +2053,14 @@ def _propose(args: ProposeArgs, run: CheckRunner) -> Decided:
 
 @decisions.command(
     "approve",
-    # A person approves; no agent tool stands in for it.
+    # A person approves; no agent tool stands in for it. The person types the
+    # decision id at a terminal, which no flag answers, --yes included.
+    # requires_person keeps it off MCP too; mcp=False says so here as well.
     mcp=False,
+    requires_person=True,
     description=(
-        "Approve one recorded proposal, run it, and verify it; without --yes it "
-        "shows the proposal and runs nothing"
+        "Approve one recorded proposal, run it, and verify it; a person types "
+        "the decision id at a terminal, and `decisions show` previews it"
     ),
     danger_level="mutating",
     exit_codes=["NOT_FOUND", "PRECONDITION", "RECORD_INVALID", "NOT_VERIFIED"],
@@ -2073,12 +2069,14 @@ def _propose(args: ProposeArgs, run: CheckRunner) -> Decided:
     subprocess=Subprocess("ansible-playbook"),
     required_tools={"ansible-playbook": "2.21.0"},
     examples=[
-        ("Review a proposal", "cloudfall decisions approve restart-nginx-20260101"),
-        ("Run it", "cloudfall decisions approve restart-nginx-20260101 --yes"),
+        (
+            "Approve and run a proposal, typing its id at a terminal",
+            "cloudfall decisions approve restart-nginx-20260101",
+        ),
     ],
 )
 def decisions_approve(args: ApproveDecisionArgs, ctx: Ctx) -> Decided:
-    """Run what was proposed, as recorded, and record how it ended."""
+    """Run what was proposed, as recorded, once a person typed its id."""
     store = DecisionStore(
         directory=args.root / args.decisions, catalog=SchemaCatalog(args.schemas)
     )
@@ -2088,21 +2086,22 @@ def decisions_approve(args: ApproveDecisionArgs, ctx: Ctx) -> Decided:
         if error.code == ERROR_DECISION_MISSING:
             raise Exit.NOT_FOUND(error.detail, context={"code": error.code}) from error
         raise _record_invalid(error) from error
-    if not args.yes:
-        # Without --yes the run is treaty's dry run (Flag(confirm=True)).
-        return Decided(
-            effect="would_update",
-            status="pending",
-            decision=decision.as_document(),
-            next=[
-                f"review the recorded diff at {decision.check.diff.path}",
-                "approve with --yes to run it",
-            ],
-        )
+    # Off a terminal this ends with PERSON_REQUIRED, and a mistyped id with
+    # ATTESTATION_MISMATCH, before anything runs: --yes never approves.
+    attestation = ctx.attest(
+        f"The diff is at {decision.check.diff.path}. Type the decision id to "
+        f"approve {decision.decision_id.value} and run it",
+        expected=decision.decision_id.value,
+    )
     approver = args.approver if args.approver is not None else ctx.env.get("USER", "")
     try:
         approved = approve(
-            ApprovalRequest(decision=decision, approver=approver, repository=args.root),
+            ApprovalRequest(
+                decision=decision,
+                approver=approver,
+                repository=args.root,
+                via=ApprovalChannel(attestation.channel),
+            ),
             store,
             run=_check_runner(ctx, args.root),
         )
@@ -3875,7 +3874,10 @@ def _operation_tool(
         if operation.risk is RiskLevel.READ:
             return decided
         record = cast("Mapping[str, Mapping[str, object]]", decided.decision)
-        approve = f"{APPROVAL_COMMAND} {record['metadata']['id']} --yes"
+        approve = (
+            "a person approves it at a terminal, typing the decision id: "
+            f"{APPROVAL_COMMAND} {record['metadata']['id']}"
+        )
         return dataclasses.replace(decided, next=[approve])
 
     return McpTool(

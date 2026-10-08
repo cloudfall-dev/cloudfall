@@ -326,17 +326,22 @@ def test_an_endpoint_must_be_plain_http(url: str) -> None:
 
 
 def _streamed(out: str) -> dict[str, Any]:
-    """Read a stream: the saved record's event, and how the stream ended."""
+    """Read a stream: its events, the saved record's event, and how it ended.
+
+    Each event is a bare line with ``_seq``; the stream ends with the
+    ``_summary`` line, or with the error envelope when it failed.
+    """
     lines = [json.loads(line) for line in out.splitlines() if line.strip()]
+    events = [line for line in lines if "_seq" in line]
     record = next(
-        (
-            line["data"]
-            for line in lines
-            if line["data"] and line["data"]["kind"] == "investigation"
-        ),
-        None,
+        (event for event in events if event["kind"] == "investigation"), None
     )
-    return {"data": record, "error": lines[-1]["error"], "lines": lines}
+    return {
+        "data": record,
+        "error": lines[-1].get("error"),
+        "events": events,
+        "end": lines[-1],
+    }
 
 
 class _Model(BaseHTTPRequestHandler):
@@ -785,8 +790,9 @@ def test_the_cli_streams_each_turn_and_call_then_the_record(
 
     assert _investigate_against(repository, key, model_url) == 0
 
-    lines = _streamed(capsys.readouterr().out)["lines"]
-    events = [line["data"] for line in lines if line["data"]]
+    stream = _streamed(capsys.readouterr().out)
+    events = stream["events"]
+    assert [event["_seq"] for event in events] == [1, 2, 3, 4]
     assert [event["kind"] for event in events] == [
         "turn",
         "call",
@@ -796,7 +802,9 @@ def test_the_cli_streams_each_turn_and_call_then_the_record(
     assert events[1]["effect"] == "created"
     assert "/var/log/shop holds 36G" in events[1]["result"]["output"]
     assert events[2]["text"].startswith("ROOT CAUSE")
-    assert lines[-1]["meta"]["end"] is True
+    # The decision the call wrote, and the saved record.
+    assert stream["end"]["_summary"] is True
+    assert stream["end"]["effects"] == {"created": 2, "noop": 2}
 
 
 def test_an_incomplete_investigation_ends_with_the_record_then_93(
@@ -812,7 +820,8 @@ def test_an_incomplete_investigation_ends_with_the_record_then_93(
     payload = _streamed(capsys.readouterr().out)
     assert exit_code == 93, payload
     assert payload["data"]["status"] == "unstructured"
-    assert payload["lines"][-2]["data"]["kind"] == "investigation"
+    assert payload["events"][-1]["kind"] == "investigation"
+    assert payload["end"]["error"] is not None
     assert len(list((repository / "investigations").glob("*.json"))) == 1
     error = payload["error"]
     assert error["code"] == "INVESTIGATION_INCOMPLETE"

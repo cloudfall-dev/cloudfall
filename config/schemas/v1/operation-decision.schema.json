@@ -206,6 +206,14 @@
             "approvedAt": {
               "type": "string",
               "format": "date-time"
+            },
+            "via": {
+              "description": "How the approval arrived: terminal when a person typed the decision id at a terminal. A record written before this field reads as unknown.",
+              "type": "string",
+              "enum": [
+                "terminal",
+                "unknown"
+              ]
             }
           },
           "required": [

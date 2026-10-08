@@ -68,6 +68,7 @@ _ERROR_DECISION_EXISTS = "decision_exists"
 ERROR_DECISION_MISSING = "decision_missing"
 _ERROR_NOT_PROPOSED = "decision_not_proposed"
 _ERROR_APPROVER_UNKNOWN = "decision_approver_unknown"
+_ERROR_CHANNEL_UNKNOWN = "decision_approval_channel_unknown"
 
 
 class DecisionError(RuntimeError):
@@ -223,16 +224,43 @@ class Basis:
         }
 
 
+class ApprovalChannel(StrEnum):
+    """How an approval reached the record.
+
+    A person typing the decision id back at a terminal is the only channel
+    an approval is given through. A record written before the channel was
+    recorded says nothing about it, and reads as unknown.
+    """
+
+    TERMINAL = "terminal"
+    """A person typed the decision id at a terminal."""
+
+    UNKNOWN = "unknown"
+    """The record predates the channel; it cannot say how the approval came."""
+
+    @classmethod
+    def from_record(cls, value: object) -> ApprovalChannel:
+        """Read the channel a record names; a record that names none is unknown."""
+        if value is None:
+            return cls.UNKNOWN
+        return cls(str(value))
+
+
 @dataclass(frozen=True, slots=True)
 class Approval:
-    """Who let one operation through, and when."""
+    """Who let one operation through, when, and how it arrived."""
 
     approver: str
     approved_at: str
+    via: ApprovalChannel
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the approval for the record."""
-        return {"approver": self.approver, "approvedAt": self.approved_at}
+        return {
+            "approver": self.approver,
+            "approvedAt": self.approved_at,
+            "via": self.via.value,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -435,6 +463,7 @@ class ApprovalRequest:
     decision: Decision
     approver: str
     repository: Path
+    via: ApprovalChannel
 
 
 @dataclass(frozen=True, slots=True)
@@ -469,6 +498,12 @@ def approve(
     if not request.approver.strip():
         message = "an approval records who gave it; pass --approver or set USER"
         raise DecisionError(_ERROR_APPROVER_UNKNOWN, message)
+    if request.via is ApprovalChannel.UNKNOWN:
+        message = (
+            "an approval records how it arrived; a new one cannot be of an "
+            "unknown channel"
+        )
+        raise DecisionError(_ERROR_CHANNEL_UNKNOWN, message)
     clock = now or _utc_now
     stage = _Stage(request=request, store=store, runner=run or _run_check)
     moment = clock()
@@ -482,7 +517,9 @@ def approve(
     approved = replace(
         decision,
         approval=Approval(
-            approver=request.approver.strip(), approved_at=_timestamp(moment)
+            approver=request.approver.strip(),
+            approved_at=_timestamp(moment),
+            via=request.via,
         ),
         execution=execution,
         verification=verification,
@@ -837,14 +874,16 @@ def _decision_from_document(document: Mapping[str, object]) -> Decision:
         verdict=str(spec["verdict"]) if "verdict" in spec else None,
         execution=_run_from_document(spec.get("execution")),
         verification=_run_from_document(spec.get("verify")),
-        approval=(
-            Approval(
-                approver=str(cast("Mapping[str, object]", approval)["approver"]),
-                approved_at=str(
-                    cast("Mapping[str, object]", approval)["approvedAt"]
-                ),
-            )
-            if isinstance(approval, dict)
-            else None
-        ),
+        approval=_approval_from_document(approval),
+    )
+
+
+def _approval_from_document(approval: object) -> Approval | None:
+    if not isinstance(approval, dict):
+        return None
+    record = cast("Mapping[str, object]", approval)
+    return Approval(
+        approver=str(record["approver"]),
+        approved_at=str(record["approvedAt"]),
+        via=ApprovalChannel.from_record(record.get("via")),
     )

@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import io
 import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from cloudfall.app import app
 from cloudfall.catalog import RiskLevel, TargetScope, load_catalog
 from cloudfall.cli import main
 from cloudfall.decision import (
     DECISION_DIRECTORY,
+    ApprovalChannel,
     ApprovalRequest,
     DecisionError,
     DecisionStatus,
@@ -30,12 +33,14 @@ from cloudfall.domain import ResourceId
 from cloudfall.resources import default_schema_directory
 from cloudfall.validation import SchemaCatalog
 from test_catalog import DEPLOY, FACTS, _repository
+from treaty import CommandPath
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
 SCHEMAS = default_schema_directory()
 MOMENT = datetime(2026, 9, 21, 14, 30, 12, tzinfo=UTC)
+TERMINAL = ApprovalChannel.TERMINAL
 
 WIPE = """\
 id: wipe
@@ -499,7 +504,7 @@ def test_an_approval_runs_the_recorded_proposal_and_verifies_it(
 
     approved = approve(
         ApprovalRequest(
-            decision=proposed, approver="roman", repository=repository
+            decision=proposed, approver="roman", repository=repository, via=TERMINAL
         ),
         store,
         lambda: MOMENT,
@@ -530,7 +535,7 @@ def test_an_approved_run_is_not_check_mode(tmp_path: Path) -> None:
 
     approve(
         ApprovalRequest(
-            decision=proposed, approver="roman", repository=repository
+            decision=proposed, approver="roman", repository=repository, via=TERMINAL
         ),
         store,
         lambda: MOMENT,
@@ -550,7 +555,7 @@ def test_a_failed_run_is_recorded_as_failed_and_skips_verify(
 
     approved = approve(
         ApprovalRequest(
-            decision=proposed, approver="roman", repository=repository
+            decision=proposed, approver="roman", repository=repository, via=TERMINAL
         ),
         store,
         lambda: MOMENT,
@@ -581,7 +586,7 @@ def test_a_run_that_verify_rejects_is_not_verified(tmp_path: Path) -> None:
 
     approved = approve(
         ApprovalRequest(
-            decision=proposed, approver="roman", repository=repository
+            decision=proposed, approver="roman", repository=repository, via=TERMINAL
         ),
         store,
         lambda: MOMENT,
@@ -609,7 +614,7 @@ def test_a_read_operation_without_verify_is_executed_not_verified(
 
     approved = approve(
         ApprovalRequest(
-            decision=proposed, approver="roman", repository=repository
+            decision=proposed, approver="roman", repository=repository, via=TERMINAL
         ),
         store,
         lambda: MOMENT,
@@ -624,14 +629,14 @@ def test_one_proposal_is_approved_once(tmp_path: Path) -> None:
     store = _store(repository)
     proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
     request = ApprovalRequest(
-        decision=proposed, approver="roman", repository=repository
+        decision=proposed, approver="roman", repository=repository, via=TERMINAL
     )
     approved = approve(request, store, lambda: MOMENT, _Runner())
 
     with pytest.raises(DecisionError) as error:
         approve(
             ApprovalRequest(
-                decision=approved, approver="roman", repository=repository
+                decision=approved, approver="roman", repository=repository, via=TERMINAL
             ),
             store,
             lambda: MOMENT,
@@ -648,7 +653,9 @@ def test_an_approval_records_who_gave_it(tmp_path: Path) -> None:
 
     with pytest.raises(DecisionError) as error:
         approve(
-            ApprovalRequest(decision=proposed, approver="  ", repository=repository),
+            ApprovalRequest(
+                decision=proposed, approver="  ", repository=repository, via=TERMINAL
+            ),
             store,
             lambda: MOMENT,
             _Runner(),
@@ -657,30 +664,194 @@ def test_an_approval_records_who_gave_it(tmp_path: Path) -> None:
     assert error.value.code == "decision_approver_unknown"
 
 
-def test_the_cli_shows_the_proposal_before_it_runs_anything(
+class _Terminal(io.StringIO):
+    """A stream that says it is a terminal, as a person's shell is."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+LOCAL_PLAY = (
+    "---\n- hosts: localhost\n  connection: local\n  gather_facts: false\n"
+    "  tasks:\n    - name: Nothing\n      ansible.builtin.debug:\n"
+    "        msg: nothing\n"
+)
+
+
+def _proposed_locally(repository: Path, capsys: pytest.CaptureFixture[str]) -> str:
+    """Propose deploy against localhost through the CLI; return the decision id."""
+    _observations(repository, "web-1")
+    for name in ("deploy.yml", "health.yml"):
+        (repository / "playbooks" / name).write_text(LOCAL_PLAY, encoding="utf-8")
+    exit_code = main(
+        [
+            *("operations", "propose", "deploy"),
+            *("--repository", str(repository), "--target", "localhost"),
+            *("--input", "version=1.4.0"),
+        ]
+    )
+    proposed = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    return str(proposed["data"]["decision"]["metadata"]["id"])
+
+
+def _approve_at_terminal(
+    repository: Path, decision_id: str, typed: str
+) -> tuple[int, dict[str, object]]:
+    """Run ``decisions approve`` as a person at a terminal who types ``typed``."""
+    stdout = _Terminal()
+    exit_code = app.run(
+        [
+            *("decisions", "approve", decision_id),
+            *("--repository", str(repository), "--approver", "roman"),
+            *("--format", "json"),
+        ],
+        stdin=_Terminal(f"{typed}\n"),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+    return exit_code, json.loads(stdout.getvalue())
+
+
+def test_a_person_at_a_terminal_approves_by_typing_the_decision_id(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Without --yes the approval command changes nothing."""
+    repository = _repository(tmp_path)
+    decision_id = _proposed_locally(repository, capsys)
+
+    exit_code, payload = _approve_at_terminal(repository, decision_id, decision_id)
+
+    assert exit_code == 0, payload
+    loaded = _store(repository).load(ResourceId.from_boundary(decision_id))
+    assert loaded.status is DecisionStatus.VERIFIED
+    assert loaded.approval is not None
+    assert loaded.approval.approver == "roman"
+    assert loaded.approval.via is ApprovalChannel.TERMINAL
+    on_disk = json.loads(
+        (repository / DECISION_DIRECTORY / f"{decision_id}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert on_disk["spec"]["approval"]["via"] == "terminal"
+
+
+def test_a_mistyped_decision_id_approves_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = _repository(tmp_path)
+    decision_id = _proposed_locally(repository, capsys)
+
+    exit_code, payload = _approve_at_terminal(repository, decision_id, "yes")
+
+    error = payload["error"]
+    assert isinstance(error, dict)
+    assert exit_code == 4
+    assert error["code"] == "ATTESTATION_MISMATCH"
+    loaded = _store(repository).load(ResourceId.from_boundary(decision_id))
+    assert loaded.status is DecisionStatus.PROPOSED
+    assert loaded.approval is None
+
+
+@pytest.mark.parametrize("flags", [["--yes"], []], ids=["yes", "bare"])
+def test_an_approval_off_a_terminal_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], flags: list[str]
+) -> None:
+    """An agent's shell call cannot approve, ``--yes`` or not (#25)."""
     repository = _repository(tmp_path)
     store = _store(repository)
     proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
 
     exit_code = main(
         [
-            "decisions",
-            "approve",
-            proposed.decision_id.value,
-            "--repository",
-            str(repository),
+            *("decisions", "approve", proposed.decision_id.value),
+            *("--repository", str(repository), "--approver", "roman"),
+            *flags,
         ]
     )
 
     payload = json.loads(capsys.readouterr().out)
-    assert exit_code == 0
-    assert payload["data"]["status"] == "pending"
-    assert payload["data"]["effect"] == "would_update"
-    assert payload["meta"]["dry_run"] is True
-    assert payload["data"]["decision"]["spec"]["status"] == "proposed"
+    assert exit_code == 4
+    assert payload["error"]["code"] == "PERSON_REQUIRED"
+    assert payload["error"]["retryable"] is False
+    assert store.load(proposed.decision_id).status is DecisionStatus.PROPOSED
+
+
+def test_a_raw_payload_cannot_approve_off_a_terminal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    payload_in = {
+        "decision": proposed.decision_id.value,
+        "repository": str(repository),
+        "approver": "roman",
+        "yes": True,
+    }
+
+    exit_code = main(
+        ["decisions", "approve", "--raw-payload", json.dumps(payload_in)]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 4
+    assert payload["error"]["code"] == "PERSON_REQUIRED"
+    assert store.load(proposed.decision_id).status is DecisionStatus.PROPOSED
+
+
+def test_the_approval_command_is_a_persons_and_never_a_tool() -> None:
+    command = app.commands[CommandPath("decisions.approve")]
+
+    assert command.requires_person is True
+    assert command.mcp is False
+
+
+def test_a_record_written_before_the_channel_reads_as_unknown(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    approved = approve(
+        ApprovalRequest(
+            decision=proposed, approver="roman", repository=repository, via=TERMINAL
+        ),
+        store,
+        lambda: MOMENT,
+        _Runner(),
+    )
+    path = repository / DECISION_DIRECTORY / f"{approved.decision_id.value}.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    del document["spec"]["approval"]["via"]
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    loaded = store.load(approved.decision_id)
+
+    assert loaded.approval is not None
+    assert loaded.approval.via is ApprovalChannel.UNKNOWN
+    shown = json.loads(json.dumps(loaded.as_document()))
+    assert shown["spec"]["approval"]["via"] == "unknown"
+
+
+def test_a_new_approval_names_how_it_arrived(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+
+    with pytest.raises(DecisionError) as error:
+        approve(
+            ApprovalRequest(
+                decision=proposed,
+                approver="roman",
+                repository=repository,
+                via=ApprovalChannel.UNKNOWN,
+            ),
+            store,
+            lambda: MOMENT,
+            _Runner(),
+        )
+
+    assert error.value.code == "decision_approval_channel_unknown"
     assert store.load(proposed.decision_id).status is DecisionStatus.PROPOSED
 
 
@@ -693,7 +864,7 @@ def test_an_approved_decision_round_trips_through_the_store(
     proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
     approved = approve(
         ApprovalRequest(
-            decision=proposed, approver="roman", repository=repository
+            decision=proposed, approver="roman", repository=repository, via=TERMINAL
         ),
         store,
         lambda: MOMENT,
@@ -719,7 +890,7 @@ def test_a_verify_step_that_changes_the_fleet_did_not_verify_it(
 
     approved = approve(
         ApprovalRequest(
-            decision=proposed, approver="roman", repository=repository
+            decision=proposed, approver="roman", repository=repository, via=TERMINAL
         ),
         store,
         lambda: MOMENT,
@@ -745,6 +916,7 @@ def test_every_outcome_says_why_in_the_record(tmp_path: Path) -> None:
             ),
             approver="roman",
             repository=repository,
+            via=TERMINAL,
         ),
         store,
         lambda: MOMENT,
@@ -760,6 +932,7 @@ def test_every_outcome_says_why_in_the_record(tmp_path: Path) -> None:
             ),
             approver="roman",
             repository=repository,
+            via=TERMINAL,
         ),
         store,
         lambda: MOMENT,
