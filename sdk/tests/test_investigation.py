@@ -14,11 +14,14 @@ from cloudfall.investigation import (
     AgentTool,
     InvestigationError,
     InvestigationStatus,
+    InvestigationStore,
     ModelEndpoint,
     StepOutcome,
     ToolResult,
     investigate,
 )
+from cloudfall.resources import default_schema_directory
+from cloudfall.validation import SchemaCatalog
 from test_catalog import _repository
 
 if TYPE_CHECKING:
@@ -169,6 +172,34 @@ def test_a_repeated_read_is_not_taken_for_a_proposal() -> None:
 
     assert done.finding is not None
     assert done.finding.proposed == ()
+
+
+def test_two_investigations_in_the_same_second_are_both_recorded(
+    tmp_path: Path,
+) -> None:
+    report, rotate = _tools()
+    done = investigate(
+        "alert",
+        _tool_list(report, rotate),
+        ENDPOINT,
+        _Script(_say("ROOT CAUSE: disk\nPROPOSED: none\nWHY: none.")),
+    )
+    store = InvestigationStore(
+        directory=tmp_path / "investigations",
+        catalog=SchemaCatalog(default_schema_directory()),
+    )
+
+    first = store.save(done)
+    second = store.save(done)
+
+    base = done.investigation_id.value
+    assert first.investigation_id.value == base
+    assert second.investigation_id.value == f"{base}-2"
+    recorded = json.loads(
+        (tmp_path / "investigations" / f"{base}-2.json").read_text(encoding="utf-8")
+    )
+    assert recorded["metadata"]["id"] == f"{base}-2"
+    assert (tmp_path / "investigations" / f"{base}.json").exists()
 
 
 def test_an_unknown_tool_or_bad_arguments_never_run_anything() -> None:

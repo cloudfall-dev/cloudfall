@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, cast
@@ -39,6 +39,8 @@ TOOL_TEXT_LIMIT = 8000
 """Most characters of host output one tool result hands the model."""
 TOOL_NAME_LIMIT = 128
 """Most characters of a tool name the record keeps, as its schema allows."""
+SAVE_ATTEMPTS = 100
+"""Most investigations recorded under one second's id, with their suffixes."""
 ENDPOINT_LIMIT = 512
 MODEL_NAME_LIMIT = 256
 
@@ -269,19 +271,30 @@ class InvestigationStore:
     directory: Path
     catalog: SchemaCatalog
 
-    def save(self, investigation: Investigation) -> Path:
-        """Persist a new investigation, refusing to overwrite one."""
-        path = self.directory / f"{investigation.investigation_id.value}.json"
-        if path.exists():
-            message = f"investigation already exists: {path}"
-            raise InvestigationError(ERROR_INVESTIGATION_EXISTS, message)
-        document = investigation.as_document()
-        self.catalog.validate_named(INVESTIGATION_SCHEMA, document)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            f"{json.dumps(document, indent=2, sort_keys=True)}\n", encoding="utf-8"
-        )
-        return path
+    def save(self, investigation: Investigation) -> Investigation:
+        """Persist a new investigation and return it as saved.
+
+        An investigation started in the same second as a recorded one gets a
+        numeric suffix on its id; no record is ever overwritten.
+        """
+        self.directory.mkdir(parents=True, exist_ok=True)
+        base = investigation.investigation_id.value
+        for attempt in range(1, SAVE_ATTEMPTS + 1):
+            identifier = base if attempt == 1 else f"{base}-{attempt}"
+            saved = replace(
+                investigation, investigation_id=ResourceId.from_boundary(identifier)
+            )
+            document = saved.as_document()
+            self.catalog.validate_named(INVESTIGATION_SCHEMA, document)
+            path = self.directory / f"{identifier}.json"
+            try:
+                with path.open("x", encoding="utf-8") as record:
+                    record.write(f"{json.dumps(document, indent=2, sort_keys=True)}\n")
+            except FileExistsError:
+                continue
+            return saved
+        message = f"{SAVE_ATTEMPTS} investigations already exist for {base}"
+        raise InvestigationError(ERROR_INVESTIGATION_EXISTS, message)
 
 
 def investigate(

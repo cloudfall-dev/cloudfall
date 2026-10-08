@@ -2258,14 +2258,18 @@ def agent_investigate(args: InvestigateArgs, ctx: Ctx) -> Investigated:
             _chat_transport(ctx, args.api_key),
             max_turns=args.max_turns,
         )
-        InvestigationStore(
-            directory=args.root / args.investigations,
-            catalog=SchemaCatalog(args.schemas),
-        ).save(investigation)
     except InvestigationError as error:
         raise Exit.MODEL_UNAVAILABLE(
             error.detail, context={"code": error.code}
         ) from error
+    try:
+        investigation = InvestigationStore(
+            directory=args.root / args.investigations,
+            catalog=SchemaCatalog(args.schemas),
+        ).save(investigation)
+    except InvestigationError as error:
+        # Recording failed, not the model: never MODEL_UNAVAILABLE.
+        raise Exit.PRECONDITION(error.detail, context={"code": error.code}) from error
     investigated = Investigated(
         effect="created",
         status=investigation.status.value,
