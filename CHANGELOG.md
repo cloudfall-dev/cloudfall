@@ -392,6 +392,12 @@ Notable changes to Cloudfall. The format follows
 
 ### Fixed
 
+- A decision record that is not JSON or does not match its schema answers
+  `RECORD_INVALID` (exit 86, code `decision_record_invalid`) naming the file
+  and the failing field, from `decisions show`, `decisions list`,
+  `decisions approve` and `why`; it used to crash them with exit 1 and no
+  envelope. `decisions list` and `why` still stop at the first bad record
+  rather than skip it (#41)
 - `migrate --env-file NAME=PATH` and `--data NAME=PATH` resolve a relative
   path against the project again, as every other path does; since the
   move to treaty they resolved against the current directory

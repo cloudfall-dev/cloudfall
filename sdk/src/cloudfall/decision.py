@@ -27,6 +27,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from jsonschema.exceptions import ValidationError
+
 from cloudfall.catalog import RiskLevel, TargetScope
 from cloudfall.domain import ResourceId
 
@@ -69,6 +71,7 @@ ERROR_DECISION_MISSING = "decision_missing"
 _ERROR_NOT_PROPOSED = "decision_not_proposed"
 _ERROR_APPROVER_UNKNOWN = "decision_approver_unknown"
 _ERROR_CHANNEL_UNKNOWN = "decision_approval_channel_unknown"
+_ERROR_RECORD_INVALID = "decision_record_invalid"
 
 
 class DecisionError(RuntimeError):
@@ -353,10 +356,22 @@ class DecisionStore:
         if not path.is_file():
             message = f"decision does not exist: {path}"
             raise DecisionError(ERROR_DECISION_MISSING, message)
-        document = cast(
-            "dict[str, object]", json.loads(path.read_text(encoding="utf-8"))
-        )
-        self.catalog.validate_named(DECISION_SCHEMA, document)
+        try:
+            document = cast(
+                "dict[str, object]", json.loads(path.read_text(encoding="utf-8"))
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            message = f"decision record is not valid JSON: {path}: {error}"
+            raise DecisionError(_ERROR_RECORD_INVALID, message) from error
+        try:
+            self.catalog.validate_named(DECISION_SCHEMA, document)
+        except ValidationError as error:
+            field = ".".join(str(part) for part in error.absolute_path) or "(root)"
+            message = (
+                f"decision record does not match its schema: {path}: "
+                f"{field}: {error.message}"
+            )
+            raise DecisionError(_ERROR_RECORD_INVALID, message) from error
         return _decision_from_document(document)
 
     def list(self) -> tuple[Decision, ...]:
