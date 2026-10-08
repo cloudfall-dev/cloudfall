@@ -323,6 +323,14 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
     ),
     CommandContract(
         "cloudfall",
+        "agent investigate",
+        CommandEffect.READ,
+        "let a model work an alert through the catalog: reads run, changes are "
+        "proposed in check mode, nothing is approved",
+        output=(_shape("status", "investigation:object"),),
+    ),
+    CommandContract(
+        "cloudfall",
         "audit",
         CommandEffect.READ,
         "compare the declared config with observed server snapshots",

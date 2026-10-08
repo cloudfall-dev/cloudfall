@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, ClassVar, Self, cast
 from treaty import (
     App,
     Arg,
+    CliExit,
     Ctx,
     Excludes,
     Exit,
@@ -125,6 +126,20 @@ from cloudfall.importer import (
     import_render_blueprint,
 )
 from cloudfall.inventory import PlatformInventory
+from cloudfall.investigation import (
+    DEFAULT_MAX_TURNS,
+    INVESTIGATION_DIRECTORY,
+    AgentTool,
+    ChatTransport,
+    InvestigationError,
+    InvestigationStatus,
+    InvestigationStore,
+    ModelEndpoint,
+    StepOutcome,
+    ToolResult,
+    host_text,
+    investigate,
+)
 from cloudfall.lifecycle import (
     ERROR_EXECUTION_FAILED,
     STEP_TIMEOUT_SECONDS,
@@ -2089,6 +2104,260 @@ def decisions_approve(args: ApproveDecisionArgs, ctx: Ctx) -> Decided:
     return decided
 
 
+# agent investigate
+
+
+agent = app.group(
+    "agent", description="Let a model investigate an alert through the operations"
+)
+
+app.exit_code(
+    "MODEL_UNAVAILABLE",
+    92,
+    description="The model endpoint refused the request or answered malformed JSON",
+    retryable=False,
+    side_effects="partial",
+    suggestion=(
+        "check the endpoint, the model name and the API key, then run again; "
+        "decisions already recorded stay"
+    ),
+)
+app.exit_code(
+    "INVESTIGATION_INCOMPLETE",
+    93,
+    description=(
+        "The model ran out of turns or did not answer in the asked-for shape; "
+        "data holds the record"
+    ),
+    retryable=True,
+    side_effects="none",
+    suggestion=(
+        "read data.investigation.spec.steps, then run again or raise --max-turns"
+    ),
+)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InvestigateArgs(CatalogArgs):
+    """Arguments of ``agent investigate``."""
+
+    alert: str = Flag(
+        description="The alert to investigate, as the monitoring sent it",
+        max_bytes=4000,
+    )
+    base_url: str = Flag(
+        description=(
+            "OpenAI-compatible endpoint, such as "
+            "https://api.tokenfactory.nebius.com/v1/"
+        ),
+    )
+    model: str = Flag(
+        description="Model to ask, such as nvidia/nemotron-3-super-120b-a12b",
+    )
+    api_key: str = Flag(
+        description="API key of the model endpoint",
+        secret=True,
+    )
+    max_turns: int = Flag(
+        default=DEFAULT_MAX_TURNS,
+        description=(
+            f"Most model turns before giving up (default: {DEFAULT_MAX_TURNS})"
+        ),
+    )
+    observed: Path = Flag(
+        default=Path("tmp/observed"),
+        description=(
+            "Snapshot directory proposals cite as their basis (default: tmp/observed)"
+        ),
+    )
+    decisions: Path = Flag(
+        default=Path(DECISION_DIRECTORY),
+        description=(
+            f"Directory holding the decision records (default: {DECISION_DIRECTORY})"
+        ),
+    )
+    investigations: Path = Flag(
+        default=Path(INVESTIGATION_DIRECTORY),
+        description=(
+            "Directory holding the investigation records "
+            f"(default: {INVESTIGATION_DIRECTORY})"
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        """Refuse a malformed endpoint, and keep relative paths in the repository."""
+        CatalogArgs.__post_init__(self)
+        _inside_project(self.observed, "observed")
+        _inside_project(self.decisions, "decisions")
+        _inside_project(self.investigations, "investigations")
+        if self.max_turns < 1:
+            message = "max-turns must be at least 1"
+            raise ParseError(message, context={"flag": "max-turns"})
+        self.endpoint()
+
+    def endpoint(self) -> ModelEndpoint:
+        """Return the endpoint and model to ask."""
+        try:
+            return ModelEndpoint(base_url=self.base_url, model=self.model)
+        except InvestigationError as error:
+            raise ParseError(error.detail, context={"code": error.code}) from error
+
+
+@dataclass(frozen=True, slots=True)
+class Investigated:
+    """``agent investigate``: the investigation record."""
+
+    effect: str
+    status: str
+    investigation: dict[str, object] = Out(ordered=True)
+
+
+@agent.command(
+    "investigate",
+    description=(
+        "Let a model investigate an alert: read operations run, other operations "
+        "are proposed in check mode, nothing is approved; the investigation is "
+        "recorded beside its decisions"
+    ),
+    # An agent loop is not a tool for another agent.
+    mcp=False,
+    danger_level="mutating",
+    exit_codes=[
+        "CONFIG_INVALID",
+        "PRECONDITION",
+        "MODEL_UNAVAILABLE",
+        "INVESTIGATION_INCOMPLETE",
+    ],
+    timeout=None,
+    has_network_io=True,
+    # The finding and the answer are the model's text.
+    external=True,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0"},
+    examples=[
+        (
+            "Investigate a database alert with Nemotron on Nebius Token Factory",
+            "cloudfall agent investigate --alert 'postgresql-main down on hz1' "
+            "--base-url https://api.tokenfactory.nebius.com/v1/ "
+            "--model nvidia/nemotron-3-super-120b-a12b",
+        ),
+    ],
+)
+def agent_investigate(args: InvestigateArgs, ctx: Ctx) -> Investigated:
+    """Work the alert through the catalog and keep the record."""
+    catalog = args.catalog()
+    tools = [_agent_tool(args, operation, ctx) for operation in catalog.operations]
+    try:
+        investigation = investigate(
+            args.alert,
+            tools,
+            args.endpoint(),
+            _chat_transport(ctx, args.api_key),
+            max_turns=args.max_turns,
+        )
+        InvestigationStore(
+            directory=args.root / args.investigations,
+            catalog=SchemaCatalog(args.schemas),
+        ).save(investigation)
+    except InvestigationError as error:
+        raise Exit.MODEL_UNAVAILABLE(
+            error.detail, context={"code": error.code}
+        ) from error
+    investigated = Investigated(
+        effect="created",
+        status=investigation.status.value,
+        investigation=investigation.as_document(),
+    )
+    if investigation.status is not InvestigationStatus.ANSWERED:
+        message = f"the investigation ended {investigation.status.value}"
+        raise Exit.INVESTIGATION_INCOMPLETE(message, data=investigated)
+    return investigated
+
+
+def _agent_tool(args: InvestigateArgs, operation: Operation, ctx: Ctx) -> AgentTool:
+    """One declared operation as a tool of the investigating model."""
+
+    def call(arguments: Mapping[str, object]) -> ToolResult:
+        inputs = cast("Mapping[str, object]", arguments.get("inputs", {}))
+        target = arguments.get("target")
+        proposal = ProposeArgs(
+            repository=args.root,
+            schemas=args.schemas,
+            operations=args.operations,
+            operation=operation.operation_id,
+            target=None if target is None else str(target),
+            input=tuple(f"{name}={value}" for name, value in inputs.items()),
+            observed=args.observed,
+            decisions=args.decisions,
+        )
+        try:
+            return _tool_result(operations_propose(proposal, ctx), ok=True)
+        except CliExit as error:
+            if isinstance(error.data, Decided):
+                failed = _tool_result(error.data, ok=False)
+                content = {**failed.content, "error": error.message}
+                return ToolResult(StepOutcome.FAILED, content, failed.decision)
+            content = {"ok": False, "error": error.message, "code": error.code}
+            return ToolResult(StepOutcome.FAILED, content)
+
+    return AgentTool(
+        name=operation_tool_name(operation),
+        description=operation_tool_description(operation),
+        input_schema=_operation_tool_schema(operation),
+        call=call,
+    )
+
+
+def _tool_result(decided: Decided, *, ok: bool) -> ToolResult:
+    record = cast("Mapping[str, Mapping[str, object]]", decided.decision)
+    spec = cast("Mapping[str, Mapping[str, object]]", record["spec"])
+    decision_id = str(record["metadata"]["id"])
+    content: dict[str, object] = {
+        "ok": ok,
+        "decision": decision_id,
+        "gate": spec["gate"]["requirement"],
+        "check": {
+            "exitCode": spec["check"]["exitCode"],
+            "changed": spec["check"]["changed"],
+        },
+    }
+    if decided.output is None:
+        return ToolResult(StepOutcome.PROPOSED, content, decision_id)
+    content["output"] = host_text(decided.output)
+    return ToolResult(StepOutcome.RAN, content, decision_id)
+
+
+def _chat_transport(ctx: Ctx, api_key: str) -> ChatTransport:
+    """Send one chat request through ``ctx.http``."""
+
+    def send(url: str, body: Mapping[str, object]) -> Mapping[str, object]:
+        response = ctx.http.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/json",
+            },
+            json=body,
+        )
+        if response.status != HTTPStatus.OK:
+            message = (
+                f"the model endpoint answered {response.status}: "
+                f"{response.body[:300].decode('utf-8', errors='replace')}"
+            )
+            raise Exit.MODEL_UNAVAILABLE(
+                message, context={"code": "agent_model_refused"}
+            )
+        answer = response.json()
+        if not isinstance(answer, Mapping):
+            message = "the model endpoint answered JSON that is not an object"
+            raise Exit.MODEL_UNAVAILABLE(
+                message, context={"code": "agent_model_answer_malformed"}
+            )
+        return cast("Mapping[str, object]", answer)
+
+    return send
+
+
 # operator approve
 
 
@@ -3423,14 +3692,8 @@ def _provided_tools(args: McpServeArgs, ctx: Ctx) -> list[McpTool]:
 _PROPOSE_EXIT_CODES = ("CONFIG_INVALID", "NOT_FOUND", "PRECONDITION", "CHECK_FAILED")
 
 
-def _operation_tool(
-    args: McpServeArgs, root: ServerRoot, operation: Operation
-) -> McpTool:
-    """One declared operation as a tool: calling it previews and records it.
-
-    It is read-only in effect, since it runs check mode; the destructive
-    hint says what approving it would mean.
-    """
+def _operation_tool_schema(operation: Operation) -> dict[str, object]:
+    """Return an operation tool's arguments: its target and declared inputs."""
     declared = {
         declared_input.name.value: {"type": "string"}
         for declared_input in operation.inputs
@@ -3440,7 +3703,7 @@ def _operation_tool(
         for declared_input in operation.inputs
         if declared_input.required
     ]
-    schema: dict[str, object] = {
+    return {
         "type": "object",
         "properties": {
             "target": {
@@ -3460,6 +3723,17 @@ def _operation_tool(
         "required": ["inputs"] if required else [],
         "additionalProperties": False,
     }
+
+
+def _operation_tool(
+    args: McpServeArgs, root: ServerRoot, operation: Operation
+) -> McpTool:
+    """One declared operation as a tool: calling it previews and records it.
+
+    It is read-only in effect, since it runs check mode; the destructive
+    hint says what approving it would mean.
+    """
+    schema = _operation_tool_schema(operation)
 
     def propose_operation(arguments: Mapping[str, object], ctx: Ctx) -> Decided:
         inputs = cast("Mapping[str, str]", arguments.get("inputs", {}))
