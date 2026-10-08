@@ -81,10 +81,8 @@ marketing copy; it is the release policy.
 ## 8 · Open core, never crippled
 
 Cloudfall is AGPL-3.0. The free tool must be genuinely sufficient to leave
-a PaaS and run your own server; sustainability comes from the hosted
-operator and commercial licensing, never from holding back the open core.
-What is free stays free, and the line between the two is stated in the
-README, not discovered at checkout.
+a PaaS and run your own server; sustainability never comes from holding
+back the open core. What is free stays free.
 
 ---
 

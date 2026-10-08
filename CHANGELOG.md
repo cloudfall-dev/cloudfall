@@ -70,6 +70,11 @@ Notable changes to Cloudfall. The format follows
 
 ### Changed
 
+- The README, the site, the roadmap and the architecture say what is built
+  on a team's own Ansible repository (the operations catalog, the gate,
+  decision records and `cloudfall why`) instead of calling it unbuilt, show
+  a real `cloudfall why` answer, and address both teams leaving a PaaS and
+  teams already running Ansible
 - The README opens with what Cloudfall is, a diagram of the gate, a short
   quickstart and a guide index; the long walkthroughs moved to
   [docs/getting-started.md](docs/getting-started.md). The repository has issue
