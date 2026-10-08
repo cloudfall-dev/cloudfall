@@ -149,7 +149,7 @@ The reference resource set lives in this repository, so validating it means
 a clone:
 
 ```console
-git clone https://github.com/romamo/cloudfall.git
+git clone https://github.com/cloudfall-dev/cloudfall.git
 cd cloudfall
 uv sync
 uv run cloudfall config validate --project config/examples

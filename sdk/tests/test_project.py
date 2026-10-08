@@ -83,7 +83,7 @@ def test_init_links_the_guide_and_examples_at_the_pinned_release(
     init_project(_options(directory))
 
     readme = (directory / "README.md").read_text(encoding="utf-8")
-    base = "https://github.com/romamo/cloudfall"
+    base = "https://github.com/cloudfall-dev/cloudfall"
     assert "[secrets guide][secrets-guide]" in readme
     assert "[reference set][examples]" in readme
     assert f"[cloudfall]: {base}\n" in readme

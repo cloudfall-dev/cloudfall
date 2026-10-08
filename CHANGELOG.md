@@ -70,6 +70,10 @@ Notable changes to Cloudfall. The format follows
 
 ### Changed
 
+- The repository moved to the `cloudfall-dev` organization:
+  github.com/cloudfall-dev/cloudfall. The package metadata, the README,
+  the site and `REPOSITORY_URL` point there; the old
+  github.com/romamo/cloudfall address redirects
 - **Breaking:** the CLI follows one name per meaning, and its output is
   typed:
   - Decision records have their own group: `decisions list` (was

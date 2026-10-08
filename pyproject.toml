@@ -25,9 +25,9 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://cloudfall.dev"
-Repository = "https://github.com/romamo/cloudfall"
-Changelog = "https://github.com/romamo/cloudfall/blob/main/CHANGELOG.md"
-Issues = "https://github.com/romamo/cloudfall/issues"
+Repository = "https://github.com/cloudfall-dev/cloudfall"
+Changelog = "https://github.com/cloudfall-dev/cloudfall/blob/main/CHANGELOG.md"
+Issues = "https://github.com/cloudfall-dev/cloudfall/issues"
 
 [project.optional-dependencies]
 mcp = [

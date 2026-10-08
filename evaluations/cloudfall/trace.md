@@ -511,7 +511,7 @@ writer blocked=True wrote=65536 error=None at t=10.0s; cli alive=True (stuck wri
 
 **stdout** (first 20 lines):
 ```
-{"files": ["pyproject.toml", ".gitignore", "README.md", "servers/.gitkeep", "server-types/.gitkeep", "applications/.gitkeep", "components/.gitkeep", "domains/.gitkeep", "ssh-public-keys/.gitkeep", "logging-stacks/.gitkeep", "services/.gitkeep", "alert-rules/.gitkeep", "operator-policies/.gitkeep"], "next": ["cd /Users/roman/PycharmProjects/Atlas/tmp/eval/init-s62 && uv sync", "uv run cloudfall add ssh-key ~/.ssh/id_ed25519.pub --owner <you>", "uv run cloudfall add server h1 --address <ip-or-hostname>", "uv run cloudfall config validate ."], "project": {"directory": "/Users/roman/PycharmProjects/Atlas/tmp/eval/init-s62", "name": "init-s62", "revision": "b9677a68ceac642c42b300a219a2a552dab1f0da", "source": "https://github.com/romamo/cloudfall.git"}, "status": "ok"}
+{"files": ["pyproject.toml", ".gitignore", "README.md", "servers/.gitkeep", "server-types/.gitkeep", "applications/.gitkeep", "components/.gitkeep", "domains/.gitkeep", "ssh-public-keys/.gitkeep", "logging-stacks/.gitkeep", "services/.gitkeep", "alert-rules/.gitkeep", "operator-policies/.gitkeep"], "next": ["cd /Users/roman/PycharmProjects/Atlas/tmp/eval/init-s62 && uv sync", "uv run cloudfall add ssh-key ~/.ssh/id_ed25519.pub --owner <you>", "uv run cloudfall add server h1 --address <ip-or-hostname>", "uv run cloudfall config validate ."], "project": {"directory": "/Users/roman/PycharmProjects/Atlas/tmp/eval/init-s62", "name": "init-s62", "revision": "b9677a68ceac642c42b300a219a2a552dab1f0da", "source": "https://github.com/cloudfall-dev/cloudfall.git"}, "status": "ok"}
 ```
 
 **stderr** (first 20 lines):

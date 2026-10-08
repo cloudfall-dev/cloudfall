@@ -2,7 +2,7 @@ services:
   - type: web
     name: render-demo
     runtime: python
-    repo: https://github.com/romamo/cloudfall
+    repo: https://github.com/cloudfall-dev/cloudfall
     branch: main
     rootDir: examples/render-demo
     plan: free

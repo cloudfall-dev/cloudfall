@@ -37,7 +37,7 @@
 
 ### 4. Setup Reproducibility — 1/3
 
-- Install: `git clone https://github.com/romamo/cloudfall.git && cd cloudfall && uv sync` (README Quickstart); for projects `uvx --from git+https://github.com/romamo/cloudfall.git cloudfall init my-project`. Not on PyPI
+- Install: `git clone https://github.com/cloudfall-dev/cloudfall.git && cd cloudfall && uv sync` (README Quickstart); for projects `uvx --from git+https://github.com/cloudfall-dev/cloudfall.git cloudfall init my-project`. Not on PyPI
 - Non-interactive: yes. Idempotent: `uv sync --dry-run` reports "Would make no changes" (exit 0)
 - Dependencies: declared in `pyproject.toml`, locked in `uv.lock`; `uv` provisions Python 3.14
 - Verification fails: `cloudfall --version` exits 2; no `doctor`/health-check command. Install lives only in README
