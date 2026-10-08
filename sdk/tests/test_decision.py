@@ -36,7 +36,7 @@ from test_catalog import DEPLOY, FACTS, _repository
 from treaty import CommandPath
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
 SCHEMAS = default_schema_directory()
 MOMENT = datetime(2026, 9, 21, 14, 30, 12, tzinfo=UTC)
@@ -943,3 +943,95 @@ def test_every_outcome_says_why_in_the_record(tmp_path: Path) -> None:
     assert executed.verdict == (
         "the run succeeded; the operation declares no verify step"
     )
+
+
+def _not_json(path: Path) -> str:
+    path.write_text("{not json", encoding="utf-8")
+    return "not valid JSON"
+
+
+def _bad_status(path: Path) -> str:
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["spec"]["status"] = "bogus"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return "spec.status"
+
+
+def _bad_via(path: Path) -> str:
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["spec"]["approval"]["via"] = "pigeon"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return "spec.approval.via"
+
+
+RECORD_COMMANDS: dict[str, tuple[str, ...]] = {
+    "show": ("decisions", "show", "{id}"),
+    "list": ("decisions", "list"),
+    "approve": ("decisions", "approve", "{id}", "--approver", "roman"),
+    "why": ("why",),
+}
+
+
+def _run_on_record(
+    command: str, repository: Path, decision_id: str
+) -> tuple[int, dict[str, object]]:
+    """Run one record-reading command as a person at a terminal."""
+    argv = [part.replace("{id}", decision_id) for part in RECORD_COMMANDS[command]]
+    stdout = _Terminal()
+    exit_code = app.run(
+        [*argv, "--repository", str(repository), "--format", "json"],
+        stdin=_Terminal(f"{decision_id}\n"),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+    return exit_code, json.loads(stdout.getvalue())
+
+
+@pytest.mark.parametrize("command", sorted(RECORD_COMMANDS))
+@pytest.mark.parametrize(
+    "corrupt", [_not_json, _bad_status, _bad_via], ids=["json", "status", "via"]
+)
+def test_an_invalid_record_answers_record_invalid_naming_the_file(
+    tmp_path: Path, command: str, corrupt: Callable[[Path], str]
+) -> None:
+    """A broken record is a typed RECORD_INVALID, never a crash (#41)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    approve(
+        ApprovalRequest(
+            decision=proposed, approver="roman", repository=repository, via=TERMINAL
+        ),
+        store,
+        lambda: MOMENT,
+        _Runner(),
+    )
+    path = repository / DECISION_DIRECTORY / f"{proposed.decision_id.value}.json"
+    named = corrupt(path)
+
+    exit_code, payload = _run_on_record(command, repository, proposed.decision_id.value)
+
+    error = payload["error"]
+    assert isinstance(error, dict)
+    assert exit_code == 86, payload
+    assert error["code"] == "RECORD_INVALID"
+    assert error["context"]["code"] == "decision_record_invalid"
+    assert str(path) in error["message"]
+    assert named in error["message"]
+
+
+def test_a_store_refuses_an_invalid_record_with_a_decision_error(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    path = repository / DECISION_DIRECTORY / f"{proposed.decision_id.value}.json"
+    _bad_status(path)
+
+    with pytest.raises(DecisionError) as error:
+        store.list()
+
+    assert error.value.code == "decision_record_invalid"
+    assert str(path) in error.value.detail
+    assert "spec.status" in error.value.detail
