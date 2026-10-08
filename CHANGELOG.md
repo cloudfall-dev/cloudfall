@@ -8,6 +8,12 @@ Notable changes to Cloudfall. The format follows
 
 ### Added
 
+- `agent investigate` streams: one JSON line per model turn (its words and
+  how many tools it called), one per tool call (the step and what the tool
+  handed back, `effect: created` when it wrote a decision), and the saved
+  investigation record last, then treaty's end line. `--no-stream` returns
+  every event in one envelope. A watcher, such as the hosted demo, shows the
+  agent working instead of waiting for the end
 - `agent investigate --replay DIR` plays a real run back instead of running
   Ansible: DIR is the decisions directory of a run on real hosts, and each
   check-mode call the model makes answers with the output and per-host

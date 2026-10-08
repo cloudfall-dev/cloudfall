@@ -325,6 +325,20 @@ def test_an_endpoint_must_be_plain_http(url: str) -> None:
     assert error.value.code == "agent_endpoint_invalid"
 
 
+def _streamed(out: str) -> dict[str, Any]:
+    """Read a stream: the saved record's event, and how the stream ended."""
+    lines = [json.loads(line) for line in out.splitlines() if line.strip()]
+    record = next(
+        (
+            line["data"]
+            for line in lines
+            if line["data"] and line["data"]["kind"] == "investigation"
+        ),
+        None,
+    )
+    return {"data": record, "error": lines[-1]["error"], "lines": lines}
+
+
 class _Model(BaseHTTPRequestHandler):
     """An OpenAI-compatible endpoint answering from a class-level script.
 
@@ -398,7 +412,7 @@ def test_the_cli_investigates_and_records_it(
         ]
     )
 
-    payload = json.loads(capsys.readouterr().out)
+    payload = _streamed(capsys.readouterr().out)
     assert exit_code == 0, payload
     spec = payload["data"]["investigation"]["spec"]
     assert spec["status"] == "answered"
@@ -463,7 +477,7 @@ def test_an_answer_that_is_not_json_exits_model_unavailable(
         server.shutdown()
         server.server_close()
 
-    payload = json.loads(capsys.readouterr().out)
+    payload = _streamed(capsys.readouterr().out)
     assert exit_code == 92, payload
     assert payload["error"]["context"]["code"] == "agent_model_answer_malformed"
 
@@ -506,7 +520,7 @@ def test_a_model_failing_mid_run_records_the_investigation_and_exits_92(
 
     out = capsys.readouterr()
     assert "sk-test" not in out.out + out.err
-    payload = json.loads(out.out)
+    payload = _streamed(out.out)
     assert exit_code == 92, payload
     context = payload["error"]["context"]
     assert context["code"] == code
@@ -543,7 +557,7 @@ def test_an_endpoint_with_a_query_or_fragment_is_refused_before_the_run(
     exit_code = _investigate_against(repository, key, url)
 
     out = capsys.readouterr()
-    payload = json.loads(out.out)
+    payload = _streamed(out.out)
     assert exit_code == 2, payload
     assert "sk-leak" not in out.out + out.err
     assert not (repository / "investigations").exists()
@@ -563,7 +577,7 @@ def test_a_made_up_long_tool_name_is_still_recorded(
 
     exit_code = _investigate_against(repository, key, model_url)
 
-    payload = json.loads(capsys.readouterr().out)
+    payload = _streamed(capsys.readouterr().out)
     assert exit_code == 0, payload
     step = payload["data"]["investigation"]["spec"]["steps"][0]
     assert step["outcome"] == "unknown-tool"
@@ -598,7 +612,7 @@ def test_what_the_record_would_refuse_is_refused_before_the_run(
         ]
     )
 
-    payload = json.loads(capsys.readouterr().out)
+    payload = _streamed(capsys.readouterr().out)
     assert exit_code == 2, payload
     assert not (repository / "investigations").exists()
 
@@ -616,7 +630,7 @@ def test_an_unreachable_endpoint_exits_model_unavailable(
 
     exit_code = _investigate_against(repository, key, f"http://127.0.0.1:{port}/v1")
 
-    payload = json.loads(capsys.readouterr().out)
+    payload = _streamed(capsys.readouterr().out)
     assert exit_code == 92, payload
     context = payload["error"]["context"]
     assert context["code"] == "agent_model_unreachable"
@@ -707,7 +721,7 @@ def test_a_replay_answers_from_the_recording_and_runs_no_playbook(
         ]
     )
 
-    payload = json.loads(capsys.readouterr().out)
+    payload = _streamed(capsys.readouterr().out)
     assert exit_code == 0, payload
     spec = payload["data"]["investigation"]["spec"]
     assert spec["replay"] == "recorded"
@@ -746,7 +760,40 @@ def test_a_replay_of_no_recorded_run_is_refused_before_the_model(
         ]
     )
 
-    payload = json.loads(capsys.readouterr().out)
+    payload = _streamed(capsys.readouterr().out)
     assert exit_code != 0, payload
     assert "recording_empty" in json.dumps(payload)
     assert not (repository / "investigations").exists()
+
+
+def test_the_cli_streams_each_turn_and_call_then_the_record(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], model_url: str
+) -> None:
+    repository = _repository(tmp_path)
+    (repository / "playbooks" / "facts.yml").write_text(
+        "---\n- hosts: localhost\n  connection: local\n  gather_facts: false\n"
+        "  tasks:\n    - name: Report\n      ansible.builtin.debug:\n"
+        "        msg: /var/log/shop holds 36G\n",
+        encoding="utf-8",
+    )
+    key = tmp_path / "model.key"
+    key.write_text("sk-test\n", encoding="utf-8")
+    _Model.replies[:] = [
+        _call("operation_facts", {}),
+        _say("ROOT CAUSE: /var/log/shop\nPROPOSED: none\nWHY: read only."),
+    ]
+
+    assert _investigate_against(repository, key, model_url) == 0
+
+    lines = _streamed(capsys.readouterr().out)["lines"]
+    events = [line["data"] for line in lines if line["data"]]
+    assert [event["kind"] for event in events] == [
+        "turn",
+        "call",
+        "turn",
+        "investigation",
+    ]
+    assert events[1]["effect"] == "created"
+    assert "/var/log/shop holds 36G" in events[1]["result"]["output"]
+    assert events[2]["text"].startswith("ROOT CAUSE")
+    assert lines[-1]["meta"]["end"] is True

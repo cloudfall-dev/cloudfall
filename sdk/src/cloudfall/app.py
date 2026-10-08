@@ -140,10 +140,12 @@ from cloudfall.investigation import (
     InvestigationStore,
     ModelEndpoint,
     ModelUnavailableError,
+    Progress,
     StepOutcome,
     ToolResult,
+    Turn,
     host_text,
-    investigate,
+    investigation_events,
 )
 from cloudfall.lifecycle import (
     ERROR_EXECUTION_FAILED,
@@ -2226,12 +2228,23 @@ class InvestigateArgs(CatalogArgs):
 
 
 @dataclass(frozen=True, slots=True)
-class Investigated:
-    """``agent investigate``: the investigation record."""
+class InvestigationEvent:
+    """``agent investigate``: one event of the stream.
+
+    ``turn`` is the model's words and how many tools it called; ``call`` is one
+    tool call and what the tool handed back; the last event, ``investigation``,
+    is the record as it was saved.
+    """
 
     effect: str
-    status: str
-    investigation: dict[str, object] = Out(ordered=True)
+    kind: str
+    turn: int | None = None
+    text: str | None = None
+    calls: int | None = None
+    step: dict[str, object] = Out(default_factory=dict, ordered=True)
+    result: dict[str, object] = Out(default_factory=dict, ordered=True)
+    status: str | None = None
+    investigation: dict[str, object] = Out(default_factory=dict, ordered=True)
 
 
 @agent.command(
@@ -2244,6 +2257,7 @@ class Investigated:
     # An agent loop is not a tool for another agent.
     mcp=False,
     danger_level="mutating",
+    streaming=True,
     exit_codes=[
         "CONFIG_INVALID",
         "PRECONDITION",
@@ -2265,8 +2279,10 @@ class Investigated:
         ),
     ],
 )
-def agent_investigate(args: InvestigateArgs, ctx: Ctx) -> Investigated:
-    """Work the alert through the catalog and keep the record."""
+def agent_investigate(
+    args: InvestigateArgs, ctx: Ctx
+) -> Iterator[InvestigationEvent]:
+    """Work the alert through the catalog, step by step, and keep the record."""
     catalog = args.catalog()
     try:
         replay = (
@@ -2274,25 +2290,33 @@ def agent_investigate(args: InvestigateArgs, ctx: Ctx) -> Investigated:
         )
     except RecordingError as error:
         raise Exit.PRECONDITION(error.detail, context={"code": error.code}) from error
-    run =_check_runner(ctx, args.root) if replay is None else replay.runner(args.root)
+    run = _check_runner(ctx, args.root) if replay is None else replay.runner(args.root)
     tools = [_agent_tool(args, operation, run) for operation in catalog.operations]
     store = InvestigationStore(
         directory=args.root / args.investigations,
         catalog=SchemaCatalog(args.schemas),
     )
+    events = investigation_events(
+        args.alert,
+        tools,
+        args.endpoint(),
+        _chat_transport(ctx, args.api_key),
+        max_turns=args.max_turns,
+        replay=None if args.replay is None else args.replay.as_posix(),
+    )
     try:
-        investigation = investigate(
-            args.alert,
-            tools,
-            args.endpoint(),
-            _chat_transport(ctx, args.api_key),
-            max_turns=args.max_turns,
-            replay=None if args.replay is None else args.replay.as_posix(),
-        )
+        while True:
+            try:
+                progress = next(events)
+            except StopIteration as stop:
+                investigation = cast("Investigation", stop.value)
+                break
+            yield _progress_event(progress)
     except ModelUnavailableError as error:
         # Earlier turns may have recorded decisions: the investigation that
         # produced them is recorded too, then the model's failure is reported.
         failed = _save_investigation(store, error.investigation)
+        yield _investigation_event(failed)
         raise Exit.MODEL_UNAVAILABLE(
             error.detail,
             context={
@@ -2301,15 +2325,48 @@ def agent_investigate(args: InvestigateArgs, ctx: Ctx) -> Investigated:
             },
         ) from error
     investigation = _save_investigation(store, investigation)
-    investigated = Investigated(
+    yield _investigation_event(investigation)
+    if investigation.status is not InvestigationStatus.ANSWERED:
+        message = f"the investigation ended {investigation.status.value}"
+        raise Exit.INVESTIGATION_INCOMPLETE(message)
+
+
+_RECORDING_OUTCOMES = frozenset(
+    {StepOutcome.RAN, StepOutcome.PROPOSED, StepOutcome.FAILED}
+)
+
+
+def _progress_event(progress: Progress) -> InvestigationEvent:
+    """Return one turn or call as an event; a call that wrote a decision created it."""
+    if isinstance(progress, Turn):
+        return InvestigationEvent(
+            effect="noop",
+            kind="turn",
+            turn=progress.turn,
+            text=progress.text,
+            calls=progress.calls,
+        )
+    wrote = (
+        progress.step.decision is not None
+        and progress.step.outcome in _RECORDING_OUTCOMES
+    )
+    return InvestigationEvent(
+        effect="created" if wrote else "noop",
+        kind="call",
+        turn=progress.turn,
+        step=progress.step.as_dict(),
+        result=dict(progress.result.content),
+    )
+
+
+def _investigation_event(investigation: Investigation) -> InvestigationEvent:
+    """Return the saved record as the stream's last event."""
+    return InvestigationEvent(
         effect="created",
+        kind="investigation",
         status=investigation.status.value,
         investigation=investigation.as_document(),
     )
-    if investigation.status is not InvestigationStatus.ANSWERED:
-        message = f"the investigation ended {investigation.status.value}"
-        raise Exit.INVESTIGATION_INCOMPLETE(message, data=investigated)
-    return investigated
 
 
 def _save_investigation(
