@@ -2619,6 +2619,8 @@ class Approved:
 
 @operator.command(
     "approve",
+    # A person approves; no agent tool stands in for it.
+    mcp=False,
     description="Execute a proposal and verify its trigger resolves",
     danger_level="mutating",
     exit_codes=[

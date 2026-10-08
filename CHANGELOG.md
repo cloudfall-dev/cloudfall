@@ -456,6 +456,14 @@ Notable changes to Cloudfall. The format follows
   proposal: `decisions show` does. Scripted or CI approvals stop working.
   This is a speed bump, not a boundary: a process running as the same OS
   user can fake a terminal (#25)
+- `operator approve` is no longer an MCP tool. On a project,
+  `cloudfall mcp serve` served it as `operator_approve`, so an agent could
+  run and verify its own proposal with no person in the loop. A person now
+  approves from a shell with `cloudfall operator approve`, as with
+  `decisions approve`; `operator_list` and `operator_show` stay tools. The
+  `--gateway-url`, `--gateway-ca`, `--gateway-cert` and `--gateway-key`
+  flags of `cloudfall mcp serve`, which only that tool used, are removed
+  (#35)
 
 ## [0.5.1] - 2026-09-22
 

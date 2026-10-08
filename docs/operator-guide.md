@@ -69,9 +69,9 @@ operator do that" without anyone writing a note:
 
 - **What it saw**: the alert labels or the drifted checks that triggered it
 - **What it proposed**: the diagnosis and the exact engine operation
-- **Who approved**: a human through `operator approve`, an agent through
-  the `operator_approve` tool, or a declared `OperatorPolicy`
-  (`approval.mode: autonomous` with the policy id)
+- **Who approved**: a person running `operator approve` from a shell, or a
+  declared `OperatorPolicy` (`approval.mode: autonomous` with the policy
+  id)
 - **What happened**: `verified` or `failed`, with timestamps, from the
   verify step below, never from the playbook's exit code
 
@@ -172,26 +172,18 @@ proposals it executed and which it withheld, with reasons.
 
 ## Through an agent
 
-`cloudfall mcp serve` exposes the record and the approval; start it with
-the gateway material so an alert-triggered approval can verify:
-
-```sh
-uv run cloudfall mcp serve \
-  --gateway-ca certs/ca.crt --gateway-cert certs/operator.crt \
-  --gateway-key certs/operator.key
-```
+`cloudfall mcp serve` exposes the record, not the approval:
 
 - `operator_list` and `operator_show` (read-only): the receipts with
   trigger, diagnosis, and outcome
-- `operator_approve`: executes one proposal and verifies its trigger
-  resolved, in one call, as `cloudfall operator approve` does
 
-The watch loop itself is not a tool: it runs until stopped, as the service
-above.
+Approval is not a tool. A person approves a proposal by running
+`cloudfall operator approve` from a shell, as in
+[Reviewing and approving](#reviewing-and-approving); an agent that could
+call it would run and verify the change it proposed itself. The watch
+loop is not a tool either: it runs until stopped, as the service above.
 
 The agent is the brain here and the operator is the record. The agent can
-watch, read, relay the diagnosis and decide to approve; the tools are
-annotated so the client gates the mutating one with its own permission
-mode; the server adds no confirm step of its own. Whichever
-way a proposal is approved, the receipt is the same, so an agent-approved
-remediation is as explainable afterwards as a human-approved one.
+read the proposals, relay the diagnosis and recommend one; a person
+decides, or a declared `OperatorPolicy` does for the operations it
+licenses. Whichever way a proposal is approved, the receipt is the same.

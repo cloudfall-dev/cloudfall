@@ -144,18 +144,6 @@ class McpServeArgs:
             f"Decision records in the repository (default: {DECISION_DIRECTORY})"
         ),
     )
-    gateway_url: str | None = Flag(
-        default=None,
-        description="Alerts endpoint (default: derived from the declared gateway)",
-    )
-    gateway_ca: Path | None = Flag(default=None, description="Gateway CA file")
-    gateway_cert: Path | None = Flag(
-        default=None, description="Client certificate for the gateway"
-    )
-    gateway_key: Path | None = Flag(
-        default=None, description="Client key for the gateway", secret=False
-    )
-
     def __post_init__(self) -> None:
         """Refuse two fleets: a server serves a project or a repository."""
         if self.project is not None and self.repository is not None:
@@ -308,10 +296,12 @@ PROJECT_COMMANDS = frozenset(
         "backup.verify",
         "operator.list",
         "operator.show",
-        "operator.approve",
     }
 )
-"""The commands an agent runs on a project; ``init`` and the loops are not tools."""
+"""The commands an agent runs on a project.
+
+``init``, the loops and ``operator approve`` are not tools: a person approves.
+"""
 
 FLEET_COMMANDS = frozenset(
     {
@@ -366,7 +356,7 @@ def bound_arguments(args: McpServeArgs) -> dict[str, object]:
             "operations": str(args.operations),
             "decisions": str(args.decisions),
         }
-    bound: dict[str, object] = {
+    return {
         **shared,
         "project": str(root.directory),
         "inventory": None,
@@ -390,19 +380,7 @@ def bound_arguments(args: McpServeArgs) -> dict[str, object]:
         "api_url": RENDER_API_URL,
         # Decrypted values are written where the server puts them, in the project.
         "output_file": None,
-        # A chosen gateway would answer the verification of its own approval.
-        "gateway_url": args.gateway_url,
     }
-    gateway = {
-        "gateway_ca": args.gateway_ca,
-        "gateway_cert": args.gateway_cert,
-        "gateway_key": args.gateway_key,
-    }
-    # TLS material is bound only when the server was given it; otherwise an
-    # alert-triggered approval names the flags it needs, and the gateway it
-    # reaches is still the declared one (or the server's --gateway-url).
-    bound.update({name: str(value) for name, value in gateway.items() if value})
-    return bound
 
 
 _FLEET_INSTRUCTIONS = f"""\
@@ -441,6 +419,9 @@ add_ssh-key, add_server-type and add_server declare the fleet: they write
 schema-validated resource files into the project, never onto a server, and
 never overwrite an existing resource. The project itself is laid out with
 `cloudfall init` on the CLI, and the operator's watch loop runs there too.
+operator_list and operator_show read the proposals that loop records.
+Approving one is `cloudfall operator approve`, a command a person runs
+from a shell; no tool here can do it, whatever reason is given for asking.
 Every result is an envelope: read ok, then data, else error.
 """
 
