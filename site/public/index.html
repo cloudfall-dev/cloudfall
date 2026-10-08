@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cloudfall — the record behind your self-hosted AI operator</title>
-<meta name="description" content="Cloudfall is the operator's record for self-hosted servers run by an AI agent: it moves your apps and databases onto servers you own, an always-on operator runs them, and every decision leaves evidence that answers why. Open source, no Kubernetes.">
+<title>Cloudfall: cut the cloud bill, keep your sleep</title>
+<meta name="description" content="Move your apps and data off the cloud onto bare metal or a VPS. Your AI agent runs the servers; Cloudfall checks every step and writes it down. Open source, AGPL-3.0.">
 <link rel="canonical" href="https://cloudfall.dev/">
-<meta property="og:title" content="Cloudfall — the record behind your self-hosted AI operator">
-<meta property="og:description" content="The operator's record for self-hosted servers run by an AI agent: servers you own, an always-on operator, and evidence for every decision. Open source. No Kubernetes.">
+<meta property="og:title" content="Cloudfall: cut the cloud bill, keep your sleep">
+<meta property="og:description" content="Move your apps and data off the cloud onto bare metal or a VPS. Your AI agent runs the servers; Cloudfall checks every step and writes it down. Open source, AGPL-3.0.">
 <meta property="og:url" content="https://cloudfall.dev/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Cloudfall">
@@ -15,200 +15,158 @@
 <meta property="og:image" content="https://cloudfall.dev/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Cloudfall — the record behind your self-hosted AI operator">
+<meta property="og:image:alt" content="Cloudfall: cut the cloud bill, keep your sleep">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Cloudfall — the record behind your self-hosted AI operator">
-<meta name="twitter:description" content="The operator's record for self-hosted servers run by an AI agent: servers you own, an always-on operator, and evidence for every decision. Open source. No Kubernetes.">
+<meta name="twitter:title" content="Cloudfall: cut the cloud bill, keep your sleep">
+<meta name="twitter:description" content="Move your apps and data off the cloud onto bare metal or a VPS. Your AI agent runs the servers; Cloudfall checks every step and writes it down. Open source, AGPL-3.0.">
 <meta name="twitter:image" content="https://cloudfall.dev/og.png">
-<meta name="theme-color" content="#0b1017">
+<meta name="theme-color" content="#dde8f1">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
 <link rel="manifest" href="/site.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Atkinson+Hyperlegible:wght@400;700&family=Martian+Mono:wght@400;500&display=swap">
 <style>
-  :root {
-    --bg: #0b1017;
-    --bg-raised: #101724;
-    --bg-card: #121a29;
-    --line: #1e2a3d;
-    --text: #dbe4f0;
-    --text-dim: #8b9bb3;
-    --accent: #67b7ff;
-    --accent-soft: rgba(103, 183, 255, 0.12);
-    --good: #4ad295;
-    --pause: #f2c14e;
-    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
-    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    line-height: 1.6;
-    -webkit-font-smoothing: antialiased;
-  }
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
+/* Light sky-to-paper ground, ink outlines, one sun-yellow accent; hand-drawn scenes up top, exact artifacts below */
+:root {
+  --b-sky: #dde8f1; --b-paper: #f8fafc; --b-ink: #1a2940; --b-dim: #536279;
+  --b-blue: #2f5bd3; --b-sun: #ffd04d; --b-hill: #cbe0c3; --b-green: #2b9a66;
+  --b-display: "Bricolage Grotesque", "Avenir Next", sans-serif;
+  --b-body: "Atkinson Hyperlegible", system-ui, sans-serif;
+  --b-mono: "Martian Mono", ui-monospace, Menlo, monospace;
+  color-scheme: light;
+}
+* { box-sizing: border-box }
+html { background: var(--b-paper) }
+body { margin: 0; background: var(--b-paper); color: var(--b-ink); font: 16px/1.5 var(--b-body) }
+img { max-width: 100% }
+a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px }
+.wrap { max-width: 1200px; margin: 0 auto }
+/* ============ B: light illustrated ============ */
+.vb { background: linear-gradient(180deg, var(--b-sky) 0%, var(--b-paper) 78%); color: var(--b-ink); font-family: var(--b-body) }
+.vb a { color: inherit }
+.b-nav { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 24px; padding: 18px clamp(16px, 4vw, 40px) }
+.b-brand { font-family: var(--b-display); font-weight: 800; font-size: 1.3rem; letter-spacing: -.02em; display: flex; align-items: center; gap: 8px }
+.b-links { display: flex; flex-wrap: wrap; gap: 6px 22px; font-size: .95rem; color: var(--b-dim) }
+.b-links a { text-decoration: none }
+.b-links a:hover { color: var(--b-ink) }
+.b-hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(20px, 4vw, 48px); align-items: center; padding: clamp(20px, 4vw, 40px) clamp(16px, 4vw, 40px) 8px }
+.b-pill { display: inline-flex; gap: 8px; align-items: center; background: var(--b-paper); border: 1.5px solid var(--b-ink); border-radius: 999px; padding: 4px 12px 4px 6px; font-size: .85rem }
+.b-pill b { background: var(--b-sun); border-radius: 999px; padding: 1px 8px; font-size: .78rem }
+.vb h2 { font-family: var(--b-display); font-weight: 800; font-size: clamp(2.4rem, 5.6vw, 4.4rem); line-height: .98; letter-spacing: -.035em; margin: 0 0 18px; text-wrap: balance; font-variation-settings: "opsz" 96 }
+.vb h2 .hl { background: linear-gradient(transparent 62%, var(--b-sun) 62%, var(--b-sun) 92%, transparent 92%); padding: 0 .06em }
+.b-lede { font-size: 1.12rem; line-height: 1.6; color: var(--b-dim); max-width: 48ch; margin: 0 }
+.b-lede strong { color: var(--b-ink) }
+.b-cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px }
+.b-btn { display: inline-flex; align-items: center; padding: 12px 20px; border-radius: 12px; font-weight: 700; text-decoration: none; border: 2px solid var(--b-ink) }
+.b-btn.primary { background: var(--b-ink); color: var(--b-paper); box-shadow: 4px 4px 0 var(--b-sun) }
+.b-btn.primary:hover { transform: translate(-1px, -1px); box-shadow: 5px 5px 0 var(--b-sun) }
+.b-btn:not(.primary) { background: var(--b-paper) }
+.b-art { min-width: 0 }
+.b-art svg { width: 100%; height: auto; display: block; max-width: 100% }
+.drop { animation: fall 1.8s linear infinite; animation-delay: calc(var(--d) * -1s) }
+.led { animation: blink 1.4s steps(2) infinite }
+.b-sec { padding: clamp(32px, 5vw, 56px) clamp(16px, 4vw, 40px); border-top: 2px dashed rgba(26, 41, 64, .2); display: grid; gap: 28px }
+.b-sec.tight { padding-block: 28px }
+.b-sec { grid-template-columns: minmax(0, 1fr) }
+.b-sec > *, .b-two > * { min-width: 0 }
+.b-kicker { font: 500 11.5px var(--b-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--b-blue); margin: 0 0 10px }
+.vb h3 { font-family: var(--b-display); font-weight: 700; font-size: clamp(1.6rem, 3vw, 2.3rem); letter-spacing: -.025em; line-height: 1.08; margin: 0 0 12px; text-wrap: balance }
+.vb h4 { font-family: var(--b-display); font-weight: 700; font-size: 1.2rem; letter-spacing: -.01em; margin: 0 0 6px }
+.b-sec p { margin: 0; color: var(--b-dim); max-width: 58ch }
+.b-sec p + p { margin-top: 10px }
+.b-sec p code, .b-sec li code { font: 500 .82em var(--b-mono); background: var(--b-sky); padding: 1px 5px; border-radius: 4px }
+.b-two { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); gap: clamp(20px, 4vw, 48px); align-items: start }
 
-  /* Nav */
-  header {
-    position: sticky; top: 0; z-index: 10;
-    background: rgba(11, 16, 23, 0.85);
-    backdrop-filter: blur(10px);
-    border-bottom: 1px solid var(--line);
-  }
-  nav { display: flex; align-items: center; gap: 28px; height: 60px; }
-  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 17px; color: var(--text); letter-spacing: -0.01em; }
-  .brand:hover { text-decoration: none; }
-  .brand svg { width: 26px; height: 26px; }
-  nav .links { margin-left: auto; display: flex; gap: 22px; align-items: center; font-size: 14.5px; }
-  nav .links a { color: var(--text-dim); }
-  nav .links a:hover { color: var(--text); text-decoration: none; }
-  .btn {
-    display: inline-block; padding: 9px 18px; border-radius: 8px;
-    font-size: 14.5px; font-weight: 600; transition: background 0.15s, border-color 0.15s;
-  }
-  .btn-primary { background: var(--accent); color: #06111d; }
-  .btn-primary:hover { background: #85c6ff; text-decoration: none; }
-  .btn-ghost { border: 1px solid var(--line); color: var(--text); background: transparent; }
-  .btn-ghost:hover { border-color: var(--accent); text-decoration: none; }
+/* proof strip */
+.b-proof { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px 28px }
+.b-proof div { display: grid; gap: 4px; align-content: start }
+.b-proof strong { font-family: var(--b-display); font-weight: 800; font-size: 1.7rem; letter-spacing: -.03em; line-height: 1 }
+.b-proof span { color: var(--b-dim); font-size: .95rem; line-height: 1.45 }
+.b-proof a { font-size: .85rem; color: var(--b-blue); text-underline-offset: 3px }
 
-  /* Hero */
-  .hero { padding: 88px 0 56px; position: relative; overflow: hidden; }
-  .hero::before {
-    content: ""; position: absolute; inset: 0; pointer-events: none;
-    background: radial-gradient(ellipse 60% 45% at 50% 0%, rgba(103, 183, 255, 0.10), transparent 70%);
-  }
-  .hero .wrap { position: relative; }
-  .badge {
-    display: inline-flex; align-items: center; gap: 8px;
-    font-size: 13px; color: var(--accent);
-    background: var(--accent-soft); border: 1px solid rgba(103, 183, 255, 0.25);
-    border-radius: 999px; padding: 5px 14px; margin-bottom: 26px;
-  }
-  .badge .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); }
-  h1 {
-    font-size: clamp(34px, 5.5vw, 58px);
-    line-height: 1.08; letter-spacing: -0.025em; font-weight: 800;
-    max-width: 780px;
-  }
-  h1 .accent { color: var(--accent); }
-  .hero p.sub {
-    margin: 22px 0 30px; font-size: clamp(16px, 2vw, 19px);
-    color: var(--text-dim); max-width: 660px;
-  }
-  .hero .cta { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
-  .hero .cta .btn { padding: 12px 24px; font-size: 15.5px; }
+/* doors */
+.b-doors { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px }
+.b-try { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 18px }
+.b-try code { font: 500 13px var(--b-mono); background: var(--b-paper); border: 1.5px dashed var(--b-ink); border-radius: 8px; padding: 7px 12px; overflow-wrap: anywhere }
+.b-try button { font: 700 13px var(--b-body); background: transparent; border: 0; color: var(--b-blue); cursor: pointer; padding: 4px }
+.b-try button:focus-visible { outline: 2px solid var(--b-blue); border-radius: 4px }
+.b-try small { width: 100%; color: var(--b-dim); font-size: .85rem }
+.b-aside code { font: 500 .85em var(--b-mono); background: var(--b-paper); padding: 1px 5px; border-radius: 4px }
+.b-aside { margin-top: 22px; font-size: .98rem; color: var(--b-dim) }
+.b-aside a { color: var(--b-ink); font-weight: 700; text-underline-offset: 3px }
+.b-mail { font: 500 .95rem var(--b-mono); user-select: all }
+#rot-btn { line-height: 1.3 }
+.rot { display: block; overflow: hidden; height: 1.3em }
+.rot-word { display: inline-block; min-width: 3.9em; color: var(--b-sun) }
+.rot-word.out { animation: rot-out .22s ease-in forwards }
+.rot-word.in { animation: rot-in .3s ease-out }
+@keyframes rot-out { to { transform: translateY(-110%); opacity: 0 } }
+@keyframes rot-in { from { transform: translateY(110%); opacity: 0 } }
+.b-door { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 16px; padding: 20px; text-decoration: none; transition: transform .15s }
+.b-door:hover { transform: translate(-2px, -2px) }
+.b-door p { color: var(--b-dim); margin: 0 }
+.b-door .go { display: inline-block; margin-top: 10px; font-weight: 700; color: var(--b-blue) }
 
-  /* Terminal */
-  .term {
-    margin: 56px auto 0; max-width: 860px;
-    background: #0a0f16; border: 1px solid var(--line); border-radius: 12px;
-    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
-    overflow: hidden;
-  }
-  .term-bar {
-    display: flex; align-items: center; gap: 7px;
-    padding: 11px 16px; border-bottom: 1px solid var(--line); background: var(--bg-raised);
-  }
-  .term-bar span { width: 11px; height: 11px; border-radius: 50%; background: #2a3850; }
-  .term-bar .title { margin-left: 10px; font-family: var(--mono); font-size: 12px; color: var(--text-dim); background: none; width: auto; height: auto; border-radius: 0; }
-  .term pre {
-    padding: 20px 22px; overflow-x: auto;
-    font-family: var(--mono); font-size: 13.5px; line-height: 1.75; color: #b6c2d4;
-  }
-  .term .p { color: var(--text-dim); }
-  .term .cmd { color: #e8eef7; font-weight: 600; }
-  .term .ok { color: var(--good); }
-  .term .pause { color: var(--pause); }
-  .term .step { color: #9fb4d0; }
-  .term .cm { color: #5c6b82; }
+/* MSP */
+.b-yaml, .b-json { margin: 0; padding: 14px 16px; overflow-x: auto; font: 12px/1.75 var(--b-mono); color: var(--b-ink) }
+.y-k { color: var(--b-blue) } .y-c { color: #8a97aa } .y-s { color: var(--b-green) } .y-hl { background: rgba(255, 208, 77, .45); border-radius: 3px }
+.b-risk { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px }
+.b-risk > div { border: 2px solid var(--b-ink); border-radius: 12px; padding: 14px 16px; background: var(--b-paper); display: grid; gap: 6px; align-content: start }
+.chip { justify-self: start; font: 500 11.5px var(--b-mono); padding: 2px 9px; border-radius: 999px; border: 1.5px solid var(--b-ink) }
+.chip.read { background: #d6efe2 } .chip.mut { background: var(--b-sun) } .chip.des { background: #ffc9bd }
+.b-risk span:last-child { color: var(--b-dim); font-size: .95rem; line-height: 1.45 }
+.b-scene svg { width: 100%; height: auto; display: block }
 
-  /* Proof strip */
-  .proof { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--bg-raised); }
-  .proof .wrap { padding: 34px 24px; }
-  .proof p { color: var(--text-dim); font-size: 15.5px; max-width: 900px; }
-  .proof strong { color: var(--text); }
+/* under the hood */
+.b-diagram { overflow-x: auto; background: var(--b-paper); border: 2px solid var(--b-ink); border-radius: 14px; padding: 12px }
+.b-diagram svg { display: block; width: 100%; min-width: 660px; height: auto }
+.b-loop { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 8px; counter-reset: s }
+.b-loop li { counter-increment: s; display: flex; align-items: center; gap: 8px; background: var(--b-paper); border: 1.5px solid var(--b-ink); border-radius: 999px; padding: 5px 14px 5px 5px; font-weight: 700; font-size: .95rem }
+.b-loop li::before { content: counter(s); display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--b-ink); color: var(--b-paper); font: 500 11px var(--b-mono) }
+.b-loop li span { font-weight: 400; color: var(--b-dim) }
+.b-spec { margin: 0; padding: 0; list-style: none; display: grid; gap: 0; border-top: 2px solid var(--b-ink) }
+.b-spec li { display: grid; grid-template-columns: minmax(0, 13ch) minmax(0, 1fr); gap: 16px; padding: 12px 0; border-bottom: 1px solid rgba(26, 41, 64, .18); line-height: 1.5 }
+.b-spec b { font-family: var(--b-display); font-weight: 700 }
+.b-spec span { color: var(--b-dim) }
 
-  /* Sections */
-  section { padding: 76px 0; }
-  .kicker {
-    font-family: var(--mono); font-size: 13px; letter-spacing: 0.08em;
-    text-transform: uppercase; color: var(--accent); margin-bottom: 14px;
-  }
-  h2 { font-size: clamp(26px, 3.4vw, 36px); letter-spacing: -0.02em; line-height: 1.15; max-width: 640px; }
-  .section-sub { color: var(--text-dim); margin-top: 14px; max-width: 640px; font-size: 16.5px; }
+/* not yet */
+.b-notyet { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin: 0; padding: 0; list-style: none }
+.b-notyet li { border: 2px dashed rgba(26, 41, 64, .35); border-radius: 12px; padding: 14px 16px; display: grid; gap: 4px; align-content: start }
+.b-notyet b { font-family: var(--b-display) }
+.b-notyet span { color: var(--b-dim); font-size: .95rem; line-height: 1.45 }
+.b-final { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px; background: var(--b-ink); color: var(--b-paper); border-radius: 16px; padding: clamp(20px, 4vw, 32px) }
+.b-final h3 { color: var(--b-paper); margin: 0 0 6px }
+.b-final p { color: #c3cddb; margin: 0; max-width: 52ch }
+.b-final .b-btn.primary { background: var(--b-sun); color: var(--b-ink); border-color: var(--b-sun); box-shadow: none }
+.b-final .b-btn:not(.primary) { background: transparent; color: var(--b-paper); border-color: #c3cddb }
+.b-card { background: var(--b-paper); border: 2px solid var(--b-ink); border-radius: 14px; box-shadow: 6px 6px 0 rgba(26, 41, 64, .12); min-width: 0 }
+.b-card-bar { padding: 10px 16px; border-bottom: 2px solid var(--b-ink); font: 500 12px var(--b-mono); display: flex; justify-content: space-between; gap: 12px }
+.b-card-bar span:last-child { color: var(--b-green) }
+.b-story { margin: 0; padding: 14px 16px 16px; list-style: none; display: grid; gap: 8px; font-size: .95rem; line-height: 1.5 }
+.b-story li { display: grid; grid-template-columns: 5.5ch minmax(0, 1fr); gap: 10px }
+.b-story time { font: 500 11px/1.9 var(--b-mono); color: var(--b-dim) }
+.b-story code { font: 500 .8em var(--b-mono); background: var(--b-sky); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere }
+.b-story .end { font-weight: 700; color: var(--b-green) }
 
-  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; margin-top: 44px; }
-  .card {
-    background: var(--bg-card); border: 1px solid var(--line); border-radius: 12px;
-    padding: 26px 26px 24px;
-  }
-  .card h3 { font-size: 18px; margin-bottom: 10px; letter-spacing: -0.01em; }
-  .card p { color: var(--text-dim); font-size: 15px; }
-  .card code, .steps code, .proof code, .section-sub code {
-    font-family: var(--mono); font-size: 0.88em;
-    background: var(--accent-soft); color: var(--accent);
-    padding: 1.5px 6px; border-radius: 5px; white-space: nowrap;
-  }
 
-  /* How it works */
-  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 44px; counter-reset: step; }
-  .step-card {
-    background: var(--bg-card); border: 1px solid var(--line); border-radius: 12px; padding: 26px;
-    position: relative;
-  }
-  .step-card .num {
-    font-family: var(--mono); font-size: 13px; color: var(--accent);
-    border: 1px solid rgba(103, 183, 255, 0.35); border-radius: 999px;
-    width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
-    margin-bottom: 16px;
-  }
-  .step-card h3 { font-size: 17px; margin-bottom: 8px; }
-  .step-card p { color: var(--text-dim); font-size: 14.5px; }
+footer { border-top: 2px dashed rgba(26, 41, 64, .2); padding: 28px clamp(16px, 4vw, 40px) 40px }
+footer .wrap { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 28px; color: var(--b-dim); font-size: .92rem }
+footer .links { display: flex; flex-wrap: wrap; gap: 6px 20px }
+footer a { color: inherit; text-decoration: none }
+footer a:hover { color: var(--b-ink) }
+footer .b-brand { color: var(--b-ink); text-decoration: none; font-size: 1.1rem }
+.b-sec { max-width: 1200px; margin-inline: auto }
+@keyframes blink { 50% { opacity: .25 } }
+@keyframes fall { from { transform: translate(-10px, -26px) } to { transform: translate(10px, 26px) } }
+@media (prefers-reduced-motion: reduce) { *, *::before { animation: none !important } }
 
-  /* Status */
-  .status-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 44px; }
-  .status-card { background: var(--bg-card); border: 1px solid var(--line); border-radius: 12px; padding: 26px; }
-  .status-card h3 { font-size: 16px; margin-bottom: 14px; display: flex; align-items: center; gap: 9px; }
-  .status-card ul { list-style: none; }
-  .status-card li {
-    padding: 6px 0 6px 24px; position: relative; color: var(--text-dim); font-size: 14.5px;
-  }
-  .status-card li::before { position: absolute; left: 0; font-family: var(--mono); }
-  .status-card.done li::before { content: "✓"; color: var(--good); }
-  .status-card.next li::before { content: "→"; color: var(--pause); }
-
-  /* Quickstart */
-  .quickstart { text-align: center; border-top: 1px solid var(--line); background: var(--bg-raised); }
-  .quickstart h2 { margin: 0 auto; }
-  .quickstart .install {
-    margin: 34px auto 0; max-width: 620px;
-    background: #0a0f16; border: 1px solid var(--line); border-radius: 10px;
-    padding: 16px 22px; font-family: var(--mono); font-size: 14px; color: #e8eef7;
-    overflow-x: auto; text-align: left;
-  }
-  .quickstart .install .p { color: var(--text-dim); }
-  .quickstart .cta { margin-top: 30px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
-
-  /* Footer */
-  footer { border-top: 1px solid var(--line); padding: 36px 0 44px; }
-  footer .wrap { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
-  footer .brand { font-size: 15px; }
-  footer .brand svg { width: 20px; height: 20px; }
-  footer .links { margin-left: auto; display: flex; gap: 20px; font-size: 14px; }
-  footer .links a { color: var(--text-dim); }
-  footer .links a:hover { color: var(--text); }
-  footer .license { width: 100%; color: var(--text-dim); font-size: 13px; margin-top: 6px; }
-
-  @media (max-width: 760px) {
-    .grid, .steps, .status-cols { grid-template-columns: 1fr; }
-    nav .links a.hide-sm { display: none; }
-    .hero { padding-top: 64px; }
-  }
+@media (max-width: 860px) {
+  .b-hero, .b-two { grid-template-columns: minmax(0, 1fr) }
+  .b-spec li { grid-template-columns: minmax(0, 1fr); gap: 2px }
+}
 </style>
 <script type="application/ld+json">
 {
@@ -216,7 +174,7 @@
   "@type": "SoftwareApplication",
   "name": "Cloudfall",
   "url": "https://cloudfall.dev/",
-  "description": "The operator's record for self-hosted servers run by an AI agent. Cloudfall moves a SaaS's applications and databases onto one or two Debian servers you own, an always-on operator runs them, and every decision leaves evidence that answers why. No Kubernetes.",
+  "description": "Move your apps and data off the cloud onto bare metal or a VPS. Your AI agent runs the servers; Cloudfall checks every step and writes it down. Open source, AGPL-3.0.",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "Linux",
   "license": "https://www.gnu.org/licenses/agpl-3.0.html",
@@ -226,313 +184,303 @@
 }
 </script>
 </head>
-<body>
+<body class="vb">
 
-<header>
-  <div class="wrap">
-    <nav>
-      <a class="brand" href="#">
-        <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M9 20a6 6 0 1 1 1.2-11.9A8 8 0 0 1 25.7 11 5.5 5.5 0 0 1 24 21.8L9 22z" fill="#67b7ff"/><path d="M12 24v4m5-4v5m5-5v3" stroke="#67b7ff" stroke-width="2.2" stroke-linecap="round"/></svg>
-        Cloudfall
+  <nav class="b-nav wrap">
+    <a class="b-brand" href="/" style="color:inherit;text-decoration:none"><svg width="26" height="20" viewBox="0 0 26 20" aria-hidden="true"><path d="M6 15 C1 15 1 9 5 8.5 C5 4 10 2 12.5 5 C14 1 21 1 21.5 6 C25 6 25.5 15 20 15 Z" fill="#ffffff" stroke="#1a2940" stroke-width="2" stroke-linejoin="round"/><path d="M9 17.5 l-1 2 M14 17.5 l-1 2 M19 17.5 l-1 2" stroke="#2f5bd3" stroke-width="2" stroke-linecap="round"/></svg>Cloudfall</a>
+    <div class="b-links"><a href="#msp">For MSPs</a><a href="#how-it-works">How it works</a><a href="/manifesto">Manifesto</a><a href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/getting-started.md">Docs</a><a href="https://github.com/cloudfall-dev/cloudfall">GitHub</a></div>
+  </nav>
+<main class="wrap">
+
+  <div class="b-hero">
+    <div>
+      <h2>Cut the cloud bill. <span class="hl">Keep your sleep.</span></h2>
+      <p class="b-lede">A <strong>$1,000</strong> monthly cloud bill often runs on about <strong>$100</strong> of bare metal or VPS. Cloudfall moves your apps and data there. <strong>Your AI agent runs it.</strong> Cloudfall checks every step and writes it down.</p>
+      <div class="b-cta">
+        <a class="b-btn primary" id="rot-btn" href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/render-migration-guide.md">Move off&nbsp;<span class="rot"><span class="rot-word" id="rot-word">Render</span></span></a>
+        <a class="b-btn" href="#pilot">Free pilot</a>
+      </div>
+      <div class="b-try"><code id="install-cmd">uv tool install cloudfall</code><button type="button" id="copy-install" data-copy="install-cmd">Copy</button><small>Open source, AGPL-3.0.</small></div>
+      <p class="b-aside" style="margin-top:10px" id="rot-note">Import your <code>render.yaml</code>: apps, data and a DNS cutover that pauses until you flip it.</p>
+      <p class="b-aside">Run servers for clients? <a href="#msp">See how the agent works within your rules →</a></p>
+    </div>
+
+    <div class="b-art">
+      <svg viewBox="0 0 520 400" role="img" aria-label="A cloud tagged $1,000 a month rains apps and data down onto a small server tagged about $100 a month, where a robot operator holds a checklist">
+        <!-- hill -->
+        <defs><linearGradient id="hillfade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#cbe0c3"/><stop offset="1" stop-color="#cbe0c3" stop-opacity="0"/></linearGradient></defs>
+        <path d="M0 352 C130 300 280 318 520 296 L520 400 L0 400 Z" fill="url(#hillfade)"/>
+        <path d="M0 352 C130 300 280 318 520 296" fill="none" stroke="#1a2940" stroke-width="2.5" stroke-linecap="round"/>
+        <!-- cloud -->
+        <path d="M62 132 C30 132 22 96 52 88 C48 56 92 40 114 62 C126 30 182 26 196 62 C224 48 262 70 250 100 C278 106 274 132 246 132 Z" fill="#ffffff" stroke="#1a2940" stroke-width="3" stroke-linejoin="round"/>
+        <circle cx="112" cy="104" r="3" fill="#1a2940"/><circle cx="150" cy="104" r="3" fill="#1a2940"/>
+        <path d="M118 118 q13 -8 26 0" fill="none" stroke="#1a2940" stroke-width="2.5" stroke-linecap="round"/>
+        <!-- price tag on cloud -->
+        <path d="M70 132 L58 168" stroke="#1a2940" stroke-width="2"/>
+        <g transform="rotate(-8 58 186)">
+          <rect x="14" y="168" width="118" height="34" rx="7" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/>
+          <circle cx="27" cy="185" r="3.5" fill="#dde8f1" stroke="#1a2940" stroke-width="2"/>
+          <text x="37" y="191" font-family="Martian Mono, monospace" font-size="14" fill="#1a2940" text-decoration="line-through">$1,000/mo</text>
+        </g>
+        <!-- rain: apps + data -->
+        <g stroke="#2f5bd3" stroke-width="3.5" stroke-linecap="round">
+          <path class="drop" style="--d:0.2" d="M150 160 l6 14"/>
+          <path class="drop" style="--d:1.1" d="M186 168 l6 14"/>
+          <path class="drop" style="--d:0.7" d="M222 160 l6 14"/>
+          <path class="drop" style="--d:1.5" d="M168 206 l6 14"/>
+          <path class="drop" style="--d:0.4" d="M206 214 l6 14"/>
+          <path class="drop" style="--d:1.3" d="M244 204 l6 14"/>
+          <path class="drop" style="--d:0.9" d="M230 252 l6 14"/>
+          <path class="drop" style="--d:0.1" d="M268 246 l6 14"/>
+        </g>
+        <text x="70" y="262" font-family="Bricolage Grotesque, sans-serif" font-size="15" font-weight="600" fill="#536279" transform="rotate(-6 70 262)">your apps + data</text>
+        <!-- server -->
+        <g transform="translate(330 176)">
+          <path d="M65 0 L65 -28" stroke="#1a2940" stroke-width="2"/>
+          <g transform="rotate(5 65 -46)">
+            <rect x="4" y="-64" width="122" height="36" rx="7" fill="#ffd04d" stroke="#1a2940" stroke-width="2.5"/>
+            <text x="16" y="-41" font-family="Martian Mono, monospace" font-size="14" fill="#1a2940">≈ $100/mo</text>
+          </g>
+          <rect x="0" y="0" width="130" height="136" rx="12" fill="#ffffff" stroke="#1a2940" stroke-width="3"/>
+          <rect x="14" y="16" width="102" height="28" rx="5" fill="#dde8f1" stroke="#1a2940" stroke-width="2"/>
+          <rect x="14" y="54" width="102" height="28" rx="5" fill="#dde8f1" stroke="#1a2940" stroke-width="2"/>
+          <rect x="14" y="92" width="102" height="28" rx="5" fill="#dde8f1" stroke="#1a2940" stroke-width="2"/>
+          <circle cx="100" cy="30" r="4.5" fill="#2b9a66"/>
+          <circle class="led" cx="100" cy="68" r="4.5" fill="#2b9a66"/>
+          <circle cx="100" cy="106" r="4.5" fill="#2b9a66"/>
+          <path d="M24 30 h40 M24 68 h52 M24 106 h30" stroke="#1a2940" stroke-width="2.5" stroke-linecap="round"/>
+          <text x="18" y="158" font-family="Martian Mono, monospace" font-size="12" fill="#536279">your bare metal</text>
+        </g>
+        <!-- operator robot -->
+        <g transform="translate(250 252)">
+          <path d="M24 0 V-12" stroke="#1a2940" stroke-width="2.5"/>
+          <circle cx="24" cy="-15" r="4" fill="#ffd04d" stroke="#1a2940" stroke-width="2"/>
+          <rect x="6" y="0" width="36" height="28" rx="7" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/>
+          <circle cx="17" cy="13" r="3" fill="#1a2940"/><circle cx="31" cy="13" r="3" fill="#1a2940"/>
+          <rect x="2" y="32" width="44" height="40" rx="9" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/>
+          <path d="M14 72 v14 M34 72 v14" stroke="#1a2940" stroke-width="3" stroke-linecap="round"/>
+          <path d="M46 44 l14 4" stroke="#1a2940" stroke-width="2.5" stroke-linecap="round"/>
+          <rect x="56" y="34" width="30" height="38" rx="4" fill="#ffffff" stroke="#1a2940" stroke-width="2.5" transform="rotate(8 71 53)"/>
+          <path d="M62 46 l3 3 l6 -6 M62 58 l3 3 l6 -6" fill="none" stroke="#2b9a66" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" transform="rotate(8 71 53)"/>
+        </g>
+      </svg>
+    </div>
+  </div>
+
+  <!-- two doors -->
+  <div class="b-sec">
+    <div>
+      <p class="b-kicker">Two ways in, one record</p>
+      <h3>Where are your servers today?</h3>
+    </div>
+    <div class="b-doors">
+      <a class="b-card b-door" href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/render-migration-guide.md">
+        <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M14 30 C6 30 6 20 13 19 C13 11 22 8 27 13 C30 5 42 6 43 15 C50 14 52 30 44 30 Z" fill="#ffffff" stroke="#1a2940" stroke-width="2.5" stroke-linejoin="round"/><path d="M22 36 l2 5 M30 36 l2 5 M38 36 l2 5" stroke="#2f5bd3" stroke-width="2.5" stroke-linecap="round"/><rect x="20" y="46" width="24" height="14" rx="3" fill="#ffd04d" stroke="#1a2940" stroke-width="2.5"/></svg>
+        <div><h4>In a cloud or on a PaaS</h4><p>Render import is built in; from anywhere else, describe your apps in config. Migrate apps and data, cut DNS, keep the difference as runway.</p><span class="go">Read the migration guide →</span></div>
       </a>
-      <div class="links">
-        <a class="hide-sm" href="#why">Why</a>
-        <a class="hide-sm" href="#record">The record</a>
-        <a class="hide-sm" href="#how">How it works</a>
-        <a class="hide-sm" href="#status">Status</a>
-        <a class="hide-sm" href="/manifesto">Manifesto</a>
-        <a href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/render-migration-guide.md">Docs</a>
-        <a class="btn btn-ghost" href="https://github.com/cloudfall-dev/cloudfall">GitHub</a>
-      </div>
-    </nav>
-  </div>
-</header>
-
-<main>
-  <div class="hero">
-    <div class="wrap">
-      <div class="badge"><span class="dot"></span>Migration and operator proven live · open source · AGPL-3.0</div>
-      <h1>Your servers, run by an agent.<br>With a <span class="accent">record</span> that answers why.</h1>
-      <p class="sub">
-        Cloudfall is the operator's record for self-hosted servers run by an
-        AI agent. It moves your applications and data onto one or two servers
-        you own — hardened baseline, monitoring, health-gated deploys with
-        rollback, a real DNS cutover — and an always-on operator runs them
-        there. Every operation is verified, every decision leaves evidence:
-        what the fleet looked like, what was proposed, who approved, what
-        happened. Plain systemd and nginx. No Kubernetes.
-      </p>
-      <div class="cta">
-        <a class="btn btn-primary" href="https://github.com/cloudfall-dev/cloudfall">View on GitHub</a>
-        <a class="btn btn-ghost" href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/render-migration-guide.md">Read the migration guide</a>
-      </div>
-
-      <div class="term">
-        <div class="term-bar">
-          <span></span><span></span><span></span>
-          <div class="title">cloudfall migrate</div>
-        </div>
-        <pre><span class="p">$</span> <span class="cmd">uv run cloudfall import render render.yaml --application acme --server h1</span>
-<span class="p">$</span> <span class="cmd">uv run cloudfall migrate --build web=main --yes</span>
-  <span class="ok">✓ baseline</span>       <span class="step">converge every server to the managed baseline</span>
-  <span class="ok">✓ services</span>       <span class="step">converge every declared infrastructure service</span>
-  <span class="ok">✓ data:acme-db</span>   <span class="step">migrate external data with row-count verification</span>
-  <span class="ok">✓ build:web</span>      <span class="step">build a release artifact for web</span>
-  <span class="ok">✓ deploy:web</span>     <span class="step">deploy web behind its health gate</span>
-  <span class="ok">✓ domains-http</span>   <span class="step">render every declared domain route over HTTP</span>
-  <span class="pause">⏸ dns-verify</span>     <span class="step">paused: point acme.example.com at your server, then resume</span>
-<span class="p">$</span> <span class="cmd">uv run cloudfall migrate --yes</span>   <span class="cm"># resume after the DNS flip</span>
-  <span class="ok">✓ dns-verify</span>     <span class="step">public DNS points at the declared proxy servers</span>
-  <span class="ok">✓ domains-tls</span>    <span class="step">Let's Encrypt issued, HTTPS routes enabled</span>
-  <span class="ok">✓ inspect</span>        <span class="step">read-only server evidence collected</span>
-  <span class="ok">✓ audit</span>          <span class="step">compliant: config matches the observed servers</span>
-  <span class="ok">✓ verify-routes</span>  <span class="step">every declared route healthy over HTTPS</span></pre>
-      </div>
+      <a class="b-card b-door" href="#msp">
+        <svg viewBox="0 0 64 64" aria-hidden="true"><rect x="4" y="22" width="16" height="22" rx="3" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/><rect x="24" y="14" width="16" height="30" rx="3" fill="#ffd04d" stroke="#1a2940" stroke-width="2.5"/><rect x="44" y="22" width="16" height="22" rx="3" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/><path d="M4 52 h56" stroke="#1a2940" stroke-width="2.5" stroke-linecap="round"/><circle cx="32" cy="22" r="2.5" fill="#2b9a66"/></svg>
+        <div><h4>Already on servers, yours or your clients'</h4><p>Managed by hand, with scripts or with Ansible. Start from Cloudfall's baseline operations, or point it at the Ansible repo you already run.</p><span class="go">See how it fits →</span></div>
+      </a>
     </div>
   </div>
 
-  <div class="proof">
-    <div class="wrap">
-      <p>
-        <strong>Proven live, not promised.</strong> The full journey ran on disposable
-        Hetzner servers: an application actually hosted on Render was cut over with its
-        data and a real TTL-lowered DNS flip on an owned domain, resuming to byte-identical
-        responses from the Cloudfall host, with a deliberately bad release rolled back
-        automatically along the way — the entire run driven by an AI agent through
-        its MCP server alone. The operator then remediated an induced failure
-        with a single approval, remediated the next identical failure autonomously under
-        declared policy in 2m06s, proved a real backup restorable in a timer-driven drill,
-        and delivered an alert to a second machine across the public network, receipts
-        throughout.
-        <a href="https://github.com/cloudfall-dev/cloudfall/tree/main/docs/proving-runs">Read the proving-run reports</a>
-      </p>
+  <!-- MSP -->
+  <div class="b-sec" id="msp">
+    <div class="b-two">
+      <div>
+        <p class="b-kicker">For agencies and MSPs</p>
+        <h3>Hand the routine to an agent. Keep the rules and the record.</h3>
+        <p>Disks filling up, certificates expiring, backups nobody has tested. Your agent takes the routine across client servers, but only through operations you allow. Each one has a risk level, a verify step and a record. An operation you haven't declared doesn't exist to the agent.</p>
+        <p>No baseline yet? Start from Cloudfall's operations for hardening, PostgreSQL, backups and deploys. Already on Ansible? Declare the playbooks you run, as on the right. No import, no second copy of anyone's fleet.</p>
+      </div>
+      <div class="b-card">
+        <div class="b-card-bar"><span>operations/deploy.yml</span><span>on Ansible</span></div>
+<pre class="b-yaml"><span class="y-k">id</span>: deploy
+<span class="y-k">playbook</span>: playbooks/deploy.yml   <span class="y-c"># your existing playbook</span>
+<span class="y-hl"><span class="y-k">risk</span>: mutating</span>                   <span class="y-c"># read | mutating | destructive</span>
+<span class="y-k">targets</span>: component
+<span class="y-k">inputs</span>:
+  <span class="y-k">version</span>: string
+<span class="y-k">preconditions</span>:
+  - <span class="y-k">health</span>: <span class="y-s">ok</span>
+<span class="y-hl"><span class="y-k">verify</span>:</span>
+  <span class="y-k">playbook</span>: playbooks/health.yml</pre>
+      </div>
+    </div>
+
+    <div class="b-risk">
+      <div><span class="chip read">read</span><b>Runs freely</b><span>Facts, health, inventory. Nothing to gate.</span></div>
+      <div><span class="chip mut">mutating</span><b>Check mode, then approval</b><span>The diff is recorded first and a person approves it. Once your policy licenses the class, the next identical failure gets fixed alone.</span></div>
+      <div><span class="chip des">destructive</span><b>Always a human</b><span>Data deletion, DNS cutover, promotion. No policy and no prompt can unlock it.</span></div>
+    </div>
+
+    <div class="b-two">
+      <div class="b-scene">
+        <svg viewBox="0 0 520 280" role="img" aria-label="One robot operator with a clipboard connected by dashed lines to three client fleets of small servers">
+          <g stroke="#1a2940" stroke-width="2" stroke-dasharray="5 6" fill="none" opacity=".55">
+            <path d="M240 92 C180 120 110 130 92 170"/><path d="M260 96 V170"/><path d="M280 92 C340 120 410 130 428 170"/>
+          </g>
+          <g transform="translate(236 18)">
+            <path d="M24 0 V-8" stroke="#1a2940" stroke-width="2.5"/><circle cx="24" cy="-11" r="4" fill="#ffd04d" stroke="#1a2940" stroke-width="2"/>
+            <rect x="6" y="0" width="36" height="28" rx="7" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/>
+            <circle cx="17" cy="13" r="3" fill="#1a2940"/><circle cx="31" cy="13" r="3" fill="#1a2940"/>
+            <rect x="2" y="32" width="44" height="40" rx="9" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/>
+            <rect x="50" y="30" width="28" height="36" rx="4" fill="#ffffff" stroke="#1a2940" stroke-width="2.5" transform="rotate(8 64 48)"/>
+            <path d="M56 41 l3 3 l6 -6 M56 53 l3 3 l6 -6" fill="none" stroke="#2b9a66" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" transform="rotate(8 64 48)"/>
+          </g>
+          <g>
+            <ellipse cx="92" cy="236" rx="84" ry="14" fill="#cbe0c3"/>
+            <rect x="40" y="176" width="30" height="58" rx="5" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/><rect x="78" y="186" width="30" height="48" rx="5" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/><rect x="116" y="196" width="30" height="38" rx="5" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/>
+            <circle cx="55" cy="188" r="3.5" fill="#2b9a66"/><circle cx="93" cy="198" r="3.5" fill="#2b9a66"/><circle cx="131" cy="208" r="3.5" fill="#2b9a66"/>
+            <text x="92" y="270" text-anchor="middle" font-family="Martian Mono, monospace" font-size="12" fill="#536279">dental-group · 3</text>
+          </g>
+          <g>
+            <ellipse cx="260" cy="236" rx="70" ry="14" fill="#cbe0c3"/>
+            <rect x="226" y="180" width="30" height="54" rx="5" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/><rect x="264" y="190" width="30" height="44" rx="5" fill="#ffd04d" stroke="#1a2940" stroke-width="2.5"/>
+            <circle cx="241" cy="192" r="3.5" fill="#2b9a66"/><circle class="led" cx="279" cy="202" r="3.5" fill="#1a2940"/>
+            <text x="260" y="270" text-anchor="middle" font-family="Martian Mono, monospace" font-size="12" fill="#536279">shop-eu · 2</text>
+          </g>
+          <g>
+            <ellipse cx="428" cy="236" rx="84" ry="14" fill="#cbe0c3"/>
+            <rect x="376" y="196" width="30" height="38" rx="5" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/><rect x="414" y="176" width="30" height="58" rx="5" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/><rect x="452" y="186" width="30" height="48" rx="5" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/>
+            <circle cx="391" cy="208" r="3.5" fill="#2b9a66"/><circle cx="429" cy="188" r="3.5" fill="#2b9a66"/><circle cx="467" cy="198" r="3.5" fill="#2b9a66"/>
+            <text x="428" y="270" text-anchor="middle" font-family="Martian Mono, monospace" font-size="12" fill="#536279">saas-crm · 3</text>
+          </g>
+          <text x="296" y="150" font-family="Bricolage Grotesque, sans-serif" font-size="14" font-weight="600" fill="#536279" transform="rotate(-4 296 150)">waiting for your approval</text>
+        </svg>
+      </div>
+      <div>
+        <p class="b-kicker">After an incident</p>
+        <h3>The record is the page you send your client</h3>
+        <p>Your client doesn't want an Ansible log. They want to know what happened, who allowed it and whether it worked. Every sentence below comes from a field of the record.</p>
+      </div>
+    </div>
+
+    <div class="b-card">
+      <div class="b-card-bar"><span>$ cloudfall why --operation converge</span><span>● verified</span></div>
+      <ol class="b-story">
+        <li><time>19:38</time><span>Converge of <code>site.yml</code> proposed against the whole fleet, based on 6 host snapshots.</span></li>
+        <li><time>19:38</time><span>Check mode: no host would change. Diff saved as <code>converge-20260922193845.diff</code>.</span></li>
+        <li><time>19:39</time><span>Waited for approval. <strong>roman</strong> approved the recorded diff.</span></li>
+        <li><time>19:39</time><span>Run exited 0 and changed no host.</span></li>
+        <li><time>19:40</time><span class="end">Verify exited 0. Ended verified.</span></li>
+      </ol>
+    </div>
+    <div class="b-cta" style="margin-top:0">
+      <a class="b-btn primary" href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/neon-migration-guide.md#step-1-declare-the-postgresql-service">Put one client's PostgreSQL under the gate</a>
+      <a class="b-btn" href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/brownfield-design.md">Bring your Ansible repo</a>
     </div>
   </div>
 
-  <section id="record">
-    <div class="wrap">
-      <div class="kicker">The record</div>
-      <h2>Ask why. Get the story, not a log.</h2>
-      <p class="section-sub">
-        A real decision from the maintainer's six-host production fleet: a
-        <code>converge</code> of the team's own <code>site.yml</code>. Every sentence
-        is drawn from a field of the record, as JSON for agents or as one page for people.
-      </p>
-      <div class="term" style="margin-top:32px">
-        <div class="term-bar">
-          <span></span><span></span><span></span>
-          <div class="title">cloudfall why</div>
-        </div>
-        <pre style="white-space:pre-wrap;word-break:break-word"><span class="p">$</span> <span class="cmd">cloudfall why --operation converge</span>
-<span class="step">It was based on 6 host snapshots in tmp/observed, the latest observed at 2026-09-21T10:39:30Z.</span>
-<span class="step">At 2026-09-22T19:38:45Z the mutating operation converge (site.yml) was proposed against the whole fleet with no inputs.</span>
-<span class="step">Check mode would have changed no host and left 3 hosts untouched; the diff is decisions/converge-20260922193845.diff (sha256 4c8458ca26c5…, 48061 bytes).</span>
-<span class="pause">It waited for an approval: a mutating operation runs in check mode first and waits for an approval of the recorded diff.</span>
-<span class="ok">roman approved it at 2026-09-22T19:39:51Z.</span>
-<span class="step">The run at 2026-09-22T19:39:51Z exited 0 and changed no host; the log is decisions/converge-20260922193845-execution.log.</span>
-<span class="step">The verify step at 2026-09-22T19:40:39Z exited 0 and changed no host; the log is decisions/converge-20260922193845-verify.log.</span>
-<span class="ok">It ended verified: the run succeeded and the verify step changed nothing.</span></pre>
-      </div>
+  <!-- under the hood -->
+  <div class="b-sec" id="how-it-works">
+    <div>
+      <p class="b-kicker">Under the hood</p>
+      <h3>The gate lives in Cloudfall, not in the prompt</h3>
+      <p>An agent can be talked out of a rule in its instructions. It can't be talked out of a process that refuses to run a destructive operation without a person.</p>
     </div>
-  </section>
 
-  <section id="who">
-    <div class="wrap">
-      <div class="kicker">Who it is for</div>
-      <h2>Two ways in, one record</h2>
-      <div class="grid">
-        <div class="card">
-          <h3>Leaving a PaaS</h3>
-          <p>
-            A small production app with a database costs about $83 a month on
-            Render and runs on a Hetzner server for under €10. Cloudfall moves
-            your applications and data onto servers you own, and an always-on
-            operator runs them there with a receipt for every action.
-          </p>
-        </div>
-        <div class="card">
-          <h3>Already running Ansible</h3>
-          <p>
-            Point Cloudfall at your own repository. Each playbook you declare
-            becomes an operation with a risk level, a verify step and a record;
-            your agent sees exactly those as tools, a mutating one waits for a
-            person to approve its check-mode diff. No import, no second copy of
-            your fleet.
-          </p>
-        </div>
-      </div>
-    </div>
-  </section>
+    <div class="b-diagram">
+      <svg viewBox="0 0 760 300" role="img" aria-label="Architecture: your agent calls Cloudfall's CLI or MCP server, which gates by risk, asks a person to approve, runs Ansible against your hosts, verifies, and writes every decision to the record">
+        <defs><marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#1a2940"/></marker></defs>
+        <g font-family="Bricolage Grotesque, sans-serif" fill="#1a2940">
+          <rect x="16" y="96" width="150" height="74" rx="12" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/>
+          <text x="91" y="128" text-anchor="middle" font-size="17" font-weight="700">Your agent</text>
+          <text x="91" y="150" text-anchor="middle" font-size="12" font-family="Martian Mono, monospace" fill="#536279">any MCP client</text>
 
-  <section id="why">
-    <div class="wrap">
-      <div class="kicker">Why Cloudfall</div>
-      <h2>An operator that can't fake success</h2>
-      <p class="section-sub">
-        Agents can already run your servers. What they lack is a record:
-        what they may do, whether it worked, and why they did it. Cloudfall
-        is that record, and it happens to make leaving the cloud safe too.
-      </p>
-      <div class="grid">
-        <div class="card">
-          <h3>A record that answers why</h3>
-          <p>
-            An agent's own log says a tool was called. Cloudfall's record
-            says what the fleet looked like when it was, what was proposed,
-            who approved, and what verify reported. After an incident, that
-            is the page you open.
-          </p>
-        </div>
-        <div class="card">
-          <h3>Verified, not just ran</h3>
-          <p>
-            Deployments produce receipts. Status is derived from validated
-            observations, and <code>cloudfall audit</code> reports drift between
-            your config and the observed servers with distinct exit codes.
-            Cloudfall never reports success it cannot prove.
-          </p>
-        </div>
-        <div class="card">
-          <h3>Good-enough databases, with proof</h3>
-          <p>
-            Managed Postgres is mostly insurance. Cloudfall keeps the coverage
-            and drops the premium: loopback PostgreSQL and Redis with receipted
-            backups and timer-driven restore drills that prove a real backup
-            restorable instead of assuming it.
-          </p>
-        </div>
-        <div class="card">
-          <h3>Autonomy earned, never assumed</h3>
-          <p>
-            The always-on operator diagnoses from evidence and proposes fixes
-            you approve, from the CLI or through
-            <code>cloudfall mcp serve</code>. Autonomy is granted per operation class, licensed by
-            declared policy and earned receipt history; DNS cutover, data
-            deletion, and promotion always require your confirmation.
-          </p>
-        </div>
-        <div class="card">
-          <h3>The bill buys computers, not margins</h3>
-          <p>
-            A steady cloud bill is mostly margin on commodity compute and
-            managed databases: an app that costs $83 a month on Render runs
-            on a Hetzner server for under €10. The difference is runway,
-            every year.
-          </p>
-        </div>
-        <div class="card">
-          <h3>systemd, not containers</h3>
-          <p>
-            Applications run as native systemd services with artifact releases
-            and symlink rollback on long-lived Debian servers. It is all plain
-            systemd, nginx, and Postgres, so any Linux admin can take over
-            without Cloudfall. No lock-in if you ever hire one.
-          </p>
-        </div>
-      </div>
-    </div>
-  </section>
+          <rect x="236" y="84" width="180" height="98" rx="12" fill="#ffd04d" stroke="#1a2940" stroke-width="3"/>
+          <text x="326" y="116" text-anchor="middle" font-size="18" font-weight="800">Cloudfall</text>
+          <text x="326" y="138" text-anchor="middle" font-size="12" font-family="Martian Mono, monospace">CLI + MCP server</text>
+          <text x="326" y="160" text-anchor="middle" font-size="12" font-family="Martian Mono, monospace">gate by risk</text>
 
-  <section id="how">
-    <div class="wrap">
-      <div class="kicker">How it works</div>
-      <h2>From <code style="font-size:0.85em">render.yaml</code> to your own server</h2>
-      <p class="section-sub">
-        One resumable migration: it pauses where you must act and picks up
-        exactly where it left off.
-      </p>
-      <div class="steps">
-        <div class="step-card">
-          <div class="num">1</div>
-          <h3>Import</h3>
-          <p>
-            <code>cloudfall import render</code> maps your Render blueprint onto
-            typed Cloudfall config with an explicit gap report. Nothing is
-            guessed silently.
-          </p>
-        </div>
-        <div class="step-card">
-          <div class="num">2</div>
-          <h3>Migrate</h3>
-          <p>
-            <code>cloudfall migrate</code> converges the baseline and services,
-            migrates your data with row-count verification, deploys behind
-            health gates, and pauses at DNS verification before issuing TLS.
-          </p>
-        </div>
-        <div class="step-card">
-          <div class="num">3</div>
-          <h3>Operate</h3>
-          <p>
-            Cut DNS and the bill starts buying computers. The always-on
-            operator watches declared alerts and audited drift, remediates
-            what its record proves reversible, and writes an audit entry for
-            every decision; you approve only what can't be undone.
-          </p>
-        </div>
-      </div>
-    </div>
-  </section>
+          <rect x="470" y="96" width="140" height="74" rx="12" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/>
+          <text x="540" y="128" text-anchor="middle" font-size="17" font-weight="700">Ansible</text>
+          <text x="540" y="150" text-anchor="middle" font-size="12" font-family="Martian Mono, monospace" fill="#536279">your playbooks</text>
 
-  <section id="status">
-    <div class="wrap">
-      <div class="kicker">Status</div>
-      <h2>Pre-1.0, honestly labeled</h2>
-      <p class="section-sub">
-        Cloudfall is early. Here is exactly where it stands.
-      </p>
-      <div class="status-cols">
-        <div class="status-card done">
-          <h3>Implemented and proven live</h3>
-          <ul>
-            <li>Hardened Debian baseline, nftables firewall, UTC time</li>
-            <li>Loki / Grafana / Alloy logging with metrics and declared alert rules over mTLS</li>
-            <li>Loopback PostgreSQL and Redis with timer-driven restore drills</li>
-            <li>Health-gated deploys with automatic rollback of bad releases</li>
-            <li>Let's Encrypt TLS and nginx routes from declared domains</li>
-            <li>Render blueprint and live-API importers with guided data migration</li>
-            <li>Resumable migrate with a real DNS cutover on an owned domain</li>
-            <li><code>cloudfall mcp serve</code> agent server, confined to one fleet</li>
-            <li>sops/age secret references rendered to per-component env files</li>
-            <li>Always-on operator: receipted proposals, policy-bounded autonomy</li>
-            <li>On your own Ansible repository: declared operations, check-then-approve gate, decision records and <code>cloudfall why</code>, run on the maintainer's production fleet</li>
-          </ul>
-        </div>
-        <div class="status-card next">
-          <h3>Not there yet</h3>
-          <ul>
-            <li>Bare-metal RAID and storage provisioning</li>
-            <li>Broader service catalog: MySQL, Elasticsearch, RabbitMQ, Node runtimes</li>
-            <li>Enforced per-component resource limits for shared nodes</li>
-            <li>Importers beyond Render</li>
-            <li>Safe edits of your inventory and variables, and autonomy computed from the record (<a href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/brownfield-design.md">design</a>)</li>
-          </ul>
-        </div>
-      </div>
-    </div>
-  </section>
+          <rect x="666" y="88" width="78" height="26" rx="5" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/>
+          <rect x="666" y="120" width="78" height="26" rx="5" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/>
+          <rect x="666" y="152" width="78" height="26" rx="5" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/>
+          <circle cx="730" cy="101" r="3.5" fill="#2b9a66"/><circle cx="730" cy="133" r="3.5" fill="#2b9a66"/><circle cx="730" cy="165" r="3.5" fill="#2b9a66"/>
+          <text x="705" y="200" text-anchor="middle" font-size="12" font-family="Martian Mono, monospace" fill="#536279">hosts</text>
 
-  <section class="quickstart">
-    <div class="wrap">
-      <div class="kicker">Get started</div>
-      <h2>Sixty seconds to see how it thinks</h2>
-      <div class="install"><span class="p">$</span> uv tool install cloudfall
-<span class="p">$</span> uvx cloudfall init my-project && cd my-project && uv sync
-<span class="p">$</span> uv run cloudfall config validate</div>
-      <div class="cta">
-        <a class="btn btn-primary" href="https://github.com/cloudfall-dev/cloudfall">Star on GitHub</a>
-        <a class="btn btn-ghost" href="https://github.com/cloudfall-dev/cloudfall/blob/main/ROADMAP.md">See the roadmap</a>
+          <rect x="246" y="226" width="160" height="56" rx="10" fill="#dde8f1" stroke="#1a2940" stroke-width="2.5"/>
+          <text x="326" y="252" text-anchor="middle" font-size="16" font-weight="700">The record</text>
+          <text x="326" y="270" text-anchor="middle" font-size="11" font-family="Martian Mono, monospace" fill="#536279">OperationDecision</text>
+
+          <circle cx="326" cy="22" r="9" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/>
+          <path d="M312 50 q14 -18 28 0" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/>
+          <text x="312" y="30" text-anchor="end" font-size="13" font-weight="600" fill="#536279">a person approves the diff</text>
+        </g>
+        <g stroke="#1a2940" stroke-width="2.5" fill="none" marker-end="url(#arr)">
+          <path d="M168 133 H232"/>
+          <path d="M326 56 V80"/>
+          <path d="M418 133 H466"/>
+          <path d="M612 133 H660"/>
+          <path d="M326 184 V222"/>
+          <path d="M705 84 C705 52 560 46 420 92" stroke-dasharray="6 5"/>
+        </g>
+        <g font-family="Martian Mono, monospace" font-size="11" fill="#536279">
+          <text x="91" y="196" text-anchor="middle">declared tools only</text>
+          <text x="600" y="30" text-anchor="middle">verify → snapshots</text>
+          <text x="340" y="208">diff · approval · outcome</text>
+        </g>
+      </svg>
+    </div>
+
+    <ol class="b-loop" aria-label="The fixed loop">
+      <li>Observe <span>snapshots</span></li>
+      <li>Decide <span>operation, targets, why</span></li>
+      <li>Preview <span>check mode, diff</span></li>
+      <li>Approve <span>gate by risk</span></li>
+      <li>Run <span>through Ansible</span></li>
+      <li>Verify <span>update snapshots</span></li>
+    </ol>
+
+    <div class="b-two">
+      <ul class="b-spec">
+        <li><b>Tool list</b><span>Generated from your declared operations. Risk levels go out as MCP tool annotations, so any client can gate on them too.</span></li>
+        <li><b>Status</b><span>Derived from validated observations, never from the agent saying so. <code>cloudfall audit</code> reports drift with distinct exit codes.</span></li>
+        <li><b>Your agent</b><span>Claude Code, Codex or any MCP client. <code>cloudfall init</code> writes an <code>AGENTS.md</code>: every command sorted by effect and the gate it needs. Your agent reads it first.</span></li>
+        <li><b>Same surface</b><span>One CLI and one MCP server, the same commands for people and agents, JSON everywhere.</span></li>
+        <li><b>Exit plan</b><span>Plain systemd, nginx and PostgreSQL on Debian. Remove Cloudfall and any Linux admin can carry on.</span></li>
+        <li><b>License</b><span>AGPL-3.0. <a href="https://github.com/cloudfall-dev/cloudfall">Read the gate</a> before you trust it.</span></li>
+      </ul>
+      <div class="b-card">
+        <div class="b-card-bar"><span>$ cloudfall why --operation converge --json</span><span>trimmed</span></div>
+<pre class="b-json">{
+  <span class="y-k">"apiVersion"</span>: <span class="y-s">"cloudfall/v1"</span>,
+  <span class="y-k">"kind"</span>: <span class="y-s">"OperationDecision"</span>,
+  <span class="y-k">"metadata"</span>: { <span class="y-k">"id"</span>: <span class="y-s">"converge-20260922193845"</span> },
+  <span class="y-k">"spec"</span>: {
+    <span class="y-k">"proposedAt"</span>: <span class="y-s">"2026-09-22T19:38:45Z"</span>,
+    <span class="y-k">"operation"</span>: { <span class="y-k">"id"</span>: <span class="y-s">"converge"</span>,
+               <span class="y-k">"risk"</span>: <span class="y-s">"mutating"</span> },
+    <span class="y-k">"targets"</span>: { <span class="y-k">"scope"</span>: <span class="y-s">"fleet"</span> },
+    <span class="y-hl"><span class="y-k">"gate"</span>: {
+  <span class="y-k">"requirement"</span>: <span class="y-s">"check-then-approve"</span> }</span>,
+    <span class="y-k">"check"</span>: { <span class="y-k">"exitCode"</span>: 0, <span class="y-k">"changed"</span>: [],
+           <span class="y-k">"diff"</span>: { <span class="y-k">"bytes"</span>: 48061 } },
+    <span class="y-hl"><span class="y-k">"approval"</span>: { <span class="y-k">"approver"</span>: <span class="y-s">"roman"</span> }</span>,
+    <span class="y-k">"status"</span>: <span class="y-s">"verified"</span>
+  }
+}</pre>
       </div>
     </div>
-  </section>
+  </div>
+
+  <!-- pilot -->
+  <div class="b-sec">
+    <div class="b-final" id="pilot">
+      <div><h3>Want us to set it up with you? The pilot is free.</h3><p>We're taking three outside teams this quarter. We move one app or one client fleet onto Cloudfall together with you, and you keep running it. Write to <span class="b-mail">pilot@cloudfall.dev</span></p></div>
+      <div class="b-cta" style="margin-top:0"><a class="b-btn primary" href="mailto:pilot@cloudfall.dev?subject=Cloudfall%20pilot">Email about a pilot</a><a class="b-btn" href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/neon-migration-guide.md#step-1-declare-the-postgresql-service">Start with one PostgreSQL</a></div>
+    </div>
+  </div>
 </main>
 
 <footer>
   <div class="wrap">
-    <a class="brand" href="#">
-      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M9 20a6 6 0 1 1 1.2-11.9A8 8 0 0 1 25.7 11 5.5 5.5 0 0 1 24 21.8L9 22z" fill="#67b7ff"/><path d="M12 24v4m5-4v5m5-5v3" stroke="#67b7ff" stroke-width="2.2" stroke-linecap="round"/></svg>
-      Cloudfall
-    </a>
+    <a class="b-brand" href="/"><svg width="26" height="20" viewBox="0 0 26 20" aria-hidden="true"><path d="M6 15 C1 15 1 9 5 8.5 C5 4 10 2 12.5 5 C14 1 21 1 21.5 6 C25 6 25.5 15 20 15 Z" fill="#ffffff" stroke="#1a2940" stroke-width="2" stroke-linejoin="round"/><path d="M9 17.5 l-1 2 M14 17.5 l-1 2 M19 17.5 l-1 2" stroke="#2f5bd3" stroke-width="2" stroke-linecap="round"/></svg>Cloudfall</a>
     <div class="links">
       <a href="https://github.com/cloudfall-dev/cloudfall">GitHub</a>
       <a href="/manifesto">Manifesto</a>
@@ -544,5 +492,38 @@
   </div>
 </footer>
 
+<script>
+document.querySelectorAll("[data-copy]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const code = document.getElementById(btn.dataset.copy);
+    const selectIt = () => { const r = document.createRange(); r.selectNodeContents(code); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); btn.textContent = "Press ⌘C"; };
+    if (!navigator.clipboard) { selectIt(); return; }
+    navigator.clipboard.writeText(code.textContent).then(() => { btn.textContent = "Copied"; }, selectIt);
+  });
+});
+</script>
+<script>
+(() => {
+  const items = [
+    { name: "Render", href: "https://github.com/cloudfall-dev/cloudfall/blob/main/docs/render-migration-guide.md", note: 'Import your <code>render.yaml</code>: apps, data and a DNS cutover that pauses until you flip it.' },
+    { name: "Neon", href: "https://github.com/cloudfall-dev/cloudfall/blob/main/docs/neon-migration-guide.md#step-1-declare-the-postgresql-service", note: 'One <code>Service</code> file: PostgreSQL on your server, nightly backups, a daily check that the backup restores.' },
+  ];
+  const btn = document.getElementById("rot-btn"), word = document.getElementById("rot-word"), note = document.getElementById("rot-note");
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  let i = 0, paused = false;
+  ["mouseenter", "focusin"].forEach(e => btn.addEventListener(e, () => paused = true));
+  ["mouseleave", "focusout"].forEach(e => btn.addEventListener(e, () => paused = false));
+  setInterval(() => {
+    if (paused) return;
+    i = (i + 1) % items.length;
+    word.classList.remove("in"); word.classList.add("out");
+    setTimeout(() => {
+      const it = items[i];
+      word.textContent = it.name; btn.href = it.href; note.innerHTML = it.note;
+      word.classList.remove("out"); void word.offsetWidth; word.classList.add("in");
+    }, 220);
+  }, 2800);
+})();
+</script>
 </body>
 </html>

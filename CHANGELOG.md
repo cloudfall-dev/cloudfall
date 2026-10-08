@@ -70,6 +70,12 @@ Notable changes to Cloudfall. The format follows
 
 ### Changed
 
+- The site's landing page is redesigned for technical founders leaving the
+  cloud and for teams running servers for clients: a light, illustrated
+  look, the hero's call to action rotating between moving off Render and
+  moving off Neon, a section for MSPs on gated operations and the record
+  as the page sent to a client, a section on how the gate works with a
+  real decision record, and a free pilot by email
 - The README, the site, the roadmap and the architecture say what is built
   on a team's own Ansible repository (the operations catalog, the gate,
   decision records and `cloudfall why`) instead of calling it unbuilt, show
