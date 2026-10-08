@@ -381,6 +381,60 @@ def test_an_answer_that_is_not_json_exits_model_unavailable(
     assert payload["error"]["context"]["code"] == "agent_model_answer_malformed"
 
 
+def test_a_made_up_long_tool_name_is_still_recorded(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], model_url: str
+) -> None:
+    repository = _repository(tmp_path)
+    key = tmp_path / "model.key"
+    key.write_text("sk-test\n", encoding="utf-8")
+    _Model.seen.clear()
+    _Model.replies[:] = [
+        _call("x" * 200, {}),
+        _say("ROOT CAUSE: none\nPROPOSED: none\nWHY: no tool fit."),
+    ]
+
+    exit_code = _investigate_against(repository, key, model_url)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0, payload
+    step = payload["data"]["investigation"]["spec"]["steps"][0]
+    assert step["outcome"] == "unknown-tool"
+    assert step["tool"] == "x" * 128
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"), [("--alert", " "), ("--model", "m" * 257)]
+)
+def test_what_the_record_would_refuse_is_refused_before_the_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], flag: str, value: str
+) -> None:
+    repository = _repository(tmp_path)
+    key = tmp_path / "model.key"
+    key.write_text("sk-test\n", encoding="utf-8")
+    arguments = {
+        "--alert": "postgresql-main down on web-1",
+        "--base-url": "http://127.0.0.1:9/v1",
+        "--model": "nemotron",
+    }
+    arguments[flag] = value
+
+    exit_code = main(
+        [
+            "agent",
+            "investigate",
+            "--repository",
+            str(repository),
+            *(part for pair in arguments.items() for part in pair),
+            "--api-key-from-file",
+            str(key),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 2, payload
+    assert not (repository / "investigations").exists()
+
+
 def test_an_unreachable_endpoint_exits_model_unavailable(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

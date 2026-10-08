@@ -37,6 +37,10 @@ INVESTIGATION_DIRECTORY = "investigations"
 DEFAULT_MAX_TURNS = 12
 TOOL_TEXT_LIMIT = 8000
 """Most characters of host output one tool result hands the model."""
+TOOL_NAME_LIMIT = 128
+"""Most characters of a tool name the record keeps, as its schema allows."""
+ENDPOINT_LIMIT = 512
+MODEL_NAME_LIMIT = 256
 
 ERROR_ENDPOINT_INVALID = "agent_endpoint_invalid"
 ERROR_MODEL_ANSWER_MALFORMED = "agent_model_answer_malformed"
@@ -114,6 +118,12 @@ class ModelEndpoint:
             raise InvestigationError(ERROR_ENDPOINT_INVALID, message)
         if not self.model.strip():
             message = "the model name is empty"
+            raise InvestigationError(ERROR_ENDPOINT_INVALID, message)
+        if len(self.base_url) > ENDPOINT_LIMIT:
+            message = f"the model endpoint is longer than {ENDPOINT_LIMIT} characters"
+            raise InvestigationError(ERROR_ENDPOINT_INVALID, message)
+        if len(self.model) > MODEL_NAME_LIMIT:
+            message = f"the model name is longer than {MODEL_NAME_LIMIT} characters"
             raise InvestigationError(ERROR_ENDPOINT_INVALID, message)
 
     @property
@@ -390,24 +400,26 @@ def _run_call(
         message = "a tool call of the model has no function"
         raise InvestigationError(ERROR_MODEL_ANSWER_MALFORMED, message)
     name = str(function.get("name", ""))
+    # The name is the model's text; the record keeps at most what its schema takes.
+    recorded_name = name[:TOOL_NAME_LIMIT]
     raw = function.get("arguments") or "{}"
     try:
         arguments = json.loads(raw) if isinstance(raw, str) else raw
     except json.JSONDecodeError as error:
         result = _refusal(StepOutcome.INVALID, f"arguments are not JSON: {error}")
-        return Step(name, {}, result.outcome, None), result
+        return Step(recorded_name, {}, result.outcome, None), result
     if not isinstance(arguments, Mapping):
         result = _refusal(StepOutcome.INVALID, "arguments must be a JSON object")
-        return Step(name, {}, result.outcome, None), result
+        return Step(recorded_name, {}, result.outcome, None), result
     arguments = cast("Mapping[str, object]", arguments)
     tool = tools.get(name)
     if tool is None:
         known = ", ".join(sorted(tools))
         result = _refusal(
             StepOutcome.UNKNOWN_TOOL,
-            f"no tool is named {name!r}; the tools are {known}",
+            f"no tool is named {recorded_name!r}; the tools are {known}",
         )
-        return Step(name, arguments, result.outcome, None), result
+        return Step(recorded_name, arguments, result.outcome, None), result
     errors = sorted(
         Draft202012Validator(tool.input_schema).iter_errors(arguments),
         key=lambda error: list(error.path),

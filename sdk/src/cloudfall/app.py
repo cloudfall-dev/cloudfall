@@ -2193,6 +2193,9 @@ class InvestigateArgs(CatalogArgs):
         if self.max_turns < 1:
             message = "max-turns must be at least 1"
             raise ParseError(message, context={"flag": "max-turns"})
+        if not self.alert.strip():
+            message = "the alert is empty"
+            raise ParseError(message, context={"flag": "alert"})
         self.endpoint()
 
     def endpoint(self) -> ModelEndpoint:
