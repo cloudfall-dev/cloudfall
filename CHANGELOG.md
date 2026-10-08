@@ -76,7 +76,8 @@ Notable changes to Cloudfall. The format follows
   moving off Neon, a section for MSPs on gated operations and the record
   as the page sent to a client, a section on how the gate works with a
   real decision record, and a free pilot by email; the manifesto page and
-  the link preview image follow the same look
+  the link preview image follow the same look, and the manifesto's release
+  policy is stated as "proven live or labeled unproven" instead of "pre-1.0"
 - The README, the site, the roadmap and the architecture say what is built
   on a team's own Ansible repository (the operations catalog, the gate,
   decision records and `cloudfall why`) instead of calling it unbuilt, show

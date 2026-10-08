@@ -75,8 +75,8 @@ explicit, it chooses explicit.
 Every implemented layer is exercised on disposable servers against real
 targets: real certificates, real DNS flips on owned domains, real rollbacks
 of deliberately bad releases. What has not been proven live is listed as
-such in the README and the roadmap. "Pre-1.0, honestly labeled" is not
-marketing copy; it is the release policy.
+such in the README and the roadmap. "Proven live or labeled unproven" is
+not marketing copy; it is the release policy.
 
 ## 8 · Open core, never crippled
 
