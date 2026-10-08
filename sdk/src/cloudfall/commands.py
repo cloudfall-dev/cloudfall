@@ -267,11 +267,12 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "decisions approve",
         CommandEffect.SERVERS,
         "approve one recorded proposal, run it for real, and verify it",
-        gate=_YES,
-        output=(
-            _shape("status", "decision", "next", when="without `--yes`"),
-            _shape("status", "decision", when="with `--yes`"),
+        gate=(
+            "a person types the decision id at a terminal, which no flag answers "
+            "(`--yes` included); off a terminal it exits 4 with `PERSON_REQUIRED`, "
+            "and `decisions show` previews the proposal"
         ),
+        output=(_shape("status", "decision"),),
     ),
     CommandContract(
         "cloudfall",

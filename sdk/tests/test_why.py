@@ -8,7 +8,14 @@ from typing import TYPE_CHECKING
 
 import pytest
 from cloudfall.cli import main
-from cloudfall.decision import ApprovalRequest, DecisionStatus, approve, propose
+from cloudfall.decision import (
+    DECISION_DIRECTORY,
+    ApprovalChannel,
+    ApprovalRequest,
+    DecisionStatus,
+    approve,
+    propose,
+)
 from cloudfall.why import Instant, WhyError, WhyQuery, answer, render_why_html
 from test_catalog import _repository
 from test_decision import MOMENT, _proposal, _Runner, _store
@@ -26,7 +33,12 @@ def _record(repository: Path) -> tuple[Decision, Decision]:
     store = _store(repository)
     deploy = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
     deploy = approve(
-        ApprovalRequest(decision=deploy, approver="roman", repository=repository),
+        ApprovalRequest(
+            decision=deploy,
+            approver="roman",
+            repository=repository,
+            via=ApprovalChannel.TERMINAL,
+        ),
         store,
         lambda: MOMENT,
         _Runner(),
@@ -142,7 +154,10 @@ def test_every_sentence_of_the_story_cites_the_record(tmp_path: Path) -> None:
     assert story[2].startswith("Check mode would have changed web-1 and left 1 host")
     assert deploy.check.diff.sha256[:12] in story[2]
     assert story[3].startswith("It waited for an approval:")
-    assert story[4] == "roman approved it at 2026-09-21T14:30:12Z."
+    assert story[4] == (
+        "roman approved it at 2026-09-21T14:30:12Z (via terminal): a person "
+        "typed its id at a terminal."
+    )
     assert story[5].startswith(
         "The run at 2026-09-21T14:30:12Z exited 0 and changed web-1"
     )
@@ -180,6 +195,7 @@ def test_the_cli_answers_in_json_without_a_catalog(
     assert entry["id"] == "deploy-20260921143012"
     assert entry["hosts"] == ["web-1", "web-2"]
     assert entry["decision"]["spec"]["approval"]["approver"] == "roman"
+    assert entry["decision"]["spec"]["approval"]["via"] == "terminal"
     assert entry["decision"]["spec"]["verify"]["changed"] == []
     assert entry["decision"]["spec"]["check"]["diff"]["sha256"]
     assert entry["decision"]["spec"]["basis"]["observedAt"] == {
@@ -202,7 +218,30 @@ def test_the_cli_answers_as_a_page(
     assert "2 decisions" in page
     assert 'class="badge healthy">verified' in page
     assert 'class="badge warning">proposed' in page
-    assert "roman approved it at 2026-09-21T14:30:12Z." in page
+    assert "roman approved it at 2026-09-21T14:30:12Z (via terminal)" in page
+
+
+def test_an_approval_recorded_before_the_channel_says_via_unknown(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = _repository(tmp_path)
+    deploy, _ = _record(repository)
+    path = repository / DECISION_DIRECTORY / f"{deploy.decision_id.value}.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    del document["spec"]["approval"]["via"]
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    told = answer(_store(repository), WhyQuery.from_boundary(operation="deploy"))
+    exit_code = main(["why", "--repository", str(repository), "--host", "web-1"])
+
+    assert told.explanations[0].story[4] == (
+        "roman approved it at 2026-09-21T14:30:12Z (via unknown): the record "
+        "predates noting how an approval arrived."
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    entry = payload["data"]["answers"][0]
+    assert entry["decision"]["spec"]["approval"]["via"] == "unknown"
 
 
 def test_the_cli_reports_a_bad_window_as_json(

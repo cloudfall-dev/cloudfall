@@ -93,6 +93,10 @@ project and never overwrite an existing resource. `cloudfall init`,
 `decisions approve`, `operator run` and `dashboard serve` are never tools:
 the server starts inside an existing project, approving a recorded
 operation is a person's command, and the loops run until stopped.
+`decisions approve` asks the person to type the decision id at a terminal;
+off a terminal it exits 4 with `PERSON_REQUIRED`, `--yes` or not. That is a
+speed bump against an agent with a shell, not a boundary: a process running
+as the same OS user can fake a terminal.
 
 ```console
 uv run cloudfall mcp serve --project config/examples

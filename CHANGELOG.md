@@ -8,6 +8,11 @@ Notable changes to Cloudfall. The format follows
 
 ### Added
 
+- A decision record's approval says how it arrived, as `approval.via`:
+  `terminal` when a person typed the decision id at a terminal. A record
+  written before reads as `via: unknown`. `cloudfall why` tells it in the
+  approval sentence. The field is optional in
+  `operation-decision.schema.json` (#25)
 - `agent investigate --replay DIR` plays a real run back instead of running
   Ansible: DIR is the decisions directory of a run on real hosts, and each
   check-mode call the model makes answers with the output and per-host
@@ -130,6 +135,12 @@ Notable changes to Cloudfall. The format follows
 
 ### Changed
 
+- treaty 1.0.0rc38 instead of 1.0.0rc29. `dashboard serve` and
+  `operator run` write each event in `json` and `jsonl` as a bare JSON line
+  with `_seq` instead of an envelope with `data` and `meta.seq`, and end
+  with one `"_summary": true` line or the error envelope. `mcp serve`
+  stopped by `SIGINT` or `SIGTERM` exits 130 or 143 with the `CANCELLED`
+  envelope instead of 0, and writes no envelope when it stops cleanly (#25)
 - The package is classified as Beta on PyPI instead of Alpha
 - The site's landing page is redesigned for technical founders leaving the
   cloud and for teams running servers for clients: a light, illustrated
@@ -419,6 +430,19 @@ Notable changes to Cloudfall. The format follows
   Before, a run against unreachable hosts crashed while writing the
   `failed` receipt, left the proposal `proposed` with no trace that it ran,
   and showed the caller a traceback
+
+### Security
+
+- `cloudfall decisions approve <id>` asks the person to type the decision id
+  at a terminal before it runs anything, and no flag answers that, `--yes`
+  included. Off a terminal, as from an agent's shell or a script, it exits 4
+  with `PERSON_REQUIRED` and runs nothing; a mistyped id exits 4 with
+  `ATTESTATION_MISMATCH`. Before, `--yes` ran it headless and `--approver`
+  fell back to `$USER`, so an agent could approve its own proposal in the
+  person's name. Without `--yes` the command no longer previews the
+  proposal: `decisions show` does. Scripted or CI approvals stop working.
+  This is a speed bump, not a boundary: a process running as the same OS
+  user can fake a terminal (#25)
 
 ## [0.5.1] - 2026-09-22
 

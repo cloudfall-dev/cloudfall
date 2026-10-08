@@ -20,13 +20,13 @@ from datetime import UTC, datetime
 from html import escape
 from typing import TYPE_CHECKING, cast
 
-from cloudfall.decision import DecisionStatus, Requirement
+from cloudfall.decision import ApprovalChannel, DecisionStatus, Requirement
 from cloudfall.domain import Hostname, ResourceId
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
-    from cloudfall.decision import Decision, DecisionStore, RunRecord
+    from cloudfall.decision import Approval, Decision, DecisionStore, RunRecord
 
 _ERROR_INSTANT_INVALID = "why_instant_invalid"
 _ERROR_WINDOW_INVERTED = "why_window_inverted"
@@ -348,10 +348,7 @@ def _story(decision: Decision) -> Iterable[str]:
     yield _checked(decision)
     yield _gated(decision)
     if decision.approval is not None:
-        yield (
-            f"{decision.approval.approver} approved it at "
-            f"{decision.approval.approved_at}."
-        )
+        yield _approved(decision.approval)
     if decision.execution is not None:
         yield _ran("The run", decision.execution, decision.execution.log.path)
     if decision.verification is not None:
@@ -359,6 +356,16 @@ def _story(decision: Decision) -> Iterable[str]:
             "The verify step", decision.verification, decision.verification.log.path
         )
     yield _ended(decision)
+
+
+def _approved(approval: Approval) -> str:
+    said = (
+        f"{approval.approver} approved it at {approval.approved_at} "
+        f"(via {approval.via.value})"
+    )
+    if approval.via is ApprovalChannel.UNKNOWN:
+        return f"{said}: the record predates noting how an approval arrived."
+    return f"{said}: a person typed its id at a terminal."
 
 
 def _saw(decision: Decision) -> str:

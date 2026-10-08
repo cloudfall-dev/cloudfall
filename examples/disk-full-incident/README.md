@@ -61,12 +61,14 @@ cloudfall agent investigate \
 ```
 
 The answer names the root cause and the decisions it recorded, in the order
-to approve them. Nothing on the host has changed yet. Review and approve:
+to approve them. Nothing on the host has changed yet. Review, then approve
+at your terminal, where each approval asks you to type the decision id (an
+agent's shell call is refused with `PERSON_REQUIRED`):
 
 ```console
-cloudfall decisions approve shop-logrotate-<stamp>          # shows the proposal
-cloudfall decisions approve shop-logrotate-<stamp> --yes    # runs it, then verifies
-cloudfall decisions approve postgresql-restart-<stamp> --yes
+cloudfall decisions show shop-logrotate-<stamp>         # shows the proposal
+cloudfall decisions approve shop-logrotate-<stamp>      # type the id; runs it, then verifies
+cloudfall decisions approve postgresql-restart-<stamp>
 cloudfall why --host hz1 --format html > why.html
 ```
 

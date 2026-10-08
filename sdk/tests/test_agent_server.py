@@ -207,7 +207,8 @@ def test_an_operation_tool_records_a_proposal_and_changes_nothing(
     assert decision["spec"]["status"] == "proposed"
     assert decision["spec"]["inputs"] == {"version": "2.0.0"}
     assert proposed["data"]["next"] == [
-        f"cloudfall decisions approve {decision['metadata']['id']} --yes"
+        "a person approves it at a terminal, typing the decision id: "
+        f"cloudfall decisions approve {decision['metadata']['id']}"
     ]
     assert not (repository / "marker.txt").exists()
     recorded = decisions["data"]["decisions"]

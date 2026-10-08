@@ -118,7 +118,7 @@ def test_dashboard_serve_streams_where_it_listens_until_stopped(
         readable, _, _ = select.select([process.stdout], [], [], 30)
         assert readable, "the listening event never arrived"
         listening = json.loads(process.stdout.readline())
-        url = listening["data"]["dashboard"]["url"]
+        url = listening["dashboard"]["url"]
         with urllib.request.urlopen(f"{url}operations.json", timeout=10) as response:  # noqa: S310 - local server
             assert response.status == 200
         process.send_signal(signal.SIGTERM)
@@ -128,8 +128,8 @@ def test_dashboard_serve_streams_where_it_listens_until_stopped(
         process.kill()
         process.wait()
 
-    assert listening["meta"]["seq"] == 1
-    assert listening["data"]["status"] == "ok"
+    assert listening["_seq"] == 1
+    assert listening["status"] == "ok"
     assert closing["error"]["code"] == "CANCELLED"
 
 

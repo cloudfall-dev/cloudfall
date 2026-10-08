@@ -21,7 +21,7 @@ dependencies = [
     "ansible-core>=2.21,<2.22",
     "jsonschema[format]>=4.23,<5",
     "pyyaml>=6,<7",
-    "treaty==1.0.0rc29",
+    "treaty==1.0.0rc38",
 ]
 
 [project.urls]
