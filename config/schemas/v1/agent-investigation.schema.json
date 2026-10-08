@@ -54,7 +54,8 @@
           "enum": [
             "answered",
             "unstructured",
-            "turn-limit"
+            "turn-limit",
+            "model-unavailable"
           ]
         },
         "turns": {

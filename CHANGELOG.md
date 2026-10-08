@@ -27,6 +27,14 @@ Notable changes to Cloudfall. The format follows
   behind a PostgreSQL alert was traced to unrotated application logs in five
   turns, and the two proposals it recorded, once approved, brought the
   database back
+- `agent investigate` records the investigation when the model endpoint
+  fails partway (refused, unreachable, not JSON, or a malformed answer),
+  so the decisions earlier turns proposed are never left without one: the
+  record ends `model-unavailable` with the steps, turns and tokens so far,
+  an empty `answer` and no `finding`, the command still exits 92
+  `MODEL_UNAVAILABLE`, and `error.context.investigation` names the record.
+  A failure on the first request records an investigation with no steps;
+  a refusal before any request (exit 2) still records nothing (#29)
 - An operation tool of `mcp serve --repository` describes a read operation
   as running and returning what the hosts reported, instead of saying it
   runs check mode only
