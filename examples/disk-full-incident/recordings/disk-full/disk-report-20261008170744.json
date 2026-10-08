@@ -1,0 +1,41 @@
+{
+  "apiVersion": "cloudfall/v1",
+  "kind": "OperationDecision",
+  "metadata": {
+    "id": "disk-report-20261008170744"
+  },
+  "spec": {
+    "basis": {
+      "observations": "tmp/observed",
+      "observedAt": {}
+    },
+    "check": {
+      "changed": [],
+      "diff": {
+        "bytes": 2346,
+        "path": "tmp/eval/NVIDIA-Nemotron-3-Nano-30B-A3B/0/decisions/disk-report-20261008170744.diff",
+        "sha256": "b9b21bf43cad0296c7f8888a30dfc91ef4ebb11d645e30608d803de6bcc674da"
+      },
+      "exitCode": 0,
+      "unchanged": [
+        "hz1"
+      ]
+    },
+    "gate": {
+      "reason": "a read operation changes nothing, so nothing gates it",
+      "requirement": "runs-freely"
+    },
+    "inputs": {},
+    "operation": {
+      "id": "disk-report",
+      "playbook": "playbooks/disk-report.yml",
+      "risk": "read"
+    },
+    "proposedAt": "2026-10-08T17:07:44Z",
+    "status": "proposed",
+    "targets": {
+      "pattern": "hz1",
+      "scope": "host"
+    }
+  }
+}

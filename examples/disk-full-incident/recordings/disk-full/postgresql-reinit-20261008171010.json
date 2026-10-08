@@ -1,0 +1,40 @@
+{
+  "apiVersion": "cloudfall/v1",
+  "kind": "OperationDecision",
+  "metadata": {
+    "id": "postgresql-reinit-20261008171010"
+  },
+  "spec": {
+    "basis": {
+      "observations": "tmp/observed",
+      "observedAt": {}
+    },
+    "check": {
+      "changed": [],
+      "diff": {
+        "bytes": 1023,
+        "path": "tmp/eval/Nemotron-3_5-Lightning/0/decisions/postgresql-reinit-20261008171010.diff",
+        "sha256": "4508221b6dbad0ba59b660b4eecb650ec20702b5eb25d85923f7a7ba29a37807"
+      },
+      "exitCode": 0,
+      "unchanged": []
+    },
+    "gate": {
+      "reason": "a destructive operation cannot be undone, so only a person may let it through",
+      "requirement": "human-required"
+    },
+    "inputs": {},
+    "operation": {
+      "id": "postgresql-reinit",
+      "playbook": "playbooks/postgresql-reinit.yml",
+      "risk": "destructive",
+      "verifyPlaybook": "playbooks/postgresql.yml"
+    },
+    "proposedAt": "2026-10-08T17:10:10Z",
+    "status": "proposed",
+    "targets": {
+      "pattern": "hz1",
+      "scope": "host"
+    }
+  }
+}

@@ -245,6 +245,8 @@ class Investigation:
     steps: tuple[Step, ...]
     answer: str
     finding: Finding | None
+    replay: str | None = None
+    """The recording played back instead of the hosts, when there was one."""
 
     def as_document(self) -> dict[str, object]:
         """Serialize the investigation as a schema-valid record."""
@@ -264,6 +266,8 @@ class Investigation:
         }
         if self.finding is not None:
             spec["finding"] = self.finding.as_dict()
+        if self.replay is not None:
+            spec["replay"] = self.replay
         return {
             "apiVersion": "cloudfall/v1",
             "kind": "AgentInvestigation",
@@ -318,13 +322,14 @@ class InvestigationStore:
         raise InvestigationError(ERROR_INVESTIGATION_EXISTS, message)
 
 
-def investigate(
+def investigate(  # noqa: PLR0913 - the loop's inputs, and what the record cites.
     alert: str,
     tools: Sequence[AgentTool],
     endpoint: ModelEndpoint,
     transport: ChatTransport,
     *,
     max_turns: int = DEFAULT_MAX_TURNS,
+    replay: str | None = None,
 ) -> Investigation:
     """Let the model work the alert through the tools until it answers.
 
@@ -360,6 +365,7 @@ def investigate(
             steps=tuple(steps),
             answer=answer,
             finding=finding,
+            replay=replay,
         )
 
     try:
