@@ -299,7 +299,7 @@ footer .b-brand { color: var(--b-ink); text-decoration: none; font-size: 1.1rem 
 <pre class="b-yaml"><span class="y-k">id</span>: deploy
 <span class="y-k">playbook</span>: playbooks/deploy.yml   <span class="y-c"># your existing playbook</span>
 <span class="y-hl"><span class="y-k">risk</span>: mutating</span>                   <span class="y-c"># read | mutating | destructive</span>
-<span class="y-k">targets</span>: component
+<span class="y-k">targets</span>: host                    <span class="y-c"># fleet | group | host</span>
 <span class="y-k">inputs</span>:
   <span class="y-k">version</span>: string
 <span class="y-k">preconditions</span>:
