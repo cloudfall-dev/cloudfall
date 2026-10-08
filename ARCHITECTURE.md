@@ -15,7 +15,8 @@ Debian servers without Kubernetes (see the [fleet goals](docs/fleet-goals.md)),
 on a config the team already owns. This document describes the durable
 design; [`ROADMAP.md`](ROADMAP.md) is the authoritative source for what is
 implemented today, and the [brownfield design](docs/brownfield-design.md)
-describes the proposed next step, none of which is built.
+describes the next step, whose operations catalog, gate and record are
+built while safe edits and autonomy from the record are not.
 
 Every layer keeps the same invariants: no action without declared config, no
 status without evidence, no compliance without audit, no decision without a

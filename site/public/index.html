@@ -149,7 +149,7 @@
   }
   .card h3 { font-size: 18px; margin-bottom: 10px; letter-spacing: -0.01em; }
   .card p { color: var(--text-dim); font-size: 15px; }
-  .card code, .steps code, .proof code {
+  .card code, .steps code, .proof code, .section-sub code {
     font-family: var(--mono); font-size: 0.88em;
     background: var(--accent-soft); color: var(--accent);
     padding: 1.5px 6px; border-radius: 5px; white-space: nowrap;
@@ -237,6 +237,7 @@
       </a>
       <div class="links">
         <a class="hide-sm" href="#why">Why</a>
+        <a class="hide-sm" href="#record">The record</a>
         <a class="hide-sm" href="#how">How it works</a>
         <a class="hide-sm" href="#status">Status</a>
         <a class="hide-sm" href="/manifesto">Manifesto</a>
@@ -308,6 +309,61 @@
     </div>
   </div>
 
+  <section id="record">
+    <div class="wrap">
+      <div class="kicker">The record</div>
+      <h2>Ask why. Get the story, not a log.</h2>
+      <p class="section-sub">
+        A real decision from the maintainer's six-host production fleet: a
+        <code>converge</code> of the team's own <code>site.yml</code>. Every sentence
+        is drawn from a field of the record, as JSON for agents or as one page for people.
+      </p>
+      <div class="term" style="margin-top:32px">
+        <div class="term-bar">
+          <span></span><span></span><span></span>
+          <div class="title">cloudfall why</div>
+        </div>
+        <pre style="white-space:pre-wrap;word-break:break-word"><span class="p">$</span> <span class="cmd">cloudfall why --operation converge</span>
+<span class="step">It was based on 6 host snapshots in tmp/observed, the latest observed at 2026-09-21T10:39:30Z.</span>
+<span class="step">At 2026-09-22T19:38:45Z the mutating operation converge (site.yml) was proposed against the whole fleet with no inputs.</span>
+<span class="step">Check mode would have changed no host and left 3 hosts untouched; the diff is decisions/converge-20260922193845.diff (sha256 4c8458ca26c5…, 48061 bytes).</span>
+<span class="pause">It waited for an approval: a mutating operation runs in check mode first and waits for an approval of the recorded diff.</span>
+<span class="ok">roman approved it at 2026-09-22T19:39:51Z.</span>
+<span class="step">The run at 2026-09-22T19:39:51Z exited 0 and changed no host; the log is decisions/converge-20260922193845-execution.log.</span>
+<span class="step">The verify step at 2026-09-22T19:40:39Z exited 0 and changed no host; the log is decisions/converge-20260922193845-verify.log.</span>
+<span class="ok">It ended verified: the run succeeded and the verify step changed nothing.</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="who">
+    <div class="wrap">
+      <div class="kicker">Who it is for</div>
+      <h2>Two ways in, one record</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>Leaving a PaaS</h3>
+          <p>
+            A small production app with a database costs about $83 a month on
+            Render and runs on a Hetzner server for under €10. Cloudfall moves
+            your applications and data onto servers you own, and an always-on
+            operator runs them there with a receipt for every action.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Already running Ansible</h3>
+          <p>
+            Point Cloudfall at your own repository. Each playbook you declare
+            becomes an operation with a risk level, a verify step and a record;
+            your agent sees exactly those as tools, a mutating one waits for a
+            person to approve its check-mode diff. No import, no second copy of
+            your fleet.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <section id="why">
     <div class="wrap">
       <div class="kicker">Why Cloudfall</div>
@@ -359,9 +415,9 @@
           <h3>The bill buys computers, not margins</h3>
           <p>
             A steady cloud bill is mostly margin on commodity compute and
-            managed databases. The same workload runs on one or two
-            Hetzner-class servers for a tenth of the price, and the
-            difference is runway, every year.
+            managed databases: an app that costs $83 a month on Render runs
+            on a Hetzner server for under €10. The difference is runway,
+            every year.
           </p>
         </div>
         <div class="card">
@@ -439,6 +495,7 @@
             <li><code>cloudfall mcp serve</code> agent server, confined to one fleet</li>
             <li>sops/age secret references rendered to per-component env files</li>
             <li>Always-on operator: receipted proposals, policy-bounded autonomy</li>
+            <li>On your own Ansible repository: declared operations, check-then-approve gate, decision records and <code>cloudfall why</code>, run on the maintainer's production fleet</li>
           </ul>
         </div>
         <div class="status-card next">
@@ -448,7 +505,7 @@
             <li>Broader service catalog: MySQL, Elasticsearch, RabbitMQ, Node runtimes</li>
             <li>Enforced per-component resource limits for shared nodes</li>
             <li>Importers beyond Render</li>
-            <li>Your existing Ansible inventory and playbooks as the config and the agent's tool list: <a href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/brownfield-design.md">design written</a>, nothing built</li>
+            <li>Safe edits of your inventory and variables, and autonomy computed from the record (<a href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/brownfield-design.md">design</a>)</li>
           </ul>
         </div>
       </div>
@@ -459,9 +516,9 @@
     <div class="wrap">
       <div class="kicker">Get started</div>
       <h2>Sixty seconds to see how it thinks</h2>
-      <div class="install"><span class="p">$</span> git clone https://github.com/cloudfall-dev/cloudfall && cd cloudfall
-<span class="p">$</span> uv run cloudfall config validate --project config/examples
-<span class="p">$</span> uv run cloudfall init ../my-project</div>
+      <div class="install"><span class="p">$</span> uv tool install cloudfall
+<span class="p">$</span> uvx cloudfall init my-project && cd my-project && uv sync
+<span class="p">$</span> uv run cloudfall config validate</div>
       <div class="cta">
         <a class="btn btn-primary" href="https://github.com/cloudfall-dev/cloudfall">Star on GitHub</a>
         <a class="btn btn-ghost" href="https://github.com/cloudfall-dev/cloudfall/blob/main/ROADMAP.md">See the roadmap</a>

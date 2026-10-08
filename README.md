@@ -44,15 +44,44 @@ flowchart LR
     R -.->|earned autonomy| G
 ```
 
+### What the record looks like
+
+Ask why something happened and Cloudfall answers from the record alone. This
+is a real decision from the maintainer's six-host production fleet, a
+`converge` run of the team's own `site.yml` (output abridged to the story):
+
+```console
+$ cloudfall why --operation converge
+It was based on 6 host snapshots in tmp/observed, the latest observed at 2026-09-21T10:39:30Z.
+At 2026-09-22T19:38:45Z the mutating operation converge (site.yml) was proposed against the whole fleet with no inputs.
+Check mode would have changed no host and left 3 hosts untouched; the diff is decisions/converge-20260922193845.diff (sha256 4c8458ca26c5…, 48061 bytes).
+It waited for an approval: a mutating operation runs in check mode first and waits for an approval of the recorded diff.
+roman approved it at 2026-09-22T19:39:51Z.
+The run at 2026-09-22T19:39:51Z exited 0 and changed no host; the log is decisions/converge-20260922193845-execution.log.
+The verify step at 2026-09-22T19:40:39Z exited 0 and changed no host; the log is decisions/converge-20260922193845-verify.log.
+It ended verified: the run succeeded and the verify step changed nothing.
+```
+
+Every sentence is drawn from a field of the record. `--format html` renders
+the same answer as one page, and agents get it as the `why` tool.
+
 ## Who it is for
 
-Teams with one to twenty servers and no platform hire: founders leaving a
-PaaS whose bill crossed $1,000 a month, and anyone whose servers are already
-run by Claude Code, Codex or another agent. Today Cloudfall moves your
-applications and databases onto one or two Hetzner-class servers you own
-(hardened baseline, monitoring, PostgreSQL and Redis with backups that
+**Founders leaving a PaaS.** A small production app with a database costs
+about $83 a month on Render and runs on a Hetzner server for under €10.
+Cloudfall moves your applications and databases onto one or two servers you
+own (hardened baseline, monitoring, PostgreSQL and Redis with backups that
 provably restore, health-gated deploys with rollback, a real DNS cutover),
 and an always-on operator runs them there with a receipt for every action.
+Start with the [Render migration guide](docs/render-migration-guide.md).
+
+**Teams and agencies that already run Ansible.** Point Cloudfall at your own
+repository: it reads your inventory, and each playbook you declare in
+`operations/` becomes an operation with a risk level, a verify step and a
+record. Your agent sees exactly those operations as tools, a mutating one
+runs in check mode and waits for a person to approve the diff, and
+`cloudfall why` answers for it afterwards. No import, no second copy of
+your fleet. See the [brownfield design](docs/brownfield-design.md).
 
 > **Proven live, not promised.** Everything implemented has run on
 > disposable Hetzner Cloud Debian 13 servers: an application actually hosted
@@ -120,8 +149,8 @@ and drift audit to the live dashboard, is in
 
 ```console
 uv run cloudfall import render render.yaml --application acme --server h1
-uv run cloudfall migrate --build acme-api=main          # show the plan
-uv run cloudfall migrate --build acme-api=main --yes    # run it
+uv run cloudfall migrate --build web=main          # show the plan
+uv run cloudfall migrate --build web=main --yes    # run it
 ```
 
 The importer never guesses silently: `IMPORT-REPORT.md` records what was not
@@ -161,8 +190,8 @@ contracts. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Status
 
-Cloudfall is pre-1.0 and honestly labeled. Implemented and proven live on
-disposable Debian targets:
+Cloudfall is pre-1.0 and honestly labeled. On servers Cloudfall sets up,
+implemented and proven live on disposable Debian targets:
 
 - Typed YAML config with JSON Schemas, deterministic Ansible inventory,
   read-only inspection and config-versus-observed drift audit
@@ -175,18 +204,19 @@ disposable Debian targets:
 - `cloudfall mcp serve` and the always-on operator with receipted proposals
   and policy-bounded autonomy
 
-Not yet validated live: bare-metal RAID/storage provisioning. Next up: the
-fleet-density track (resource sharing, node drain, PostgreSQL point-in-time
-recovery). See the [roadmap](ROADMAP.md).
+On your own Ansible repository, implemented and run on the maintainer's
+production fleet:
 
-### Direction: your Ansible, not ours
+- Read-only observation through your inventory and `ansible.cfg`, and drift
+  audit without a Cloudfall project
+- The operations catalog, the check-then-approve gate, and one decision
+  record per operation with its evidence, diff, approver and verify result
+- `cloudfall why` and `cloudfall mcp serve --repository`, where the tool
+  list is your catalog
 
-Most teams that would use Cloudfall already run Ansible. The next step reads
-their inventory as the only config and exposes each of their playbooks to
-the agent as a declared operation with a risk level, a verify step and an
-audit entry. Ansible is the hand, the agent is the brain, Cloudfall is the
-conscience. Designed, not yet built:
-[docs/brownfield-design.md](docs/brownfield-design.md).
+Not yet validated live: bare-metal RAID/storage provisioning. Not built yet:
+safe edits of your inventory and variables, and autonomy computed from the
+record. See the [roadmap](ROADMAP.md).
 
 ## Community
 
@@ -197,8 +227,5 @@ conscience. Designed, not yet built:
 
 ## License
 
-Everything in this repository is free under the
-[GNU AGPL-3.0-or-later](LICENSE) and sufficient on its own. The hosted
-always-on operator and commercial licensing are how the project sustains
-itself; neither holds back the open core. Commercial licensing exceptions
-are available from the copyright holder.
+Cloudfall is free under the [GNU AGPL-3.0-or-later](LICENSE). Commercial
+licensing exceptions are available from the copyright holder.

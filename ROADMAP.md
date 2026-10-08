@@ -13,8 +13,11 @@ The first story, proven live in M0–M10:
 > from GitHub with health checks and rollback, and a DNS cutover checklist.
 > An always-on operator then runs it there, with a receipt for every action.
 
-The second story, designed and not yet built (M15–M17, see the
-[brownfield design](docs/brownfield-design.md)):
+The second story, under way (M15–M17, see the
+[brownfield design](docs/brownfield-design.md)): the operations catalog,
+the gate and the decision record are built and have run on the
+maintainer's own production fleet; safe edits and autonomy from the record
+are not built yet:
 
 > A team that already runs Ansible points its agent at its own repository.
 > Cloudfall reads their inventory as the only config, exposes each of their
