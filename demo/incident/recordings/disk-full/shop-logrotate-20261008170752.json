@@ -1,0 +1,42 @@
+{
+  "apiVersion": "cloudfall/v1",
+  "kind": "OperationDecision",
+  "metadata": {
+    "id": "shop-logrotate-20261008170752"
+  },
+  "spec": {
+    "basis": {
+      "observations": "tmp/observed",
+      "observedAt": {}
+    },
+    "check": {
+      "changed": [
+        "hz1"
+      ],
+      "diff": {
+        "bytes": 4924,
+        "path": "tmp/eval/NVIDIA-Nemotron-3-Nano-30B-A3B/0/decisions/shop-logrotate-20261008170752.diff",
+        "sha256": "d1888a25878a6c02cc7a77bd8730a61d387aa45502927b7c234fb1a1ddf4613a"
+      },
+      "exitCode": 0,
+      "unchanged": []
+    },
+    "gate": {
+      "reason": "a mutating operation runs in check mode first and waits for an approval of the recorded diff",
+      "requirement": "check-then-approve"
+    },
+    "inputs": {},
+    "operation": {
+      "id": "shop-logrotate",
+      "playbook": "playbooks/shop-logrotate.yml",
+      "risk": "mutating",
+      "verifyPlaybook": "playbooks/shop-logrotate.yml"
+    },
+    "proposedAt": "2026-10-08T17:07:52Z",
+    "status": "proposed",
+    "targets": {
+      "pattern": "hz1",
+      "scope": "host"
+    }
+  }
+}

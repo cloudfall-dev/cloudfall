@@ -1,0 +1,18 @@
+
+PLAY [Run PostgreSQL 17 for the shop] ******************************************
+
+TASK [Gathering Facts] *********************************************************
+ok: [hz1]
+
+TASK [Install PostgreSQL] ******************************************************
+ok: [hz1]
+
+TASK [Keep the cluster running] ************************************************
+ok: [hz1]
+
+PLAY RECAP *********************************************************************
+hz1                        : ok=3    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+
+[WARNING]: Deprecation warnings can be disabled by setting `deprecation_warnings=False` in ansible.cfg.
+[DEPRECATION WARNING]: The tree callback plugin is deprecated. This feature will be removed from ansible-core version 2.23.
+[WARNING]: Host 'hz1' is using the discovered Python interpreter at '/usr/bin/python3.13', but future installation of another Python interpreter could cause a different interpreter to be discovered. See https://docs.ansible.com/ansible-core/2.21/reference_appendices/interpreter_discovery.html for more information.

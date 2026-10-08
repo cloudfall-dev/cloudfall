@@ -1,0 +1,7 @@
+id: converge
+description: Bring the host to the state this repository declares (PostgreSQL and the shop worker)
+playbook: site.yml
+risk: mutating
+targets: fleet
+verify:
+  playbook: site.yml

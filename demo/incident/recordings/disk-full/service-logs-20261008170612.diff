@@ -1,0 +1,31 @@
+
+PLAY [Show the last log lines of one systemd unit] *****************************
+
+TASK [Read the unit's journal] *************************************************
+ok: [hz1]
+
+TASK [Report] ******************************************************************
+ok: [hz1] => {
+    "logs.stdout_lines": [
+        "Oct 08 16:54:45 eval systemd[1]: Starting postgresql@17-main.service - PostgreSQL Cluster 17-main...",
+        "Oct 08 16:54:47 eval systemd[1]: Started postgresql@17-main.service - PostgreSQL Cluster 17-main.",
+        "Oct 08 16:55:03 eval systemd[1]: Stopping postgresql@17-main.service - PostgreSQL Cluster 17-main...",
+        "Oct 08 16:55:03 eval systemd[1]: postgresql@17-main.service: Deactivated successfully.",
+        "Oct 08 16:55:03 eval systemd[1]: Stopped postgresql@17-main.service - PostgreSQL Cluster 17-main.",
+        "Oct 08 16:55:03 eval systemd[1]: Starting postgresql@17-main.service - PostgreSQL Cluster 17-main...",
+        "Oct 08 16:55:03 eval postgresql@17-main[3564]: Error: /usr/lib/postgresql/17/bin/pg_ctl /usr/lib/postgresql/17/bin/pg_ctl start -D /var/lib/postgresql/17/main -l /var/log/postgresql/postgresql-17-main.log -s -o  -c config_file=\"/etc/postgresql/17/main/postgresql.conf\"  exited with status 1:",
+        "Oct 08 16:55:03 eval postgresql@17-main[3564]: 2026-10-08 16:55:03.466 UTC [3569] FATAL:  could not write lock file \"postmaster.pid\": No space left on device",
+        "Oct 08 16:55:03 eval postgresql@17-main[3564]: pg_ctl: could not start server",
+        "Oct 08 16:55:03 eval postgresql@17-main[3564]: Examine the log output.",
+        "Oct 08 16:55:03 eval systemd[1]: postgresql@17-main.service: Can't open PID file '/run/postgresql/17-main.pid' (yet?) after start: No such file or directory",
+        "Oct 08 16:55:03 eval systemd[1]: postgresql@17-main.service: Failed with result 'protocol'.",
+        "Oct 08 16:55:03 eval systemd[1]: Failed to start postgresql@17-main.service - PostgreSQL Cluster 17-main."
+    ]
+}
+
+PLAY RECAP *********************************************************************
+hz1                        : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+
+[WARNING]: Deprecation warnings can be disabled by setting `deprecation_warnings=False` in ansible.cfg.
+[DEPRECATION WARNING]: The tree callback plugin is deprecated. This feature will be removed from ansible-core version 2.23.
+[WARNING]: Host 'hz1' is using the discovered Python interpreter at '/usr/bin/python3.13', but future installation of another Python interpreter could cause a different interpreter to be discovered. See https://docs.ansible.com/ansible-core/2.21/reference_appendices/interpreter_discovery.html for more information.

@@ -37,6 +37,13 @@ jobs:
       - name: Test
         run: uv run pytest
 
+      - name: Demo
+        working-directory: demo
+        run: |
+          uv sync
+          uv run mypy
+          uv run pytest
+
       - name: Validate example state
         run: uv run cloudfall config validate --project config/examples
 

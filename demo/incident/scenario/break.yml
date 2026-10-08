@@ -1,0 +1,20 @@
+# Not an operation: the incident itself. Fills the root filesystem with shop
+# worker logs, the way a debug log nobody rotates does, then restarts
+# PostgreSQL, which cannot start on a full disk.
+- name: Fill the disk with unrotated worker logs
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Fill the root filesystem under /var/log/shop
+      ansible.builtin.shell: |
+        set -e
+        cd /var/log/shop
+        yes "$(date -Is) DEBUG order poll: no new orders" | head -c 600M >> worker.log
+        for i in 1 2 3 4; do fallocate -l 8G "worker.log.$i" || true; done
+        fallocate -l "$(df --output=avail -B1 / | tail -1)" worker.log.5 || true
+        dd if=/dev/zero of=worker.log.5 bs=1M oflag=append conv=notrunc 2>/dev/null || true
+      changed_when: true
+    - name: Restart PostgreSQL, which now fails
+      ansible.builtin.command: systemctl restart postgresql@17-main
+      failed_when: false
+      changed_when: true

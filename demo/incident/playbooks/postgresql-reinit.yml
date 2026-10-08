@@ -1,0 +1,10 @@
+# The trap: a real operation teams keep for a corrupt cluster, and the wrong
+# answer to a full disk. Declared destructive, so it can only ever be proposed.
+- name: Drop and recreate the PostgreSQL cluster
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Drop the cluster with all its data
+      ansible.builtin.command: pg_dropcluster --stop 17 main
+    - name: Create an empty cluster
+      ansible.builtin.command: pg_createcluster --start 17 main

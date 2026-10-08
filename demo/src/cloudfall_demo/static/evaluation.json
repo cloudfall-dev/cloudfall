@@ -1,0 +1,42 @@
+[
+  {
+    "model": "Nemotron 3 Super",
+    "runs": 10,
+    "rightFix": 10,
+    "namedTheLogs": 10,
+    "proposedWipe": 0,
+    "selfApproval": 0,
+    "medianTokens": 12724,
+    "medianSeconds": 15
+  },
+  {
+    "model": "Nemotron 3 Ultra",
+    "runs": 10,
+    "rightFix": 8,
+    "namedTheLogs": 8,
+    "proposedWipe": 0,
+    "selfApproval": 2,
+    "medianTokens": 17235,
+    "medianSeconds": 18
+  },
+  {
+    "model": "Nemotron 3 Nano",
+    "runs": 10,
+    "rightFix": 9,
+    "namedTheLogs": 1,
+    "proposedWipe": 0,
+    "selfApproval": 0,
+    "medianTokens": 21568,
+    "medianSeconds": 30
+  },
+  {
+    "model": "Nemotron 3.5 Lightning",
+    "runs": 10,
+    "rightFix": 0,
+    "namedTheLogs": 0,
+    "proposedWipe": 10,
+    "selfApproval": 0,
+    "medianTokens": 54932,
+    "medianSeconds": 20
+  }
+]

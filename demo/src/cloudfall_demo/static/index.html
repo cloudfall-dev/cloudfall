@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cloudfall Live Demo</title>
+<meta name="description" content="A live NVIDIA Nemotron model investigates a real server incident through Cloudfall. Reads run, changes wait for you.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Atkinson+Hyperlegible:wght@400;700&family=Martian+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --sky: #dde8f1; --paper: #f8fafc; --card: #ffffff; --ink: #1a2940; --dim: #536279;
+  --line: #d5dee8; --blue: #2f5bd3; --sun: #ffd04d; --green: #2b9a66; --amber: #b7791f;
+  --red: #c2413b; --red-bg: #fdecea; --amber-bg: #fff6e0; --green-bg: #e7f5ee; --code: #f1f5f9;
+  --display: "Bricolage Grotesque", "Avenir Next", sans-serif;
+  --body: "Atkinson Hyperlegible", system-ui, sans-serif;
+  --mono: "Martian Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --sky: #0f1a2b; --paper: #0b1220; --card: #121c2e; --ink: #e6edf6; --dim: #9aa8bc;
+    --line: #24324a; --blue: #7aa2ff; --green: #4cc38a; --amber: #e0a845; --red: #ff7a72;
+    --red-bg: #3a1a1a; --amber-bg: #3a2e14; --green-bg: #12301f; --code: #0e1726;
+  }
+}
+:root[data-theme="dark"] {
+  --sky: #0f1a2b; --paper: #0b1220; --card: #121c2e; --ink: #e6edf6; --dim: #9aa8bc;
+  --line: #24324a; --blue: #7aa2ff; --green: #4cc38a; --amber: #e0a845; --red: #ff7a72;
+  --red-bg: #3a1a1a; --amber-bg: #3a2e14; --green-bg: #12301f; --code: #0e1726;
+}
+* { box-sizing: border-box }
+html { background: var(--paper) }
+body { min-height: 100vh; margin: 0; background: linear-gradient(180deg, var(--sky) 0, var(--paper) 420px); color: var(--ink); font: 16px/1.5 var(--body) }
+a { color: var(--blue) }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px }
+header { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; gap: 12px; flex-wrap: wrap }
+.brand { font: 800 1.3rem var(--display); letter-spacing: -.02em; text-decoration: none; color: var(--ink) }
+.brand span { font: 500 .7rem var(--mono); background: var(--sun); color: #1a2940; padding: 2px 8px; border-radius: 99px; margin-left: 8px; vertical-align: middle }
+nav a { margin-left: 16px; font-weight: 700; text-decoration: none }
+h1 { font: 800 clamp(2rem, 5vw, 3.4rem)/1 var(--display); letter-spacing: -.035em; margin: 24px 0 12px; text-wrap: balance }
+.lede { color: var(--dim); font-size: 1.1rem; max-width: 720px; margin: 0 0 28px }
+.alert { background: var(--red-bg); border: 1px solid var(--red); border-radius: 12px; padding: 14px 16px; font: 500 .9rem var(--mono); color: var(--ink); margin-bottom: 18px; overflow-wrap: anywhere }
+.alert b { color: var(--red) }
+.models { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin-bottom: 14px }
+.model { border: 1.5px solid var(--line); background: var(--card); border-radius: 12px; padding: 12px; cursor: pointer; text-align: left; color: var(--ink); font: inherit }
+.model b { display: block; font: 700 1rem var(--display) }
+.model small { color: var(--dim) }
+.model[aria-pressed="true"] { border-color: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 25%, transparent) }
+.run { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 26px }
+button.primary { background: var(--blue); color: #fff; border: 0; border-radius: 10px; padding: 12px 22px; font: 700 1rem var(--display); cursor: pointer }
+button.primary:disabled { opacity: .5; cursor: default }
+.status { color: var(--dim); font-size: .95rem }
+.grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 18px; align-items: start }
+@media (max-width: 860px) { .grid { grid-template-columns: 1fr } }
+.panel { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; min-height: 120px }
+.panel h2 { font: 700 1.15rem var(--display); margin: 0 0 12px; letter-spacing: -.01em }
+.empty { color: var(--dim); font-size: .95rem }
+.event { border-left: 3px solid var(--line); padding: 4px 0 10px 12px; margin-left: 2px }
+.event.turn { border-color: var(--blue) }
+.event .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font: 500 .82rem var(--mono) }
+.tool { font-weight: 700 }
+.args { color: var(--dim) }
+.badge { font: 500 .72rem var(--mono); padding: 1px 8px; border-radius: 99px; border: 1px solid currentColor }
+.b-ran { color: var(--green) } .b-proposed { color: var(--amber) } .b-failed, .b-unknown-tool, .b-invalid { color: var(--red) } .b-repeated { color: var(--dim) }
+.say { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere }
+pre { background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: .74rem/1.5 var(--mono); overflow-x: auto; margin: 8px 0 0; max-height: 260px; white-space: pre }
+.thinking { color: var(--dim); font-size: .9rem; padding: 6px 0 6px 15px }
+.thinking::after { content: "…"; animation: dots 1.2s steps(3) infinite }
+@keyframes dots { 0% { content: "" } 33% { content: "." } 66% { content: ".." } }
+.finding { background: var(--green-bg); border: 1px solid var(--green); border-radius: 12px; padding: 14px; margin-top: 12px }
+.finding.bad { background: var(--amber-bg); border-color: var(--amber) }
+.finding dt { font: 700 .8rem var(--mono); color: var(--dim); margin-top: 6px }
+.finding dd { margin: 2px 0 0 }
+.decision { border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 10px }
+.decision.destructive { border-color: var(--red); background: var(--red-bg) }
+.decision .top { display: flex; justify-content: space-between; gap: 8px; align-items: center }
+.decision b { font: 700 1rem var(--display) }
+.risk { font: 500 .72rem var(--mono); padding: 1px 8px; border-radius: 99px }
+.risk.mutating { background: var(--amber-bg); color: var(--amber) }
+.risk.destructive { background: var(--red); color: #fff }
+.decision p { margin: 6px 0; color: var(--dim); font-size: .9rem }
+.decision code { font: .7rem var(--mono); color: var(--dim); overflow-wrap: anywhere }
+.decision button { margin-top: 8px; border: 1.5px solid var(--ink); background: transparent; color: var(--ink); border-radius: 8px; padding: 6px 14px; font: 700 .9rem var(--display); cursor: pointer }
+.decision button:disabled { opacity: .5; cursor: default }
+.outcome { margin-top: 8px; font-size: .9rem }
+.outcome.verified { color: var(--green); font-weight: 700 }
+.outcome.refused { color: var(--red) }
+section.more { margin: 44px 0 }
+section.more h2 { font: 800 clamp(1.5rem, 3vw, 2.1rem)/1.1 var(--display); letter-spacing: -.025em; margin: 0 0 8px }
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--card) }
+table { border-collapse: collapse; width: 100%; font-size: .92rem }
+th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap }
+th { font: 700 .78rem var(--mono); color: var(--dim) }
+td.num { font-family: var(--mono); font-size: .85rem }
+td.bad { color: var(--red); font-weight: 700 }
+td.good { color: var(--green); font-weight: 700 }
+.how { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px }
+.how div { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px }
+.how b { font: 700 1.05rem var(--display) }
+.how p { margin: 6px 0 0; color: var(--dim); font-size: .93rem }
+footer { color: var(--dim); font-size: .85rem; padding: 30px 0 50px }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <a class="brand" href="https://cloudfall.dev">Cloudfall<span>live demo</span></a>
+    <nav><a href="#how">How it works</a><a href="https://github.com/cloudfall-dev/cloudfall">GitHub</a></nav>
+  </header>
+
+  <h1>The agent proposes. You decide.</h1>
+  <p class="lede">A live NVIDIA Nemotron model, on Nebius Token Factory, works a real server incident through Cloudfall. Reads run; every change waits for your approval and is kept on the record.</p>
+
+  <div class="alert" id="alert"><b>ALERT</b> loading…</div>
+
+  <div class="models" id="models" role="group" aria-label="Model"></div>
+  <div class="run">
+    <button class="primary" id="run" disabled>Run the investigation</button>
+    <span class="status" id="status" aria-live="polite"></span>
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>What the agent does</h2>
+      <div id="timeline"><p class="empty">Pick a model and run it. Each step appears as the model takes it.</p></div>
+    </div>
+    <div class="panel">
+      <h2>Waiting for you</h2>
+      <div id="decisions"><p class="empty">Changes the agent proposes land here, checked but not run. You approve them, or not.</p></div>
+    </div>
+  </div>
+
+  <section class="more">
+    <h2>40 runs on a real broken host</h2>
+    <p class="lede">The same alert, ten times per model, against a Hetzner server whose disk was really full. If the tools had run whatever the model asked:</p>
+    <div class="tablewrap"><table id="evaluation"><thead><tr>
+      <th>Model</th><th>Right fix</th><th>Named the cause</th><th>Proposed the wipe</th><th>Tried to self-approve</th><th>Median tokens</th><th>Median time</th>
+    </tr></thead><tbody></tbody></table></div>
+    <p class="status">With Cloudfall's gate, none of it reached the host. <a href="https://github.com/cloudfall-dev/cloudfall/tree/main/evaluations/nemotron-incident">Method and raw results</a></p>
+  </section>
+
+  <section class="more" id="how">
+    <h2>How it works</h2>
+    <div class="how">
+      <div><b>The model is live</b><p>Each run calls Nemotron on Nebius Token Factory through <code>cloudfall agent investigate</code>. Pick Lightning and you may watch it try to wipe the database.</p></div>
+      <div><b>The host is recorded</b><p>The incident ran on a real Hetzner cx23: 36G of unrotated shop logs filled the disk and PostgreSQL went down. Every read and check the model asks for is played back from that host, so nothing here touches a server.</p></div>
+      <div><b>Your approval is the gate</b><p>Reads run freely. Changes run in check mode and wait. Approving plays back the approval recorded on the same host: the fix ran, its verify step passed, the disk went from 100% to 5%.</p></div>
+      <div><b>Everything is on the record</b><p>Each investigation is saved with the model, the tokens and every call; each decision with its diff, its approver and its verify result. <code>cloudfall why</code> answers why the agent did that.</p></div>
+    </div>
+  </section>
+
+  <footer>Cloudfall is open source (AGPL-3.0). Built for the Nebius × NVIDIA Global AI Hackathon. Runs are limited per visitor and per day.</footer>
+</div>
+
+<script>
+const $ = (selector) => document.querySelector(selector);
+const state = { config: null, model: null, run: null, decisions: new Set() };
+
+function el(tag, attributes = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attributes)) {
+    if (key === "class") node.className = value;
+    else node.setAttribute(key, value);
+  }
+  for (const child of children) node.append(child);
+  return node;
+}
+
+function toolName(tool) {
+  return tool.replace(/^operation_/, "").replaceAll("_", "-");
+}
+
+function argsText(args) {
+  const parts = [];
+  if (args.target) parts.push(`--target ${args.target}`);
+  for (const [name, value] of Object.entries(args.inputs || {})) parts.push(`${name}=${value}`);
+  return parts.join(" ");
+}
+
+function hostOutput(text) {
+  const lines = text.split("\n").filter((line) => !line.includes("WARNING"));
+  const start = lines.map((line, index) => (line.includes("=> {") ? index : -1)).filter((index) => index >= 0).pop();
+  const end = lines.findIndex((line) => line.startsWith("PLAY RECAP"));
+  if (start !== undefined) return lines.slice(start, end > start ? end : undefined).join("\n").trim();
+  return lines.slice(-14).join("\n").trim();
+}
+
+async function load() {
+  const response = await fetch("/api/config");
+  state.config = await response.json();
+  $("#alert").replaceChildren(el("b", {}, "ALERT"), " " + state.config.alert.replace(/^ALERT /, ""));
+  const group = $("#models");
+  for (const model of state.config.models) {
+    const button = el("button", { class: "model", type: "button", "aria-pressed": "false" }, el("b", {}, model.label), el("small", {}, model.note));
+    button.addEventListener("click", () => pick(model.id));
+    button.dataset.id = model.id;
+    group.append(button);
+  }
+  pick(state.config.models[0].id);
+  const body = $("#evaluation tbody");
+  for (const row of state.config.evaluation) {
+    body.append(el("tr", {},
+      el("td", {}, row.model),
+      el("td", { class: "num " + (row.rightFix === row.runs ? "good" : "") }, `${row.rightFix} / ${row.runs}`),
+      el("td", { class: "num" }, `${row.namedTheLogs} / ${row.runs}`),
+      el("td", { class: "num " + (row.proposedWipe ? "bad" : "") }, `${row.proposedWipe} / ${row.runs}`),
+      el("td", { class: "num " + (row.selfApproval ? "bad" : "") }, `${row.selfApproval} / ${row.runs}`),
+      el("td", { class: "num" }, row.medianTokens.toLocaleString("en")),
+      el("td", { class: "num" }, `${row.medianSeconds} s`)));
+  }
+  $("#run").disabled = false;
+}
+
+function pick(id) {
+  state.model = id;
+  for (const button of document.querySelectorAll(".model")) button.setAttribute("aria-pressed", String(button.dataset.id === id));
+}
+
+function thinking(on) {
+  const existing = $("#thinking");
+  if (existing) existing.remove();
+  if (on) $("#timeline").append(el("div", { class: "thinking", id: "thinking" }, "Nemotron is thinking"));
+}
+
+function showTurn(data) {
+  if (!data.text) return;
+  const node = el("div", { class: "event turn" },
+    el("div", { class: "head" }, el("span", { class: "tool" }, `Nemotron · turn ${data.turn}`)),
+    el("p", { class: "say" }, data.text.length > 900 ? data.text.slice(0, 900) + "…" : data.text));
+  $("#timeline").append(node);
+}
+
+function showCall(data) {
+  const step = data.step;
+  const result = data.result || {};
+  const label = { "unknown-tool": "invented tool", "invalid": "bad arguments" }[step.outcome] || step.outcome;
+  const node = el("div", { class: "event" },
+    el("div", { class: "head" },
+      el("span", { class: "tool" }, toolName(step.tool)),
+      el("span", { class: "args" }, argsText(step.arguments)),
+      el("span", { class: `badge b-${step.outcome}` }, label)));
+  if (result.output) node.append(el("pre", {}, hostOutput(result.output)));
+  else if (result.error) node.append(el("p", { class: "say" }, String(result.error)));
+  $("#timeline").append(node);
+  if ((step.outcome === "proposed" || step.outcome === "repeated") && step.decision && !state.decisions.has(step.decision)) {
+    addDecision(toolName(step.tool), step.decision);
+  }
+}
+
+function addDecision(operation, decision) {
+  state.decisions.add(decision);
+  const entry = state.config.catalog[operation] || { risk: "mutating", description: "" };
+  if ($("#decisions .empty")) $("#decisions").replaceChildren();
+  const button = el("button", { type: "button" }, entry.risk === "destructive" ? "Approve anyway" : "Approve");
+  const outcome = el("div", { class: "outcome" });
+  const card = el("div", { class: `decision ${entry.risk}` },
+    el("div", { class: "top" }, el("b", {}, operation), el("span", { class: `risk ${entry.risk}` }, entry.risk)),
+    el("p", {}, entry.description),
+    el("code", {}, decision), el("br"), button, outcome);
+  button.addEventListener("click", () => approve(decision, button, outcome));
+  $("#decisions").append(card);
+}
+
+async function approve(decision, button, outcome) {
+  button.disabled = true;
+  const response = await fetch("/api/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ run: state.run, decision }) });
+  const result = await response.json();
+  if (result.outcome === "verified") {
+    outcome.className = "outcome verified";
+    outcome.replaceChildren(`✓ ${result.verdict}`);
+    if (result.after) outcome.append(el("pre", {}, hostOutput(result.after)));
+  } else {
+    outcome.className = `outcome ${result.outcome || "refused"}`;
+    outcome.replaceChildren(result.message || result.error || "No answer");
+  }
+}
+
+function showFinding(data) {
+  const spec = data.investigation.spec;
+  const finding = spec.finding;
+  const tokens = spec.tokens.prompt + spec.tokens.completion;
+  const box = el("div", { class: "finding" + (finding ? "" : " bad") });
+  if (finding) {
+    box.append(el("dl", {},
+      el("dt", {}, "ROOT CAUSE"), el("dd", {}, finding.rootCause),
+      el("dt", {}, "PROPOSED, IN ORDER"), el("dd", {}, finding.proposed.length ? finding.proposed.join(" → ") : "nothing"),
+      el("dt", {}, "WHY"), el("dd", {}, finding.why)));
+    if (finding.unrecorded.length) box.append(el("p", {}, `Named but never recorded (made up): ${finding.unrecorded.join(", ")}`));
+  } else {
+    const reason = { "turn-limit": "The model ran out of turns without an answer.", "unstructured": "The model stopped without the asked-for answer.", "model-unavailable": "Token Factory stopped answering." }[spec.status] || spec.status;
+    box.append(el("b", {}, reason));
+    if (spec.answer) box.append(el("pre", {}, spec.answer));
+  }
+  box.append(el("p", { class: "status" }, `${spec.turns} turns · ${tokens.toLocaleString("en")} tokens · ${spec.model.name}`));
+  $("#timeline").append(box);
+}
+
+async function run() {
+  $("#run").disabled = true;
+  state.decisions.clear();
+  $("#timeline").replaceChildren();
+  $("#decisions").replaceChildren(el("p", { class: "empty" }, "Nothing proposed yet."));
+  $("#status").textContent = "Running…";
+  thinking(true);
+  try {
+    const response = await fetch("/api/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: state.model }) });
+    if (!response.ok) {
+      const problem = await response.json();
+      thinking(false);
+      $("#status").textContent = problem.error;
+      return;
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline;
+      while ((newline = buffer.indexOf("\n")) >= 0) {
+        const line = JSON.parse(buffer.slice(0, newline));
+        buffer = buffer.slice(newline + 1);
+        handle(line);
+      }
+    }
+  } catch (error) {
+    $("#status").textContent = `The run stopped: ${error.message}`;
+  } finally {
+    thinking(false);
+    $("#run").disabled = false;
+  }
+}
+
+function handle(line) {
+  if (line.run) { state.run = line.run; return; }
+  thinking(false);
+  const data = line.data;
+  if (data && data.kind === "turn") showTurn(data);
+  else if (data && data.kind === "call") showCall(data);
+  else if (data && data.kind === "investigation") showFinding(data);
+  if (line.meta && line.meta.end) $("#status").textContent = "Done. Review what it proposed.";
+  else if (line.ok === false) $("#status").textContent = line.error.code === "INVESTIGATION_INCOMPLETE" ? "Ended without an answer." : line.error.message;
+  else thinking(true);
+}
+
+$("#run").addEventListener("click", run);
+load();
+</script>
+</body>
+</html>
