@@ -85,8 +85,8 @@ dispatch = ["publish.yml"]
 
 # shipmill gate (launchd) starts a Claude Code session only when the repo needs one
 [agents]
-prompt = "/github-issue-triage {repo} triage the new issues and open a PR for each one to build; do not merge"
-prs = false        # true when the prompt lands PRs
+prompt = "/shipmill:github-issue-triage {repo} triage the new issues; merge when green"
+prs = true         # true when the prompt lands PRs
 retry_hours = 24   # unchanged findings start a new session after this
 notify = true      # a desktop notification when a session waits on you
 remind_hours = 4   # repeat it while the session still waits
