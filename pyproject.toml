@@ -8,7 +8,7 @@ license-files = ["LICENSE"]
 requires-python = ">=3.14"
 keywords = ["ai-agents", "ansible", "mcp", "self-hosted", "devops", "sre", "debian", "hetzner", "audit-log", "paas-alternative"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: System Administrators",
     "Operating System :: POSIX :: Linux",
