@@ -2,7 +2,7 @@
 name = "cloudfall"
 
 # off: do nothing; dry-run: show the release commit it would make; release: release
-mode = "dry-run"
+mode = "release"
 branch = "main"
 
 # pyproject: [project] version in pyproject.toml and uv.lock; none: tags and CHANGELOG only
