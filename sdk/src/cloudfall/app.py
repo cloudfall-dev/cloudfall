@@ -2221,6 +2221,14 @@ the handler has no say in it, so ``cloudfall.cli`` reads this to exit
 ``INVESTIGATION_STOPPED`` instead. A stream closed by a signal or a timeout
 keeps the exit code treaty gives it.
 """
+stream_unrecorded: list[InvestigationError] = []
+"""Why an ``agent investigate`` stream closed mid-run could not record its run.
+
+Raised from the stream's close, the error would reach only treaty, which
+prints its traceback and still exits 0; kept here instead, ``cloudfall.cli``
+reports it on stderr and exits ``PRECONDITION``, as a run whose record could
+not be written does when its stream ran to the end.
+"""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -2424,7 +2432,12 @@ def agent_investigate(
         if stopped is None:
             message = "the investigation ended before its reader went away"
             raise RuntimeError(message) from None
-        _save_investigation(store, stopped)
+        try:
+            store.save(stopped)
+        except InvestigationError as error:
+            # The record is lost; the run still ends non-zero, PRECONDITION.
+            stream_unrecorded.append(error)
+            raise GeneratorExit from error
         stream_stopped.set()
         raise
     investigation = _save_investigation(store, investigation)
