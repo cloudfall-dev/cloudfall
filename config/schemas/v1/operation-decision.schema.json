@@ -363,6 +363,12 @@
           "description": "Why the decision ended in its status.",
           "minLength": 1,
           "maxLength": 300
+        },
+        "replay": {
+          "type": "string",
+          "description": "The recording this decision's check output was played back from, as agent investigate --replay named it. Such a decision cannot be approved. A record without it was checked live.",
+          "minLength": 1,
+          "maxLength": 512
         }
       },
       "required": [

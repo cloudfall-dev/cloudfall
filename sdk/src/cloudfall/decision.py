@@ -69,6 +69,7 @@ _ERROR_INPUT_TYPE = "decision_input_type"
 _ERROR_DECISION_EXISTS = "decision_exists"
 ERROR_DECISION_MISSING = "decision_missing"
 _ERROR_NOT_PROPOSED = "decision_not_proposed"
+ERROR_DECISION_REPLAYED = "decision_replayed"
 _ERROR_APPROVER_UNKNOWN = "decision_approver_unknown"
 _ERROR_CHANNEL_UNKNOWN = "decision_approval_channel_unknown"
 ERROR_RECORD_INVALID = "decision_record_invalid"
@@ -294,6 +295,8 @@ class Decision:
     verdict: str | None = None
     ran_exit_code: int | None = None
     superseded_by: ResourceId | None = None
+    replay: str | None = None
+    """The recording its check output was played back from; None when live."""
 
     def same_call(self, other: Decision) -> bool:
         """Return whether both name the same operation, targets and inputs."""
@@ -334,6 +337,8 @@ class Decision:
             spec["ranExitCode"] = self.ran_exit_code
         if self.superseded_by is not None:
             spec["supersededBy"] = self.superseded_by.value
+        if self.replay is not None:
+            spec["replay"] = self.replay
         return {
             "apiVersion": API_VERSION,
             "kind": DECISION_KIND,
@@ -425,6 +430,8 @@ class ProposalRequest:
     inputs: Mapping[str, object]
     repository: Path
     observations: Path
+    replay: str | None = None
+    """The recording check mode is played back from, as the caller named it."""
 
 
 def propose(
@@ -490,6 +497,7 @@ def propose(
             else None
         ),
         ran_exit_code=exit_code if ran else None,
+        replay=request.replay,
     )
     store.save(decision)
     for older in recorded:
@@ -552,6 +560,7 @@ def approve(
     human read and the run that follows it.
     """
     decision = request.decision
+    refuse_replayed(decision)
     refuse_unapprovable(decision)
     if not request.approver.strip():
         message = "an approval records who gave it; pass --approver or set USER"
@@ -620,6 +629,23 @@ def refuse_unapprovable(decision: Decision) -> None:
             "there is nothing left to approve"
         )
     raise DecisionError(_ERROR_NOT_PROPOSED, message)
+
+
+def refuse_replayed(decision: Decision) -> None:
+    """Refuse a decision whose check output was played back, before anything runs.
+
+    Its diff came from a recording, not from the hosts, so approving it
+    would run something nobody saw checked against the fleet. Callers that
+    ask a person for the decision id check this first.
+    """
+    if decision.replay is None:
+        return
+    message = (
+        f"decision {decision.decision_id} was proposed during a replay of "
+        f"{decision.replay}: its check output was played back, not run on the "
+        "hosts, so it cannot be approved; propose it again live"
+    )
+    raise DecisionError(ERROR_DECISION_REPLAYED, message)
 
 
 def _outcome(
@@ -977,6 +1003,7 @@ def _decision_from_document(document: Mapping[str, object]) -> Decision:
             if "supersededBy" in spec
             else None
         ),
+        replay=str(spec["replay"]) if "replay" in spec else None,
         execution=_run_from_document(spec.get("execution")),
         verification=_run_from_document(spec.get("verify")),
         approval=_approval_from_document(approval),

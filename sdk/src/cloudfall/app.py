@@ -112,6 +112,7 @@ from cloudfall.decision import (
     Targets,
     approve,
     propose,
+    refuse_replayed,
     refuse_unapprovable,
 )
 from cloudfall.domain import (
@@ -2034,8 +2035,14 @@ def operations_propose(args: ProposeArgs, ctx: Ctx) -> Decided:
     return _propose(args, _check_runner(ctx, args.root))
 
 
-def _propose(args: ProposeArgs, run: CheckRunner) -> Decided:
-    """Propose one operation, running check mode through ``run``."""
+def _propose(
+    args: ProposeArgs, run: CheckRunner, replay: Path | None = None
+) -> Decided:
+    """Propose one operation, running check mode through ``run``.
+
+    ``replay`` names the recording ``run`` plays back, so the record says
+    its check output never came from the hosts.
+    """
     catalog = args.catalog()
     try:
         operation = catalog.get(args.operation)
@@ -2051,6 +2058,7 @@ def _propose(args: ProposeArgs, run: CheckRunner) -> Decided:
         inputs=args.inputs(),
         repository=args.root,
         observations=args.root / args.observed,
+        replay=None if replay is None else replay.as_posix(),
     )
     store = DecisionStore(
         directory=args.root / args.decisions, catalog=SchemaCatalog(args.schemas)
@@ -2120,6 +2128,7 @@ def decisions_approve(args: ApproveDecisionArgs, ctx: Ctx) -> Decided:
             raise Exit.NOT_FOUND(error.detail, context={"code": error.code}) from error
         raise _record_invalid(error) from error
     try:
+        refuse_replayed(decision)
         refuse_unapprovable(decision)
     except DecisionError as error:
         raise _decision_failed(error) from error
@@ -2231,7 +2240,8 @@ class InvestigateArgs(CatalogArgs):
         default=None,
         description=(
             "Decisions directory of a real run to play back instead of running "
-            "Ansible: the model is live, the hosts are recorded"
+            "Ansible: the model is live, the hosts are recorded, and the "
+            "decisions it proposes name the recording and cannot be approved"
         ),
     )
     investigations: Path = Flag(
@@ -2254,6 +2264,18 @@ class InvestigateArgs(CatalogArgs):
         if not self.alert.strip():
             message = "the alert is empty"
             raise ParseError(message, context={"flag": "alert"})
+        if (
+            self.replay is not None
+            and (self.root / self.decisions).resolve()
+            == (self.root / self.replay).resolve()
+        ):
+            # A recording is a decisions directory: written into, the replay
+            # would add played-back records to the run it is playing.
+            message = (
+                f"--decisions {self.decisions} is the recording --replay "
+                f"{self.replay} plays back; pass another --decisions directory"
+            )
+            raise ParseError(message, context={"flag": "decisions"})
         self.endpoint()
 
     def endpoint(self) -> ModelEndpoint:
@@ -2438,7 +2460,7 @@ def _agent_tool(
             decisions=args.decisions,
         )
         try:
-            return _tool_result(_propose(proposal, run), ok=True)
+            return _tool_result(_propose(proposal, run, args.replay), ok=True)
         except CliExit as error:
             if isinstance(error.data, Decided):
                 failed = _tool_result(error.data, ok=False, repository=args.root)

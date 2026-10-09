@@ -91,7 +91,9 @@ cloudfall agent investigate --replay recordings/disk-full \
 ```
 
 A call the recording does not hold, such as the logs of a unit nobody asked
-for during the evaluation, fails and says so.
+for during the evaluation, fails and says so. The decisions a replay
+proposes name the recording under `replay` and cannot be approved: their
+check never ran on a host.
 
 ## What happened when we ran it
 
