@@ -241,18 +241,19 @@ Notable changes to Cloudfall. The format follows
     fixed for the run: they leave the tool schemas, and a call that passes
     one is refused, so no call reaches another fleet or engine or writes
     outside the project. So are the Render API URL `import_render-api`
-    sends its key file to, the env file `secrets_render` writes, and the
-    alert gateway `operator_approve` verifies against. Files a tool reads
-    as input (a blueprint, a key file, an env file) stay arguments
+    sends its key file to and the env file `secrets_render` writes. Files
+    a tool reads as input (a blueprint, a key file, an env file) stay
+    arguments
   - On a project, `deploy`, `rollback`, `restart`, `migrate` and
     `data_migrate` return their plan until called with `yes: true`, as on
     the CLI; the old `confirm=true` handshake is gone. `build_artifact` and
     the `converge_baseline`, `converge_services` and `converge_domains`
     tools stay, the converges destructive and run only with
-    `confirm_destructive: true`. `operator_approve`, `backup_run` and
-    `backup_verify` run in one call, as their commands do (they were
-    confirm-gated in `cloudfall-mcp`), and `operator_watch` is gone: the
-    watch loop runs as a service
+    `confirm_destructive: true`. `backup_run` and `backup_verify` run in
+    one call, as their commands do (they were confirm-gated in
+    `cloudfall-mcp`), and `operator_watch` and `operator_approve` are gone:
+    the watch loop runs as a service, and a person approves a proposal from
+    a shell
   - On a repository, the tools are the read-only fleet commands and one
     `operation_*` tool per declared operation, which runs check mode,
     records a proposal and answers with the approval command in
