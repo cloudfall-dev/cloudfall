@@ -205,6 +205,23 @@
           "required": [
             "mode"
           ],
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "autonomous"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "via"
+              ]
+            }
+          },
           "additionalProperties": false
         },
         "outcome": {

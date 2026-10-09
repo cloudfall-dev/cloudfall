@@ -400,6 +400,11 @@ Notable changes to Cloudfall. The format follows
 
 ### Fixed
 
+- The operator proposal schema refuses `approval.via` on an autonomous
+  (policy) approval. Such a receipt used to pass validation and lose the
+  field on load; it now fails schema validation like any other invalid
+  receipt. Cloudfall never wrote one, so only a hand-edited receipt is
+  affected (#46)
 - A decision record that is not JSON or does not match its schema answers
   `RECORD_INVALID` (exit 86, code `decision_record_invalid`) naming the file
   and the failing field, from `decisions show`, `decisions list`,
