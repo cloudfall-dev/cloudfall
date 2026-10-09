@@ -19,6 +19,8 @@ from cloudfall.investigation import (
     ARGUMENTS_LIMIT,
     ERROR_INVESTIGATIONS_UNWRITABLE,
     ERROR_MODEL_REFUSED,
+    FINDING_TEXT_LIMIT,
+    STEP_ARGUMENTS_LIMIT,
     TRACE_TEXT_LIMIT,
     AgentTool,
     InvestigationError,
@@ -1172,6 +1174,67 @@ def test_a_finding_past_the_cut_is_still_read_from_the_whole_answer() -> None:
     assert "ROOT CAUSE" not in done.answer
 
 
+@pytest.mark.parametrize(
+    "length", [FINDING_TEXT_LIMIT, FINDING_TEXT_LIMIT + 1, 50_000]
+)
+def test_long_finding_lines_keep_their_start(tmp_path: Path, length: int) -> None:
+    report, rotate = _tools()
+    # Characters, not bytes: the Cyrillic line is counted the same.
+    cause = ("диск-" * length)[:length]
+    why = ("why-" * length)[:length]
+    answer = f"ROOT CAUSE: {cause}\nPROPOSED: none\nWHY: {why}\n"
+
+    done = investigate(
+        "alert", _tool_list(report, rotate), ENDPOINT, _Script(_say(answer))
+    )
+    saved = InvestigationStore(
+        directory=tmp_path / "investigations",
+        catalog=SchemaCatalog(default_schema_directory()),
+    ).save(done)
+
+    assert FINDING_TEXT_LIMIT == 8000
+    assert saved.finding is not None
+    for whole, kept in [(cause, saved.finding.root_cause), (why, saved.finding.why)]:
+        if length == FINDING_TEXT_LIMIT:
+            assert kept == whole
+            continue
+        assert FINDING_TEXT_LIMIT - 3 <= len(kept) <= FINDING_TEXT_LIMIT
+        head, mark = kept.rsplit("\n", 1)
+        assert whole.startswith(head)
+        assert mark == f"[last {len(whole) - len(head)} characters cut]"
+
+
+def test_the_proposed_line_is_read_whole_past_the_finding_limit() -> None:
+    report, rotate = _tools()
+    decision = "shop-logrotate-20261008152628"
+    proposed = "x" * 9000 + f" {decision}"
+    answer = f"ROOT CAUSE: disk\nPROPOSED: {proposed}\nWHY: rotate.\n"
+    script = _Script(_call("shop-logrotate", {}), _say(answer))
+
+    done = investigate("alert", _tool_list(report, rotate), ENDPOINT, script)
+
+    assert done.finding is not None
+    assert done.finding.proposed == (decision,)
+
+
+@pytest.mark.parametrize("field", ["rootCause", "why"])
+def test_the_schema_refuses_a_finding_line_past_the_limit(field: str) -> None:
+    report, rotate = _tools()
+    done = investigate(
+        "alert", _tool_list(report, rotate), ENDPOINT, _Script(_say(_FINDING))
+    )
+    document = done.as_document()
+    spec = document["spec"]
+    assert isinstance(spec, dict)
+    catalog = SchemaCatalog(default_schema_directory())
+    spec["finding"][field] = "x" * FINDING_TEXT_LIMIT
+    catalog.validate_named("agent-investigation.schema.json", document)
+    spec["finding"][field] = "x" * (FINDING_TEXT_LIMIT + 1)
+
+    with pytest.raises(ValidationError):
+        catalog.validate_named("agent-investigation.schema.json", document)
+
+
 def test_the_cli_streams_the_answer_as_the_record_keeps_it(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], model_url: str
 ) -> None:
@@ -1212,7 +1275,7 @@ class _Echo:
 
 
 @pytest.mark.parametrize("length", [ARGUMENTS_LIMIT, ARGUMENTS_LIMIT + 1, 50_000])
-def test_long_raw_arguments_keep_their_start_in_the_trace_only(
+def test_long_arguments_are_refused_unrun_and_cut_in_the_trace(
     tmp_path: Path, length: int
 ) -> None:
     echo = _Echo()
@@ -1228,18 +1291,66 @@ def test_long_raw_arguments_keep_their_start_in_the_trace_only(
         catalog=SchemaCatalog(default_schema_directory()),
     ).save(done)
 
-    # The tool ran on the whole arguments; only the trace's copy is cut.
-    assert echo.received == [{"note": note}]
-    assert saved.steps[0].arguments == {"note": note}
     kept = saved.trace[0].tool_calls[0].arguments
-    assert ARGUMENTS_LIMIT == 8000
+    assert ARGUMENTS_LIMIT == STEP_ARGUMENTS_LIMIT == 8000
     if length == ARGUMENTS_LIMIT:
+        # At the limit the tool runs on the whole arguments, kept whole.
+        assert echo.received == [{"note": note}]
+        assert saved.steps[0].arguments == {"note": note}
+        assert saved.steps[0].outcome is StepOutcome.RAN
         assert kept == raw
         return
+    # Past it nothing runs and the step keeps no arguments (#63) ...
+    assert echo.received == []
+    assert saved.steps[0].arguments == {}
+    assert saved.steps[0].outcome is StepOutcome.INVALID
+    told = script.requests[1]["messages"]
+    assert isinstance(told, list)
+    assert "longer than 8000 characters" in told[-1]["content"]
+    # ... while the trace still keeps the start of the model's text (#57).
     assert ARGUMENTS_LIMIT - 3 <= len(kept) <= ARGUMENTS_LIMIT
     head, mark = kept.rsplit("\n", 1)
     assert raw.startswith(head)
     assert mark == f"[last {length - len(head)} characters cut]"
+
+
+@pytest.mark.parametrize(
+    ("length", "ran"),
+    [(STEP_ARGUMENTS_LIMIT - 1, True), (STEP_ARGUMENTS_LIMIT + 1, False)],
+)
+def test_non_ascii_arguments_are_measured_in_characters(
+    length: int, *, ran: bool
+) -> None:
+    echo = _Echo()
+    # Characters, not ASCII escapes: a Cyrillic note just under the limit runs.
+    note = "ж" * (length - len(json.dumps({"note": ""})))
+    assert len(json.dumps({"note": note}, ensure_ascii=False)) == length
+    script = _Script(_call("note", {"note": note}), _say(_FINDING))
+
+    done = investigate("alert", [echo.tool], ENDPOINT, script)
+
+    if ran:
+        assert echo.received == [{"note": note}]
+        assert done.steps[0].outcome is StepOutcome.RAN
+    else:
+        assert echo.received == []
+        assert done.steps[0].outcome is StepOutcome.INVALID
+
+
+def test_a_refused_long_call_is_not_remembered_as_run() -> None:
+    echo = _Echo()
+    note = "n" * STEP_ARGUMENTS_LIMIT
+    script = _Script(
+        _call("note", {"note": note}, "c1"),
+        _call("note", {"note": note}, "c2"),
+        _say(_FINDING),
+    )
+
+    done = investigate("alert", [echo.tool], ENDPOINT, script)
+
+    # The second call is refused again, not served as a repeat of a run.
+    assert echo.received == []
+    assert [step.outcome for step in done.steps] == [StepOutcome.INVALID] * 2
 
 
 @pytest.mark.parametrize("field", ["answer", "arguments"])

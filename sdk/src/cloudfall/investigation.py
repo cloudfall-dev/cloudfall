@@ -44,6 +44,10 @@ ANSWER_LIMIT = TOOL_TEXT_LIMIT
 """Most characters of the model's answer the record keeps, cut mark included."""
 ARGUMENTS_LIMIT = TOOL_TEXT_LIMIT
 """Most characters of a tool call's raw arguments the trace keeps, cut mark included."""
+FINDING_TEXT_LIMIT = TOOL_TEXT_LIMIT
+"""Most characters of a finding's root cause or why the record keeps, mark included."""
+STEP_ARGUMENTS_LIMIT = TOOL_TEXT_LIMIT
+"""Most characters a call's parsed arguments serialize to before it is refused unrun."""
 TOOL_NAME_LIMIT = 128
 """Most characters of a tool name the record keeps, as its schema allows."""
 REPLY_ID_LIMIT = 256
@@ -585,9 +589,9 @@ def _trace_text(text: str) -> str:
 
 
 def _head_text(text: str, limit: int) -> str:
-    """Keep the start of a long answer or raw arguments, where they begin, and say so.
+    """Keep the start of a long answer, finding line or raw arguments, and say so.
 
-    Both are the model's text and can quote host output, so the record
+    All are the model's text and can quote host output, so the record
     bounds them as it bounds the trace's reasoning, but keeps the start: an
     answer opens with its finding. The mark counts against the limit: what
     is kept fits the schema's ``maxLength``.
@@ -699,10 +703,11 @@ def _run_call(
     try:
         arguments = json.loads(raw) if isinstance(raw, str) else raw
     except json.JSONDecodeError as error:
-        result = _refusal(StepOutcome.INVALID, f"arguments are not JSON: {error}")
-        return Step(recorded_name, {}, result.outcome, None), result
-    if not isinstance(arguments, Mapping):
-        result = _refusal(StepOutcome.INVALID, "arguments must be a JSON object")
+        problem: str | None = f"arguments are not JSON: {error}"
+    else:
+        problem = _arguments_problem(arguments)
+    if problem is not None:
+        result = _refusal(StepOutcome.INVALID, problem)
         return Step(recorded_name, {}, result.outcome, None), result
     arguments = cast("Mapping[str, object]", arguments)
     tool = tools.get(name)
@@ -739,6 +744,20 @@ def _run_call(
     return Step(name, arguments, result.outcome, result.decision), result
 
 
+def _arguments_problem(arguments: object) -> str | None:
+    if not isinstance(arguments, Mapping):
+        return "arguments must be a JSON object"
+    # Key order as parsed and no ASCII escapes give one length per call, in
+    # characters; a step keeps only arguments that ran whole, so a longer
+    # call is refused before it runs.
+    if len(json.dumps(arguments, ensure_ascii=False)) > STEP_ARGUMENTS_LIMIT:
+        return (
+            f"arguments are longer than {STEP_ARGUMENTS_LIMIT} characters as JSON; "
+            "nothing ran"
+        )
+    return None
+
+
 def _refusal(outcome: StepOutcome, message: str) -> ToolResult:
     return ToolResult(outcome=outcome, content={"ok": False, "error": message})
 
@@ -764,11 +783,13 @@ def _finding(answer: str, steps: Sequence[Step]) -> Finding | None:
     }
     written = {step.decision for step in steps if step.decision is not None}
     named = list(dict.fromkeys(_DECISION_ID.findall(fields["proposed"])))
+    # The ids are read from the whole proposed line; the record keeps the
+    # start of the two free-text lines.
     return Finding(
-        root_cause=fields["root cause"],
+        root_cause=_head_text(fields["root cause"], FINDING_TEXT_LIMIT),
         proposed=tuple(entry for entry in named if entry in recorded),
         unrecorded=tuple(entry for entry in named if entry not in written),
-        why=fields["why"],
+        why=_head_text(fields["why"], FINDING_TEXT_LIMIT),
     )
 
 
