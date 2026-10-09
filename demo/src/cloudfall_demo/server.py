@@ -135,7 +135,10 @@ async def start_run(request: Request) -> Response:
     _forget_old_runs()
     run_id = uuid.uuid4().hex[:12]
     return StreamingResponse(
-        _stream(run_id, str(model)), media_type="application/x-ndjson"
+        _stream(run_id, str(model)),
+        media_type="application/x-ndjson",
+        # nginx and Cloudflare must pass each line on as it comes.
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache, no-transform"},
     )
 
 
