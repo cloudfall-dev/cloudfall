@@ -100,6 +100,18 @@ td.good { color: var(--green); font-weight: 700 }
 .how b { font: 700 1.05rem var(--display) }
 .how p { margin: 6px 0 0; color: var(--dim); font-size: .93rem }
 footer { color: var(--dim); font-size: .85rem; padding: 30px 0 50px }
+.chips { display: inline-flex; gap: 6px; flex-wrap: wrap }
+.chip { font: 500 .7rem var(--mono); color: var(--dim); background: var(--code); border: 1px solid var(--line); border-radius: 99px; padding: 1px 8px }
+.reasoning { margin: 8px 0 0; padding: 8px 10px; border-left: 3px solid var(--sun); background: color-mix(in srgb, var(--sun) 10%, transparent); border-radius: 0 8px 8px 0; font-size: .9rem; white-space: pre-wrap; overflow-wrap: anywhere }
+.reasoning small, .label { display: block; font: 500 .68rem var(--mono); color: var(--dim); margin-bottom: 2px }
+.callraw { margin-top: 8px; font: .74rem var(--mono); background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; overflow-wrap: anywhere }
+.ids { margin-top: 6px; font: .66rem var(--mono); color: var(--dim); overflow-wrap: anywhere }
+details { margin-top: 6px }
+details summary { cursor: pointer; font: 500 .72rem var(--mono); color: var(--blue) }
+.prov { margin-top: 6px; font: .68rem var(--mono); color: var(--dim); overflow-wrap: anywhere }
+.command { font: .72rem var(--mono); background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 12px; overflow-wrap: anywhere }
+.tools { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px }
+.tools button { border: 1.5px solid var(--line); background: var(--card); color: var(--ink); border-radius: 8px; padding: 5px 12px; font: 600 .82rem var(--body); cursor: pointer }
 </style>
 </head>
 <body>
@@ -155,7 +167,7 @@ footer { color: var(--dim); font-size: .85rem; padding: 30px 0 50px }
 
 <script>
 const $ = (selector) => document.querySelector(selector);
-const state = { config: null, model: null, run: null, decisions: new Set() };
+const state = { config: null, model: null, run: null, decisions: new Set(), raw: [], events: new Map() };
 
 function el(tag, attributes = {}, ...children) {
   const node = document.createElement(tag);
@@ -163,13 +175,13 @@ function el(tag, attributes = {}, ...children) {
     if (key === "class") node.className = value;
     else node.setAttribute(key, value);
   }
-  for (const child of children) node.append(child);
+  for (const child of children) if (child !== null && child !== undefined) node.append(child);
   return node;
 }
 
-function toolName(tool) {
-  return tool.replace(/^operation_/, "").replaceAll("_", "-");
-}
+const toolName = (tool) => tool.replace(/^operation_/, "").replaceAll("_", "-");
+const number = (value) => Number(value).toLocaleString("en");
+const short = (text, length = 12) => (text && text.length > length ? text.slice(0, length) + "…" : text);
 
 function argsText(args) {
   const parts = [];
@@ -186,27 +198,29 @@ function hostOutput(text) {
   return lines.slice(-14).join("\n").trim();
 }
 
+function rawDetails(label, text) {
+  return el("details", {}, el("summary", {}, label), el("pre", {}, text));
+}
+
 async function load() {
   const response = await fetch("/api/config");
   state.config = await response.json();
   $("#alert").replaceChildren(el("b", {}, "ALERT"), " " + state.config.alert.replace(/^ALERT /, ""));
-  const group = $("#models");
   for (const model of state.config.models) {
     const button = el("button", { class: "model", type: "button", "aria-pressed": "false" }, el("b", {}, model.label), el("small", {}, model.note));
-    button.addEventListener("click", () => pick(model.id));
     button.dataset.id = model.id;
-    group.append(button);
+    button.addEventListener("click", () => pick(model.id));
+    $("#models").append(button);
   }
   pick(state.config.models[0].id);
-  const body = $("#evaluation tbody");
   for (const row of state.config.evaluation) {
-    body.append(el("tr", {},
+    $("#evaluation tbody").append(el("tr", {},
       el("td", {}, row.model),
       el("td", { class: "num " + (row.rightFix === row.runs ? "good" : "") }, `${row.rightFix} / ${row.runs}`),
       el("td", { class: "num" }, `${row.namedTheLogs} / ${row.runs}`),
       el("td", { class: "num " + (row.proposedWipe ? "bad" : "") }, `${row.proposedWipe} / ${row.runs}`),
       el("td", { class: "num " + (row.selfApproval ? "bad" : "") }, `${row.selfApproval} / ${row.runs}`),
-      el("td", { class: "num" }, row.medianTokens.toLocaleString("en")),
+      el("td", { class: "num" }, number(row.medianTokens)),
       el("td", { class: "num" }, `${row.medianSeconds} s`)));
   }
   $("#run").disabled = false;
@@ -223,29 +237,57 @@ function thinking(on) {
   if (on) $("#timeline").append(el("div", { class: "thinking", id: "thinking" }, "Nemotron is thinking"));
 }
 
-function showTurn(data) {
-  if (!data.text) return;
+function showTurn(event) {
+  const trace = event.trace || {};
+  const tokens = trace.tokens || {};
   const node = el("div", { class: "event turn" },
-    el("div", { class: "head" }, el("span", { class: "tool" }, `Nemotron · turn ${data.turn}`)),
-    el("p", { class: "say" }, data.text.length > 900 ? data.text.slice(0, 900) + "…" : data.text));
+    el("div", { class: "head" },
+      el("span", { class: "tool" }, `Nemotron · turn ${event.turn}`),
+      el("span", { class: "chips" },
+        el("span", { class: "chip" }, `${(trace.elapsedMs / 1000).toFixed(2)} s`),
+        el("span", { class: "chip" }, `${number(tokens.prompt)} in`),
+        el("span", { class: "chip" }, `${number(tokens.completion)} out`),
+        tokens.reasoning ? el("span", { class: "chip" }, `${number(tokens.reasoning)} reasoning`) : null)));
+  if (trace.reasoning) node.append(el("div", { class: "reasoning" }, el("small", {}, "reasoning_content"), trace.reasoning));
+  if (event.text) node.append(el("p", { class: "say" }, event.text));
+  for (const call of trace.toolCalls || []) node.append(el("div", { class: "callraw" }, el("span", { class: "label" }, "tool call, as the model wrote it"), `${call.name}(${call.arguments})`));
+  if (trace.responseId || trace.requestId) node.append(el("div", { class: "ids" }, `response ${trace.responseId || "–"} · Nebius x-request-id ${trace.requestId || "–"}`));
+  node.append(rawDetails("raw event", JSON.stringify(event, null, 2)));
   $("#timeline").append(node);
 }
 
-function showCall(data) {
-  const step = data.step;
-  const result = data.result || {};
+function showCall(event) {
+  const step = event.step;
+  const result = event.result || {};
   const label = { "unknown-tool": "invented tool", "invalid": "bad arguments" }[step.outcome] || step.outcome;
   const node = el("div", { class: "event" },
     el("div", { class: "head" },
       el("span", { class: "tool" }, toolName(step.tool)),
       el("span", { class: "args" }, argsText(step.arguments)),
       el("span", { class: `badge b-${step.outcome}` }, label)));
-  if (result.output) node.append(el("pre", {}, hostOutput(result.output)));
-  else if (result.error) node.append(el("p", { class: "say" }, String(result.error)));
+  if (result.output) {
+    node.append(el("pre", {}, hostOutput(result.output)));
+    node.append(rawDetails(`what the model saw: raw Ansible output, ${result.output.split("\n").length} lines`, result.output));
+  } else if (result.error) {
+    node.append(el("p", { class: "say" }, String(result.error)));
+  }
+  if (step.decision) node.append(el("div", { class: "ids" }, `decision ${step.decision}`));
+  const provenance = el("div", { class: "prov" });
+  node.append(provenance);
+  node.append(rawDetails("raw event", JSON.stringify(event, null, 2)));
+  state.events.set(event._seq, provenance);
   $("#timeline").append(node);
   if ((step.outcome === "proposed" || step.outcome === "repeated") && step.decision && !state.decisions.has(step.decision)) {
     addDecision(toolName(step.tool), step.decision);
   }
+}
+
+function showProvenance(line) {
+  const slot = state.events.get(line.seq);
+  if (!slot) return;
+  slot.replaceChildren("▶ host answer played back from the cx23 recording: ",
+    el("a", { href: line.url, target: "_blank", rel: "noopener" }, line.decision),
+    `, recorded ${line.recordedAt}, sha256 ${short(line.sha256, 16)}`);
 }
 
 function addDecision(operation, decision) {
@@ -268,16 +310,20 @@ async function approve(decision, button, outcome) {
   const result = await response.json();
   if (result.outcome === "verified") {
     outcome.className = "outcome verified";
-    outcome.replaceChildren(`✓ ${result.verdict}`);
-    if (result.after) outcome.append(el("pre", {}, hostOutput(result.after)));
+    outcome.replaceChildren(`✓ ${result.verdict}`,
+      el("div", { class: "prov" }, "▶ played back from the approval recorded on a real cx23: ",
+        el("a", { href: result.record, target: "_blank", rel: "noopener" }, result.decision),
+        `, approved ${result.approvedAt}, verified ${result.verifiedAt}`));
+    if (result.after) outcome.append(el("span", { class: "label" }, "disk report after the fix"), el("pre", {}, hostOutput(result.after)));
+    outcome.append(rawDetails("raw execution log", result.execution), rawDetails("raw verify log", result.verify));
   } else {
     outcome.className = `outcome ${result.outcome || "refused"}`;
     outcome.replaceChildren(result.message || result.error || "No answer");
   }
 }
 
-function showFinding(data) {
-  const spec = data.investigation.spec;
+function showFinding(event) {
+  const spec = event.investigation.spec;
   const finding = spec.finding;
   const tokens = spec.tokens.prompt + spec.tokens.completion;
   const box = el("div", { class: "finding" + (finding ? "" : " bad") });
@@ -292,13 +338,22 @@ function showFinding(data) {
     box.append(el("b", {}, reason));
     if (spec.answer) box.append(el("pre", {}, spec.answer));
   }
-  box.append(el("p", { class: "status" }, `${spec.turns} turns · ${tokens.toLocaleString("en")} tokens · ${spec.model.name}`));
+  box.append(el("p", { class: "status" }, `${spec.turns} turns · ${number(tokens)} tokens · ${spec.model.name}`));
+  box.append(rawDetails("raw investigation record", JSON.stringify(event.investigation, null, 2)));
   $("#timeline").append(box);
+}
+
+function download() {
+  const blob = new Blob([state.raw.join("\n") + "\n"], { type: "application/x-ndjson" });
+  const link = el("a", { href: URL.createObjectURL(blob), download: `cloudfall-investigation-${state.run}.ndjson` });
+  link.click();
 }
 
 async function run() {
   $("#run").disabled = true;
   state.decisions.clear();
+  state.events.clear();
+  state.raw = [];
   $("#timeline").replaceChildren();
   $("#decisions").replaceChildren(el("p", { class: "empty" }, "Nothing proposed yet."));
   $("#status").textContent = "Running…";
@@ -307,7 +362,6 @@ async function run() {
     const response = await fetch("/api/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: state.model }) });
     if (!response.ok) {
       const problem = await response.json();
-      thinking(false);
       $("#status").textContent = problem.error;
       return;
     }
@@ -320,9 +374,9 @@ async function run() {
       buffer += decoder.decode(value, { stream: true });
       let newline;
       while ((newline = buffer.indexOf("\n")) >= 0) {
-        const line = JSON.parse(buffer.slice(0, newline));
+        const text = buffer.slice(0, newline);
         buffer = buffer.slice(newline + 1);
-        handle(line);
+        if (text.trim()) handle(text, JSON.parse(text));
       }
     }
   } catch (error) {
@@ -333,20 +387,32 @@ async function run() {
   }
 }
 
-function handle(line) {
-  if (line.run) { state.run = line.run; return; }
+function handle(text, line) {
+  if (line._demo === "run") {
+    state.run = line.run;
+    $("#timeline").prepend(el("div", { class: "command" }, el("span", { class: "label" }, "the server runs"), "$ " + line.command));
+    return;
+  }
+  if (line._demo === "provenance") { showProvenance(line); return; }
+  state.raw.push(text);
   thinking(false);
-  const data = line.data;
-  if (data && data.kind === "turn") showTurn(data);
-  else if (data && data.kind === "call") showCall(data);
-  else if (data && data.kind === "investigation") showFinding(data);
-  if (line.meta && line.meta.end) $("#status").textContent = "Done. Review what it proposed.";
-  else if (line.ok === false) $("#status").textContent = line.error.code === "INVESTIGATION_INCOMPLETE" ? "Ended without an answer." : line.error.message;
-  else thinking(true);
+  if (line.kind === "turn") showTurn(line);
+  else if (line.kind === "call") showCall(line);
+  else if (line.kind === "investigation") showFinding(line);
+  if (line._summary) {
+    $("#status").replaceChildren("Done. Review what it proposed. ", el("span", { class: "tools" }, (() => { const b = el("button", { type: "button" }, "Download the raw trace (.ndjson)"); b.addEventListener("click", download); return b; })()));
+  } else if (line.ok === false) {
+    $("#status").textContent = line.error.code === "INVESTIGATION_INCOMPLETE" ? "Ended without an answer." : line.error.message;
+    const button = el("button", { type: "button" }, "Download the raw trace (.ndjson)");
+    button.addEventListener("click", download);
+    $("#status").append(" ", el("span", { class: "tools" }, button));
+  } else {
+    thinking(true);
+  }
 }
 
 $("#run").addEventListener("click", run);
-load();
+load().then(() => { if (location.hash === "#autorun") run(); });
 </script>
 </body>
 </html>

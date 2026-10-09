@@ -137,7 +137,7 @@ wheels = [
 [[package]]
 name = "cloudfall"
 version = "0.5.1"
-source = { git = "https://github.com/cloudfall-dev/cloudfall?rev=fb1d935e93ac9009aa524d7723d1e1759de36bc7#fb1d935e93ac9009aa524d7723d1e1759de36bc7" }
+source = { git = "https://github.com/cloudfall-dev/cloudfall?rev=3ff7f00e949da4bfe850672c333d505ccbd4b14e#3ff7f00e949da4bfe850672c333d505ccbd4b14e" }
 dependencies = [
     { name = "ansible-core" },
     { name = "jsonschema", extra = ["format"] },
@@ -164,7 +164,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cloudfall", git = "https://github.com/cloudfall-dev/cloudfall?rev=fb1d935e93ac9009aa524d7723d1e1759de36bc7" },
+    { name = "cloudfall", git = "https://github.com/cloudfall-dev/cloudfall?rev=3ff7f00e949da4bfe850672c333d505ccbd4b14e" },
     { name = "starlette", specifier = ">=0.46,<2" },
     { name = "uvicorn", specifier = ">=0.34,<1" },
 ]
@@ -801,11 +801,11 @@ wheels = [
 
 [[package]]
 name = "treaty"
-version = "1.0.0rc29"
+version = "1.0.0rc38"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ec/50/e564b3e75431d5df24f170cf8726968a536bceb0ff7468da2308afac92de/treaty-1.0.0rc29.tar.gz", hash = "sha256:11f30f51f051d7da2008a2b15970edcb708a7d9becae8f1a0ecdd9631bb70a2f", size = 562870, upload-time = "2026-10-03T10:03:37.738Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e8/b9/e20c42a64380f69eeff8ccb8aa04ca28dda5f8d00505f074757f20c0eba7/treaty-1.0.0rc38.tar.gz", hash = "sha256:580437e2d0f70f13340d5201639d9fba0ffec853980f9819fb0d365f82b76927", size = 515401, upload-time = "2026-10-08T17:50:35.324Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/02/b0/80f2a44a6151ddbc295f769dbf63542c88548f170f90fabb8c16d338e618/treaty-1.0.0rc29-py3-none-any.whl", hash = "sha256:1c7314db7ee78a7dc16199444c6486ece85a4ed1b24b622aedccf23b152d73c4", size = 561162, upload-time = "2026-10-03T10:03:35.85Z" },
+    { url = "https://files.pythonhosted.org/packages/75/ee/c53221910616676275225137eaaa890d500f4d8ed7f82a0428059b994c56/treaty-1.0.0rc38-py3-none-any.whl", hash = "sha256:670573b0ed1b311531170abd2f3dc74f9443b757c1e60cf64ad4617a2d765770", size = 565262, upload-time = "2026-10-08T17:50:33.528Z" },
 ]
 
 [[package]]

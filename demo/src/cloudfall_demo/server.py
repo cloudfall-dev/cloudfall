@@ -37,6 +37,10 @@ RECORDING = "recordings/disk-full"
 APPROVED = INCIDENT / "recordings" / "disk-full-approved"
 RUNS = Path("tmp/runs")
 BASE_URL = "https://api.tokenfactory.nebius.com/v1/"
+SOURCE = (
+    "https://github.com/cloudfall-dev/cloudfall/blob/main/"
+    "examples/disk-full-incident/recordings"
+)
 ALERT = "ALERT postgresql-main DOWN on host hz1. The shop's orders API returns 500."
 
 MODELS = (
@@ -175,16 +179,31 @@ async def approve(request: Request) -> Response:
 
 
 async def _stream(run_id: str, model: str) -> AsyncIterator[bytes]:
-    """Run the CLI and forward its stream, line by line."""
-    yield _line({"run": run_id, "model": model})
+    """Run the CLI and forward its stream, line by line.
+
+    The CLI's lines pass through untouched. The demo's own lines carry
+    ``_demo``: the command it ran, and where each played-back answer was
+    recorded.
+    """
+    arguments = (
+        *("agent", "investigate", "--alert", ALERT),
+        *("--base-url", BASE_URL, "--model", model),
+        *("--replay", RECORDING),
+        *("--decisions", (RUNS / run_id / "decisions").as_posix()),
+        *("--investigations", (RUNS / run_id / "investigations").as_posix()),
+    )
+    yield _line(
+        {
+            "_demo": "run",
+            "run": run_id,
+            "model": model,
+            "command": " ".join(["cloudfall", *(_quoted(a) for a in arguments)]),
+        }
+    )
     async with LIMITS.slots:
         process = await asyncio.create_subprocess_exec(
             _cloudfall(),
-            *("agent", "investigate", "--alert", ALERT),
-            *("--base-url", BASE_URL, "--model", model),
-            *("--replay", RECORDING),
-            *("--decisions", (RUNS / run_id / "decisions").as_posix()),
-            *("--investigations", (RUNS / run_id / "investigations").as_posix()),
+            *arguments,
             cwd=INCIDENT,
             env={**os.environ, "PATH": f"{_BIN}{os.pathsep}{os.environ['PATH']}"},
             stdout=asyncio.subprocess.PIPE,
@@ -198,7 +217,10 @@ async def _stream(run_id: str, model: str) -> AsyncIterator[bytes]:
             async for raw in process.stdout:
                 line = json.loads(raw)
                 _count_tokens(line)
-                yield _line(line)
+                yield raw if raw.endswith(b"\n") else raw + b"\n"
+                provenance = _provenance(line)
+                if provenance is not None:
+                    yield _line(provenance)
         finally:
             if process.returncode is None:
                 process.kill()
@@ -206,11 +228,63 @@ async def _stream(run_id: str, model: str) -> AsyncIterator[bytes]:
 
 
 def _count_tokens(line: Mapping[str, object]) -> None:
-    data = line.get("data")
-    if not isinstance(data, Mapping) or data.get("kind") != "investigation":
+    if line.get("kind") != "investigation":
         return
-    tokens = data["investigation"]["spec"]["tokens"]
+    investigation = line["investigation"]
+    assert isinstance(investigation, Mapping)  # noqa: S101 - the CLI's schema.
+    tokens = investigation["spec"]["tokens"]
     LIMITS.tokens += int(tokens["prompt"]) + int(tokens["completion"])
+
+
+def _provenance(line: Mapping[str, object]) -> dict[str, object] | None:
+    """Say which recorded run answered a played-back call, when one did."""
+    if line.get("kind") != "call":
+        return None
+    step = line["step"]
+    assert isinstance(step, Mapping)  # noqa: S101 - the CLI's schema.
+    operation = str(step["tool"]).removeprefix("operation_").replace("_", "-")
+    entry = _catalog().get(operation)
+    if entry is None:
+        return None
+    arguments = step["arguments"]
+    assert isinstance(arguments, Mapping)  # noqa: S101 - the CLI's schema.
+    recorded = _RECORDED.get(
+        _key(entry["playbook"], arguments.get("target"), arguments.get("inputs", {}))
+    )
+    if recorded is None:
+        return None
+    return {"_demo": "provenance", "seq": line.get("_seq"), **recorded}
+
+
+def _key(playbook: str, target: object, inputs: object) -> str:
+    return json.dumps(
+        {"playbook": playbook, "pattern": target, "inputs": inputs}, sort_keys=True
+    )
+
+
+def _recorded_runs() -> dict[str, dict[str, object]]:
+    """Index the recording the way the replay looks it up: first of a call wins."""
+    index: dict[str, dict[str, object]] = {}
+    for path in sorted((INCIDENT / RECORDING).glob("*.json")):
+        spec = json.loads(path.read_text(encoding="utf-8"))["spec"]
+        key = _key(
+            spec["operation"]["playbook"],
+            spec["targets"].get("pattern"),
+            spec["inputs"],
+        )
+        index.setdefault(
+            key,
+            {
+                "decision": path.stem,
+                "recordedAt": spec["proposedAt"],
+                "sha256": spec["check"]["diff"]["sha256"],
+                "url": f"{SOURCE}/disk-full/{path.stem}.diff",
+            },
+        )
+    return index
+
+
+_RECORDED = _recorded_runs()
 
 
 def _recorded_approval(operation_id: str) -> dict[str, object] | None:
@@ -222,12 +296,18 @@ def _recorded_approval(operation_id: str) -> dict[str, object] | None:
         execution = APPROVED / Path(spec["execution"]["log"]["path"]).name
         reports = sorted(APPROVED.glob("disk-report-*.json"))
         after = reports[-1].with_suffix(".diff") if reports else None
+        verify = APPROVED / Path(spec["verify"]["log"]["path"]).name
         return {
             "outcome": "verified",
             "verdict": spec["verdict"],
+            "decision": path.stem,
+            "proposedAt": spec["proposedAt"],
             "approvedAt": spec["approval"]["approvedAt"],
-            "execution": _tail(execution),
+            "verifiedAt": spec["verify"]["ranAt"],
+            "execution": _tail(execution, 400),
+            "verify": _tail(verify, 400),
             "after": _tail(after) if after is not None else "",
+            "record": f"{SOURCE}/disk-full-approved/{path.stem}.json",
         }
     return None
 
@@ -243,6 +323,7 @@ def _catalog() -> dict[str, dict[str, str]]:
         catalog[fields["id"]] = {
             "risk": fields["risk"],
             "description": fields.get("description", ""),
+            "playbook": fields["playbook"],
         }
     return catalog
 
@@ -282,6 +363,10 @@ def _cloudfall() -> str:
         message = f"cloudfall is not installed beside {sys.executable}"
         raise RuntimeError(message)
     return found
+
+
+def _quoted(argument: str) -> str:
+    return f"'{argument}'" if " " in argument else argument
 
 
 def _line(document: Mapping[str, object]) -> bytes:
