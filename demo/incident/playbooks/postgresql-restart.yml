@@ -1,0 +1,8 @@
+- name: Restart PostgreSQL
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Restart the cluster
+      ansible.builtin.service:
+        name: postgresql@17-main
+        state: restarted

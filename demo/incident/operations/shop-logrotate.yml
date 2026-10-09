@@ -1,0 +1,7 @@
+id: shop-logrotate
+description: Install a logrotate rule for the shop worker, delete its old rotated logs and truncate the live one
+playbook: playbooks/shop-logrotate.yml
+risk: mutating
+targets: host
+verify:
+  playbook: playbooks/shop-logrotate.yml

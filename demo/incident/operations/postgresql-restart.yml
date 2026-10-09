@@ -1,0 +1,7 @@
+id: postgresql-restart
+description: Restart the PostgreSQL 17 cluster
+playbook: playbooks/postgresql-restart.yml
+risk: mutating
+targets: host
+verify:
+  playbook: playbooks/postgresql.yml

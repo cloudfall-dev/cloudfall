@@ -1,0 +1,43 @@
+{
+  "apiVersion": "cloudfall/v1",
+  "kind": "OperationDecision",
+  "metadata": {
+    "id": "service-logs-20261008170838"
+  },
+  "spec": {
+    "basis": {
+      "observations": "tmp/observed",
+      "observedAt": {}
+    },
+    "check": {
+      "changed": [],
+      "diff": {
+        "bytes": 2737,
+        "path": "tmp/eval/NVIDIA-Nemotron-3-Nano-30B-A3B/2/decisions/service-logs-20261008170838.diff",
+        "sha256": "a37dcd0d8f3d6aec6f7446f2b6b5e17169731aea4795c869eb1fd39ad0d0abec"
+      },
+      "exitCode": 0,
+      "unchanged": [
+        "hz1"
+      ]
+    },
+    "gate": {
+      "reason": "a read operation changes nothing, so nothing gates it",
+      "requirement": "runs-freely"
+    },
+    "inputs": {
+      "unit": "postgresql@17-main.service"
+    },
+    "operation": {
+      "id": "service-logs",
+      "playbook": "playbooks/service-logs.yml",
+      "risk": "read"
+    },
+    "proposedAt": "2026-10-08T17:08:38Z",
+    "status": "proposed",
+    "targets": {
+      "pattern": "hz1",
+      "scope": "host"
+    }
+  }
+}

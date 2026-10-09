@@ -1,0 +1,73 @@
+{
+  "apiVersion": "cloudfall/v1",
+  "kind": "OperationDecision",
+  "metadata": {
+    "id": "shop-logrotate-20261008204351"
+  },
+  "spec": {
+    "approval": {
+      "approvedAt": "2026-10-08T20:44:00Z",
+      "approver": "operator"
+    },
+    "basis": {
+      "observations": "tmp/observed",
+      "observedAt": {}
+    },
+    "check": {
+      "changed": [],
+      "diff": {
+        "bytes": 5016,
+        "path": "approved/shop-logrotate-20261008204351.diff",
+        "sha256": "e11dfdc6ddfe33d7165a8409693f394495319c38477558f9d8a49e2bb80f6e5e"
+      },
+      "exitCode": 0,
+      "unchanged": [
+        "hz1"
+      ]
+    },
+    "execution": {
+      "changed": [],
+      "exitCode": 0,
+      "log": {
+        "bytes": 5009,
+        "path": "approved/shop-logrotate-20261008204351-execution.log",
+        "sha256": "b016e654f69c65dd365bda9566ce664c2acedb55009d25e61f441b9b33525580"
+      },
+      "ranAt": "2026-10-08T20:44:00Z",
+      "unchanged": [
+        "hz1"
+      ]
+    },
+    "gate": {
+      "reason": "a mutating operation runs in check mode first and waits for an approval of the recorded diff",
+      "requirement": "check-then-approve"
+    },
+    "inputs": {},
+    "operation": {
+      "id": "shop-logrotate",
+      "playbook": "playbooks/shop-logrotate.yml",
+      "risk": "mutating",
+      "verifyPlaybook": "playbooks/shop-logrotate.yml"
+    },
+    "proposedAt": "2026-10-08T20:43:51Z",
+    "status": "verified",
+    "targets": {
+      "pattern": "hz1",
+      "scope": "host"
+    },
+    "verdict": "the run succeeded and the verify step changed nothing",
+    "verify": {
+      "changed": [],
+      "exitCode": 0,
+      "log": {
+        "bytes": 1299,
+        "path": "approved/shop-logrotate-20261008204351-verify.log",
+        "sha256": "612f21d0c61548152e846b6a42bbc3fafba8e80059b1b1393bbd6637f0a3945b"
+      },
+      "ranAt": "2026-10-08T20:44:07Z",
+      "unchanged": [
+        "hz1"
+      ]
+    }
+  }
+}

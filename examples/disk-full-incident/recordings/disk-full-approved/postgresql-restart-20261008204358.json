@@ -1,0 +1,73 @@
+{
+  "apiVersion": "cloudfall/v1",
+  "kind": "OperationDecision",
+  "metadata": {
+    "id": "postgresql-restart-20261008204358"
+  },
+  "spec": {
+    "approval": {
+      "approvedAt": "2026-10-08T20:44:09Z",
+      "approver": "operator"
+    },
+    "basis": {
+      "observations": "tmp/observed",
+      "observedAt": {}
+    },
+    "check": {
+      "changed": [
+        "hz1"
+      ],
+      "diff": {
+        "bytes": 924,
+        "path": "approved/postgresql-restart-20261008204358.diff",
+        "sha256": "daea76fdfb4c117c0e052066522c4927640515f0be3cd770693250fd1a08b18c"
+      },
+      "exitCode": 0,
+      "unchanged": []
+    },
+    "execution": {
+      "changed": [
+        "hz1"
+      ],
+      "exitCode": 0,
+      "log": {
+        "bytes": 924,
+        "path": "approved/postgresql-restart-20261008204358-execution.log",
+        "sha256": "daea76fdfb4c117c0e052066522c4927640515f0be3cd770693250fd1a08b18c"
+      },
+      "ranAt": "2026-10-08T20:44:09Z",
+      "unchanged": []
+    },
+    "gate": {
+      "reason": "a mutating operation runs in check mode first and waits for an approval of the recorded diff",
+      "requirement": "check-then-approve"
+    },
+    "inputs": {},
+    "operation": {
+      "id": "postgresql-restart",
+      "playbook": "playbooks/postgresql-restart.yml",
+      "risk": "mutating",
+      "verifyPlaybook": "playbooks/postgresql.yml"
+    },
+    "proposedAt": "2026-10-08T20:43:58Z",
+    "status": "verified",
+    "targets": {
+      "pattern": "hz1",
+      "scope": "host"
+    },
+    "verdict": "the run succeeded and the verify step changed nothing",
+    "verify": {
+      "changed": [],
+      "exitCode": 0,
+      "log": {
+        "bytes": 1103,
+        "path": "approved/postgresql-restart-20261008204358-verify.log",
+        "sha256": "388024bb026d9177659ed77b21b7eca1ec58494c8e808657f8c890685e8c9596"
+      },
+      "ranAt": "2026-10-08T20:44:14Z",
+      "unchanged": [
+        "hz1"
+      ]
+    }
+  }
+}

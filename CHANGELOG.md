@@ -8,6 +8,14 @@ Notable changes to Cloudfall. The format follows
 
 ### Added
 
+- `demo/`: the hosted demo, a small Starlette app that streams a live
+  Nemotron investigation of the recorded disk-full incident to the page and
+  plays back the recorded approval of the fix; limits per visitor, per run
+  and per day. `examples/disk-full-incident/recordings/disk-full-approved`
+  holds the approved and verified fix from a real host
+- The example's `shop-logrotate` is idempotent: it truncates the live log
+  only when it outgrew the rule and writes the rule only when it differs,
+  so its verify run changes nothing and the approval verifies
 - A decision record has two new statuses, added to
   `operation-decision.schema.json` beside the old ones. `ran`: a `risk: read`
   operation has run by the time it is recorded, so it is recorded with its

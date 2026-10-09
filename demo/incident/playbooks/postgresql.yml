@@ -1,0 +1,12 @@
+- name: Run PostgreSQL 17 for the shop
+  hosts: db_servers
+  tasks:
+    - name: Install PostgreSQL
+      ansible.builtin.apt:
+        name: [postgresql, logrotate]
+        update_cache: true
+    - name: Keep the cluster running
+      ansible.builtin.service:
+        name: postgresql@17-main
+        state: started
+        enabled: true

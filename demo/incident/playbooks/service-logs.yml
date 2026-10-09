@@ -1,0 +1,12 @@
+- name: Show the last log lines of one systemd unit
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Read the unit's journal
+      ansible.builtin.command: journalctl -u {{ unit }} -n 30 --no-pager
+      check_mode: false
+      changed_when: false
+      register: logs
+    - name: Report
+      ansible.builtin.debug:
+        var: logs.stdout_lines

@@ -1,0 +1,53 @@
+
+PLAY [Report what is using the disk and which services are failing] ************
+
+TASK [Read filesystem usage] ***************************************************
+ok: [hz1]
+
+TASK [Read the largest directories under /var] *********************************
+ok: [hz1]
+
+TASK [Read the journal size] ***************************************************
+ok: [hz1]
+
+TASK [Read failed units] *******************************************************
+ok: [hz1]
+
+TASK [Report] ******************************************************************
+ok: [hz1] => {
+    "msg": {
+        "failed_units": [
+            "postgresql@17-main.service loaded failed failed PostgreSQL Cluster 17-main"
+        ],
+        "filesystems": [
+            "Filesystem      Size  Used Avail Use% Mounted on",
+            "/dev/sda1        38G   38G     0 100% /",
+            "/dev/sda15      241M  146K  241M   1% /boot/efi"
+        ],
+        "journal": "Archived and active journals take up 8M in the file system.",
+        "largest_under_var": [
+            "37G\t/var",
+            "36G\t/var/log/shop",
+            "36G\t/var/log",
+            "314M\t/var/lib",
+            "257M\t/var/lib/apt/lists",
+            "257M\t/var/lib/apt",
+            "165M\t/var/cache",
+            "159M\t/var/cache/apt",
+            "61M\t/var/cache/apt/archives",
+            "39M\t/var/lib/postgresql/17",
+            "39M\t/var/lib/postgresql",
+            "18M\t/var/lib/dpkg",
+            "17M\t/var/log/journal",
+            "17M\t/var/lib/dpkg/info",
+            "8.1M\t/var/log/journal/8b7ce634661d412ead8c5a27ff9d97a7"
+        ]
+    }
+}
+
+PLAY RECAP *********************************************************************
+hz1                        : ok=5    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+
+[WARNING]: Deprecation warnings can be disabled by setting `deprecation_warnings=False` in ansible.cfg.
+[DEPRECATION WARNING]: The tree callback plugin is deprecated. This feature will be removed from ansible-core version 2.23.
+[WARNING]: Host 'hz1' is using the discovered Python interpreter at '/usr/bin/python3.13', but future installation of another Python interpreter could cause a different interpreter to be discovered. See https://docs.ansible.com/ansible-core/2.21/reference_appendices/interpreter_discovery.html for more information.
