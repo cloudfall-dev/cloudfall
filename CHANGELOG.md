@@ -241,18 +241,19 @@ Notable changes to Cloudfall. The format follows
     fixed for the run: they leave the tool schemas, and a call that passes
     one is refused, so no call reaches another fleet or engine or writes
     outside the project. So are the Render API URL `import_render-api`
-    sends its key file to, the env file `secrets_render` writes, and the
-    alert gateway `operator_approve` verifies against. Files a tool reads
-    as input (a blueprint, a key file, an env file) stay arguments
+    sends its key file to and the env file `secrets_render` writes. Files
+    a tool reads as input (a blueprint, a key file, an env file) stay
+    arguments
   - On a project, `deploy`, `rollback`, `restart`, `migrate` and
     `data_migrate` return their plan until called with `yes: true`, as on
     the CLI; the old `confirm=true` handshake is gone. `build_artifact` and
     the `converge_baseline`, `converge_services` and `converge_domains`
     tools stay, the converges destructive and run only with
-    `confirm_destructive: true`. `operator_approve`, `backup_run` and
-    `backup_verify` run in one call, as their commands do (they were
-    confirm-gated in `cloudfall-mcp`), and `operator_watch` is gone: the
-    watch loop runs as a service
+    `confirm_destructive: true`. `backup_run` and `backup_verify` run in
+    one call, as their commands do (they were confirm-gated in
+    `cloudfall-mcp`), and `operator_watch` and `operator_approve` are gone:
+    the watch loop runs as a service, and a person approves a proposal from
+    a shell
   - On a repository, the tools are the read-only fleet commands and one
     `operation_*` tool per declared operation, which runs check mode,
     records a proposal and answers with the approval command in
@@ -456,6 +457,14 @@ Notable changes to Cloudfall. The format follows
   proposal: `decisions show` does. Scripted or CI approvals stop working.
   This is a speed bump, not a boundary: a process running as the same OS
   user can fake a terminal (#25)
+- `operator approve` is no longer an MCP tool. On a project,
+  `cloudfall mcp serve` served it as `operator_approve`, so an agent could
+  run and verify its own proposal with no person in the loop. A person now
+  approves from a shell with `cloudfall operator approve`, as with
+  `decisions approve`; `operator_list` and `operator_show` stay tools. The
+  `--gateway-url`, `--gateway-ca`, `--gateway-cert` and `--gateway-key`
+  flags of `cloudfall mcp serve`, which only that tool used, are removed
+  (#35)
 
 ## [0.5.1] - 2026-09-22
 
