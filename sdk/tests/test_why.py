@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -176,6 +177,33 @@ def test_every_sentence_of_the_story_cites_the_record(tmp_path: Path) -> None:
         "It ran when it was proposed and exited 0: a read operation waits for "
         "no approval."
     )
+
+
+def test_a_replayed_read_is_not_told_as_run_on_the_hosts(tmp_path: Path) -> None:
+    """Its output was played back from a recording, never run (#58)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    propose(
+        replace(
+            _proposal(repository, "facts", target=None, inputs={}),
+            replay="recordings/disk-full",
+        ),
+        store,
+        lambda: MOMENT,
+        _Runner(),
+    )
+
+    story = answer(store, WhyQuery.from_boundary(operation="facts"))
+    told = story.explanations[0].story
+
+    assert told[3] == (
+        "That check output was played back from the recording "
+        "recordings/disk-full, not run on the hosts, so it cannot be approved."
+    )
+    assert told[-1] == (
+        "Its played-back output exited 0: a read operation waits for no approval."
+    )
+    assert not any("It ran when it was proposed" in line for line in told)
 
 
 def test_a_superseded_proposal_says_what_replaced_it(tmp_path: Path) -> None:

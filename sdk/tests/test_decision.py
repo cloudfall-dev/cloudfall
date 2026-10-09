@@ -975,7 +975,12 @@ def test_a_replayed_decision_since_superseded_is_refused_as_replayed(
         lambda: MOMENT,
         _Runner(),
     )
-    newer = propose(request, store, lambda: LATER, _Runner())
+    newer = propose(
+        replace(request, replay="recordings/disk-full"),
+        store,
+        lambda: LATER,
+        _Runner(),
+    )
     superseded = store.load(replayed.decision_id)
     run = _Runner()
 
@@ -998,6 +1003,89 @@ def test_a_replayed_decision_since_superseded_is_refused_as_replayed(
     assert "replay of recordings/disk-full" in error.value.detail
     assert run.recorded == []
     assert store.load(replayed.decision_id) == superseded
+
+
+@pytest.mark.parametrize(
+    ("older_replay", "newer_replay", "supersedes"),
+    [
+        (None, None, True),
+        (None, "recordings/disk-full", False),
+        ("recordings/disk-full", None, False),
+        ("recordings/disk-full", "recordings/disk-full", True),
+        ("recordings/disk-full", "recordings/other", False),
+    ],
+    ids=[
+        "live-then-live",
+        "live-then-replay",
+        "replay-then-live",
+        "replay-then-same-replay",
+        "replay-then-other-replay",
+    ],
+)
+def test_only_a_proposal_of_the_same_replay_value_supersedes(
+    tmp_path: Path,
+    *,
+    older_replay: str | None,
+    newer_replay: str | None,
+    supersedes: bool,
+) -> None:
+    """A replay never closes a live proposal, nor a live run a replayed one (#58)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    request = _proposal(repository)
+    older = propose(
+        replace(request, replay=older_replay), store, lambda: MOMENT, _Runner()
+    )
+
+    newer = propose(
+        replace(request, replay=newer_replay), store, lambda: LATER, _Runner()
+    )
+
+    reloaded = store.load(older.decision_id)
+    if supersedes:
+        assert reloaded.status is DecisionStatus.SUPERSEDED
+        assert reloaded.superseded_by == newer.decision_id
+    else:
+        assert reloaded == older
+        assert reloaded.status is DecisionStatus.PROPOSED
+
+
+def test_a_replayed_read_says_its_output_was_played_back(tmp_path: Path) -> None:
+    """It is recorded ran, but it never ran on a host (#58)."""
+    repository = _repository(tmp_path, deploy=DEPLOY, facts=FACTS)
+    store = _store(repository)
+
+    decision = propose(
+        replace(
+            _proposal(repository, "facts", target=None, inputs={}),
+            replay="recordings/disk-full",
+        ),
+        store,
+        lambda: MOMENT,
+        _Runner(exit_code=2),
+    )
+
+    assert decision.status is DecisionStatus.RAN
+    assert decision.ran_exit_code == 2
+    assert decision.verdict is not None
+    assert "played back from the recording recordings/disk-full" in decision.verdict
+    assert "not run on the hosts" in decision.verdict
+    assert "runs when it is proposed" not in decision.verdict
+
+
+def test_a_live_read_keeps_its_verdict(tmp_path: Path) -> None:
+    repository = _repository(tmp_path, deploy=DEPLOY, facts=FACTS)
+
+    decision = propose(
+        _proposal(repository, "facts", target=None, inputs={}),
+        _store(repository),
+        lambda: MOMENT,
+        _Runner(exit_code=0),
+    )
+
+    assert decision.verdict == (
+        "a read operation runs when it is proposed; it exited 0"
+    )
 
 
 def test_a_record_without_replay_reads_as_live(tmp_path: Path) -> None:
