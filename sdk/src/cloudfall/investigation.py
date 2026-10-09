@@ -38,6 +38,8 @@ INVESTIGATION_DIRECTORY = "investigations"
 DEFAULT_MAX_TURNS = 12
 TOOL_TEXT_LIMIT = 8000
 """Most characters of host output one tool result hands the model."""
+TRACE_TEXT_LIMIT = TOOL_TEXT_LIMIT
+"""Most characters of a turn's text or reasoning the trace keeps, cut mark included."""
 TOOL_NAME_LIMIT = 128
 """Most characters of a tool name the record keeps, as its schema allows."""
 REPLY_ID_LIMIT = 256
@@ -534,10 +536,25 @@ def host_text(text: str) -> str:
     """Keep the end of a long host output, where a play reports, and say so."""
     if len(text) <= TOOL_TEXT_LIMIT:
         return text
-    return (
-        f"[first {len(text) - TOOL_TEXT_LIMIT} characters cut]\n"
-        + text[-TOOL_TEXT_LIMIT:]
-    )
+    return _cut_mark(len(text) - TOOL_TEXT_LIMIT) + text[-TOOL_TEXT_LIMIT:]
+
+
+def _trace_text(text: str) -> str:
+    """Keep the end of a long turn text or reasoning, where it concludes, and say so.
+
+    The model's reasoning often quotes the host output it just read, so the
+    trace bounds it as the tool result does. The mark counts against the
+    limit: what is kept fits the schema's ``maxLength``.
+    """
+    if len(text) <= TRACE_TEXT_LIMIT:
+        return text
+    # The mark for the whole length is at least as long as the one written.
+    kept = TRACE_TEXT_LIMIT - len(_cut_mark(len(text)))
+    return _cut_mark(len(text) - kept) + text[-kept:]
+
+
+def _cut_mark(cut: int) -> str:
+    return f"[first {cut} characters cut]\n"
 
 
 def _tool_definition(tool: AgentTool) -> dict[str, object]:
@@ -565,11 +582,12 @@ def _turn(
     details = details if isinstance(details, Mapping) else {}
     reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
     response_id = reply.body.get("id")
-    # The ids are the endpoint's text; the record keeps what its schema takes.
+    # The ids, the text and the reasoning are the endpoint's text; the record
+    # keeps what its schema takes.
     return Turn(
         turn=number,
-        text=str(message.get("content") or "").strip(),
-        reasoning=str(reasoning).strip(),
+        text=_trace_text(str(message.get("content") or "").strip()),
+        reasoning=_trace_text(str(reasoning).strip()),
         tool_calls=tuple(_call_text(call) for call in calls),
         response_id=(
             response_id[:REPLY_ID_LIMIT] if isinstance(response_id, str) else None
