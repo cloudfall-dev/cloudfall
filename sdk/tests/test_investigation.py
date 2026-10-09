@@ -1314,6 +1314,29 @@ def test_long_arguments_are_refused_unrun_and_cut_in_the_trace(
     assert mark == f"[last {length - len(head)} characters cut]"
 
 
+@pytest.mark.parametrize(
+    ("length", "ran"),
+    [(STEP_ARGUMENTS_LIMIT - 1, True), (STEP_ARGUMENTS_LIMIT + 1, False)],
+)
+def test_non_ascii_arguments_are_measured_in_characters(
+    length: int, *, ran: bool
+) -> None:
+    echo = _Echo()
+    # Characters, not ASCII escapes: a Cyrillic note just under the limit runs.
+    note = "ж" * (length - len(json.dumps({"note": ""})))
+    assert len(json.dumps({"note": note}, ensure_ascii=False)) == length
+    script = _Script(_call("note", {"note": note}), _say(_FINDING))
+
+    done = investigate("alert", [echo.tool], ENDPOINT, script)
+
+    if ran:
+        assert echo.received == [{"note": note}]
+        assert done.steps[0].outcome is StepOutcome.RAN
+    else:
+        assert echo.received == []
+        assert done.steps[0].outcome is StepOutcome.INVALID
+
+
 def test_a_refused_long_call_is_not_remembered_as_run() -> None:
     echo = _Echo()
     note = "n" * STEP_ARGUMENTS_LIMIT

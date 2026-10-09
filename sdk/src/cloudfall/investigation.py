@@ -747,10 +747,10 @@ def _run_call(
 def _arguments_problem(arguments: object) -> str | None:
     if not isinstance(arguments, Mapping):
         return "arguments must be a JSON object"
-    # json.dumps' defaults (key order as parsed, ASCII escapes) give one length
-    # per call; a step keeps only arguments that ran whole, so a longer call
-    # is refused before it runs.
-    if len(json.dumps(arguments)) > STEP_ARGUMENTS_LIMIT:
+    # Key order as parsed and no ASCII escapes give one length per call, in
+    # characters; a step keeps only arguments that ran whole, so a longer
+    # call is refused before it runs.
+    if len(json.dumps(arguments, ensure_ascii=False)) > STEP_ARGUMENTS_LIMIT:
         return (
             f"arguments are longer than {STEP_ARGUMENTS_LIMIT} characters as JSON; "
             "nothing ran"
