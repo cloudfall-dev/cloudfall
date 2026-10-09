@@ -183,6 +183,14 @@ Notable changes to Cloudfall. The format follows
   `agent-investigation.schema.json` bounds both fields with `maxLength`, and
   says that a step's parsed arguments are what ran while
   `toolCalls[].arguments` is only the model's text (#50)
+- The investigation record of `agent investigate` keeps at most 8000
+  characters of the model's answer (`spec.answer`) and of each tool call's
+  raw arguments (`spec.trace[].toolCalls[].arguments`). Unlike the trace's
+  reasoning, a longer one keeps its start, followed by a
+  `[last N characters cut]` mark, in the record and in the stream's events
+  alike. The finding is still read from the whole answer, and the tool
+  still runs on the whole arguments. `agent-investigation.schema.json`
+  bounds both fields with `maxLength` (#57)
 - treaty 1.0.0rc38 instead of 1.0.0rc29. `dashboard serve` and
   `operator run` write each event in `json` and `jsonl` as a bare JSON line
   with `_seq` instead of an envelope with `data` and `meta.seq`, and end

@@ -116,7 +116,9 @@
           }
         },
         "answer": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 8000,
+          "description": "The model's final words, which the finding is read from; a longer answer keeps its start, before a mark naming how many characters were cut. The finding is read from the whole answer."
         },
         "trace": {
           "type": "array",
@@ -142,7 +144,8 @@
                     "name": {"type": "string"},
                     "arguments": {
                       "type": "string",
-                      "description": "The arguments exactly as the model wrote them. The step's parsed arguments are what ran; this raw string is only the model's text."
+                      "maxLength": 8000,
+                      "description": "The arguments exactly as the model wrote them; longer ones keep their start, before a mark naming how many characters were cut. The step's parsed arguments are what ran; this raw string is only the model's text."
                     }
                   },
                   "required": ["name", "arguments"],
