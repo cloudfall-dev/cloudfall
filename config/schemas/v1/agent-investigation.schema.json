@@ -123,15 +123,26 @@
             "type": "object",
             "properties": {
               "turn": {"type": "integer", "minimum": 1},
-              "text": {"type": "string"},
-              "reasoning": {"type": "string"},
+              "text": {
+                "type": "string",
+                "maxLength": 8000,
+                "description": "The turn's words; a longer text keeps its end, after a mark naming how many characters were cut."
+              },
+              "reasoning": {
+                "type": "string",
+                "maxLength": 8000,
+                "description": "The model's reasoning, as the endpoint returned it; a longer reasoning keeps its end, after a mark naming how many characters were cut."
+              },
               "toolCalls": {
                 "type": "array",
                 "items": {
                   "type": "object",
                   "properties": {
                     "name": {"type": "string"},
-                    "arguments": {"type": "string"}
+                    "arguments": {
+                      "type": "string",
+                      "description": "The arguments exactly as the model wrote them. The step's parsed arguments are what ran; this raw string is only the model's text."
+                    }
                   },
                   "required": ["name", "arguments"],
                   "additionalProperties": false

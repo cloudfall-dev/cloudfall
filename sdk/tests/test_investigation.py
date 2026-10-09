@@ -12,6 +12,7 @@ import pytest
 from cloudfall.cli import main
 from cloudfall.investigation import (
     ERROR_MODEL_REFUSED,
+    TRACE_TEXT_LIMIT,
     AgentTool,
     InvestigationError,
     InvestigationStatus,
@@ -25,6 +26,7 @@ from cloudfall.investigation import (
 )
 from cloudfall.resources import default_schema_directory
 from cloudfall.validation import SchemaCatalog
+from jsonschema import ValidationError
 from test_catalog import _repository
 
 if TYPE_CHECKING:
@@ -868,6 +870,58 @@ def test_each_turn_keeps_the_raw_trace() -> None:
     assert isinstance(recorded, dict)
     assert recorded["trace"][0]["reasoning"] == turn.reasoning
     assert recorded["trace"][1]["toolCalls"] == []
+
+
+def test_a_long_reasoning_is_cut_to_the_limit_and_marked(tmp_path: Path) -> None:
+    report, rotate = _tools()
+    # A reasoning quoting a long host output, past the limit, ending in its plan.
+    reasoning = "журнал " * 1500 + "The disk is full; read it first."
+    long_text = "x" * 9000 + " rotate the logs."
+    thinking = _call("disk-report", {})
+    first = thinking["choices"]
+    assert isinstance(first, list)
+    first[0]["message"]["reasoning_content"] = reasoning
+    script = _Script(thinking, _say(long_text))
+
+    done = investigate("alert", _tool_list(report, rotate), ENDPOINT, script)
+    saved = InvestigationStore(
+        directory=tmp_path / "investigations",
+        catalog=SchemaCatalog(default_schema_directory()),
+    ).save(done)
+
+    kept, said = saved.trace[0].reasoning, saved.trace[1].text
+    # Characters, not bytes: the Cyrillic reasoning is counted the same. The
+    # mark counts against the limit; a shorter count can leave it one under.
+    assert TRACE_TEXT_LIMIT == 8000
+    assert TRACE_TEXT_LIMIT - 1 <= len(kept) <= TRACE_TEXT_LIMIT
+    assert len(said) == TRACE_TEXT_LIMIT
+    mark, tail = kept.split("\n", 1)
+    assert mark == f"[first {len(reasoning) - len(tail)} characters cut]"
+    assert reasoning.endswith(tail)
+    assert tail.endswith("The disk is full; read it first.")
+    assert said.startswith("[first 1045 characters cut]\n")
+    assert said.endswith(" rotate the logs.")
+    # The answer the finding is read from is the model's whole text.
+    assert saved.answer == long_text
+
+
+def test_the_schema_refuses_a_trace_longer_than_the_limit() -> None:
+    report, rotate = _tools()
+    done = investigate(
+        "alert",
+        _tool_list(report, rotate),
+        ENDPOINT,
+        _Script(_say("ROOT CAUSE: disk\nPROPOSED: none\nWHY: read only.")),
+    )
+    document = done.as_document()
+    spec = document["spec"]
+    assert isinstance(spec, dict)
+    spec["trace"][0]["reasoning"] = "x" * (TRACE_TEXT_LIMIT + 1)
+
+    with pytest.raises(ValidationError):
+        SchemaCatalog(default_schema_directory()).validate_named(
+            "agent-investigation.schema.json", document
+        )
 
 
 class _LongIds(_Script):
