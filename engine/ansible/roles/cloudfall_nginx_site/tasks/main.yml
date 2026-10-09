@@ -20,6 +20,47 @@
     update_cache: true
     cache_valid_time: 3600
 
+# The TLS server block spells HTTP/2 the way the installed Nginx parses it:
+# `http2 on;` exists only from 1.25.1, and Debian 12 ships 1.22.1. Nginx
+# prints its version on stderr. The probe also runs in check mode, since the
+# template needs the version there too.
+- name: Read the installed Nginx version
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/nginx
+      - -v
+  register: cloudfall_nginx_site_version_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Require a readable Nginx version
+  ansible.builtin.assert:
+    that:
+      - cloudfall_nginx_site_version_probe.rc == 0
+      - >-
+        cloudfall_nginx_site_version_probe.stderr is search(
+          '^nginx version: nginx/[0-9]+[.][0-9]+[.][0-9]+', multiline=True
+        )
+    fail_msg: >-
+      Cannot read the installed Nginx version from `nginx -v` (exit {{
+        cloudfall_nginx_site_version_probe.rc
+      }}): {{
+        cloudfall_nginx_site_version_probe.stderr | default('', true)
+        or cloudfall_nginx_site_version_probe.msg | default('')
+      }}
+
+- name: Record the installed Nginx version
+  ansible.builtin.set_fact:
+    cloudfall_nginx_site_version: >-
+      {{
+        cloudfall_nginx_site_version_probe.stderr
+        | regex_findall(
+            '^nginx version: nginx/([0-9]+[.][0-9]+[.][0-9]+)', multiline=True
+          )
+        | first
+      }}
+
 - name: Create the ACME challenge webroot
   ansible.builtin.file:
     path: "{{ cloudfall_nginx_site_acme_webroot }}"
@@ -50,42 +91,30 @@
         and cloudfall_nginx_site_certificate.stat.exists
       }}
 
-- name: Render the managed virtual host
-  ansible.builtin.template:
-    src: domain-site.conf.j2
-    dest: "{{ cloudfall_nginx_site_domain.proxy.configurationPath }}"
-    owner: root
-    group: root
-    mode: "0644"
-  notify: Reload Nginx
-
-- name: Enable the managed virtual host
-  ansible.builtin.file:
-    src: "{{ cloudfall_nginx_site_domain.proxy.configurationPath }}"
-    dest: >-
-      /etc/nginx/sites-enabled/{{
-        cloudfall_nginx_site_domain.proxy.configurationPath | basename
+# Only a vhost under sites-available is linked into sites-enabled; an empty
+# link path means the declared path is read by Nginx where it is.
+- name: Locate the managed virtual host link
+  ansible.builtin.set_fact:
+    cloudfall_nginx_site_link: >-
+      {{
+        '/etc/nginx/sites-enabled/'
+        ~ (cloudfall_nginx_site_domain.proxy.configurationPath | basename)
+        if cloudfall_nginx_site_domain.proxy.configurationPath.startswith(
+          '/etc/nginx/sites-available/'
+        )
+        else ''
       }}
-    state: link
-  notify: Reload Nginx
-  when: >-
-    cloudfall_nginx_site_domain.proxy.configurationPath.startswith(
-      '/etc/nginx/sites-available/'
-    )
 
+- name: Apply the virtual host before issuance
+  ansible.builtin.include_tasks: apply_virtual_host.yml
+
+# Nginx is started only after the configuration test passed, so a rejected
+# vhost never reaches a starting server.
 - name: Enable Nginx
   ansible.builtin.systemd_service:
     name: nginx.service
     enabled: true
     state: started
-
-- name: Validate the Nginx configuration before issuance
-  ansible.builtin.command:
-    argv:
-      - /usr/sbin/nginx
-      - -t
-  changed_when: false
-  when: not ansible_check_mode
 
 - name: Serve the ACME challenge location before issuance
   ansible.builtin.meta: flush_handlers
@@ -133,14 +162,8 @@
         and cloudfall_nginx_site_certificate.stat.exists
       }}
 
-- name: Render the managed virtual host with issued material
-  ansible.builtin.template:
-    src: domain-site.conf.j2
-    dest: "{{ cloudfall_nginx_site_domain.proxy.configurationPath }}"
-    owner: root
-    group: root
-    mode: "0644"
-  notify: Reload Nginx
+- name: Apply the virtual host with issued material
+  ansible.builtin.include_tasks: apply_virtual_host.yml
 
 - name: Enable the certificate renewal timer
   ansible.builtin.systemd_service:
@@ -148,14 +171,6 @@
     enabled: true
     state: started
   when: cloudfall_nginx_site_domain.tls.mode == "required"
-
-- name: Validate the complete Nginx configuration
-  ansible.builtin.command:
-    argv:
-      - /usr/sbin/nginx
-      - -t
-  changed_when: false
-  when: not ansible_check_mode
 
 - name: Apply the validated virtual host
   ansible.builtin.meta: flush_handlers

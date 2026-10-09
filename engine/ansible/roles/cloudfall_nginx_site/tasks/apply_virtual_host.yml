@@ -1,0 +1,89 @@
+---
+# A render goes live only behind `nginx -t`. What was on disk before is
+# recorded first, so a rejected render is rolled back before the play fails:
+# otherwise the invalid vhost stays enabled and the next reload (a certbot
+# hook, a reboot) takes every site on the host down with it. The rescue ends
+# in a failure, so with force_handlers off the queued reload never runs.
+- name: Inspect the current virtual host
+  ansible.builtin.stat:
+    path: "{{ cloudfall_nginx_site_domain.proxy.configurationPath }}"
+    get_checksum: false
+  register: cloudfall_nginx_site_previous_file
+
+- name: Keep the current virtual host for rollback
+  ansible.builtin.slurp:
+    src: "{{ cloudfall_nginx_site_domain.proxy.configurationPath }}"
+  register: cloudfall_nginx_site_previous_content
+  when: cloudfall_nginx_site_previous_file.stat.exists
+
+- name: Inspect the current virtual host link
+  ansible.builtin.stat:
+    path: "{{ cloudfall_nginx_site_link }}"
+    get_checksum: false
+  register: cloudfall_nginx_site_previous_link
+  when: cloudfall_nginx_site_link | length > 0
+
+- name: Apply the virtual host behind the configuration test
+  block:
+    - name: Render the managed virtual host
+      ansible.builtin.template:
+        src: domain-site.conf.j2
+        dest: "{{ cloudfall_nginx_site_domain.proxy.configurationPath }}"
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload Nginx
+
+    - name: Enable the managed virtual host
+      ansible.builtin.file:
+        src: "{{ cloudfall_nginx_site_domain.proxy.configurationPath }}"
+        dest: "{{ cloudfall_nginx_site_link }}"
+        state: link
+      notify: Reload Nginx
+      when: cloudfall_nginx_site_link | length > 0
+
+    - name: Validate the Nginx configuration
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/nginx
+          - -t
+      changed_when: false
+      when: not ansible_check_mode
+  rescue:
+    - name: Restore the previous virtual host
+      ansible.builtin.copy:
+        content: >-
+          {{ cloudfall_nginx_site_previous_content.content | b64decode }}
+        dest: "{{ cloudfall_nginx_site_domain.proxy.configurationPath }}"
+        owner: "{{ cloudfall_nginx_site_previous_file.stat.pw_name }}"
+        group: "{{ cloudfall_nginx_site_previous_file.stat.gr_name }}"
+        mode: "{{ cloudfall_nginx_site_previous_file.stat.mode }}"
+      when:
+        - not ansible_check_mode
+        - cloudfall_nginx_site_previous_file.stat.exists
+
+    - name: Remove the rejected new virtual host
+      ansible.builtin.file:
+        path: "{{ cloudfall_nginx_site_domain.proxy.configurationPath }}"
+        state: absent
+      when:
+        - not ansible_check_mode
+        - not cloudfall_nginx_site_previous_file.stat.exists
+
+    - name: Remove the link this run created
+      ansible.builtin.file:
+        path: "{{ cloudfall_nginx_site_link }}"
+        state: absent
+      when:
+        - not ansible_check_mode
+        - cloudfall_nginx_site_link | length > 0
+        - not cloudfall_nginx_site_previous_link.stat.exists
+
+    - name: Fail after rolling back the rejected virtual host
+      ansible.builtin.fail:
+        msg: >-
+          {{ cloudfall_nginx_site_domain.proxy.configurationPath }} was
+          rejected and rolled back, and Nginx was not reloaded: {{
+            ansible_failed_result.stderr | default('', true)
+            or ansible_failed_result.msg | default('')
+          }}

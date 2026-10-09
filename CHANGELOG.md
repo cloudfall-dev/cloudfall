@@ -534,6 +534,17 @@ Notable changes to Cloudfall. The format follows
   `spec.steps[].arguments` only holds arguments that ran whole; the trace
   still keeps the start of the raw arguments. `agent-investigation.schema.json`
   bounds both finding fields with `maxLength` (#63)
+- `domains` deploys a TLS route on Debian 12. The vhost wrote `http2 on;`,
+  which Nginx only knows from 1.25.1, so on Debian's 1.22.1 `nginx -t`
+  failed with `unknown directive "http2"`. The role now reads the installed
+  version with `nginx -v` (failing the converge when it cannot) and writes
+  `listen 443 ssl http2;` below 1.25.1; the rendered vhost on 1.25.1 and
+  later is unchanged. A vhost that `nginx -t` rejects no longer stays on
+  disk and enabled for the next reload (a certbot hook, a reboot) to take
+  every site on the host down: the role restores the previous file, or
+  removes a new file and the `sites-enabled` link this run created, then
+  fails with Nginx's error and without reloading. Nginx is now started only
+  after the configuration test passes (#66)
 
 ### Security
 
