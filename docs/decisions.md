@@ -59,3 +59,11 @@ entry that supersedes it, never by editing an old one.
 - Why: A replayed record can't be approved (D-2), so letting it supersede a live proposal leaves the operator with nothing to approve
 - Applies to: sdk/src/cloudfall/decision.py, sdk/src/cloudfall/app.py, agent investigate --replay, cloudfall why
 - Enforced by: review
+
+## D-8: The finding and recorded step arguments are bounded
+
+- Decided: 2026-10-09, in cloudfall-dev/cloudfall#63
+- Rule: The investigation record keeps at most 8000 characters of finding.rootCause and of finding.why, keeping the start and marking the cut as D-6 does, and the schema bounds both; a tool call whose parsed arguments serialize to more than 8000 characters is refused before it runs, recorded as an invalid step with empty arguments, so spec.steps[].arguments only ever holds arguments that ran whole
+- Why: All three come from the model's output, which can quote host output; structured arguments can't be cut and stay meaningful, so refusing keeps steps[] a true account of what ran
+- Applies to: sdk/src/cloudfall/investigation.py, config/schemas/v1/agent-investigation.schema.json
+- Enforced by: review
