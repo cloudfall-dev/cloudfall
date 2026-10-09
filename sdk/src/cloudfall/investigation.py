@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -39,6 +40,8 @@ TOOL_TEXT_LIMIT = 8000
 """Most characters of host output one tool result hands the model."""
 TOOL_NAME_LIMIT = 128
 """Most characters of a tool name the record keeps, as its schema allows."""
+REPLY_ID_LIMIT = 256
+"""Most characters of an endpoint's response or request id the trace keeps."""
 SAVE_ATTEMPTS = 100
 """Most investigations recorded under one second's id, with their suffixes."""
 ENDPOINT_LIMIT = 512
@@ -164,11 +167,18 @@ class AgentTool:
     call: Callable[[Mapping[str, object]], ToolResult]
 
 
-ChatTransport = Callable[[str, Mapping[str, object]], Mapping[str, object]]
-"""Send one chat request body to a URL and return the answer's JSON.
+@dataclass(frozen=True, slots=True)
+class ModelReply:
+    """One answer of the endpoint: its JSON, and the request id it was served under."""
 
-A failed request raises ``InvestigationError``.
-"""
+    body: Mapping[str, object]
+    request_id: str | None = None
+
+
+ChatTransport = Callable[[str, Mapping[str, object]], ModelReply]
+"""Send one chat request body to a URL and return the endpoint's reply.
+
+A failed request raises ``InvestigationError``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +257,8 @@ class Investigation:
     finding: Finding | None
     replay: str | None = None
     """The recording played back instead of the hosts, when there was one."""
+    trace: tuple[Turn, ...] = ()
+    """Every turn as the endpoint answered it, reasoning included."""
 
     def as_document(self) -> dict[str, object]:
         """Serialize the investigation as a schema-valid record."""
@@ -268,6 +280,8 @@ class Investigation:
             spec["finding"] = self.finding.as_dict()
         if self.replay is not None:
             spec["replay"] = self.replay
+        if self.trace:
+            spec["trace"] = [turn.as_dict() for turn in self.trace]
         return {
             "apiVersion": "cloudfall/v1",
             "kind": "AgentInvestigation",
@@ -323,12 +337,61 @@ class InvestigationStore:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolCallText:
+    """One tool call exactly as the model wrote it: the name and the raw arguments."""
+
+    name: str
+    arguments: str
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the call for the record."""
+        return {"name": self.name, "arguments": self.arguments}
+
+
+@dataclass(frozen=True, slots=True)
 class Turn:
-    """The model answered one turn: its words, and how many tools it called."""
+    """One turn of the model, as the endpoint answered it.
+
+    Its words, its reasoning when the model returns it (Nemotron does, as
+    ``reasoning_content``), the tool calls as written, the ids the endpoint
+    served it under, how long it took and the tokens it cost.
+    """
 
     turn: int
     text: str
-    calls: int
+    reasoning: str
+    tool_calls: tuple[ToolCallText, ...]
+    response_id: str | None
+    request_id: str | None
+    elapsed_ms: int
+    prompt_tokens: int
+    completion_tokens: int
+    reasoning_tokens: int
+
+    @property
+    def calls(self) -> int:
+        """How many tools the model called this turn."""
+        return len(self.tool_calls)
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the turn for the record's trace."""
+        document: dict[str, object] = {
+            "turn": self.turn,
+            "text": self.text,
+            "reasoning": self.reasoning,
+            "toolCalls": [call.as_dict() for call in self.tool_calls],
+            "elapsedMs": self.elapsed_ms,
+            "tokens": {
+                "prompt": self.prompt_tokens,
+                "completion": self.completion_tokens,
+                "reasoning": self.reasoning_tokens,
+            },
+        }
+        if self.response_id is not None:
+            document["responseId"] = self.response_id
+        if self.request_id is not None:
+            document["requestId"] = self.request_id
+        return document
 
 
 @dataclass(frozen=True, slots=True)
@@ -392,6 +455,7 @@ def investigation_events(  # noqa: PLR0913 - as investigate.
     steps: list[Step] = []
     seen: dict[str, ToolResult] = {}
     usage = Usage()
+    trace: list[Turn] = []
     answer = ""
     status = InvestigationStatus.TURN_LIMIT
     turns = 0
@@ -412,11 +476,13 @@ def investigation_events(  # noqa: PLR0913 - as investigate.
             answer=answer,
             finding=finding,
             replay=replay,
+            trace=tuple(trace),
         )
 
     try:
         while turns < max_turns:
             turns += 1
+            asked = time.monotonic()
             reply = transport(
                 endpoint.chat_url,
                 {
@@ -426,14 +492,17 @@ def investigation_events(  # noqa: PLR0913 - as investigate.
                     "temperature": 0.2,
                 },
             )
-            usage = usage.plus(reply)
-            message = _first_message(reply)
+            elapsed_ms = int((time.monotonic() - asked) * 1000)
+            usage = usage.plus(reply.body)
+            message = _first_message(reply.body)
             messages.append(message)
             calls = cast(
                 "Sequence[Mapping[str, object]]", message.get("tool_calls") or ()
             )
             text = str(message.get("content") or "").strip()
-            yield Turn(turn=turns, text=text, calls=len(calls))
+            turn = _turn(turns, reply, message, calls, elapsed_ms)
+            trace.append(turn)
+            yield turn
             if not calls:
                 answer = text
                 status = InvestigationStatus.UNSTRUCTURED
@@ -480,6 +549,49 @@ def _tool_definition(tool: AgentTool) -> dict[str, object]:
             "parameters": dict(tool.input_schema),
         },
     }
+
+
+def _turn(
+    number: int,
+    reply: ModelReply,
+    message: Mapping[str, object],
+    calls: Sequence[Mapping[str, object]],
+    elapsed_ms: int,
+) -> Turn:
+    """Read one turn's raw trace out of the endpoint's answer."""
+    usage = reply.body.get("usage")
+    usage = usage if isinstance(usage, Mapping) else {}
+    details = usage.get("completion_tokens_details")
+    details = details if isinstance(details, Mapping) else {}
+    reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+    response_id = reply.body.get("id")
+    # The ids are the endpoint's text; the record keeps what its schema takes.
+    return Turn(
+        turn=number,
+        text=str(message.get("content") or "").strip(),
+        reasoning=str(reasoning).strip(),
+        tool_calls=tuple(_call_text(call) for call in calls),
+        response_id=(
+            response_id[:REPLY_ID_LIMIT] if isinstance(response_id, str) else None
+        ),
+        request_id=(
+            None if reply.request_id is None else reply.request_id[:REPLY_ID_LIMIT]
+        ),
+        elapsed_ms=elapsed_ms,
+        prompt_tokens=_count(usage, "prompt_tokens"),
+        completion_tokens=_count(usage, "completion_tokens"),
+        reasoning_tokens=_count(details, "reasoning_tokens"),
+    )
+
+
+def _call_text(call: Mapping[str, object]) -> ToolCallText:
+    function = call.get("function")
+    function = function if isinstance(function, Mapping) else {}
+    arguments = function.get("arguments", "")
+    return ToolCallText(
+        name=str(function.get("name", "")),
+        arguments=arguments if isinstance(arguments, str) else json.dumps(arguments),
+    )
 
 
 def _first_message(reply: Mapping[str, object]) -> dict[str, object]:

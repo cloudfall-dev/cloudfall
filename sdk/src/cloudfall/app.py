@@ -140,6 +140,7 @@ from cloudfall.investigation import (
     InvestigationStatus,
     InvestigationStore,
     ModelEndpoint,
+    ModelReply,
     ModelUnavailableError,
     Progress,
     StepOutcome,
@@ -2231,9 +2232,10 @@ class InvestigateArgs(CatalogArgs):
 class InvestigationEvent:
     """``agent investigate``: one event of the stream.
 
-    ``turn`` is the model's words and how many tools it called; ``call`` is one
-    tool call and what the tool handed back; the last event, ``investigation``,
-    is the record as it was saved.
+    ``turn`` is one model turn as the endpoint answered it (``trace``: its
+    reasoning, the tool calls as written, the response and request ids, the
+    time and the tokens); ``call`` is one tool call and what the tool handed
+    back; the last event, ``investigation``, is the record as it was saved.
     """
 
     effect: str
@@ -2241,6 +2243,7 @@ class InvestigationEvent:
     turn: int | None = None
     text: str | None = None
     calls: int | None = None
+    trace: dict[str, object] = Out(default_factory=dict, ordered=True)
     step: dict[str, object] = Out(default_factory=dict, ordered=True)
     result: dict[str, object] = Out(default_factory=dict, ordered=True)
     status: str | None = None
@@ -2345,6 +2348,7 @@ def _progress_event(progress: Progress) -> InvestigationEvent:
             turn=progress.turn,
             text=progress.text,
             calls=progress.calls,
+            trace=progress.as_dict(),
         )
     wrote = (
         progress.step.decision is not None
@@ -2444,7 +2448,7 @@ def _tool_result(
 def _chat_transport(ctx: Ctx, api_key: str) -> ChatTransport:
     """Send one chat request through ``ctx.http``."""
 
-    def send(url: str, body: Mapping[str, object]) -> Mapping[str, object]:
+    def send(url: str, body: Mapping[str, object]) -> ModelReply:
         try:
             response = ctx.http.post(
                 url,
@@ -2473,7 +2477,10 @@ def _chat_transport(ctx: Ctx, api_key: str) -> ChatTransport:
         if not isinstance(answer, Mapping):
             message = "the model endpoint answered JSON that is not an object"
             raise InvestigationError(ERROR_MODEL_ANSWER_MALFORMED, message)
-        return cast("Mapping[str, object]", answer)
+        return ModelReply(
+            body=cast("Mapping[str, object]", answer),
+            request_id=response.headers.get("x-request-id"),
+        )
 
     return send
 

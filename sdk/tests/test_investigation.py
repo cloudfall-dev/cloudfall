@@ -17,6 +17,7 @@ from cloudfall.investigation import (
     InvestigationStatus,
     InvestigationStore,
     ModelEndpoint,
+    ModelReply,
     ModelUnavailableError,
     StepOutcome,
     ToolResult,
@@ -74,10 +75,10 @@ class _Script:
         self.replies = list(replies)
         self.requests: list[Mapping[str, object]] = []
 
-    def __call__(self, url: str, body: Mapping[str, object]) -> Mapping[str, object]:
+    def __call__(self, url: str, body: Mapping[str, object]) -> ModelReply:
         assert url == "https://models.example/v1/chat/completions"
         self.requests.append(json.loads(json.dumps(body)))
-        return self.replies.pop(0)
+        return ModelReply(body=self.replies.pop(0), request_id="req-test")
 
 
 class _Tool:
@@ -270,7 +271,7 @@ def test_a_malformed_model_answer_is_refused() -> None:
 class _Failing(_Script):
     """A model that answers from a list, then its endpoint refuses."""
 
-    def __call__(self, url: str, body: Mapping[str, object]) -> Mapping[str, object]:
+    def __call__(self, url: str, body: Mapping[str, object]) -> ModelReply:
         if not self.replies:
             message = "the model endpoint answered 500: overloaded"
             raise InvestigationError(ERROR_MODEL_REFUSED, message)
@@ -802,6 +803,11 @@ def test_the_cli_streams_each_turn_and_call_then_the_record(
     assert events[1]["effect"] == "created"
     assert "/var/log/shop holds 36G" in events[1]["result"]["output"]
     assert events[2]["text"].startswith("ROOT CAUSE")
+    # A turn carries its raw trace; this endpoint sends no x-request-id.
+    trace = events[0]["trace"]
+    assert trace["toolCalls"][0]["name"] == "operation_facts"
+    assert "requestId" not in trace
+    assert "sk-test" not in json.dumps(events)
     # The decision the call wrote, and the saved record.
     assert stream["end"]["_summary"] is True
     assert stream["end"]["effects"] == {"created": 2, "noop": 2}
@@ -828,3 +834,66 @@ def test_an_incomplete_investigation_ends_with_the_record_then_93(
     # The error line holds no data: the record is the event before it.
     assert "data.investigation" not in error["suggestion"]
     assert "kind investigation" in error["suggestion"]
+
+
+def test_each_turn_keeps_the_raw_trace() -> None:
+    report, rotate = _tools()
+    thinking = _call("disk-report", {})
+    thinking["id"] = "chatcmpl-1"
+    first = thinking["choices"]
+    assert isinstance(first, list)
+    first[0]["message"]["reasoning_content"] = "The disk may be full; read it first."
+    thinking["usage"] = {
+        "prompt_tokens": 100,
+        "completion_tokens": 40,
+        "completion_tokens_details": {"reasoning_tokens": 30},
+    }
+    script = _Script(
+        thinking, _say("ROOT CAUSE: disk\nPROPOSED: none\nWHY: read only.")
+    )
+
+    done = investigate("alert", _tool_list(report, rotate), ENDPOINT, script)
+
+    turn = done.trace[0]
+    assert turn.reasoning == "The disk may be full; read it first."
+    assert turn.tool_calls[0].name == "disk-report"
+    assert turn.tool_calls[0].arguments == "{}"
+    assert (turn.response_id, turn.request_id) == ("chatcmpl-1", "req-test")
+    assert (turn.prompt_tokens, turn.completion_tokens, turn.reasoning_tokens) == (
+        100,
+        40,
+        30,
+    )
+    recorded = done.as_document()["spec"]
+    assert isinstance(recorded, dict)
+    assert recorded["trace"][0]["reasoning"] == turn.reasoning
+    assert recorded["trace"][1]["toolCalls"] == []
+
+
+class _LongIds(_Script):
+    """An endpoint that serves its answers under over-long ids."""
+
+    def __call__(self, url: str, body: Mapping[str, object]) -> ModelReply:
+        reply = super().__call__(url, body)
+        return ModelReply(body=reply.body, request_id="r" * 300)
+
+
+def test_an_over_long_endpoint_id_still_leaves_a_valid_record(
+    tmp_path: Path,
+) -> None:
+    report, rotate = _tools()
+    answer = _say("ROOT CAUSE: disk\nPROPOSED: none\nWHY: read only.")
+    answer["id"] = "chatcmpl-" + "x" * 300
+    script = _LongIds(answer)
+    done = investigate("alert", _tool_list(report, rotate), ENDPOINT, script)
+
+    saved = InvestigationStore(
+        directory=tmp_path / "investigations",
+        catalog=SchemaCatalog(default_schema_directory()),
+    ).save(done)
+
+    turn = saved.trace[0]
+    assert turn.response_id is not None
+    assert turn.request_id is not None
+    assert turn.response_id.startswith("chatcmpl-")
+    assert (len(turn.response_id), len(turn.request_id)) == (256, 256)
