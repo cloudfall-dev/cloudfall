@@ -31,7 +31,8 @@ Notable changes to Cloudfall. The format follows
   `PRECONDITION` (`decision_replayed`) before asking for the decision id or
   running anything. `--replay` also refuses, before the model is asked, a
   `--decisions` directory that resolves to the recording itself, which would
-  have written played-back records into the run being played (#36)
+  have written played-back records into the run being played, and a
+  `--replay` path longer than the 512 characters the records keep (#36)
 - Every turn of `agent investigate` keeps its raw trace, in the stream's
   `turn` event (`trace`) and in the investigation record (`spec.trace`): the
   model's reasoning when it returns one (Nemotron's `reasoning_content`),

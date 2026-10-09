@@ -915,6 +915,56 @@ def test_a_replay_into_its_own_recording_is_refused_before_the_model(
     assert list((repository / "recorded").iterdir()) == []
 
 
+def test_a_replay_path_too_long_to_record_is_refused_before_the_model(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], model_url: str
+) -> None:
+    """The records keep --replay as given, at most 512 characters (#36).
+
+    Past that, every proposal and the investigation itself would fail
+    their schema only after the model was asked.
+    """
+    repository = _repository(tmp_path)
+    for name in ("deploy.yml", "health.yml"):
+        (repository / "playbooks" / name).write_text(LOCAL_PLAY, encoding="utf-8")
+    recorded = main(
+        [
+            *("operations", "propose", "deploy", "--repository", str(repository)),
+            *("--target", "localhost", "--input", "version=2"),
+            *("--decisions", "recorded"),
+        ]
+    )
+    assert recorded == 0
+    capsys.readouterr()
+    nested = repository / ("a" * 200) / ("b" * 200)
+    nested.mkdir(parents=True)
+    (nested / ("c" * 200)).symlink_to(repository / "recorded")
+    replay = f"{'a' * 200}/{'b' * 200}/{'c' * 200}"
+    key = tmp_path / "model.key"
+    key.write_text("sk-test\n", encoding="utf-8")
+    _Model.seen.clear()
+    _Model.replies[:] = [
+        _call("operation_deploy", {"target": "localhost", "inputs": {"version": "2"}}),
+        _say("ROOT CAUSE: drift\nPROPOSED: deploy\nWHY: the release is old."),
+    ]
+
+    exit_code = main(
+        [
+            *("agent", "investigate", "--repository", str(repository)),
+            *("--alert", "web-1 serves an old release"),
+            *("--base-url", model_url, "--model", "nemotron"),
+            *("--api-key-from-file", str(key), "--replay", replay),
+        ]
+    )
+
+    payload = _streamed(capsys.readouterr().out)
+    assert exit_code == 2, payload
+    assert payload["error"]["code"] == "ARG_ERROR"
+    assert "512" in payload["error"]["message"]
+    assert _Model.seen == []
+    assert not (repository / "investigations").exists()
+    assert not (repository / "decisions").exists()
+
+
 def test_the_cli_streams_each_turn_and_call_then_the_record(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], model_url: str
 ) -> None:

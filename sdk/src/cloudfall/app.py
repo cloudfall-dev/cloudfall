@@ -136,6 +136,7 @@ from cloudfall.investigation import (
     ERROR_MODEL_REFUSED,
     ERROR_MODEL_UNREACHABLE,
     INVESTIGATION_DIRECTORY,
+    REPLAY_LIMIT,
     AgentTool,
     ChatTransport,
     Investigation,
@@ -2264,6 +2265,10 @@ class InvestigateArgs(CatalogArgs):
         if not self.alert.strip():
             message = "the alert is empty"
             raise ParseError(message, context={"flag": "alert"})
+        if self.replay is not None and len(self.replay.as_posix()) > REPLAY_LIMIT:
+            # The investigation and its decisions keep the path as given.
+            message = f"--replay is longer than {REPLAY_LIMIT} characters"
+            raise ParseError(message, context={"flag": "replay"})
         if (
             self.replay is not None
             and (self.root / self.decisions).resolve()
