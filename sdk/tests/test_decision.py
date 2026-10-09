@@ -27,6 +27,7 @@ from cloudfall.decision import (
     gate,
     propose,
     read_basis,
+    refuse_unapprovable,
     run_command,
 )
 from cloudfall.domain import ResourceId
@@ -37,6 +38,8 @@ from treaty import CommandPath
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
+
+    from cloudfall.decision import Decision
 
 SCHEMAS = default_schema_directory()
 MOMENT = datetime(2026, 9, 21, 14, 30, 12, tzinfo=UTC)
@@ -51,6 +54,9 @@ targets: fleet
 verify:
   playbook: playbooks/health.yml
 """
+
+LATER = datetime(2026, 9, 21, 14, 45, 0, tzinfo=UTC)
+LATEST = datetime(2026, 9, 21, 15, 0, 0, tzinfo=UTC)
 
 
 def _store(repository: Path) -> DecisionStore:
@@ -87,6 +93,25 @@ def _proposal(
         repository=repository,
         observations=_observations(repository, "web-1"),
     )
+
+
+def _legacy_read(
+    repository: Path, store: DecisionStore, moment: datetime
+) -> Decision:
+    """Record a facts read as a version before #26 did: ``proposed``, no exit code."""
+    decision = propose(
+        _proposal(repository, "facts", target=None, inputs={}),
+        store,
+        lambda: moment,
+        _Runner(),
+    )
+    path = repository / DECISION_DIRECTORY / f"{decision.decision_id.value}.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["spec"]["status"] = "proposed"
+    del document["spec"]["ranExitCode"]
+    del document["spec"]["verdict"]
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return store.load(decision.decision_id)
 
 
 class _Runner:
@@ -358,6 +383,260 @@ def test_a_read_operation_is_gated_by_nothing(tmp_path: Path) -> None:
     assert decision.verify_playbook is None
 
 
+def test_a_read_operation_is_recorded_as_ran_with_its_exit_code(
+    tmp_path: Path,
+) -> None:
+    """A read has run by the time it is recorded; it never waits (#26)."""
+    repository = _repository(tmp_path, deploy=DEPLOY, facts=FACTS)
+    store = _store(repository)
+
+    decision = propose(
+        _proposal(repository, "facts", target=None, inputs={}),
+        store,
+        lambda: MOMENT,
+        _Runner(exit_code=2),
+    )
+
+    assert decision.status is DecisionStatus.RAN
+    assert decision.ran_exit_code == 2
+    assert decision.check.exit_code == 2
+    assert store.load(decision.decision_id) == decision
+    on_disk = json.loads(
+        (repository / DECISION_DIRECTORY / f"{decision.decision_id.value}.json")
+        .read_text(encoding="utf-8")
+    )
+    assert on_disk["spec"]["status"] == "ran"
+    assert on_disk["spec"]["ranExitCode"] == 2
+
+
+def test_a_mutating_proposal_still_waits_and_has_no_run_exit_code(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+
+    decision = propose(
+        _proposal(repository), _store(repository), lambda: MOMENT, _Runner()
+    )
+
+    assert decision.status is DecisionStatus.PROPOSED
+    assert decision.ran_exit_code is None
+    assert "ranExitCode" not in json.dumps(decision.as_document())
+
+
+def test_a_new_proposal_supersedes_the_open_one_of_the_same_call(
+    tmp_path: Path,
+) -> None:
+    """Proposing the same thing twice leaves one open proposal, not two (#26)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    first = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+
+    second = propose(_proposal(repository), store, lambda: LATER, _Runner())
+
+    older = store.load(first.decision_id)
+    assert older.status is DecisionStatus.SUPERSEDED
+    assert older.superseded_by == second.decision_id
+    assert older.approval is None
+    assert older.verdict is not None
+    assert second.decision_id.value in older.verdict
+    assert store.load(second.decision_id).status is DecisionStatus.PROPOSED
+    on_disk = json.loads(
+        (repository / DECISION_DIRECTORY / f"{first.decision_id.value}.json")
+        .read_text(encoding="utf-8")
+    )
+    assert on_disk["spec"]["supersededBy"] == second.decision_id.value
+
+
+@pytest.mark.parametrize(
+    ("target", "inputs"),
+    [
+        ("web-2", {"version": "1.4.0"}),
+        ("web-1", {"version": "1.5.0"}),
+        ("web-1", {"version": "1.4.0", "force": "yes"}),
+    ],
+    ids=["other-target", "other-input", "extra-input"],
+)
+def test_a_proposal_of_another_call_supersedes_nothing(
+    tmp_path: Path, target: str, inputs: dict[str, object]
+) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    first = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+
+    propose(
+        _proposal(repository, target=target, inputs=inputs),
+        store,
+        lambda: LATER,
+        _Runner(),
+    )
+
+    assert store.load(first.decision_id).status is DecisionStatus.PROPOSED
+
+
+def test_superseding_never_touches_a_decision_that_ran(tmp_path: Path) -> None:
+    """Only an open proposal is replaced: what ran stays what it was."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    first = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    approved = approve(
+        ApprovalRequest(
+            decision=first, approver="roman", repository=repository, via=TERMINAL
+        ),
+        store,
+        lambda: MOMENT,
+        _Runner(),
+    )
+
+    propose(_proposal(repository), store, lambda: LATER, _Runner())
+
+    assert store.load(first.decision_id) == approved
+    assert approved.status is DecisionStatus.VERIFIED
+
+
+def test_a_read_run_supersedes_a_read_recorded_before_ran_existed(
+    tmp_path: Path,
+) -> None:
+    """A record on disk that says ``proposed`` for a read still loads (#26)."""
+    repository = _repository(tmp_path, deploy=DEPLOY, facts=FACTS)
+    store = _store(repository)
+    old = _legacy_read(repository, store, MOMENT)
+    assert old.status is DecisionStatus.PROPOSED
+
+    new = propose(
+        _proposal(repository, "facts", target=None, inputs={}),
+        store,
+        lambda: LATER,
+        _Runner(),
+    )
+
+    assert new.status is DecisionStatus.RAN
+    assert store.load(old.decision_id).superseded_by == new.decision_id
+
+
+def test_a_superseded_read_does_not_point_at_a_run_to_approve(
+    tmp_path: Path,
+) -> None:
+    """The read that replaced it ran already; there is nothing to approve."""
+    repository = _repository(tmp_path, deploy=DEPLOY, facts=FACTS)
+    store = _store(repository)
+    old = _legacy_read(repository, store, MOMENT)
+    new = propose(
+        _proposal(repository, "facts", target=None, inputs={}),
+        store,
+        lambda: LATER,
+        _Runner(),
+    )
+
+    with pytest.raises(DecisionError) as error:
+        refuse_unapprovable(store.load(old.decision_id))
+
+    assert error.value.code == "decision_not_proposed"
+    assert new.decision_id.value in error.value.detail
+    assert "approve that one" not in error.value.detail
+    assert "ran when it was proposed" in error.value.detail
+
+
+@pytest.mark.parametrize("status", ["ran", "superseded"])
+def test_approving_a_decision_that_is_not_open_is_refused(
+    tmp_path: Path, status: str
+) -> None:
+    repository = _repository(tmp_path, deploy=DEPLOY, facts=FACTS)
+    store = _store(repository)
+    if status == "ran":
+        decision = propose(
+            _proposal(repository, "facts", target=None, inputs={}),
+            store,
+            lambda: MOMENT,
+            _Runner(),
+        )
+    else:
+        first = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+        propose(_proposal(repository), store, lambda: LATER, _Runner())
+        decision = store.load(first.decision_id)
+    run = _Runner()
+
+    with pytest.raises(DecisionError) as error:
+        approve(
+            ApprovalRequest(
+                decision=decision,
+                approver="roman",
+                repository=repository,
+                via=TERMINAL,
+            ),
+            store,
+            lambda: MOMENT,
+            run,
+        )
+
+    assert error.value.code == "decision_not_proposed"
+    assert run.recorded == []
+    assert store.load(decision.decision_id) == decision
+
+
+def test_the_issue_repro_lists_ran_superseded_and_proposed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A read, then the same mutating proposal twice (#26)."""
+    repository = _repository(tmp_path, deploy=DEPLOY, facts=FACTS)
+    store = _store(repository)
+    propose(
+        _proposal(repository, "facts", target=None, inputs={}),
+        store,
+        lambda: MOMENT,
+        _Runner(),
+    )
+    propose(_proposal(repository), store, lambda: LATER, _Runner())
+    propose(_proposal(repository), store, lambda: LATEST, _Runner())
+
+    exit_code = main(["decisions", "list", "--repository", str(repository)])
+    every = json.loads(capsys.readouterr().out)
+    open_only = main(
+        [
+            *("decisions", "list", "--repository", str(repository)),
+            *("--status", "proposed"),
+        ]
+    )
+    waiting = json.loads(capsys.readouterr().out)
+    settled = main(
+        [
+            *("decisions", "list", "--repository", str(repository)),
+            *("--status", "ran", "--status", "superseded"),
+        ]
+    )
+    closed = json.loads(capsys.readouterr().out)
+
+    assert exit_code == open_only == settled == 0
+    assert [entry["spec"]["status"] for entry in every["data"]["decisions"]] == [
+        "ran",
+        "superseded",
+        "proposed",
+    ]
+    assert [entry["metadata"]["id"] for entry in waiting["data"]["decisions"]] == [
+        "deploy-20260921150000"
+    ]
+    assert [entry["spec"]["status"] for entry in closed["data"]["decisions"]] == [
+        "ran",
+        "superseded",
+    ]
+
+
+def test_an_unknown_status_filter_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = _repository(tmp_path)
+
+    exit_code = main(
+        [
+            *("decisions", "list", "--repository", str(repository)),
+            *("--status", "stale"),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 2
+    assert payload["error"]["code"] == "ARG_ERROR"
+
+
 def test_the_cli_proposes_and_then_lists_the_record(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -600,17 +879,13 @@ def test_a_run_that_verify_rejects_is_not_verified(tmp_path: Path) -> None:
     assert approved.verification.exit_code == 1
 
 
-def test_a_read_operation_without_verify_is_executed_not_verified(
+def test_an_operation_without_verify_is_executed_not_verified(
     tmp_path: Path,
 ) -> None:
+    """Only a read declares no verify step, and only one recorded before #26 waits."""
     repository = _repository(tmp_path, deploy=DEPLOY, facts=FACTS)
     store = _store(repository)
-    proposed = propose(
-        _proposal(repository, "facts", target=None, inputs={}),
-        store,
-        lambda: MOMENT,
-        _Runner(),
-    )
+    proposed = _legacy_read(repository, store, MOMENT)
 
     approved = approve(
         ApprovalRequest(
@@ -776,6 +1051,30 @@ def test_an_approval_off_a_terminal_is_refused(
     assert store.load(proposed.decision_id).status is DecisionStatus.PROPOSED
 
 
+def test_the_cli_refuses_a_superseded_decision_before_asking_for_its_id(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nobody types an id only to hear there was nothing to approve (#26)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    first = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    second = propose(_proposal(repository), store, lambda: LATER, _Runner())
+
+    exit_code = main(
+        [
+            *("decisions", "approve", first.decision_id.value),
+            *("--repository", str(repository), "--approver", "roman"),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 4
+    assert payload["error"]["code"] == "PRECONDITION"
+    assert payload["error"]["context"]["code"] == "decision_not_proposed"
+    assert second.decision_id.value in payload["error"]["message"]
+    assert store.load(first.decision_id).status is DecisionStatus.SUPERSEDED
+
+
 def test_a_raw_payload_cannot_approve_off_a_terminal(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -924,12 +1223,7 @@ def test_every_outcome_says_why_in_the_record(tmp_path: Path) -> None:
     )
     executed = approve(
         ApprovalRequest(
-            decision=propose(
-                _proposal(repository, "facts", target=None, inputs={}),
-                store,
-                lambda: MOMENT,
-                _Runner(),
-            ),
+            decision=_legacy_read(repository, store, MOMENT),
             approver="roman",
             repository=repository,
             via=TERMINAL,

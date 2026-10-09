@@ -29,7 +29,7 @@ LATER = datetime(2026, 9, 22, 8, 0, 0, tzinfo=UTC)
 
 
 def _record(repository: Path) -> tuple[Decision, Decision]:
-    """One verified deploy on web-1, then a proposed facts read of the fleet."""
+    """One verified deploy on web-1, then a facts read of the fleet that ran."""
     store = _store(repository)
     deploy = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
     deploy = approve(
@@ -168,11 +168,66 @@ def test_every_sentence_of_the_story_cites_the_record(tmp_path: Path) -> None:
         "It ended verified: the run succeeded and the verify step changed nothing."
     )
 
-    proposed = read.explanations[0].story
-    assert facts.status is DecisionStatus.PROPOSED
-    assert "was proposed against the whole fleet with no inputs." in proposed[1]
-    assert proposed[3].startswith("Nothing gated it:")
-    assert proposed[-1] == ("It is still proposed: nobody has approved or rejected it.")
+    ran = read.explanations[0].story
+    assert facts.status is DecisionStatus.RAN
+    assert "was proposed against the whole fleet with no inputs." in ran[1]
+    assert ran[3].startswith("Nothing gated it:")
+    assert ran[-1] == (
+        "It ran when it was proposed and exited 0: a read operation waits for "
+        "no approval."
+    )
+
+
+def test_a_superseded_proposal_says_what_replaced_it(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    first = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    second = propose(_proposal(repository), store, lambda: LATER, _Runner())
+
+    told = answer(store, WhyQuery.from_boundary(status=["superseded"]))
+
+    assert [e.decision.decision_id for e in told.explanations] == [first.decision_id]
+    assert told.explanations[0].story[-1] == (
+        f"It was superseded by {second.decision_id.value}, a newer proposal of "
+        "the same operation, targets and inputs; nobody approved it."
+    )
+
+
+def test_a_status_question_is_answered(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--status`` is repeatable and keeps only the statuses asked for (#26)."""
+    repository = _repository(tmp_path)
+    _record(repository)
+
+    exit_code = main(
+        [
+            *("why", "--repository", str(repository)),
+            *("--status", "ran", "--status", "proposed"),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["data"]["query"] == {"status": ["proposed", "ran"]}
+    assert [entry["id"] for entry in payload["data"]["answers"]] == [
+        "facts-20260922080000"
+    ]
+
+
+def test_an_unknown_status_question_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = _repository(tmp_path)
+
+    exit_code = main(["why", "--repository", str(repository), "--status", "stale"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 2
+    assert payload["error"]["code"] == "ARG_ERROR"
+    with pytest.raises(WhyError) as error:
+        WhyQuery.from_boundary(status=["stale"])
+    assert error.value.code == "why_status_unknown"
 
 
 def test_the_cli_answers_in_json_without_a_catalog(
@@ -217,7 +272,7 @@ def test_the_cli_answers_as_a_page(
     assert "<title>Cloudfall Why</title>" in page
     assert "2 decisions" in page
     assert 'class="badge healthy">verified' in page
-    assert 'class="badge warning">proposed' in page
+    assert 'class="badge healthy">ran' in page
     assert "roman approved it at 2026-09-21T14:30:12Z (via terminal)" in page
 
 

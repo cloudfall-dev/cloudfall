@@ -71,7 +71,7 @@ ERROR_DECISION_MISSING = "decision_missing"
 _ERROR_NOT_PROPOSED = "decision_not_proposed"
 _ERROR_APPROVER_UNKNOWN = "decision_approver_unknown"
 _ERROR_CHANNEL_UNKNOWN = "decision_approval_channel_unknown"
-_ERROR_RECORD_INVALID = "decision_record_invalid"
+ERROR_RECORD_INVALID = "decision_record_invalid"
 
 
 class DecisionError(RuntimeError):
@@ -113,6 +113,11 @@ class DecisionStatus(StrEnum):
     EXECUTED = "executed"
     VERIFIED = "verified"
     FAILED = "failed"
+    RAN = "ran"
+    """A read operation: it ran when it was proposed; nothing waits on it."""
+
+    SUPERSEDED = "superseded"
+    """A newer proposal of the same operation, targets and inputs replaced it."""
 
 
 def gate(risk: RiskLevel) -> tuple[Requirement, str]:
@@ -287,6 +292,16 @@ class Decision:
     execution: RunRecord | None = None
     verification: RunRecord | None = None
     verdict: str | None = None
+    ran_exit_code: int | None = None
+    superseded_by: ResourceId | None = None
+
+    def same_call(self, other: Decision) -> bool:
+        """Return whether both name the same operation, targets and inputs."""
+        return (
+            self.operation_id == other.operation_id
+            and self.targets == other.targets
+            and _canonical(self.inputs) == _canonical(other.inputs)
+        )
 
     def as_document(self) -> dict[str, object]:
         """Serialize the decision as a schema-valid record document."""
@@ -315,6 +330,10 @@ class Decision:
             spec["verify"] = self.verification.as_dict()
         if self.verdict is not None:
             spec["verdict"] = self.verdict
+        if self.ran_exit_code is not None:
+            spec["ranExitCode"] = self.ran_exit_code
+        if self.superseded_by is not None:
+            spec["supersededBy"] = self.superseded_by.value
         return {
             "apiVersion": API_VERSION,
             "kind": DECISION_KIND,
@@ -362,7 +381,7 @@ class DecisionStore:
             )
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             message = f"decision record is not valid JSON: {path}: {error}"
-            raise DecisionError(_ERROR_RECORD_INVALID, message) from error
+            raise DecisionError(ERROR_RECORD_INVALID, message) from error
         try:
             self.catalog.validate_named(DECISION_SCHEMA, document)
         except ValidationError as error:
@@ -371,7 +390,7 @@ class DecisionStore:
                 f"decision record does not match its schema: {path}: "
                 f"{field}: {error.message}"
             )
-            raise DecisionError(_ERROR_RECORD_INVALID, message) from error
+            raise DecisionError(ERROR_RECORD_INVALID, message) from error
         return _decision_from_document(document)
 
     def list(self) -> tuple[Decision, ...]:
@@ -418,10 +437,19 @@ def propose(
 
     Nothing on the fleet changes: check mode is the whole point of the
     step. The record it leaves is what an approval is given against.
+
+    A read operation has run by the time it is recorded, so it is recorded
+    as ``ran`` with its exit code rather than left waiting. An older open
+    proposal of the same operation, targets and inputs is marked
+    ``superseded`` by the new one: approving the older one would run what
+    the newer check already replaced.
     """
     operation = request.operation
     declared = _validated_inputs(operation, request.inputs)
     pattern = _validated_targets(operation, request.targets)
+    # Read before anything runs: a record that does not load stops the
+    # proposal here rather than after check mode ran.
+    recorded = store.list()
     moment = (now or _utc_now)()
     decision_id = _decision_identifier(operation.operation_id, moment)
     diff_path = store.directory / f"{decision_id.value}{_DIFF_SUFFIX}"
@@ -439,6 +467,7 @@ def propose(
     diff_path.parent.mkdir(parents=True, exist_ok=True)
     exit_code = (run or _run_check)(argv, environment, diff_path)
     requirement, reason = gate(operation.risk)
+    ran = requirement is Requirement.RUNS_FREELY
     decision = Decision(
         decision_id=decision_id,
         proposed_at=_timestamp(moment),
@@ -454,9 +483,28 @@ def propose(
         reason=reason,
         basis=read_basis(request.observations, request.repository),
         check=_preview(exit_code, tree, diff_path, request.repository),
-        status=DecisionStatus.PROPOSED,
+        status=DecisionStatus.RAN if ran else DecisionStatus.PROPOSED,
+        verdict=(
+            f"a read operation runs when it is proposed; it exited {exit_code}"
+            if ran
+            else None
+        ),
+        ran_exit_code=exit_code if ran else None,
     )
     store.save(decision)
+    for older in recorded:
+        if older.status is DecisionStatus.PROPOSED and older.same_call(decision):
+            store.update(
+                replace(
+                    older,
+                    status=DecisionStatus.SUPERSEDED,
+                    superseded_by=decision_id,
+                    verdict=(
+                        f"{decision_id.value} proposed the same operation, "
+                        "targets and inputs again"
+                    ),
+                )
+            )
     return decision
 
 
@@ -504,12 +552,7 @@ def approve(
     human read and the run that follows it.
     """
     decision = request.decision
-    if decision.status is not DecisionStatus.PROPOSED:
-        message = (
-            f"decision {decision.decision_id} is {decision.status.value}, so "
-            "there is nothing left to approve"
-        )
-        raise DecisionError(_ERROR_NOT_PROPOSED, message)
+    refuse_unapprovable(decision)
     if not request.approver.strip():
         message = "an approval records who gave it; pass --approver or set USER"
         raise DecisionError(_ERROR_APPROVER_UNKNOWN, message)
@@ -543,6 +586,40 @@ def approve(
     )
     store.update(approved)
     return approved
+
+
+def refuse_unapprovable(decision: Decision) -> None:
+    """Refuse a decision that is not an open proposal, before anything runs.
+
+    Callers that ask a person for the decision id check this first, so
+    nobody types an id only to hear there was nothing to approve.
+    """
+    if decision.status is DecisionStatus.PROPOSED:
+        return
+    if decision.status is DecisionStatus.SUPERSEDED:
+        # A read is recorded as ran, so the decision that replaced an old
+        # read record has nothing left to approve either.
+        instead = (
+            "it ran when it was proposed, so there is nothing to approve"
+            if decision.requirement is Requirement.RUNS_FREELY
+            else "approve that one instead"
+        )
+        message = (
+            f"decision {decision.decision_id} is superseded by "
+            f"{decision.superseded_by}, a newer proposal of the same operation, "
+            f"targets and inputs; {instead}"
+        )
+    elif decision.status is DecisionStatus.RAN:
+        message = (
+            f"decision {decision.decision_id} is a read operation that ran when "
+            "it was proposed, so there is nothing to approve"
+        )
+    else:
+        message = (
+            f"decision {decision.decision_id} is {decision.status.value}, so "
+            "there is nothing left to approve"
+        )
+    raise DecisionError(_ERROR_NOT_PROPOSED, message)
 
 
 def _outcome(
@@ -797,6 +874,11 @@ def _coerced(
     raise DecisionError(_ERROR_INPUT_TYPE, message)
 
 
+def _canonical(inputs: Mapping[str, object]) -> str:
+    """Return the inputs as one comparable text: ``1`` and ``true`` differ."""
+    return json.dumps(dict(inputs), sort_keys=True)
+
+
 def _decision_identifier(operation_id: ResourceId, moment: datetime) -> ResourceId:
     stamp = moment.strftime("%Y%m%d%H%M%S")
     return ResourceId.from_boundary(f"{operation_id.value}-{stamp}")
@@ -887,6 +969,14 @@ def _decision_from_document(document: Mapping[str, object]) -> Decision:
         ),
         status=DecisionStatus(str(spec["status"])),
         verdict=str(spec["verdict"]) if "verdict" in spec else None,
+        ran_exit_code=(
+            int(cast("int", spec["ranExitCode"])) if "ranExitCode" in spec else None
+        ),
+        superseded_by=(
+            ResourceId.from_boundary(spec["supersededBy"])
+            if "supersededBy" in spec
+            else None
+        ),
         execution=_run_from_document(spec.get("execution")),
         verification=_run_from_document(spec.get("verify")),
         approval=_approval_from_document(approval),
