@@ -8,6 +8,13 @@ Notable changes to Cloudfall. The format follows
 
 ### Added
 
+- `agent investigate` streams: one bare JSON line with `_seq` per model turn
+  (its words and how many tools it called), one per tool call (the step and
+  what the tool handed back, `effect: created` when it wrote a decision),
+  and the saved investigation record last (`kind: investigation`), then the
+  `"_summary": true` line with `effects`, or the error envelope when it
+  failed. `--no-stream` returns every event in one envelope. A watcher, such
+  as the hosted demo, shows the agent working instead of waiting for the end
 - A decision record's approval says how it arrived, as `approval.via`:
   `terminal` when a person typed the decision id at a terminal. A record
   written before reads as `via: unknown`. `cloudfall why` tells it in the

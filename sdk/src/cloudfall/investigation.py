@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -322,6 +322,28 @@ class InvestigationStore:
         raise InvestigationError(ERROR_INVESTIGATION_EXISTS, message)
 
 
+@dataclass(frozen=True, slots=True)
+class Turn:
+    """The model answered one turn: its words, and how many tools it called."""
+
+    turn: int
+    text: str
+    calls: int
+
+
+@dataclass(frozen=True, slots=True)
+class Called:
+    """One tool call of a turn, and what the tool handed back."""
+
+    turn: int
+    step: Step
+    result: ToolResult
+
+
+type Progress = Turn | Called
+"""What an investigation reports while it runs."""
+
+
 def investigate(  # noqa: PLR0913 - the loop's inputs, and what the record cites.
     alert: str,
     tools: Sequence[AgentTool],
@@ -335,6 +357,30 @@ def investigate(  # noqa: PLR0913 - the loop's inputs, and what the record cites
 
     When the endpoint fails or answers malformed once the run started, this
     raises ``ModelUnavailableError`` carrying the investigation so far.
+    """
+    events = investigation_events(
+        alert, tools, endpoint, transport, max_turns=max_turns, replay=replay
+    )
+    while True:
+        try:
+            next(events)
+        except StopIteration as stop:
+            return cast("Investigation", stop.value)
+
+
+def investigation_events(  # noqa: PLR0913 - as investigate.
+    alert: str,
+    tools: Sequence[AgentTool],
+    endpoint: ModelEndpoint,
+    transport: ChatTransport,
+    *,
+    max_turns: int = DEFAULT_MAX_TURNS,
+    replay: str | None = None,
+) -> Generator[Progress, None, Investigation]:
+    """Run the investigation, yielding each turn and call as it happens.
+
+    The generator's return value is the investigation; a failing endpoint
+    raises ``ModelUnavailableError`` as ``investigate`` does.
     """
     started = _utc_now()
     by_name = {tool.name: tool for tool in tools}
@@ -383,14 +429,19 @@ def investigate(  # noqa: PLR0913 - the loop's inputs, and what the record cites
             usage = usage.plus(reply)
             message = _first_message(reply)
             messages.append(message)
-            calls = message.get("tool_calls")
+            calls = cast(
+                "Sequence[Mapping[str, object]]", message.get("tool_calls") or ()
+            )
+            text = str(message.get("content") or "").strip()
+            yield Turn(turn=turns, text=text, calls=len(calls))
             if not calls:
-                answer = str(message.get("content") or "").strip()
+                answer = text
                 status = InvestigationStatus.UNSTRUCTURED
                 break
-            for call in cast("Sequence[Mapping[str, object]]", calls):
+            for call in calls:
                 step, result = _run_call(call, by_name, seen)
                 steps.append(step)
+                yield Called(turn=turns, step=step, result=result)
                 messages.append(
                     {
                         "role": "tool",
