@@ -192,6 +192,14 @@
             },
             "policy": {
               "$ref": "common.schema.json#/$defs/resourceId"
+            },
+            "via": {
+              "description": "How a person's approval arrived: terminal when a person typed the proposal id at a terminal. A human approval written before this field reads as unknown; an autonomous one has none.",
+              "type": "string",
+              "enum": [
+                "terminal",
+                "unknown"
+              ]
             }
           },
           "required": [

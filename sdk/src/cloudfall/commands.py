@@ -554,7 +554,11 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "operator approve",
         CommandEffect.SERVERS,
         "execute one proposal and verify that its trigger resolves",
-        gate="the proposal id names a receipt a human has reviewed",
+        gate=(
+            "a person types the proposal id at a terminal, which no flag answers "
+            "(`--yes` included); off a terminal it exits 4 with `PERSON_REQUIRED`, "
+            "and `operator show` previews the proposal"
+        ),
         output=_PROPOSAL,
     ),
 )
