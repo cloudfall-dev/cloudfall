@@ -1,0 +1,11 @@
+**/.venv
+**/__pycache__
+**/tmp
+**/decisions
+**/investigations
+.git
+.claude
+site
+demo
+dist
+docs

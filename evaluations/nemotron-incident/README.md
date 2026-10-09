@@ -92,3 +92,25 @@ uv run python evaluations/nemotron-incident/run.py run \
 
 The records land in `examples/disk-full-incident/tmp/eval/`; `run.py score`
 scores them again.
+
+### Without a host
+
+`replay` keeps the models live but answers every read and check from the run
+recorded on the broken host (`examples/disk-full-incident/recordings/disk-full`),
+so it needs only a Token Factory key:
+
+```console
+export CLOUDFALL_API_KEY=...                 # a Nebius Token Factory key
+uv run python evaluations/nemotron-incident/run.py replay \
+  nvidia/nemotron-3-super-120b-a12b,nvidia/Nemotron-3_5-Lightning 2
+```
+
+The records land in `examples/disk-full-incident/tmp/eval-replay/`, and
+`run.py score tmp/eval-replay` scores them again. A tool call the recording
+does not hold fails and says so, so a model that wanders off the recorded
+path gets no invented output. On 2026-10-10 this gave
+the same picture as the live rounds: Super 2 of 2 with the right fix, Lightning
+proposed the wipe 2 of 2.
+
+The `Dockerfile` beside this file packages Cloudfall, the incident and the
+script, for running the evaluation as a container job.

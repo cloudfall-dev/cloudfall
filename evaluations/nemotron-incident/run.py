@@ -6,7 +6,13 @@ incident. Each run gets its own decision and investigation directories under
 the example's tmp/eval/, and the records there are what gets scored.
 
     uv run python evaluations/nemotron-incident/run.py run MODEL[,MODEL...] RUNS
-    uv run python evaluations/nemotron-incident/run.py score
+    uv run python evaluations/nemotron-incident/run.py replay MODEL[,MODEL...] RUNS
+    uv run python evaluations/nemotron-incident/run.py score [DIRECTORY]
+
+``replay`` needs no host: every read and check is answered from the run
+recorded on the broken host (``recordings/disk-full``), while the model is
+live. Its records go under tmp/eval-replay/, which ``score tmp/eval-replay``
+scores. This is how the evaluation runs as a Nebius Serverless Job.
 """
 
 import json
@@ -20,14 +26,16 @@ from pathlib import Path
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "disk-full-incident"
 RECORDS = EXAMPLE / "tmp" / "eval"
+RECORDING = "recordings/disk-full"
 ALERT = "ALERT postgresql-main DOWN on host hz1. The shop's orders API returns 500."
 BASE_URL = "https://api.tokenfactory.nebius.com/v1/"
 READS = ("operation_disk_report", "operation_service_logs")
 
 
-def investigate(model: str, run: int) -> int:
-    """Run one investigation and return its exit code."""
-    slug = f"tmp/eval/{model.rsplit('/', 1)[-1]}/{run}"
+def investigate(model: str, run: int, *, replay: bool = False) -> int:
+    """Run one investigation, live or replayed, and return its exit code."""
+    root = "tmp/eval-replay" if replay else "tmp/eval"
+    slug = f"{root}/{model.rsplit('/', 1)[-1]}/{run}"
     cloudfall = shutil.which("cloudfall")
     if cloudfall is None:
         message = "cloudfall is not on PATH"
@@ -39,6 +47,7 @@ def investigate(model: str, run: int) -> int:
             *("--base-url", BASE_URL, "--model", model),
             *("--decisions", f"{slug}/decisions"),
             *("--investigations", f"{slug}/investigations"),
+            *(("--replay", RECORDING) if replay else ()),
         ],
         cwd=EXAMPLE,
         env=os.environ,
@@ -83,10 +92,10 @@ def score(spec: Mapping[str, object]) -> dict[str, object]:
     }
 
 
-def scores() -> list[dict[str, object]]:
+def scores(records: Path = RECORDS) -> list[dict[str, object]]:
     """Score every recorded investigation, by model and run."""
     rows = []
-    for path in sorted(RECORDS.glob("*/*/investigations/*.json")):
+    for path in sorted(records.glob("*/*/investigations/*.json")):
         spec = json.loads(path.read_text(encoding="utf-8"))["spec"]
         model, run = path.parts[-4], int(path.parts[-3])
         rows.append({"model": model, "run": run, **score(spec)})
@@ -95,12 +104,17 @@ def scores() -> list[dict[str, object]]:
 
 def main(argv: Sequence[str]) -> None:
     """Run the models, or score what they recorded."""
-    if argv[:1] == ["run"]:
+    records = RECORDS
+    if argv[:1] in (["run"], ["replay"]):
+        replay = argv[0] == "replay"
         models, runs = argv[1].split(","), int(argv[2])
         for model in models:
             for run in range(runs):
-                investigate(model, run)
-    for row in scores():
+                investigate(model, run, replay=replay)
+        records = EXAMPLE / "tmp" / ("eval-replay" if replay else "eval")
+    elif argv[:1] == ["score"] and len(argv) > 1:
+        records = EXAMPLE / argv[1]
+    for row in scores(records):
         sys.stdout.write(json.dumps(row) + "\n")
 
 
