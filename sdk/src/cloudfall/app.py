@@ -18,6 +18,7 @@ import dataclasses
 import errno
 import os
 import shutil
+import threading
 
 # treaty reads a handler's annotations at registration, so a streaming
 # handler's Iterator and a provided MCP tool's Mapping must exist at runtime.
@@ -2186,6 +2187,30 @@ app.exit_code(
         "then run again or raise --max-turns"
     ),
 )
+INVESTIGATION_STOPPED = 94
+"""The exit code of an ``agent investigate`` whose reader closed stdout mid-run."""
+app.exit_code(
+    "INVESTIGATION_STOPPED",
+    INVESTIGATION_STOPPED,
+    description=(
+        "The reader closed stdout mid-run; the investigation so far is recorded "
+        "in investigations/, ended stopped"
+    ),
+    retryable=False,
+    side_effects="partial",
+    suggestion=(
+        "read the newest record in investigations/ and the decisions it names, "
+        "then run again with a reader that stays to the end"
+    ),
+)
+stream_stopped = threading.Event()
+"""Set when an ``agent investigate`` stream was closed mid-run and recorded so.
+
+treaty ends a stream whose reader went away after an event with exit 0, and
+the handler has no say in it, so ``cloudfall.cli`` reads this to exit
+``INVESTIGATION_STOPPED`` instead. A stream closed by a signal or a timeout
+keeps the exit code treaty gives it.
+"""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -2302,6 +2327,7 @@ class InvestigationEvent:
         "PRECONDITION",
         "MODEL_UNAVAILABLE",
         "INVESTIGATION_INCOMPLETE",
+        "INVESTIGATION_STOPPED",
     ],
     timeout=None,
     has_network_io=True,
@@ -2363,6 +2389,17 @@ def agent_investigate(
                 "investigation": failed.investigation_id.value,
             },
         ) from error
+    except GeneratorExit:
+        # The stream was closed before its end, as when the reader closes
+        # stdout: nothing more can be written, but the decisions proposed so
+        # far keep the investigation that made them.
+        stopped = events.close()
+        if stopped is None:
+            message = "the investigation ended before its reader went away"
+            raise RuntimeError(message) from None
+        _save_investigation(store, stopped)
+        stream_stopped.set()
+        raise
     investigation = _save_investigation(store, investigation)
     yield _investigation_event(investigation)
     if investigation.status is not InvestigationStatus.ANSWERED:

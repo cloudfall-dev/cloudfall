@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import socket
+import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -23,6 +25,7 @@ from cloudfall.investigation import (
     StepOutcome,
     ToolResult,
     investigate,
+    investigation_events,
 )
 from cloudfall.resources import default_schema_directory
 from cloudfall.validation import SchemaCatalog
@@ -951,3 +954,123 @@ def test_an_over_long_endpoint_id_still_leaves_a_valid_record(
     assert turn.request_id is not None
     assert turn.response_id.startswith("chatcmpl-")
     assert (len(turn.response_id), len(turn.request_id)) == (256, 256)
+
+
+def test_closing_the_events_returns_the_investigation_so_far_stopped() -> None:
+    report, rotate = _tools()
+    script = _Script(_call("shop-logrotate", {}), _say("never asked"))
+    events = investigation_events(
+        "alert", _tool_list(report, rotate), ENDPOINT, script
+    )
+
+    assert next(events).turn == 1  # the first turn
+    assert next(events).turn == 1  # its call, which proposed a decision
+    stopped = events.close()
+
+    assert stopped is not None
+    assert stopped.status is InvestigationStatus.STOPPED
+    assert [step.decision for step in stopped.steps] == [
+        "shop-logrotate-20261008152628"
+    ]
+    assert (stopped.turns, stopped.answer, stopped.finding) == (1, "", None)
+    assert len(script.requests) == 1
+
+
+class _Held(BaseHTTPRequestHandler):
+    """An endpoint whose second answer waits until the test lets it go."""
+
+    replies: ClassVar[list[Mapping[str, object]]] = []
+    answered: ClassVar[list[Mapping[str, object]]] = []
+    released: ClassVar[threading.Event] = threading.Event()
+
+    def do_POST(self) -> None:
+        self.rfile.read(int(self.headers["Content-Length"]))
+        if _Held.answered:
+            assert _Held.released.wait(60), "the test never let the answer go"
+        reply = _Held.replies.pop(0)
+        _Held.answered.append(reply)
+        answer = json.dumps(reply).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(answer)))
+        self.end_headers()
+        self.wfile.write(answer)
+
+    def log_message(self, *_args: object) -> None:
+        return
+
+
+def test_a_reader_closing_stdout_mid_run_leaves_the_record_stopped(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    (repository / "playbooks" / "facts.yml").write_text(
+        "---\n- hosts: localhost\n  connection: local\n  gather_facts: false\n"
+        "  tasks:\n    - name: Report\n      ansible.builtin.debug:\n"
+        "        msg: /var/log/shop holds 36G\n",
+        encoding="utf-8",
+    )
+    key = tmp_path / "model.key"
+    key.write_text("sk-test\n", encoding="utf-8")
+    _Held.replies[:] = [
+        _call("operation_facts", {}),
+        _say("ROOT CAUSE: /var/log/shop\nPROPOSED: none\nWHY: read only."),
+    ]
+    _Held.answered.clear()
+    _Held.released.clear()
+    server = HTTPServer(("127.0.0.1", 0), _Held)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    command = [
+        sys.executable,
+        "-c",
+        "from cloudfall.cli import run; run()",
+        *("agent", "investigate", "--repository", str(repository)),
+        *("--alert", "postgresql-main down on web-1", "--model", "nemotron"),
+        *("--base-url", f"http://127.0.0.1:{server.server_address[1]}/v1"),
+        *("--api-key-from-file", str(key)),
+    ]
+    stderr_path = tmp_path / "stderr.txt"
+    try:
+        with stderr_path.open("w", encoding="utf-8") as stderr:
+            process = subprocess.Popen(  # noqa: S603 - fixed interpreter and arguments.
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=stderr,
+                cwd=tmp_path,
+            )
+            try:
+                assert process.stdout is not None
+                # A reader that takes the first turn and its call, then goes
+                # away; only then does the model answer its second turn.
+                first = json.loads(process.stdout.readline())
+                call = json.loads(process.stdout.readline())
+                process.stdout.close()
+                _Held.released.set()
+                exit_code = process.wait(timeout=60)
+            finally:
+                process.kill()
+                process.wait()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert (first["kind"], call["kind"]) == ("turn", "call")
+    assert exit_code == 94
+    # Nothing more is written once stdout is gone: no traceback, and no
+    # "Exception ignored ... BrokenPipeError" at shutdown either. stderr holds
+    # only the stream's JSON warning lines, such as UNTRUSTED_CONTENT.
+    err = stderr_path.read_text(encoding="utf-8")
+    assert "BrokenPipe" not in err
+    assert "Traceback" not in err
+    assert all("code" in json.loads(line) for line in err.splitlines())
+    [recorded] = (repository / "investigations").glob("*.json")
+    spec = json.loads(recorded.read_text(encoding="utf-8"))["spec"]
+    assert spec["status"] == "stopped"
+    assert spec["turns"] == 2
+    assert spec["answer"] == ""
+    assert "finding" not in spec
+    [step] = spec["steps"]
+    assert step["outcome"] == "ran"
+    assert list((repository / "decisions").glob(f"{step['decision']}*"))

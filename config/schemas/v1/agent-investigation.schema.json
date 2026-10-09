@@ -55,7 +55,8 @@
             "answered",
             "unstructured",
             "turn-limit",
-            "model-unavailable"
+            "model-unavailable",
+            "stopped"
           ]
         },
         "turns": {
