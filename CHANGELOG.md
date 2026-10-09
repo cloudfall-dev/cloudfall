@@ -431,6 +431,15 @@ Notable changes to Cloudfall. The format follows
 
 ### Fixed
 
+- `agent investigate` keeps its investigation record when the reader closes
+  stdout mid-run (such as `| head -2`). Since the command streams, such a
+  run left the decisions it proposed without the investigation that made
+  them, and exited 0. The record is now saved ended `stopped`, a new status
+  in `agent-investigation.schema.json`, with the steps, turns and tokens so
+  far, an empty `answer` and no `finding`; nothing more is written to the
+  closed stdout, and the command exits 94 `INVESTIGATION_STOPPED`. A stream
+  stopped by a signal or a timeout is recorded `stopped` too and keeps its
+  own exit code; `--no-stream` is unchanged (#44)
 - The operator proposal schema refuses `approval.via` on an autonomous
   (policy) approval. Such a receipt used to pass validation and lose the
   field on load; it now fails schema validation like any other invalid

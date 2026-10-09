@@ -100,6 +100,9 @@ class InvestigationStatus(StrEnum):
     MODEL_UNAVAILABLE = "model-unavailable"
     """The endpoint failed mid-run; the record holds the steps before it."""
 
+    STOPPED = "stopped"
+    """Its reader went away mid-run; the record holds the steps before it."""
+
 
 class StepOutcome(StrEnum):
     """What came of one tool call."""
@@ -445,7 +448,9 @@ def investigation_events(  # noqa: PLR0913 - as investigate.
     """Run the investigation, yielding each turn and call as it happens.
 
     The generator's return value is the investigation; a failing endpoint
-    raises ``ModelUnavailableError`` as ``investigate`` does.
+    raises ``ModelUnavailableError`` as ``investigate`` does. Closed before
+    it ends, it returns the investigation so far, ended ``stopped``, from
+    ``close()``.
     """
     started = _utc_now()
     by_name = {tool.name: tool for tool in tools}
@@ -526,6 +531,10 @@ def investigation_events(  # noqa: PLR0913 - as investigate.
         # still empty: the loop ends at the model's last words.
         failed = record(InvestigationStatus.MODEL_UNAVAILABLE, None)
         raise ModelUnavailableError(error, failed) from error
+    except GeneratorExit:
+        # Whoever read the events went away: nothing more is asked or run, and
+        # the steps so far, decisions included, end in a record of their own.
+        return record(InvestigationStatus.STOPPED, None)
     finding = _finding(answer, steps) if answer else None
     if finding is not None:
         status = InvestigationStatus.ANSWERED
