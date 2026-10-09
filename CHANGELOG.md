@@ -441,6 +441,15 @@ Notable changes to Cloudfall. The format follows
 
 ### Fixed
 
+- A decision proposed during `agent investigate --replay` no longer marks an
+  open live proposal of the same operation, targets and inputs `superseded`,
+  which left the operator a live proposal closed and a replayed one that
+  `decisions approve` refuses. A newer proposal now supersedes an older one
+  only when both carry the same `replay` value: live closes live, a replay
+  closes a replay of the same recording, and nothing crosses between them. A
+  replayed read is still recorded `ran`, but its verdict and `cloudfall why`
+  now say its output was played back from the recording, not run on the
+  hosts (#58)
 - `agent investigate` keeps its investigation record when the reader closes
   stdout mid-run (such as `| head -2`). Since the command streams, such a
   run left the decisions it proposed without the investigation that made

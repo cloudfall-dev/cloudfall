@@ -491,17 +491,19 @@ def propose(
         basis=read_basis(request.observations, request.repository),
         check=_preview(exit_code, tree, diff_path, request.repository),
         status=DecisionStatus.RAN if ran else DecisionStatus.PROPOSED,
-        verdict=(
-            f"a read operation runs when it is proposed; it exited {exit_code}"
-            if ran
-            else None
-        ),
+        verdict=_ran_verdict(exit_code, request.replay) if ran else None,
         ran_exit_code=exit_code if ran else None,
         replay=request.replay,
     )
     store.save(decision)
     for older in recorded:
-        if older.status is DecisionStatus.PROPOSED and older.same_call(decision):
+        # A replay never closes a live proposal and a live run never closes
+        # a replayed one: only a record of the same replay value is replaced.
+        if (
+            older.status is DecisionStatus.PROPOSED
+            and older.replay == decision.replay
+            and older.same_call(decision)
+        ):
             store.update(
                 replace(
                     older,
@@ -514,6 +516,15 @@ def propose(
                 )
             )
     return decision
+
+
+def _ran_verdict(exit_code: int, replay: str | None) -> str:
+    if replay is None:
+        return f"a read operation runs when it is proposed; it exited {exit_code}"
+    return (
+        f"a read operation's output was played back from the recording {replay}, "
+        f"not run on the hosts; it exited {exit_code}"
+    )
 
 
 @dataclass(frozen=True, slots=True)

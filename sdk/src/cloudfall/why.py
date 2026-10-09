@@ -465,6 +465,11 @@ def _ran(subject: str, run: RunRecord, log: object) -> str:
 def _ended(decision: Decision) -> str:
     if decision.status is DecisionStatus.PROPOSED:
         return "It is still proposed: nobody has approved or rejected it."
+    if decision.status is DecisionStatus.RAN and decision.replay is not None:
+        return (
+            f"Its played-back output exited {decision.ran_exit_code}: "
+            "a read operation waits for no approval."
+        )
     if decision.status is DecisionStatus.RAN:
         return (
             f"It ran when it was proposed and exited {decision.ran_exit_code}: "
