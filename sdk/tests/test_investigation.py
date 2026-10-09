@@ -15,6 +15,7 @@ import pytest
 from cloudfall.app import app
 from cloudfall.cli import main
 from cloudfall.investigation import (
+    ERROR_INVESTIGATIONS_UNWRITABLE,
     ERROR_MODEL_REFUSED,
     TRACE_TEXT_LIMIT,
     AgentTool,
@@ -1191,10 +1192,13 @@ class _Held(BaseHTTPRequestHandler):
         return
 
 
-def test_a_reader_closing_stdout_mid_run_leaves_the_record_stopped(
-    tmp_path: Path,
-) -> None:
-    repository = _repository(tmp_path)
+def _closed_mid_run(
+    tmp_path: Path, repository: Path
+) -> tuple[dict[str, Any], dict[str, Any], int, str]:
+    """Run the CLI, read the first turn and its call, then close stdout.
+
+    Return the two events read, the exit code and what went to stderr.
+    """
     (repository / "playbooks" / "facts.yml").write_text(
         "---\n- hosts: localhost\n  connection: local\n  gather_facts: false\n"
         "  tasks:\n    - name: Report\n      ansible.builtin.debug:\n"
@@ -1246,13 +1250,21 @@ def test_a_reader_closing_stdout_mid_run_leaves_the_record_stopped(
     finally:
         server.shutdown()
         server.server_close()
+    return first, call, exit_code, stderr_path.read_text(encoding="utf-8")
+
+
+def test_a_reader_closing_stdout_mid_run_leaves_the_record_stopped(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+
+    first, call, exit_code, err = _closed_mid_run(tmp_path, repository)
 
     assert (first["kind"], call["kind"]) == ("turn", "call")
     assert exit_code == 94
     # Nothing more is written once stdout is gone: no traceback, and no
     # "Exception ignored ... BrokenPipeError" at shutdown either. stderr holds
     # only the stream's JSON warning lines, such as UNTRUSTED_CONTENT.
-    err = stderr_path.read_text(encoding="utf-8")
     assert "BrokenPipe" not in err
     assert "Traceback" not in err
     assert all("code" in json.loads(line) for line in err.splitlines())
@@ -1265,3 +1277,67 @@ def test_a_reader_closing_stdout_mid_run_leaves_the_record_stopped(
     [step] = spec["steps"]
     assert step["outcome"] == "ran"
     assert list((repository / "decisions").glob(f"{step['decision']}*"))
+
+
+def test_an_unwritable_investigations_folder_is_refused_naming_it(
+    tmp_path: Path,
+) -> None:
+    report, rotate = _tools()
+    done = investigate(
+        "alert",
+        _tool_list(report, rotate),
+        ENDPOINT,
+        _Script(_say("ROOT CAUSE: disk\nPROPOSED: none\nWHY: read only.")),
+    )
+    folder = tmp_path / "investigations"
+    folder.write_text("not a folder\n", encoding="utf-8")
+    store = InvestigationStore(
+        directory=folder, catalog=SchemaCatalog(default_schema_directory())
+    )
+
+    with pytest.raises(InvestigationError) as error:
+        store.save(done)
+
+    assert error.value.code == ERROR_INVESTIGATIONS_UNWRITABLE
+    assert str(folder) in error.value.detail
+
+
+def test_a_record_that_cannot_be_written_exits_precondition(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], model_url: str
+) -> None:
+    repository = _repository(tmp_path)
+    (repository / "investigations").write_text("not a folder\n", encoding="utf-8")
+    key = tmp_path / "model.key"
+    key.write_text("sk-test\n", encoding="utf-8")
+    _Model.replies[:] = [
+        _say("ROOT CAUSE: /var/log/shop\nPROPOSED: none\nWHY: read only.")
+    ]
+
+    exit_code = _investigate_against(repository, key, model_url)
+
+    out = capsys.readouterr()
+    payload = _streamed(out.out)
+    assert exit_code == 4, payload
+    assert payload["error"]["code"] == "PRECONDITION"
+    assert payload["error"]["context"]["code"] == ERROR_INVESTIGATIONS_UNWRITABLE
+    assert str(repository / "investigations") in payload["error"]["message"]
+    assert "Traceback" not in out.err
+
+
+def test_a_stopped_run_whose_record_cannot_be_written_exits_precondition(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    (repository / "investigations").write_text("not a folder\n", encoding="utf-8")
+
+    first, call, exit_code, err = _closed_mid_run(tmp_path, repository)
+
+    assert (first["kind"], call["kind"]) == ("turn", "call")
+    # Not 0, as when the save crashed, and not 94: no stopped record was kept.
+    assert exit_code == 4, err
+    assert "Traceback" not in err
+    lines = [json.loads(line) for line in err.splitlines()]
+    [refused] = [line for line in lines if line["code"] == "PRECONDITION"]
+    assert refused["context"]["code"] == ERROR_INVESTIGATIONS_UNWRITABLE
+    assert str(repository / "investigations") in refused["message"]
+    assert (repository / "investigations").is_file()

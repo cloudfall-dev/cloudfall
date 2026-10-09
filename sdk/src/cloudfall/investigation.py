@@ -56,6 +56,7 @@ ERROR_MODEL_ANSWER_MALFORMED = "agent_model_answer_malformed"
 ERROR_MODEL_REFUSED = "agent_model_refused"
 ERROR_MODEL_UNREACHABLE = "agent_model_unreachable"
 ERROR_INVESTIGATION_EXISTS = "agent_investigation_exists"
+ERROR_INVESTIGATIONS_UNWRITABLE = "agent_investigations_unwritable"
 
 SYSTEM_PROMPT = """\
 You are the on-call agent for a server fleet. You act only through the tools, \
@@ -321,9 +322,14 @@ class InvestigationStore:
         """Persist a new investigation and return it as saved.
 
         An investigation started in the same second as a recorded one gets a
-        numeric suffix on its id; no record is ever overwritten.
+        numeric suffix on its id; no record is ever overwritten. A directory
+        that cannot be written, such as a file in its place, raises
+        ``InvestigationError`` naming it.
         """
-        self.directory.mkdir(parents=True, exist_ok=True)
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise self._unwritable(error) from error
         base = investigation.investigation_id.value
         for attempt in range(1, SAVE_ATTEMPTS + 1):
             identifier = base if attempt == 1 else f"{base}-{attempt}"
@@ -338,9 +344,18 @@ class InvestigationStore:
                     record.write(f"{json.dumps(document, indent=2, sort_keys=True)}\n")
             except FileExistsError:
                 continue
+            except OSError as error:
+                raise self._unwritable(error) from error
             return saved
         message = f"{SAVE_ATTEMPTS} investigations already exist for {base}"
         raise InvestigationError(ERROR_INVESTIGATION_EXISTS, message)
+
+    def _unwritable(self, error: OSError) -> InvestigationError:
+        reason = error.strerror or type(error).__name__
+        message = (
+            f"cannot write the investigation record to {self.directory}: {reason}"
+        )
+        return InvestigationError(ERROR_INVESTIGATIONS_UNWRITABLE, message)
 
 
 @dataclass(frozen=True, slots=True)

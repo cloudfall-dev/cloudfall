@@ -451,6 +451,14 @@ Notable changes to Cloudfall. The format follows
   stopped by a signal or a timeout keeps its own exit code, and one stopped
   while it waits on the model still leaves no record;
   `--no-stream` is unchanged (#44)
+- `agent investigate` exits 4 `PRECONDITION` (code
+  `agent_investigations_unwritable`), naming the investigations folder,
+  when it cannot write the investigation record, such as when a file
+  stands where the folder should be. A run that ended crashed with a
+  traceback instead; one whose reader closed stdout mid-run printed the
+  traceback and exited 0. Such a stopped run still exits non-zero, now
+  `PRECONDITION` with the reason as a JSON line on stderr, though its
+  record is lost (#56)
 - The operator proposal schema refuses `approval.via` on an autonomous
   (policy) approval. Such a receipt used to pass validation and lose the
   field on load; it now fails schema validation like any other invalid
