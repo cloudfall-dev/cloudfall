@@ -40,6 +40,8 @@ TOOL_TEXT_LIMIT = 8000
 """Most characters of host output one tool result hands the model."""
 TOOL_NAME_LIMIT = 128
 """Most characters of a tool name the record keeps, as its schema allows."""
+REPLY_ID_LIMIT = 256
+"""Most characters of an endpoint's response or request id the trace keeps."""
 SAVE_ATTEMPTS = 100
 """Most investigations recorded under one second's id, with their suffixes."""
 ENDPOINT_LIMIT = 512
@@ -563,13 +565,18 @@ def _turn(
     details = details if isinstance(details, Mapping) else {}
     reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
     response_id = reply.body.get("id")
+    # The ids are the endpoint's text; the record keeps what its schema takes.
     return Turn(
         turn=number,
         text=str(message.get("content") or "").strip(),
         reasoning=str(reasoning).strip(),
         tool_calls=tuple(_call_text(call) for call in calls),
-        response_id=response_id if isinstance(response_id, str) else None,
-        request_id=reply.request_id,
+        response_id=(
+            response_id[:REPLY_ID_LIMIT] if isinstance(response_id, str) else None
+        ),
+        request_id=(
+            None if reply.request_id is None else reply.request_id[:REPLY_ID_LIMIT]
+        ),
         elapsed_ms=elapsed_ms,
         prompt_tokens=_count(usage, "prompt_tokens"),
         completion_tokens=_count(usage, "completion_tokens"),

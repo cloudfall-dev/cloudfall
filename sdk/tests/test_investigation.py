@@ -803,6 +803,11 @@ def test_the_cli_streams_each_turn_and_call_then_the_record(
     assert events[1]["effect"] == "created"
     assert "/var/log/shop holds 36G" in events[1]["result"]["output"]
     assert events[2]["text"].startswith("ROOT CAUSE")
+    # A turn carries its raw trace; this endpoint sends no x-request-id.
+    trace = events[0]["trace"]
+    assert trace["toolCalls"][0]["name"] == "operation_facts"
+    assert "requestId" not in trace
+    assert "sk-test" not in json.dumps(events)
     # The decision the call wrote, and the saved record.
     assert stream["end"]["_summary"] is True
     assert stream["end"]["effects"] == {"created": 2, "noop": 2}
@@ -863,3 +868,32 @@ def test_each_turn_keeps_the_raw_trace() -> None:
     assert isinstance(recorded, dict)
     assert recorded["trace"][0]["reasoning"] == turn.reasoning
     assert recorded["trace"][1]["toolCalls"] == []
+
+
+class _LongIds(_Script):
+    """An endpoint that serves its answers under over-long ids."""
+
+    def __call__(self, url: str, body: Mapping[str, object]) -> ModelReply:
+        reply = super().__call__(url, body)
+        return ModelReply(body=reply.body, request_id="r" * 300)
+
+
+def test_an_over_long_endpoint_id_still_leaves_a_valid_record(
+    tmp_path: Path,
+) -> None:
+    report, rotate = _tools()
+    answer = _say("ROOT CAUSE: disk\nPROPOSED: none\nWHY: read only.")
+    answer["id"] = "chatcmpl-" + "x" * 300
+    script = _LongIds(answer)
+    done = investigate("alert", _tool_list(report, rotate), ENDPOINT, script)
+
+    saved = InvestigationStore(
+        directory=tmp_path / "investigations",
+        catalog=SchemaCatalog(default_schema_directory()),
+    ).save(done)
+
+    turn = saved.trace[0]
+    assert turn.response_id is not None
+    assert turn.request_id is not None
+    assert turn.response_id.startswith("chatcmpl-")
+    assert (len(turn.response_id), len(turn.request_id)) == (256, 256)
