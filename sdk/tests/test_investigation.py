@@ -15,6 +15,8 @@ import pytest
 from cloudfall.app import app
 from cloudfall.cli import main
 from cloudfall.investigation import (
+    ANSWER_LIMIT,
+    ARGUMENTS_LIMIT,
     ERROR_INVESTIGATIONS_UNWRITABLE,
     ERROR_MODEL_REFUSED,
     TRACE_TEXT_LIMIT,
@@ -1096,8 +1098,10 @@ def test_a_long_reasoning_is_cut_to_the_limit_and_marked(tmp_path: Path) -> None
     assert tail.endswith("The disk is full; read it first.")
     assert said.startswith("[first 1045 characters cut]\n")
     assert said.endswith(" rotate the logs.")
-    # The answer the finding is read from is the model's whole text.
-    assert saved.answer == long_text
+    # The record's answer keeps the start of the same text (#57).
+    assert saved.answer.startswith("x" * 7000)
+    assert saved.answer.endswith("\n[last 1044 characters cut]")
+    assert len(saved.answer) == ANSWER_LIMIT
 
 
 def test_the_schema_refuses_a_trace_longer_than_the_limit() -> None:
@@ -1117,6 +1121,150 @@ def test_the_schema_refuses_a_trace_longer_than_the_limit() -> None:
         SchemaCatalog(default_schema_directory()).validate_named(
             "agent-investigation.schema.json", document
         )
+
+
+_FINDING = "ROOT CAUSE: disk\nPROPOSED: none\nWHY: read only.\n"
+
+
+@pytest.mark.parametrize("length", [ANSWER_LIMIT, ANSWER_LIMIT + 1, 50_000])
+def test_a_long_answer_keeps_its_start_and_its_finding(
+    tmp_path: Path, length: int
+) -> None:
+    report, rotate = _tools()
+    # The finding first, as asked, then a long quote of host output.
+    # Characters, not bytes: the Cyrillic quote is counted the same.
+    answer = (_FINDING + "журнал;" * length)[:length]
+    assert len(answer) == length
+
+    done = investigate(
+        "alert", _tool_list(report, rotate), ENDPOINT, _Script(_say(answer))
+    )
+    saved = InvestigationStore(
+        directory=tmp_path / "investigations",
+        catalog=SchemaCatalog(default_schema_directory()),
+    ).save(done)
+
+    assert ANSWER_LIMIT == 8000
+    assert saved.status is InvestigationStatus.ANSWERED
+    assert saved.finding is not None
+    assert saved.finding.root_cause == "disk"
+    if length == ANSWER_LIMIT:
+        assert saved.answer == answer
+        return
+    # The mark counts against the limit; a shorter count can leave it under.
+    assert ANSWER_LIMIT - 3 <= len(saved.answer) <= ANSWER_LIMIT
+    head, mark = saved.answer.rsplit("\n", 1)
+    assert answer.startswith(head)
+    assert mark == f"[last {length - len(head)} characters cut]"
+
+
+def test_a_finding_past_the_cut_is_still_read_from_the_whole_answer() -> None:
+    report, rotate = _tools()
+    answer = "x" * 9000 + "\n" + _FINDING
+
+    done = investigate(
+        "alert", _tool_list(report, rotate), ENDPOINT, _Script(_say(answer))
+    )
+
+    assert done.status is InvestigationStatus.ANSWERED
+    assert done.finding is not None
+    assert done.finding.why == "read only."
+    assert "ROOT CAUSE" not in done.answer
+
+
+def test_the_cli_streams_the_answer_as_the_record_keeps_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], model_url: str
+) -> None:
+    repository = _repository(tmp_path)
+    key = tmp_path / "model.key"
+    key.write_text("sk-test\n", encoding="utf-8")
+    _Model.replies[:] = [_say(_FINDING + "y" * 9000)]
+
+    assert _investigate_against(repository, key, model_url) == 0
+
+    streamed = _streamed(capsys.readouterr().out)["data"]["investigation"]
+    [recorded] = (repository / "investigations").glob("*.json")
+    kept = json.loads(recorded.read_text(encoding="utf-8"))
+    assert streamed["spec"]["answer"] == kept["spec"]["answer"]
+    assert kept["spec"]["answer"].endswith(" characters cut]")
+    assert kept["spec"]["finding"]["rootCause"] == "disk"
+
+
+class _Echo:
+    """A tool taking a note, which keeps the arguments it was called with."""
+
+    def __init__(self) -> None:
+        self.received: list[Mapping[str, object]] = []
+        self.tool = AgentTool(
+            name="note",
+            description="note",
+            input_schema={
+                "type": "object",
+                "properties": {"note": {"type": "string"}},
+                "additionalProperties": False,
+            },
+            call=self._call,
+        )
+
+    def _call(self, arguments: Mapping[str, object]) -> ToolResult:
+        self.received.append(arguments)
+        return ToolResult(StepOutcome.RAN, {"output": "noted"})
+
+
+@pytest.mark.parametrize("length", [ARGUMENTS_LIMIT, ARGUMENTS_LIMIT + 1, 50_000])
+def test_long_raw_arguments_keep_their_start_in_the_trace_only(
+    tmp_path: Path, length: int
+) -> None:
+    echo = _Echo()
+    # {"note": "..."} with the note sized so the raw string is `length` long.
+    note = "n" * (length - len(json.dumps({"note": ""})))
+    raw = json.dumps({"note": note})
+    assert len(raw) == length
+    script = _Script(_call("note", {"note": note}), _say(_FINDING))
+
+    done = investigate("alert", [echo.tool], ENDPOINT, script)
+    saved = InvestigationStore(
+        directory=tmp_path / "investigations",
+        catalog=SchemaCatalog(default_schema_directory()),
+    ).save(done)
+
+    # The tool ran on the whole arguments; only the trace's copy is cut.
+    assert echo.received == [{"note": note}]
+    assert saved.steps[0].arguments == {"note": note}
+    kept = saved.trace[0].tool_calls[0].arguments
+    assert ARGUMENTS_LIMIT == 8000
+    if length == ARGUMENTS_LIMIT:
+        assert kept == raw
+        return
+    assert ARGUMENTS_LIMIT - 3 <= len(kept) <= ARGUMENTS_LIMIT
+    head, mark = kept.rsplit("\n", 1)
+    assert raw.startswith(head)
+    assert mark == f"[last {length - len(head)} characters cut]"
+
+
+@pytest.mark.parametrize("field", ["answer", "arguments"])
+def test_the_schema_refuses_an_answer_or_arguments_past_the_limit(
+    field: str,
+) -> None:
+    report, rotate = _tools()
+    done = investigate(
+        "alert",
+        _tool_list(report, rotate),
+        ENDPOINT,
+        _Script(_call("disk-report", {}), _say(_FINDING)),
+    )
+    document = done.as_document()
+    spec = document["spec"]
+    assert isinstance(spec, dict)
+    catalog = SchemaCatalog(default_schema_directory())
+    catalog.validate_named("agent-investigation.schema.json", document)
+    if field == "answer":
+        spec["answer"] = "x" * (ANSWER_LIMIT + 1)
+    else:
+        spec["trace"][0]["toolCalls"][0]["arguments"] = "x" * (ARGUMENTS_LIMIT + 1)
+
+    with pytest.raises(ValidationError):
+        catalog.validate_named("agent-investigation.schema.json", document)
 
 
 class _LongIds(_Script):

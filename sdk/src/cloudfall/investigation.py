@@ -40,6 +40,10 @@ TOOL_TEXT_LIMIT = 8000
 """Most characters of host output one tool result hands the model."""
 TRACE_TEXT_LIMIT = TOOL_TEXT_LIMIT
 """Most characters of a turn's text or reasoning the trace keeps, cut mark included."""
+ANSWER_LIMIT = TOOL_TEXT_LIMIT
+"""Most characters of the model's answer the record keeps, cut mark included."""
+ARGUMENTS_LIMIT = TOOL_TEXT_LIMIT
+"""Most characters of a tool call's raw arguments the trace keeps, cut mark included."""
 TOOL_NAME_LIMIT = 128
 """Most characters of a tool name the record keeps, as its schema allows."""
 REPLY_ID_LIMIT = 256
@@ -497,7 +501,8 @@ def investigation_events(  # noqa: PLR0913 - as investigate.
             turns=turns,
             usage=usage,
             steps=tuple(steps),
-            answer=answer,
+            # The finding is read from the whole answer; the record keeps its start.
+            answer=_head_text(answer, ANSWER_LIMIT),
             finding=finding,
             replay=replay,
             trace=tuple(trace),
@@ -579,8 +584,27 @@ def _trace_text(text: str) -> str:
     return _cut_mark(len(text) - kept) + text[-kept:]
 
 
+def _head_text(text: str, limit: int) -> str:
+    """Keep the start of a long answer or raw arguments, where they begin, and say so.
+
+    Both are the model's text and can quote host output, so the record
+    bounds them as it bounds the trace's reasoning, but keeps the start: an
+    answer opens with its finding. The mark counts against the limit: what
+    is kept fits the schema's ``maxLength``.
+    """
+    if len(text) <= limit:
+        return text
+    # The mark for the whole length is at least as long as the one written.
+    kept = limit - len(_tail_mark(len(text)))
+    return text[:kept] + _tail_mark(len(text) - kept)
+
+
 def _cut_mark(cut: int) -> str:
     return f"[first {cut} characters cut]\n"
+
+
+def _tail_mark(cut: int) -> str:
+    return f"\n[last {cut} characters cut]"
 
 
 def _tool_definition(tool: AgentTool) -> dict[str, object]:
@@ -632,9 +656,11 @@ def _call_text(call: Mapping[str, object]) -> ToolCallText:
     function = call.get("function")
     function = function if isinstance(function, Mapping) else {}
     arguments = function.get("arguments", "")
+    text = arguments if isinstance(arguments, str) else json.dumps(arguments)
+    # Only the trace's copy is cut: the call itself runs on the whole arguments.
     return ToolCallText(
         name=str(function.get("name", "")),
-        arguments=arguments if isinstance(arguments, str) else json.dumps(arguments),
+        arguments=_head_text(text, ARGUMENTS_LIMIT),
     )
 
 
