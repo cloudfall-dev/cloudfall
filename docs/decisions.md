@@ -35,3 +35,27 @@ entry that supersedes it, never by editing an old one.
 - Why: The model's reasoning quotes host output it read, so unbounded reasoning makes the record unbounded and stores host output in it
 - Applies to: sdk/src/cloudfall/investigation.py, config/schemas/v1/agent-investigation.schema.json
 - Enforced by: review
+
+## D-5: agent investigate exits PRECONDITION when its record can't be written
+
+- Decided: 2026-10-09, in cloudfall-dev/cloudfall#56
+- Rule: When agent investigate cannot write the investigation record, it exits PRECONDITION with no traceback and an error naming the investigations folder; this holds for a stopped run too, whose record is then lost but whose exit stays non-zero
+- Why: An unwritable store folder is the same kind of refusal as a bad --decisions folder, and a traceback with exit 0 breaks D-3
+- Applies to: sdk/src/cloudfall/investigation.py, sdk/src/cloudfall/app.py, agent investigate
+- Enforced by: review
+
+## D-6: The investigation answer and raw tool-call arguments are capped from the start
+
+- Decided: 2026-10-09, in cloudfall-dev/cloudfall#57
+- Rule: The investigation record keeps at most 8000 characters of spec.answer and of each trace[].toolCalls[].arguments, keeping the start and marking the cut; the schema bounds both fields
+- Why: Both can quote host output like the reasoning D-4 caps, and the finding sits at the start of the answer, so the start is what to keep
+- Applies to: sdk/src/cloudfall/investigation.py, config/schemas/v1/agent-investigation.schema.json
+- Enforced by: review
+
+## D-7: Replayed and live proposals never supersede each other
+
+- Decided: 2026-10-09, in cloudfall-dev/cloudfall#58
+- Rule: A newer proposal supersedes an older proposed record (D-1) only when both have the same replay value, so a replay never closes a live proposal and a live run never closes a replayed one; a replayed read keeps status ran and its verdict says the output was played back, with no schema change
+- Why: A replayed record can't be approved (D-2), so letting it supersede a live proposal leaves the operator with nothing to approve
+- Applies to: sdk/src/cloudfall/decision.py, sdk/src/cloudfall/app.py, agent investigate --replay, cloudfall why
+- Enforced by: review
