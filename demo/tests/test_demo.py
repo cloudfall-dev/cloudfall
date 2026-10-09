@@ -73,6 +73,25 @@ def test_an_unknown_model_is_refused() -> None:
     assert response.status_code == 400
 
 
+def test_each_turn_spends_the_daily_budget_as_it_comes() -> None:
+    # A visitor who leaves mid-run never receives the last event; the turns
+    # the model already answered still cost their tokens.
+    before = server.LIMITS.tokens
+    server.count_tokens(
+        {"kind": "turn", "trace": {"tokens": {"prompt": 100, "completion": 20}}}
+    )
+    spent_by_the_turn = server.LIMITS.tokens - before
+    server.count_tokens(
+        {
+            "kind": "investigation",
+            "investigation": {"spec": {"tokens": {"prompt": 100, "completion": 20}}},
+        }
+    )
+
+    assert spent_by_the_turn == 120
+    assert server.LIMITS.tokens - before == 120
+
+
 def _proposed(run: str, operation: str) -> str:
     """Copy one recorded decision of the operation into a run, as a proposal."""
     recorded = sorted(

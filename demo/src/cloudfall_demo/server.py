@@ -219,7 +219,7 @@ async def _stream(run_id: str, model: str) -> AsyncIterator[bytes]:
         try:
             async for raw in process.stdout:
                 line = json.loads(raw)
-                _count_tokens(line)
+                count_tokens(line)
                 yield raw if raw.endswith(b"\n") else raw + b"\n"
                 provenance = _provenance(line)
                 if provenance is not None:
@@ -230,12 +230,17 @@ async def _stream(run_id: str, model: str) -> AsyncIterator[bytes]:
             await process.wait()
 
 
-def _count_tokens(line: Mapping[str, object]) -> None:
-    if line.get("kind") != "investigation":
+def count_tokens(line: Mapping[str, object]) -> None:
+    """Spend each turn's tokens as it arrives.
+
+    The last event sums them too, but a run whose visitor left is killed
+    before it: counted only there, an abandoned run would cost nothing.
+    """
+    if line.get("kind") != "turn":
         return
-    investigation = line["investigation"]
-    assert isinstance(investigation, Mapping)  # noqa: S101 - the CLI's schema.
-    tokens = investigation["spec"]["tokens"]
+    trace = line["trace"]
+    assert isinstance(trace, Mapping)  # noqa: S101 - the CLI's schema.
+    tokens = trace["tokens"]
     LIMITS.tokens += int(tokens["prompt"]) + int(tokens["completion"])
 
 
