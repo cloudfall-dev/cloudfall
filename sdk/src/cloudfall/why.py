@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 _ERROR_INSTANT_INVALID = "why_instant_invalid"
 _ERROR_WINDOW_INVERTED = "why_window_inverted"
+_ERROR_STATUS_UNKNOWN = "why_status_unknown"
 
 
 class WhyError(RuntimeError):
@@ -90,6 +91,7 @@ class WhyQuery:
     operation: ResourceId | None = None
     since: Instant | None = None
     until: Instant | None = None
+    statuses: frozenset[DecisionStatus] = frozenset()
 
     def __post_init__(self) -> None:
         """Refuse a window that ends before it starts."""
@@ -111,6 +113,7 @@ class WhyQuery:
         operation: object = None,
         since: object = None,
         until: object = None,
+        status: Iterable[object] = (),
     ) -> WhyQuery:
         """Build a query from the primitives a CLI or tool call carries."""
         return cls(
@@ -120,6 +123,7 @@ class WhyQuery:
             ),
             since=Instant.from_boundary(since) if _present(since) else None,
             until=Instant.from_boundary(until) if _present(until) else None,
+            statuses=frozenset(_status(value) for value in status),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -133,11 +137,15 @@ class WhyQuery:
             result["since"] = self.since.as_string()
         if self.until is not None:
             result["until"] = self.until.as_string()
+        if self.statuses:
+            result["status"] = sorted(status.value for status in self.statuses)
         return result
 
     def matches(self, decision: Decision) -> bool:
         """Return whether one decision is part of the answer."""
         if self.operation is not None and decision.operation_id != self.operation:
+            return False
+        if self.statuses and decision.status not in self.statuses:
             return False
         if self.host is not None and self.host.value not in hosts_of(decision):
             return False
@@ -251,7 +259,7 @@ def render_why_document(document: Mapping[str, object]) -> str:
             '<p class="empty">The record holds no decision this question is about.</p>'
         )
     filters = ", ".join(
-        f"{escape(key)} = {escape(str(value))}"
+        f"{escape(key)} = {escape(_filter_value(value))}"
         for key, value in query.items()
     )
     asked = escape(filters) if filters else "Every decision the record holds"
@@ -312,6 +320,7 @@ def _render_card(entry: Mapping[str, object]) -> str:
     spec = cast("Mapping[str, object]", decision["spec"])
     operation = cast("Mapping[str, object]", spec["operation"])
     status = DecisionStatus(str(spec["status"]))
+    ran_exit_code = spec.get("ranExitCode")
     story = cast("Sequence[str]", entry["story"])
     steps = "".join(f"<li>{escape(sentence)}</li>" for sentence in story)
     hosts = (
@@ -323,7 +332,7 @@ def _render_card(entry: Mapping[str, object]) -> str:
         '<div class="decision-head">'
         f"<div><h3>{escape(str(operation['id']))}</h3>"
         f"<code>{escape(str(entry['id']))}</code></div>"
-        f'<span class="badge {_tone(status)}">'
+        f'<span class="badge {_tone(status, ran_exit_code)}">'
         f"{escape(status.value)}</span></div>"
         f"<ol>{steps}</ol>"
         f'<div class="hosts muted">Hosts the record names: {hosts}</div>'
@@ -331,14 +340,31 @@ def _render_card(entry: Mapping[str, object]) -> str:
     )
 
 
-def _tone(status: DecisionStatus) -> str:
+def _tone(status: DecisionStatus, ran_exit_code: object = None) -> str:
+    if status is DecisionStatus.RAN:
+        return "healthy" if ran_exit_code == 0 else "critical"
     if status is DecisionStatus.VERIFIED:
         return "healthy"
     if status is DecisionStatus.FAILED:
         return "critical"
-    if status is DecisionStatus.REJECTED:
+    if status in {DecisionStatus.REJECTED, DecisionStatus.SUPERSEDED}:
         return "unknown"
     return "warning"
+
+
+def _filter_value(value: object) -> str:
+    if isinstance(value, list):
+        return ", ".join(str(entry) for entry in cast("list[object]", value))
+    return str(value)
+
+
+def _status(value: object) -> DecisionStatus:
+    try:
+        return DecisionStatus(str(value))
+    except ValueError as error:
+        known = ", ".join(status.value for status in DecisionStatus)
+        message = f"status {value!r} is not one of {known}"
+        raise WhyError(_ERROR_STATUS_UNKNOWN, message) from error
 
 
 def _story(decision: Decision) -> Iterable[str]:
@@ -434,6 +460,16 @@ def _ran(subject: str, run: RunRecord, log: object) -> str:
 def _ended(decision: Decision) -> str:
     if decision.status is DecisionStatus.PROPOSED:
         return "It is still proposed: nobody has approved or rejected it."
+    if decision.status is DecisionStatus.RAN:
+        return (
+            f"It ran when it was proposed and exited {decision.ran_exit_code}: "
+            "a read operation waits for no approval."
+        )
+    if decision.status is DecisionStatus.SUPERSEDED:
+        return (
+            f"It was superseded by {decision.superseded_by}, a newer proposal "
+            "of the same operation, targets and inputs; nobody approved it."
+        )
     if decision.verdict is not None:
         return f"It ended {decision.status.value}: {decision.verdict}."
     return f"It ended {decision.status.value}."

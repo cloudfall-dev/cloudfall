@@ -32,8 +32,11 @@ The catalog:
 | `converge` | mutating | runs `site.yml` |
 | `postgresql-reinit` | destructive | drops the cluster with all its data and creates an empty one |
 
-Read operations run when called and return what the hosts reported. The
-others run in check mode only and leave a decision a person approves.
+Read operations run when called, return what the hosts reported, and are
+recorded as `ran`. The others run in check mode only and leave a decision a
+person approves; proposing the same one again marks the older decision
+`superseded`. `cloudfall decisions list --status proposed` shows what still
+waits.
 
 ## Run it
 

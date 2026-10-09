@@ -192,8 +192,20 @@
             "rejected",
             "executed",
             "verified",
-            "failed"
+            "failed",
+            "ran",
+            "superseded"
           ]
+        },
+        "ranExitCode": {
+          "description": "The exit code of a read operation's run, which happens when it is proposed. Set when the status is ran.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "supersededBy": {
+          "description": "The decision that proposed the same operation, targets and inputs again. Set when the status is superseded.",
+          "$ref": "common.schema.json#/$defs/resourceId"
         },
         "approval": {
           "type": "object",
@@ -362,6 +374,36 @@
         "basis",
         "check",
         "status"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "ran"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "ranExitCode"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "superseded"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "supersededBy"
+            ]
+          }
+        }
       ],
       "additionalProperties": false
     }

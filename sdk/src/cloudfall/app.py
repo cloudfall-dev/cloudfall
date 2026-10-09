@@ -100,6 +100,7 @@ from cloudfall.decision import (
     CHECK_TIMEOUT_SECONDS,
     DECISION_DIRECTORY,
     ERROR_DECISION_MISSING,
+    ERROR_RECORD_INVALID,
     ApprovalChannel,
     ApprovalRequest,
     CheckRunner,
@@ -111,6 +112,7 @@ from cloudfall.decision import (
     Targets,
     approve,
     propose,
+    refuse_unapprovable,
 )
 from cloudfall.domain import (
     ConnectionAddress,
@@ -760,6 +762,16 @@ class DecisionPayload(Payload):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class ListDecisionsArgs(DecisionsArgs):
+    """Arguments of ``decisions list``."""
+
+    status: tuple[DecisionStatus, ...] = Flag(
+        default=(),
+        description="Only decisions with this status (repeatable)",
+    )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ShowDecisionArgs(DecisionsArgs):
     """Arguments of ``decisions show``."""
 
@@ -803,13 +815,23 @@ def operations_show(args: ShowOperationArgs, _ctx: Ctx) -> OperationPayload:
     description="List the decision records this repository holds, oldest first",
     danger_level="safe",
     exit_codes=["RECORD_INVALID"],
-    examples=[("List the decision records", "cloudfall decisions list")],
+    examples=[
+        ("List the decision records", "cloudfall decisions list"),
+        (
+            "List what still waits for an approval",
+            "cloudfall decisions list --status proposed",
+        ),
+    ],
 )
-def decisions_list(args: DecisionsArgs, _ctx: Ctx) -> DecisionsPayload:
+def decisions_list(args: ListDecisionsArgs, _ctx: Ctx) -> DecisionsPayload:
     """Answer every decision record: the record outlives the catalog."""
     store = args.store()
     try:
-        documents = [decision.as_document() for decision in store.list()]
+        documents = [
+            decision.as_document()
+            for decision in store.list()
+            if not args.status or decision.status in args.status
+        ]
     except DecisionError as error:
         raise _record_invalid(error) from error
     return DecisionsPayload(
@@ -1989,7 +2011,13 @@ def _decision_failed(error: DecisionError) -> Exception:
         "on the fleet changes"
     ),
     danger_level="mutating",
-    exit_codes=["CONFIG_INVALID", "NOT_FOUND", "PRECONDITION", "CHECK_FAILED"],
+    exit_codes=[
+        "CONFIG_INVALID",
+        "NOT_FOUND",
+        "PRECONDITION",
+        "CHECK_FAILED",
+        "RECORD_INVALID",
+    ],
     timeout=None,
     subprocess=Subprocess("ansible-playbook"),
     required_tools={"ansible-playbook": "2.21.0"},
@@ -2030,6 +2058,10 @@ def _propose(args: ProposeArgs, run: CheckRunner) -> Decided:
     try:
         decision = propose(request, store, run=run)
     except DecisionError as error:
+        # A new proposal reads the open ones it may supersede, so a broken
+        # record stops it the way it stops every other reader of the record.
+        if error.code == ERROR_RECORD_INVALID:
+            raise _record_invalid(error) from error
         raise _decision_failed(error) from error
     output = (
         (args.root / decision.check.diff.path).read_text(encoding="utf-8")
@@ -2087,6 +2119,10 @@ def decisions_approve(args: ApproveDecisionArgs, ctx: Ctx) -> Decided:
         if error.code == ERROR_DECISION_MISSING:
             raise Exit.NOT_FOUND(error.detail, context={"code": error.code}) from error
         raise _record_invalid(error) from error
+    try:
+        refuse_unapprovable(decision)
+    except DecisionError as error:
+        raise _decision_failed(error) from error
     # Off a terminal this ends with PERSON_REQUIRED, and a mistyped id with
     # ATTESTATION_MISMATCH, before anything runs: --yes never approves.
     attestation = ctx.attest(
@@ -3049,6 +3085,10 @@ class WhyArgs(DecisionsArgs):
             "Only decisions with a moment at or before this ISO 8601 time or date"
         ),
     )
+    status: tuple[DecisionStatus, ...] = Flag(
+        default=(),
+        description="Only decisions with this status (repeatable)",
+    )
 
     def __post_init__(self) -> None:
         """Refuse a time the question cannot be asked with."""
@@ -3065,6 +3105,7 @@ class WhyArgs(DecisionsArgs):
             operation=self.operation.value if self.operation is not None else None,
             since=self.since,
             until=self.until,
+            status=tuple(entry.value for entry in self.status),
         )
 
 
@@ -3085,6 +3126,10 @@ class WhyPayload(Payload):
     renderers={"html": FormatRenderer(render_why_document, media_type="text/html")},
     examples=[
         ("Ask about one host", "cloudfall why --host h1"),
+        (
+            "Only the decisions that verified or failed",
+            "cloudfall why --status verified --status failed",
+        ),
         ("One page for a person", "cloudfall why --since 2026-10-01 --format html"),
     ],
 )
@@ -3839,7 +3884,13 @@ def _provided_tools(args: McpServeArgs, ctx: Ctx) -> list[McpTool]:
     return _engine_tools(args, root, ctx)
 
 
-_PROPOSE_EXIT_CODES = ("CONFIG_INVALID", "NOT_FOUND", "PRECONDITION", "CHECK_FAILED")
+_PROPOSE_EXIT_CODES = (
+    "CONFIG_INVALID",
+    "NOT_FOUND",
+    "PRECONDITION",
+    "CHECK_FAILED",
+    "RECORD_INVALID",
+)
 
 
 def _operation_tool_schema(operation: Operation) -> dict[str, object]:

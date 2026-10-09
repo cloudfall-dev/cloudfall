@@ -8,6 +8,21 @@ Notable changes to Cloudfall. The format follows
 
 ### Added
 
+- A decision record has two new statuses, added to
+  `operation-decision.schema.json` beside the old ones. `ran`: a `risk: read`
+  operation has run by the time it is recorded, so it is recorded with its
+  run's exit code (`ranExitCode`) instead of waiting as `proposed` forever.
+  `superseded`: when `operations propose` records an operation, an older
+  `proposed` record of the same operation, targets and inputs is closed and
+  names the new decision (`supersededBy`); an approved or finished record is
+  never touched. Since it reads the record first, `operations propose` now
+  stops with `RECORD_INVALID` on a record that does not load, before check
+  mode runs. `decisions approve` refuses a `ran` or `superseded` record with
+  `PRECONDITION` before asking for the decision id. `decisions list --status S` and
+  `cloudfall why --status S` (repeatable) keep only those statuses, and an
+  unknown status is refused. Records already on disk keep their status. One
+  disk-full incident left 47 records for `cloudfall why --host hz1`, most of
+  them reads and repeats (#26)
 - Every turn of `agent investigate` keeps its raw trace, in the stream's
   `turn` event (`trace`) and in the investigation record (`spec.trace`): the
   model's reasoning when it returns one (Nemotron's `reasoning_content`),
