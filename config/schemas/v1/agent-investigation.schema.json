@@ -117,6 +117,44 @@
         "answer": {
           "type": "string"
         },
+        "trace": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "turn": {"type": "integer", "minimum": 1},
+              "text": {"type": "string"},
+              "reasoning": {"type": "string"},
+              "toolCalls": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {"type": "string"},
+                    "arguments": {"type": "string"}
+                  },
+                  "required": ["name", "arguments"],
+                  "additionalProperties": false
+                }
+              },
+              "responseId": {"type": "string", "maxLength": 256},
+              "requestId": {"type": "string", "maxLength": 256},
+              "elapsedMs": {"type": "integer", "minimum": 0},
+              "tokens": {
+                "type": "object",
+                "properties": {
+                  "prompt": {"type": "integer", "minimum": 0},
+                  "completion": {"type": "integer", "minimum": 0},
+                  "reasoning": {"type": "integer", "minimum": 0}
+                },
+                "required": ["prompt", "completion", "reasoning"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["turn", "text", "reasoning", "toolCalls", "elapsedMs", "tokens"],
+            "additionalProperties": false
+          }
+        },
         "replay": {
           "type": "string",
           "minLength": 1,

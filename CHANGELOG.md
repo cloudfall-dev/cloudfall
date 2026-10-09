@@ -8,6 +8,13 @@ Notable changes to Cloudfall. The format follows
 
 ### Added
 
+- Every turn of `agent investigate` keeps its raw trace, in the stream's
+  `turn` event (`trace`) and in the investigation record (`spec.trace`): the
+  model's reasoning when it returns one (Nemotron's `reasoning_content`),
+  each tool call exactly as written (name and raw arguments), the
+  endpoint's response id and `x-request-id`, the milliseconds the turn took,
+  and its prompt, completion and reasoning tokens. The record can now say
+  what the model thought when it proposed a change
 - `agent investigate` streams: one bare JSON line with `_seq` per model turn
   (its words and how many tools it called), one per tool call (the step and
   what the tool handed back, `effect: created` when it wrote a decision),

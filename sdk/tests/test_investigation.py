@@ -17,6 +17,7 @@ from cloudfall.investigation import (
     InvestigationStatus,
     InvestigationStore,
     ModelEndpoint,
+    ModelReply,
     ModelUnavailableError,
     StepOutcome,
     ToolResult,
@@ -74,10 +75,10 @@ class _Script:
         self.replies = list(replies)
         self.requests: list[Mapping[str, object]] = []
 
-    def __call__(self, url: str, body: Mapping[str, object]) -> Mapping[str, object]:
+    def __call__(self, url: str, body: Mapping[str, object]) -> ModelReply:
         assert url == "https://models.example/v1/chat/completions"
         self.requests.append(json.loads(json.dumps(body)))
-        return self.replies.pop(0)
+        return ModelReply(body=self.replies.pop(0), request_id="req-test")
 
 
 class _Tool:
@@ -270,7 +271,7 @@ def test_a_malformed_model_answer_is_refused() -> None:
 class _Failing(_Script):
     """A model that answers from a list, then its endpoint refuses."""
 
-    def __call__(self, url: str, body: Mapping[str, object]) -> Mapping[str, object]:
+    def __call__(self, url: str, body: Mapping[str, object]) -> ModelReply:
         if not self.replies:
             message = "the model endpoint answered 500: overloaded"
             raise InvestigationError(ERROR_MODEL_REFUSED, message)
@@ -828,3 +829,37 @@ def test_an_incomplete_investigation_ends_with_the_record_then_93(
     # The error line holds no data: the record is the event before it.
     assert "data.investigation" not in error["suggestion"]
     assert "kind investigation" in error["suggestion"]
+
+
+def test_each_turn_keeps_the_raw_trace() -> None:
+    report, rotate = _tools()
+    thinking = _call("disk-report", {})
+    thinking["id"] = "chatcmpl-1"
+    first = thinking["choices"]
+    assert isinstance(first, list)
+    first[0]["message"]["reasoning_content"] = "The disk may be full; read it first."
+    thinking["usage"] = {
+        "prompt_tokens": 100,
+        "completion_tokens": 40,
+        "completion_tokens_details": {"reasoning_tokens": 30},
+    }
+    script = _Script(
+        thinking, _say("ROOT CAUSE: disk\nPROPOSED: none\nWHY: read only.")
+    )
+
+    done = investigate("alert", _tool_list(report, rotate), ENDPOINT, script)
+
+    turn = done.trace[0]
+    assert turn.reasoning == "The disk may be full; read it first."
+    assert turn.tool_calls[0].name == "disk-report"
+    assert turn.tool_calls[0].arguments == "{}"
+    assert (turn.response_id, turn.request_id) == ("chatcmpl-1", "req-test")
+    assert (turn.prompt_tokens, turn.completion_tokens, turn.reasoning_tokens) == (
+        100,
+        40,
+        30,
+    )
+    recorded = done.as_document()["spec"]
+    assert isinstance(recorded, dict)
+    assert recorded["trace"][0]["reasoning"] == turn.reasoning
+    assert recorded["trace"][1]["toolCalls"] == []
