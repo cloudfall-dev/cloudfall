@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import filecmp
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -26,14 +27,35 @@ def _differences(comparison: filecmp.dircmp[str]) -> list[str]:
     return found
 
 
-def test_the_demo_incident_is_the_example() -> None:
-    comparison = filecmp.dircmp(
-        ROOT / "examples" / "disk-full-incident",
-        ROOT / "demo" / "incident",
-        ignore=["README.md", "tmp", "__pycache__"],
+def _drift(example: Path, copy: Path) -> list[str]:
+    """Name every file the copy lacks, adds or holds differently."""
+    return _differences(
+        filecmp.dircmp(
+            example,
+            copy,
+            ignore=["README.md", "tmp", "__pycache__"],
+            # Shallow trusts a matching size and mtime without reading a byte.
+            shallow=False,
+        )
     )
 
-    assert _differences(comparison) == []
+
+def test_the_demo_incident_is_the_example() -> None:
+    assert (
+        _drift(ROOT / "examples" / "disk-full-incident", ROOT / "demo" / "incident")
+        == []
+    )
+
+
+def test_the_drift_check_reads_contents(tmp_path: Path) -> None:
+    # Same size, same mtime: only reading the bytes tells the two apart.
+    example, copy = tmp_path / "example", tmp_path / "copy"
+    for directory, text in ((example, "shop"), (copy, "shoq")):
+        directory.mkdir()
+        (directory / "site.yml").write_text(text, encoding="utf-8")
+        os.utime(directory / "site.yml", ns=(1_000_000_000, 1_000_000_000))
+
+    assert _drift(example, copy) == ["site.yml"]
 
 
 def test_the_config_lists_every_model_and_the_catalog() -> None:
