@@ -27,6 +27,7 @@ from cloudfall.decision import (
     gate,
     propose,
     read_basis,
+    refuse_unapprovable,
     run_command,
 )
 from cloudfall.domain import ResourceId
@@ -510,6 +511,29 @@ def test_a_read_run_supersedes_a_read_recorded_before_ran_existed(
 
     assert new.status is DecisionStatus.RAN
     assert store.load(old.decision_id).superseded_by == new.decision_id
+
+
+def test_a_superseded_read_does_not_point_at_a_run_to_approve(
+    tmp_path: Path,
+) -> None:
+    """The read that replaced it ran already; there is nothing to approve."""
+    repository = _repository(tmp_path, deploy=DEPLOY, facts=FACTS)
+    store = _store(repository)
+    old = _legacy_read(repository, store, MOMENT)
+    new = propose(
+        _proposal(repository, "facts", target=None, inputs={}),
+        store,
+        lambda: LATER,
+        _Runner(),
+    )
+
+    with pytest.raises(DecisionError) as error:
+        refuse_unapprovable(store.load(old.decision_id))
+
+    assert error.value.code == "decision_not_proposed"
+    assert new.decision_id.value in error.value.detail
+    assert "approve that one" not in error.value.detail
+    assert "ran when it was proposed" in error.value.detail
 
 
 @pytest.mark.parametrize("status", ["ran", "superseded"])

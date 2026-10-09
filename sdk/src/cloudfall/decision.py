@@ -597,10 +597,17 @@ def refuse_unapprovable(decision: Decision) -> None:
     if decision.status is DecisionStatus.PROPOSED:
         return
     if decision.status is DecisionStatus.SUPERSEDED:
+        # A read is recorded as ran, so the decision that replaced an old
+        # read record has nothing left to approve either.
+        instead = (
+            "it ran when it was proposed, so there is nothing to approve"
+            if decision.requirement is Requirement.RUNS_FREELY
+            else "approve that one instead"
+        )
         message = (
             f"decision {decision.decision_id} is superseded by "
             f"{decision.superseded_by}, a newer proposal of the same operation, "
-            "targets and inputs; approve that one instead"
+            f"targets and inputs; {instead}"
         )
     elif decision.status is DecisionStatus.RAN:
         message = (
