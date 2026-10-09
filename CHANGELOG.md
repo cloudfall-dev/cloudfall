@@ -525,6 +525,15 @@ Notable changes to Cloudfall. The format follows
   Before, a run against unreachable hosts crashed while writing the
   `failed` receipt, left the proposal `proposed` with no trace that it ran,
   and showed the caller a traceback
+- The investigation record of `agent investigate` bounds the rest of the
+  model's text. The finding's `rootCause` and `why` keep at most 8000
+  characters, keeping the start before a `[last N characters cut]` mark;
+  the proposed decision ids are still read from the whole line. A tool call
+  whose arguments serialize to more than 8000 characters of JSON is refused
+  before it runs and recorded as an `invalid` step with empty arguments, so
+  `spec.steps[].arguments` only holds arguments that ran whole; the trace
+  still keeps the start of the raw arguments. `agent-investigation.schema.json`
+  bounds both finding fields with `maxLength` (#63)
 
 ### Security
 

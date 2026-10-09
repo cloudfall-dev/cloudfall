@@ -91,7 +91,8 @@
                 "maxLength": 128
               },
               "arguments": {
-                "type": "object"
+                "type": "object",
+                "description": "The call's parsed arguments. A call whose arguments serialize to more than 8000 characters is refused before it runs and recorded as invalid with empty arguments."
               },
               "outcome": {
                 "enum": [
@@ -179,7 +180,9 @@
           "type": "object",
           "properties": {
             "rootCause": {
-              "type": "string"
+              "type": "string",
+              "maxLength": 8000,
+              "description": "The answer's root cause line; a longer one keeps its start, before a mark naming how many characters were cut."
             },
             "proposed": {
               "type": "array",
@@ -194,7 +197,9 @@
               }
             },
             "why": {
-              "type": "string"
+              "type": "string",
+              "maxLength": 8000,
+              "description": "The answer's why line; a longer one keeps its start, before a mark naming how many characters were cut."
             }
           },
           "required": [
