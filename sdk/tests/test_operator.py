@@ -39,6 +39,7 @@ from cloudfall.operator import (
     watch,
 )
 from cloudfall.validation import SchemaCatalog, validate_config
+from jsonschema.exceptions import ValidationError
 from test_decision import _Terminal
 from treaty import CommandPath
 
@@ -713,6 +714,59 @@ def test_autonomy_executes_once_history_is_earned(tmp_path: Path) -> None:
     assert receipt.approval.mode == "autonomous"
     assert receipt.approval.policy is not None
     assert receipt.approval.policy.value == "production-operator"
+
+
+def _autonomous_receipt(tmp_path: Path) -> tuple[ProposalStore, Path]:
+    from datetime import UTC, datetime  # noqa: PLC0415 - test-local.
+
+    from cloudfall.operator import autonomous_pass  # noqa: PLC0415
+
+    store = _store(tmp_path)
+    _seed_verified_drift(store, "packages.required[git]")
+    _seed_verified_drift(store, "packages.required[rsync]")
+    drift_pass(
+        lambda: _audit_report(("packages.required[curl]", AuditStatus.DRIFT)),
+        store,
+    )
+    report = autonomous_pass(
+        store,
+        _policied_inventory(),
+        lambda _proposal: None,
+        lambda _proposal: lambda _p: True,
+        _FAST_APPROVE,
+        now=datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
+    )
+    proposal_id, _status = report.executed[0]
+    return store, tmp_path / "proposals" / f"{proposal_id}.json"
+
+
+def test_an_autonomous_approval_is_written_and_loaded_without_a_channel(
+    tmp_path: Path,
+) -> None:
+    store, path = _autonomous_receipt(tmp_path)
+
+    document = json.loads(path.read_text(encoding="utf-8"))
+    loaded = store.load(ResourceId.from_boundary(path.stem))
+
+    assert "via" not in document["spec"]["approval"]
+    assert loaded.approval is not None
+    assert (loaded.approval.mode, loaded.approval.via) == ("autonomous", None)
+
+
+@pytest.mark.parametrize("via", ["terminal", "unknown"])
+def test_an_autonomous_approval_with_a_channel_is_refused_on_load(
+    tmp_path: Path, via: str
+) -> None:
+    """A policy's approval has no channel; a receipt claiming one does not load."""
+    store, path = _autonomous_receipt(tmp_path)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["spec"]["approval"]["via"] = via
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValidationError) as caught:
+        store.load(ResourceId.from_boundary(path.stem))
+
+    assert list(caught.value.absolute_path) == ["spec", "approval"]
 
 
 def test_autonomy_respects_quiet_hours(tmp_path: Path) -> None:
