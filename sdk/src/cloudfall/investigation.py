@@ -48,6 +48,8 @@ SAVE_ATTEMPTS = 100
 """Most investigations recorded under one second's id, with their suffixes."""
 ENDPOINT_LIMIT = 512
 MODEL_NAME_LIMIT = 256
+REPLAY_LIMIT = 512
+"""Most characters of the --replay path the records keep, as their schemas allow."""
 
 ERROR_ENDPOINT_INVALID = "agent_endpoint_invalid"
 ERROR_MODEL_ANSWER_MALFORMED = "agent_model_answer_malformed"

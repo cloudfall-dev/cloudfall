@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -919,6 +920,94 @@ def test_one_proposal_is_approved_once(tmp_path: Path) -> None:
         )
 
     assert error.value.code == "decision_not_proposed"
+
+
+def test_a_replayed_decision_is_never_approved(tmp_path: Path) -> None:
+    """Its check output came from a recording, not the hosts (#36)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    request = _proposal(repository)
+    replayed = propose(
+        ProposalRequest(
+            operation=request.operation,
+            targets=request.targets,
+            inputs=request.inputs,
+            repository=request.repository,
+            observations=request.observations,
+            replay="recordings/disk-full",
+        ),
+        store,
+        lambda: MOMENT,
+        _Runner(),
+    )
+    run = _Runner()
+
+    with pytest.raises(DecisionError) as error:
+        approve(
+            ApprovalRequest(
+                decision=store.load(replayed.decision_id),
+                approver="roman",
+                repository=repository,
+                via=TERMINAL,
+            ),
+            store,
+            lambda: MOMENT,
+            run,
+        )
+
+    assert replayed.replay == "recordings/disk-full"
+    assert error.value.code == "decision_replayed"
+    assert "recordings/disk-full" in error.value.detail
+    assert run.recorded == []
+    assert store.load(replayed.decision_id) == replayed
+
+
+def test_a_replayed_decision_since_superseded_is_refused_as_replayed(
+    tmp_path: Path,
+) -> None:
+    """Replayed is said first: no later proposal makes it approvable (#36, #26)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    request = _proposal(repository)
+    replayed = propose(
+        replace(request, replay="recordings/disk-full"),
+        store,
+        lambda: MOMENT,
+        _Runner(),
+    )
+    newer = propose(request, store, lambda: LATER, _Runner())
+    superseded = store.load(replayed.decision_id)
+    run = _Runner()
+
+    with pytest.raises(DecisionError) as error:
+        approve(
+            ApprovalRequest(
+                decision=superseded,
+                approver="roman",
+                repository=repository,
+                via=TERMINAL,
+            ),
+            store,
+            lambda: MOMENT,
+            run,
+        )
+
+    assert superseded.status is DecisionStatus.SUPERSEDED
+    assert superseded.superseded_by == newer.decision_id
+    assert error.value.code == "decision_replayed"
+    assert "replay of recordings/disk-full" in error.value.detail
+    assert run.recorded == []
+    assert store.load(replayed.decision_id) == superseded
+
+
+def test_a_record_without_replay_reads_as_live(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+
+    decision = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+
+    assert store.load(decision.decision_id).replay is None
+    assert "replay" not in json.dumps(decision.as_document())
 
 
 def test_an_approval_records_who_gave_it(tmp_path: Path) -> None:

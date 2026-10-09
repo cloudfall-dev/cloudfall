@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import socket
 import subprocess
@@ -11,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import pytest
+from cloudfall.app import app
 from cloudfall.cli import main
 from cloudfall.investigation import (
     ERROR_MODEL_REFUSED,
@@ -775,6 +777,195 @@ def test_a_replay_of_no_recorded_run_is_refused_before_the_model(
     assert exit_code != 0, payload
     assert "recording_empty" in json.dumps(payload)
     assert not (repository / "investigations").exists()
+
+
+LOCAL_PLAY = (
+    "---\n- hosts: localhost\n  connection: local\n  gather_facts: false\n"
+    "  tasks:\n    - name: Nothing\n      ansible.builtin.debug:\n"
+    "        msg: nothing\n"
+)
+
+
+def _replayed_deploy(
+    repository: Path, key: Path, model_url: str, capsys: pytest.CaptureFixture[str]
+) -> str:
+    """Record a deploy live into ``recorded``, replay it; return the new decision id."""
+    for name in ("deploy.yml", "health.yml"):
+        (repository / "playbooks" / name).write_text(LOCAL_PLAY, encoding="utf-8")
+    recorded = main(
+        [
+            *("operations", "propose", "deploy", "--repository", str(repository)),
+            *("--target", "localhost", "--input", "version=2"),
+            *("--decisions", "recorded"),
+        ]
+    )
+    assert recorded == 0
+    capsys.readouterr()
+    _Model.seen.clear()
+    _Model.replies[:] = [
+        _call("operation_deploy", {"target": "localhost", "inputs": {"version": "2"}}),
+        _say("ROOT CAUSE: drift\nPROPOSED: deploy\nWHY: the release is old."),
+    ]
+    exit_code = main(
+        [
+            *("agent", "investigate", "--repository", str(repository)),
+            *("--alert", "web-1 serves an old release"),
+            *("--base-url", model_url, "--model", "nemotron"),
+            *("--api-key-from-file", str(key), "--replay", "recorded"),
+        ]
+    )
+    payload = _streamed(capsys.readouterr().out)
+    assert exit_code == 0, payload
+    steps = payload["data"]["investigation"]["spec"]["steps"]
+    assert [step["outcome"] for step in steps] == ["proposed"]
+    return str(steps[0]["decision"])
+
+
+def test_a_decision_proposed_in_a_replay_names_the_recording(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], model_url: str
+) -> None:
+    """A played-back check cannot pass for a live one (#36)."""
+    repository = _repository(tmp_path)
+    key = tmp_path / "model.key"
+    key.write_text("sk-test\n", encoding="utf-8")
+
+    decision_id = _replayed_deploy(repository, key, model_url, capsys)
+
+    record = json.loads(
+        (repository / "decisions" / f"{decision_id}.json").read_text(encoding="utf-8")
+    )
+    assert record["spec"]["replay"] == "recorded"
+    assert record["spec"]["status"] == "proposed"
+    live = next((repository / "recorded").glob("deploy-*.json"))
+    assert "replay" not in json.loads(live.read_text(encoding="utf-8"))["spec"]
+    assert main(["decisions", "list", "--repository", str(repository)]) == 0
+    listed = json.loads(capsys.readouterr().out)["data"]["decisions"]
+    assert [entry["spec"]["replay"] for entry in listed] == ["recorded"]
+    assert main(["why", "--repository", str(repository)]) == 0
+    story = json.loads(capsys.readouterr().out)["data"]["answers"][0]["story"]
+    assert (
+        "That check output was played back from the recording recorded, not run "
+        "on the hosts, so it cannot be approved."
+    ) in story
+
+
+class _Terminal(io.StringIO):
+    """A stream that says it is a terminal, as a person's shell is."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+def test_approving_a_replayed_decision_is_refused_even_at_a_terminal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], model_url: str
+) -> None:
+    """A person typing the id still cannot approve a played-back check (#36)."""
+    repository = _repository(tmp_path)
+    key = tmp_path / "model.key"
+    key.write_text("sk-test\n", encoding="utf-8")
+    decision_id = _replayed_deploy(repository, key, model_url, capsys)
+    path = repository / "decisions" / f"{decision_id}.json"
+    before = path.read_text(encoding="utf-8")
+    stdout = _Terminal()
+
+    exit_code = app.run(
+        [
+            *("decisions", "approve", decision_id),
+            *("--repository", str(repository), "--approver", "roman"),
+            *("--format", "json"),
+        ],
+        stdin=_Terminal(f"{decision_id}\n"),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    error = json.loads(stdout.getvalue())["error"]
+    assert exit_code == 4
+    assert error["code"] == "PRECONDITION"
+    assert error["context"]["code"] == "decision_replayed"
+    assert "played back" in error["message"]
+    assert path.read_text(encoding="utf-8") == before
+    assert not list((repository / "decisions").glob(f"{decision_id}-*.log"))
+
+
+@pytest.mark.parametrize("decisions", ["recorded", "./recorded", "absolute"])
+def test_a_replay_into_its_own_recording_is_refused_before_the_model(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], decisions: str
+) -> None:
+    """The replay must not write played-back records into what it plays (#36)."""
+    repository = _repository(tmp_path)
+    (repository / "recorded").mkdir()
+    if decisions == "absolute":
+        decisions = str(repository / "recorded")
+    key = tmp_path / "model.key"
+    key.write_text("sk-test\n", encoding="utf-8")
+
+    exit_code = main(
+        [
+            *("agent", "investigate", "--repository", str(repository)),
+            *("--alert", "postgresql-main down on web-1"),
+            *("--base-url", "http://127.0.0.1:9/v1", "--model", "nemotron"),
+            *("--api-key-from-file", str(key)),
+            *("--replay", "recorded", "--decisions", decisions),
+        ]
+    )
+
+    payload = _streamed(capsys.readouterr().out)
+    assert exit_code == 2, payload
+    assert payload["error"]["code"] == "ARG_ERROR"
+    assert "is the recording" in payload["error"]["message"]
+    assert not (repository / "investigations").exists()
+    assert list((repository / "recorded").iterdir()) == []
+
+
+def test_a_replay_path_too_long_to_record_is_refused_before_the_model(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], model_url: str
+) -> None:
+    """The records keep --replay as given, at most 512 characters (#36).
+
+    Past that, every proposal and the investigation itself would fail
+    their schema only after the model was asked.
+    """
+    repository = _repository(tmp_path)
+    for name in ("deploy.yml", "health.yml"):
+        (repository / "playbooks" / name).write_text(LOCAL_PLAY, encoding="utf-8")
+    recorded = main(
+        [
+            *("operations", "propose", "deploy", "--repository", str(repository)),
+            *("--target", "localhost", "--input", "version=2"),
+            *("--decisions", "recorded"),
+        ]
+    )
+    assert recorded == 0
+    capsys.readouterr()
+    nested = repository / ("a" * 200) / ("b" * 200)
+    nested.mkdir(parents=True)
+    (nested / ("c" * 200)).symlink_to(repository / "recorded")
+    replay = f"{'a' * 200}/{'b' * 200}/{'c' * 200}"
+    key = tmp_path / "model.key"
+    key.write_text("sk-test\n", encoding="utf-8")
+    _Model.seen.clear()
+    _Model.replies[:] = [
+        _call("operation_deploy", {"target": "localhost", "inputs": {"version": "2"}}),
+        _say("ROOT CAUSE: drift\nPROPOSED: deploy\nWHY: the release is old."),
+    ]
+
+    exit_code = main(
+        [
+            *("agent", "investigate", "--repository", str(repository)),
+            *("--alert", "web-1 serves an old release"),
+            *("--base-url", model_url, "--model", "nemotron"),
+            *("--api-key-from-file", str(key), "--replay", replay),
+        ]
+    )
+
+    payload = _streamed(capsys.readouterr().out)
+    assert exit_code == 2, payload
+    assert payload["error"]["code"] == "ARG_ERROR"
+    assert "512" in payload["error"]["message"]
+    assert _Model.seen == []
+    assert not (repository / "investigations").exists()
+    assert not (repository / "decisions").exists()
 
 
 def test_the_cli_streams_each_turn_and_call_then_the_record(

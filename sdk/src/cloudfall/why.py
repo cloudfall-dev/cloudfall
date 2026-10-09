@@ -372,6 +372,11 @@ def _story(decision: Decision) -> Iterable[str]:
     yield _saw(decision)
     yield _proposed(decision)
     yield _checked(decision)
+    if decision.replay is not None:
+        yield (
+            f"That check output was played back from the recording "
+            f"{decision.replay}, not run on the hosts, so it cannot be approved."
+        )
     yield _gated(decision)
     if decision.approval is not None:
         yield _approved(decision.approval)
