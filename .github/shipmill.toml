@@ -14,6 +14,7 @@ after_stamp = ["uv lock --check"]
 [changelog]
 path = "CHANGELOG.md"
 style = "keep-a-changelog"
+fragments = "changelog.d"
 
 [bump]
 from = "headings"
@@ -93,3 +94,4 @@ remind_hours = 4   # repeat it while the session still waits
 max_wait_minutes = 15 # stop a session that waited this long; 0: never
 app_id = 5209412   # gated sessions write as shipmill-romamo[bot]
 mode = "headless" # nobody attaches: sessions ask on GitHub with needs-decision
+plugin_update = true
