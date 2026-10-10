@@ -6,6 +6,8 @@ Notable changes to Cloudfall. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-10
+
 ### Added
 
 - `demo/`: the hosted demo, a small Starlette app that streams a live
@@ -163,7 +165,6 @@ Notable changes to Cloudfall. The format follows
   `why` and `changelog`) may change in any release. What each key holds is
   not declared yet. The tests validate real output against these schemas,
   and an `etag` changes only when a command, flag or declared output does
-
 - Every error carries `exit_code`, the code the process exits with, so a
   caller that reads the JSON needs no second channel: `{"code",
   "message", "exit_code"}`. Results that exit non-zero, such as an
@@ -827,7 +828,8 @@ on disposable Hetzner Cloud Debian 13 servers (see
   exposed freely, every server-changing tool gated behind a two-step
   confirmation handshake
 
-[Unreleased]: https://github.com/cloudfall-dev/cloudfall/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/cloudfall-dev/cloudfall/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/cloudfall-dev/cloudfall/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/cloudfall-dev/cloudfall/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/cloudfall-dev/cloudfall/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/cloudfall-dev/cloudfall/compare/v0.3.0...v0.4.0
