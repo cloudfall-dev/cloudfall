@@ -78,6 +78,8 @@ endpoint; we run NVIDIA Nemotron on [Nebius Token Factory](https://tokenfactory.
 Nemotron model, watch it investigate a real incident turn by turn, with its
 reasoning, and approve the fix yourself.
 
+[![The live demo: Nemotron 3 Super works the alert turn by turn, with its reasoning and raw tool calls, and two proposed fixes wait for approval](docs/images/demo.png)](https://demo.cloudfall.dev)
+
 The incident is real: on a Hetzner server, 36G of shop logs nobody rotates
 fill the disk and PostgreSQL goes down. The alert only says "PostgreSQL is
 down". We gave it to four Nemotron models, ten times each, against the
