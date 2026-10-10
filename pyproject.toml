@@ -1,6 +1,6 @@
 [project]
 name = "cloudfall"
-version = "0.5.1"
+version = "0.6.0rc14"
 description = "The operator's record for self-hosted servers run by an AI agent: Ansible executes, Cloudfall gates, verifies and keeps the receipts"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
