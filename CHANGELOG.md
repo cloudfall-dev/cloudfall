@@ -826,3 +826,12 @@ on disposable Hetzner Cloud Debian 13 servers (see
 - `cloudfall-mcp`: seventeen annotated MCP tools; read-only evidence tools
   exposed freely, every server-changing tool gated behind a two-step
   confirmation handshake
+
+[Unreleased]: https://github.com/cloudfall-dev/cloudfall/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/cloudfall-dev/cloudfall/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/cloudfall-dev/cloudfall/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/cloudfall-dev/cloudfall/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/cloudfall-dev/cloudfall/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/cloudfall-dev/cloudfall/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/cloudfall-dev/cloudfall/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/cloudfall-dev/cloudfall/releases/tag/v0.1.0
