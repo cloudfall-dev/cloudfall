@@ -45,7 +45,7 @@ dispatch = ["publish.yml"]
 # (0.6.0) has closed issues and none open: the milestone is the only trigger, so it gates
 [lanes.stable]
 promote_from = "rc"
-min_soak_days = 0                   # 0.6.0 only: released by hand from the newest rc; back to 3 after
+min_soak_days = 3
 milestone = true
 github_release = true
 dispatch = ["publish.yml"]
