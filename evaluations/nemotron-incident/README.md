@@ -61,8 +61,10 @@ Super is right 10 of 10, with the fewest tokens and the shortest time. It
 reads the PostgreSQL journal, runs the disk report, names `/var/log/shop`,
 and proposes the fix before the restart. In the proving run of
 `agent investigate` on a separate host, a Super run was followed through
-to the end: approved by a person, both decisions verified, the disk went
-from 100% to 5%, and PostgreSQL answered again.
+to the end: approved by a person, the fix freed the disk and PostgreSQL
+came back up. Rerun on a fresh host with verification, the disk went
+from 100% to 5%
+([proving run](../../docs/proving-runs/2026-10-08-disk-full-agent.md)).
 
 ## Caveats
 
