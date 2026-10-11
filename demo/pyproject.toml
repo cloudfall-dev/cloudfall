@@ -19,7 +19,7 @@ package = true
 [tool.uv.sources]
 # The demo is deployed from this directory alone, so Cloudfall comes from git,
 # pinned: bump the rev to ship a new Cloudfall to the demo.
-cloudfall = { git = "https://github.com/cloudfall-dev/cloudfall", rev = "9e51dc569a758504d82828e157dc6f65b9978bd9" }
+cloudfall = { git = "https://github.com/cloudfall-dev/cloudfall", rev = "210e0b6ded549f699657c792e825e689646ba2de" }
 
 [build-system]
 requires = ["hatchling>=1.27"]

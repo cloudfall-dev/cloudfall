@@ -148,3 +148,71 @@ def test_a_decision_outside_the_runs_is_refused() -> None:
 
     assert response.status_code == 400
     assert json.loads(response.text)["error"] == "unknown decision"
+
+
+def _investigated(run: str, decision: str) -> None:
+    """Record, in a run, the investigation whose second turn asked for it."""
+    investigations = server.INCIDENT / server.RUNS / run / "investigations"
+    investigations.mkdir(parents=True, exist_ok=True)
+    record = {
+        "apiVersion": "cloudfall/v1",
+        "kind": "AgentInvestigation",
+        "metadata": {"id": "investigation-20261011120000"},
+        "spec": {
+            "alert": server.ALERT,
+            "model": {"endpoint": server.BASE_URL, "name": "nvidia/nemotron"},
+            "startedAt": "2026-10-11T12:00:00Z",
+            "finishedAt": "2026-10-11T12:00:09Z",
+            "status": "answered",
+            "turns": 2,
+            "tokens": {"prompt": 100, "completion": 10},
+            "steps": [
+                {
+                    "tool": "operation_shop_logrotate",
+                    "arguments": {"target": "hz1"},
+                    "outcome": "proposed",
+                    "decision": decision,
+                    "turn": 2,
+                }
+            ],
+            "answer": "",
+            "trace": [
+                {
+                    "turn": 2,
+                    "text": "",
+                    "reasoning": "The shop logs filled the disk.",
+                    "toolCalls": [],
+                    "elapsedMs": 900,
+                    "tokens": {"prompt": 100, "completion": 10, "reasoning": 6},
+                    "responseId": "chatcmpl-2",
+                }
+            ],
+        },
+    }
+    (investigations / "investigation-20261011120000.json").write_text(
+        json.dumps(record), encoding="utf-8"
+    )
+
+
+def test_the_record_tells_which_turn_asked_for_a_change() -> None:
+    decision = _proposed("testrun4", "shop-logrotate")
+    _investigated("testrun4", decision)
+    try:
+        result = CLIENT.get("/api/why", params={"run": "testrun4"}).json()
+    finally:
+        shutil.rmtree(server.INCIDENT / server.RUNS / "testrun4")
+
+    assert result["command"].startswith("cloudfall why --decisions tmp/runs/testrun4/")
+    [answer] = result["answers"]
+    assert (answer["operation"], answer["status"]) == ("shop-logrotate", "proposed")
+    assert answer["agent"]["turn"] == 2
+    assert any(
+        sentence.startswith("The agent nvidia/nemotron") and "in turn 2" in sentence
+        for sentence in answer["story"]
+    )
+    assert any("The shop logs filled the disk." in line for line in answer["story"])
+
+
+def test_the_record_of_an_unknown_run_is_refused() -> None:
+    assert CLIENT.get("/api/why", params={"run": "nosuchrun"}).status_code == 404
+    assert CLIENT.get("/api/why", params={"run": "../x"}).status_code == 404
