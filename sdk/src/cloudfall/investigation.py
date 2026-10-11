@@ -205,6 +205,8 @@ class Step:
     arguments: Mapping[str, object]
     outcome: StepOutcome
     decision: str | None
+    turn: int | None = None
+    """The turn of the trace that made the call; the record links the two by it."""
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the step for the record."""
@@ -215,6 +217,8 @@ class Step:
         }
         if self.decision is not None:
             document["decision"] = self.decision
+        if self.turn is not None:
+            document["turn"] = self.turn
         return document
 
 
@@ -542,6 +546,7 @@ def investigation_events(  # noqa: PLR0913 - as investigate.
                 break
             for call in calls:
                 step, result = _run_call(call, by_name, seen)
+                step = replace(step, turn=turns)
                 steps.append(step)
                 yield Called(turn=turns, step=step, result=result)
                 messages.append(

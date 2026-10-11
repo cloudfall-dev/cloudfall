@@ -150,6 +150,7 @@ def test_the_model_reads_proposes_and_answers() -> None:
         StepOutcome.RAN,
         StepOutcome.PROPOSED,
     ]
+    assert [step.as_dict()["turn"] for step in done.steps] == [1, 2]
     assert done.turns == 3
     assert (done.usage.prompt, done.usage.completion) == (250, 25)
     tool_reply = script.requests[1]["messages"]
