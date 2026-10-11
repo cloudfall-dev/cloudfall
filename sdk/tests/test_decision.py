@@ -15,6 +15,7 @@ from cloudfall.catalog import RiskLevel, TargetScope, load_catalog
 from cloudfall.cli import main
 from cloudfall.decision import (
     DECISION_DIRECTORY,
+    HOST_STATS_VARIABLE,
     ApprovalChannel,
     ApprovalRequest,
     DecisionError,
@@ -139,19 +140,28 @@ class _Runner:
         environment: Mapping[str, str],
         diff_path: Path,
     ) -> int:
-        tree = Path(environment["ANSIBLE_CALLBACK_TREE_DIR"])
-        changed = self.verify_changed if self._verifying(tree) else self.changed
+        host_stats = Path(environment[HOST_STATS_VARIABLE])
+        verifying = self._verifying(host_stats)
+        changed = self.verify_changed if verifying else self.changed
         self.recorded.append(tuple(argv))
-        tree.mkdir(parents=True, exist_ok=True)
+        host_stats.mkdir(parents=True, exist_ok=True)
         for host in changed:
-            (tree / host).write_text('{"changed": true}', encoding="utf-8")
-        (tree / "web-2").write_text('{"changed": false}', encoding="utf-8")
+            _write_recap(host_stats / host, ok=3, changed=1)
+        _write_recap(host_stats / "web-2", ok=3, changed=0)
         diff_path.write_text("--- before\n+++ after\n", encoding="utf-8")
         return self.exit_code
 
     @staticmethod
-    def _verifying(tree: Path) -> bool:
-        return tree.name.endswith("-verify")
+    def _verifying(host_stats: Path) -> bool:
+        return host_stats.name.endswith("-verify")
+
+
+def _write_recap(path: Path, *, ok: int, changed: int) -> None:
+    """Write one host's recap counts as the host stats callback does."""
+    path.write_text(
+        json.dumps({"changed": changed, "failed": 0, "ok": ok, "unreachable": 0}),
+        encoding="utf-8",
+    )
 
 
 def test_the_gate_follows_the_risk_level() -> None:
@@ -232,7 +242,7 @@ def test_the_team_configuration_runs_their_playbook(tmp_path: Path) -> None:
         PlaybookInvocation(
             playbook=operation.playbook,
             repository=repository,
-            tree=repository / "tree",
+            host_stats=repository / "host-stats",
             pattern="web-1",
         ),
         check=True,

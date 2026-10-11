@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, cast
 
 from jsonschema.exceptions import ValidationError
 
+from cloudfall.ansible_api import callback_plugin_path
 from cloudfall.catalog import RiskLevel, TargetScope
 from cloudfall.domain import ResourceId
 
@@ -54,11 +55,19 @@ belong in git only in a repository whose tasks set ``no_log`` where it
 matters.
 """
 
-_TREE_DIRECTORY = "tree"
+_HOST_STATS_DIRECTORY = "host-stats"
+HOST_STATS_CALLBACK = "cloudfall_host_stats"
+"""The callback that leaves each host's recap counts; see cloudfall.callback_plugins."""
+
+HOST_STATS_VARIABLE = "CLOUDFALL_HOST_STATS_DIR"
+"""Where that callback writes one JSON file per host."""
+
+_CALLBACK_PLUGIN_DIRECTORY = Path(__file__).parent / "callback_plugins"
 _DIFF_SUFFIX = ".diff"
 _ANSIBLE_CONFIG_FILE = "ansible.cfg"
 CHECK_TIMEOUT_SECONDS = 1800
 _CHANGED_KEY = "changed"
+_ERROR_HOST_STATS_INVALID = "decision_host_stats_invalid"
 
 _ERROR_ANSIBLE_MISSING = "decision_ansible_missing"
 _ERROR_TARGET_REQUIRED = "decision_target_required"
@@ -460,12 +469,12 @@ def propose(
     moment = (now or _utc_now)()
     decision_id = _decision_identifier(operation.operation_id, moment)
     diff_path = store.directory / f"{decision_id.value}{_DIFF_SUFFIX}"
-    tree = store.directory / _TREE_DIRECTORY / decision_id.value
+    host_stats = store.directory / _HOST_STATS_DIRECTORY / decision_id.value
     argv, environment = run_command(
         PlaybookInvocation(
             playbook=operation.playbook,
             repository=request.repository,
-            tree=tree,
+            host_stats=host_stats,
             pattern=pattern,
             inputs=declared,
         ),
@@ -489,7 +498,7 @@ def propose(
         requirement=requirement,
         reason=reason,
         basis=read_basis(request.observations, request.repository),
-        check=_preview(exit_code, tree, diff_path, request.repository),
+        check=_preview(exit_code, host_stats, diff_path, request.repository),
         status=DecisionStatus.RAN if ran else DecisionStatus.PROPOSED,
         verdict=_ran_verdict(exit_code, request.replay) if ran else None,
         ran_exit_code=exit_code if ran else None,
@@ -533,7 +542,9 @@ class PlaybookInvocation:
 
     playbook: Path
     repository: Path
-    tree: Path
+    host_stats: Path
+    """Where the run leaves each host's recap counts, one JSON file per host."""
+
     pattern: str | None = None
     inputs: Mapping[str, object] = field(default_factory=dict)
 
@@ -711,7 +722,9 @@ def _run_stage(
     invocation = PlaybookInvocation(
         playbook=playbook,
         repository=stage.request.repository,
-        tree=stage.store.directory / _TREE_DIRECTORY / f"{identifier}-{name}",
+        host_stats=(
+            stage.store.directory / _HOST_STATS_DIRECTORY / f"{identifier}-{name}"
+        ),
         pattern=decision.targets.pattern,
         inputs=decision.inputs,
     )
@@ -719,7 +732,7 @@ def _run_stage(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     exit_code = stage.runner(argv, environment, log_path)
     preview = _preview(
-        exit_code, invocation.tree, log_path, stage.request.repository
+        exit_code, invocation.host_stats, log_path, stage.request.repository
     )
     return RunRecord(
         ran_at=_timestamp(moment),
@@ -737,7 +750,9 @@ def run_command(
 
     The team's own configuration decides how Ansible connects and where
     their roles live, because this is their playbook: nothing about the
-    engine belongs in this run.
+    engine belongs in this run. The one thing added is the callback that
+    leaves each host's recap counts, put ahead of the callback directories
+    their configuration already names rather than in place of them.
     """
     binary = shutil.which("ansible-playbook")
     if binary is None:
@@ -751,13 +766,16 @@ def run_command(
             ("--extra-vars", json.dumps(dict(invocation.inputs), sort_keys=True))
         )
     argv.append(str(invocation.repository / invocation.playbook))
-    environment = {
-        "ANSIBLE_CALLBACKS_ENABLED": _TREE_DIRECTORY,
-        "ANSIBLE_CALLBACK_TREE_DIR": str(invocation.tree.resolve()),
-    }
     configuration = invocation.repository / _ANSIBLE_CONFIG_FILE
-    if configuration.is_file():
-        environment["ANSIBLE_CONFIG"] = str(configuration.resolve())
+    team = configuration if configuration.is_file() else None
+    plugins = (_CALLBACK_PLUGIN_DIRECTORY, *callback_plugin_path(team))
+    environment = {
+        "ANSIBLE_CALLBACK_PLUGINS": os.pathsep.join(str(path) for path in plugins),
+        "ANSIBLE_CALLBACKS_ENABLED": HOST_STATS_CALLBACK,
+        HOST_STATS_VARIABLE: str(invocation.host_stats.resolve()),
+    }
+    if team is not None:
+        environment["ANSIBLE_CONFIG"] = str(team.resolve())
     return tuple(argv), environment
 
 
@@ -801,23 +819,20 @@ def read_basis(observations: Path, repository: Path | None = None) -> Basis:
 
 
 def _preview(
-    exit_code: int, tree: Path, diff_path: Path, repository: Path | None = None
+    exit_code: int, host_stats: Path, diff_path: Path, repository: Path | None = None
 ) -> CheckPreview:
+    """Sort the hosts by what the whole play did to them, then cite the output.
+
+    A host is changed when any task changed it: the recap's count says so,
+    where the last task's result would only say what that one task did.
+    """
     changed: list[str] = []
     unchanged: list[str] = []
-    if tree.is_dir():
-        for path in sorted(tree.iterdir()):
+    if host_stats.is_dir():
+        for path in sorted(host_stats.iterdir()):
             if not path.is_file():
                 continue
-            document = cast(
-                "object", json.loads(path.read_text(encoding="utf-8"))
-            )
-            reported = (
-                bool(document.get(_CHANGED_KEY))
-                if isinstance(document, dict)
-                else False
-            )
-            (changed if reported else unchanged).append(path.name)
+            (changed if _changed_count(path) > 0 else unchanged).append(path.name)
     content = diff_path.read_bytes() if diff_path.is_file() else b""
     return CheckPreview(
         exit_code=exit_code,
@@ -833,6 +848,16 @@ def _preview(
             size=len(content),
         ),
     )
+
+
+def _changed_count(path: Path) -> int:
+    """Return how many tasks changed the host one recap file names."""
+    document = cast("object", json.loads(path.read_text(encoding="utf-8")))
+    count = document.get(_CHANGED_KEY) if isinstance(document, dict) else None
+    if not isinstance(count, int) or isinstance(count, bool):
+        message = f"{path} holds no {_CHANGED_KEY} count of a host's recap"
+        raise DecisionError(_ERROR_HOST_STATS_INVALID, message)
+    return count
 
 
 def _validated_targets(operation: Operation, targets: Targets) -> str | None:
