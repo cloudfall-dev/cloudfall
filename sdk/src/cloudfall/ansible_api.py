@@ -10,6 +10,9 @@ When the in-process loader fails on an ansible-core release, the same
 function falls back to the ``ansible-inventory`` command and says so in
 ``AnsibleInventory.in_process``, so a broken internal API degrades to a
 slower read rather than to no read at all.
+
+The callback plugin in ``cloudfall.callback_plugins`` imports ansible-core
+too, but Ansible loads it into ``ansible-playbook``; the SDK never does.
 """
 
 from __future__ import annotations
@@ -206,6 +209,34 @@ def inventory_from_config(directory: Path) -> InventorySource | None:
     if not candidate.is_absolute():
         candidate = directory / candidate
     return InventorySource(candidate)
+
+
+def callback_plugin_path(configuration: Path | None) -> tuple[Path, ...]:
+    """Return the callback plugin directories a playbook run would search.
+
+    ``ANSIBLE_CALLBACK_PLUGINS`` replaces the configured path rather than
+    adding to it, so a caller that adds a directory of its own starts from
+    this: the operator's environment, else the team's ``ansible.cfg`` (its
+    relative entries resolved against the file), else Ansible's default.
+    ``None`` searches for a configuration the way ``ansible-playbook`` does.
+    """
+    from ansible.config.manager import (  # noqa: PLC0415 - lazy by design
+        ConfigManager,
+    )
+    from ansible.errors import AnsibleError  # noqa: PLC0415 - lazy by design
+
+    try:
+        manager = ConfigManager(
+            str(configuration.resolve()) if configuration is not None else None
+        )
+        home = manager.get_config_value("ANSIBLE_HOME")
+        paths = manager.get_config_value(
+            "DEFAULT_CALLBACK_PLUGIN_PATH", variables={"ANSIBLE_HOME": home}
+        )
+    except AnsibleError as error:
+        message = f"the callback plugin path is not readable: {error}"
+        raise AnsibleReadError(_ERROR_CONFIG_UNREADABLE, message) from error
+    return tuple(Path(str(entry)) for entry in paths)
 
 
 def read_inventory(

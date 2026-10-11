@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from cloudfall.decision import HOST_STATS_VARIABLE
+
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
@@ -28,8 +30,6 @@ NOT_RECORDED_EXIT = 3
 
 ERROR_RECORDING_EMPTY = "recording_empty"
 """The code of a recording that is not a directory or holds no runs."""
-
-_TREE_DIR_VARIABLE = "ANSIBLE_CALLBACK_TREE_DIR"
 
 
 class RecordingError(ValueError):
@@ -118,7 +118,7 @@ class Recording:
                 )
                 return NOT_RECORDED_EXIT
             diff.write_text(recorded.output, encoding="utf-8")
-            _write_tree(environment, recorded)
+            _write_host_stats(environment, recorded)
             return recorded.exit_code
 
         return run
@@ -150,14 +150,20 @@ def _value(arguments: Sequence[str], flag: str) -> str | None:
     return arguments[arguments.index(flag) + 1]
 
 
-def _write_tree(environment: Mapping[str, str], recorded: RecordedRun) -> None:
-    """Leave the per-host results the tree callback would have written."""
-    tree = environment.get(_TREE_DIR_VARIABLE)
-    if tree is None:
+def _write_host_stats(environment: Mapping[str, str], recorded: RecordedRun) -> None:
+    """Leave the per-host recap counts the host stats callback would have written.
+
+    A recording keeps which hosts changed, not how many tasks did, so each
+    host is played back as one task: changed, or ok and unchanged.
+    """
+    named = environment.get(HOST_STATS_VARIABLE)
+    if named is None:
         return
-    directory = Path(tree)
+    directory = Path(named)
     directory.mkdir(parents=True, exist_ok=True)
-    for host in recorded.changed:
-        (directory / host).write_text('{"changed": true}', encoding="utf-8")
-    for host in recorded.unchanged:
-        (directory / host).write_text('{"changed": false}', encoding="utf-8")
+    for hosts, changed in ((recorded.changed, 1), (recorded.unchanged, 0)):
+        for host in hosts:
+            counts = {"ok": 1, "changed": changed, "failed": 0, "unreachable": 0}
+            (directory / host).write_text(
+                json.dumps(counts, sort_keys=True), encoding="utf-8"
+            )
