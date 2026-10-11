@@ -17,7 +17,29 @@ from cloudfall.decision import (
     approve,
     propose,
 )
-from cloudfall.why import Instant, WhyError, WhyQuery, answer, render_why_html
+from cloudfall.domain import ResourceId
+from cloudfall.investigation import (
+    INVESTIGATION_DIRECTORY,
+    Investigation,
+    InvestigationStatus,
+    InvestigationStore,
+    ModelEndpoint,
+    Step,
+    StepOutcome,
+    ToolCallText,
+    Turn,
+    Usage,
+)
+from cloudfall.resources import default_schema_directory
+from cloudfall.validation import SchemaCatalog
+from cloudfall.why import (
+    Instant,
+    Investigations,
+    WhyError,
+    WhyQuery,
+    answer,
+    render_why_html,
+)
 from test_catalog import _repository
 from test_decision import MOMENT, _proposal, _Runner, _store
 
@@ -347,3 +369,127 @@ def test_an_empty_record_renders_an_empty_page(tmp_path: Path) -> None:
 
     assert "The record holds no decision this question is about." in page
     assert "0 decisions" in page
+
+
+def _investigated(repository: Path, decision: str, *, turn: int | None = 2) -> None:
+    """Record an investigation whose second turn asked for the decision."""
+    asked = Turn(
+        turn=2,
+        text="",
+        reasoning="Disk is full of shop logs; rotate them first.",
+        tool_calls=(ToolCallText(name="operation_deploy", arguments="{}"),),
+        response_id="chatcmpl-2",
+        request_id="req-2",
+        elapsed_ms=900,
+        prompt_tokens=100,
+        completion_tokens=10,
+        reasoning_tokens=8,
+    )
+    InvestigationStore(
+        directory=repository / INVESTIGATION_DIRECTORY,
+        catalog=SchemaCatalog(default_schema_directory()),
+    ).save(
+        Investigation(
+            investigation_id=ResourceId.from_boundary("investigation-20260921143000"),
+            alert="ALERT web-1 down",
+            endpoint=ModelEndpoint(
+                base_url="https://models.example/v1/", model="nemotron"
+            ),
+            started_at="2026-09-21T14:30:00Z",
+            finished_at="2026-09-21T14:30:10Z",
+            status=InvestigationStatus.ANSWERED,
+            turns=2,
+            usage=Usage(prompt=100, completion=10),
+            steps=(
+                Step("operation_deploy", {}, StepOutcome.PROPOSED, decision, turn),
+                Step("operation_deploy", {}, StepOutcome.REPEATED, decision, turn),
+            ),
+            answer="",
+            finding=None,
+            trace=(asked,),
+        )
+    )
+
+
+def _investigations(repository: Path) -> Investigations:
+    return Investigations.load(
+        repository / INVESTIGATION_DIRECTORY,
+        SchemaCatalog(default_schema_directory()),
+    )
+
+
+def test_a_decision_an_agent_asked_for_is_told_with_its_turn(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    deploy, facts = _record(repository)
+    _investigated(repository, deploy.decision_id.value)
+
+    told = answer(_store(repository), WhyQuery(), _investigations(repository))
+
+    by_id = {entry.decision.decision_id: entry for entry in told.explanations}
+    story = by_id[deploy.decision_id].story
+    assert story[2] == (
+        "The agent nemotron at https://models.example/v1/ asked for it in turn 2 "
+        'of investigation investigation-20260921143000, working the alert "ALERT '
+        'web-1 down".'
+    )
+    assert story[3] == (
+        "Its reasoning in that turn, as the endpoint returned it: "
+        '"Disk is full of shop logs; rotate them first." (response chatcmpl-2, '
+        "request req-2)."
+    )
+    assert by_id[deploy.decision_id].as_dict()["agent"] == {
+        "investigation": "investigation-20260921143000",
+        "model": "nemotron",
+        "endpoint": "https://models.example/v1/",
+        "alert": "ALERT web-1 down",
+        "turn": 2,
+        "reasoning": "Disk is full of shop logs; rotate them first.",
+        "responseId": "chatcmpl-2",
+        "requestId": "req-2",
+    }
+    assert "agent" not in by_id[facts.decision_id].as_dict()
+    assert all("agent" not in line for line in by_id[facts.decision_id].story)
+
+
+def test_an_investigation_from_before_turns_were_kept_says_so(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    deploy, _ = _record(repository)
+    _investigated(repository, deploy.decision_id.value, turn=None)
+
+    told = answer(
+        _store(repository),
+        WhyQuery.from_boundary(operation="deploy"),
+        _investigations(repository),
+    )
+
+    story = told.explanations[0].story
+    assert story[2].endswith('working the alert "ALERT web-1 down".')
+    assert " in investigation investigation-20260921143000" in story[2]
+    assert story[3] == (
+        "That investigation predates recording which turn made each call, so "
+        "its reasoning is in its trace but not tied to this one."
+    )
+
+
+def test_the_cli_tells_the_agent_turn_and_refuses_a_broken_investigation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = _repository(tmp_path)
+    deploy, _ = _record(repository)
+    _investigated(repository, deploy.decision_id.value)
+
+    exit_code = main(["why", "--repository", str(repository), "--host", "web-1"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["data"]["answers"][0]["agent"]["turn"] == 2
+
+    (repository / INVESTIGATION_DIRECTORY / "broken.json").write_text(
+        "{", encoding="utf-8"
+    )
+    exit_code = main(["why", "--repository", str(repository)])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error"]["code"] == "RECORD_INVALID"
+    assert payload["error"]["context"]["code"] == "why_investigation_invalid"
+    assert exit_code != 0

@@ -33,6 +33,7 @@ from cloudfall.ansible_api import (
 )
 from cloudfall.catalog import CATALOG_DIRECTORY, RiskLevel
 from cloudfall.decision import DECISION_DIRECTORY
+from cloudfall.investigation import INVESTIGATION_DIRECTORY
 from cloudfall.project import (
     PROJECT_DIRECTORY_VARIABLE,
     ProjectError,
@@ -355,6 +356,8 @@ def bound_arguments(args: McpServeArgs) -> dict[str, object]:
             "env_receipts": str(root.path(args.env_receipts)),
             "operations": str(args.operations),
             "decisions": str(args.decisions),
+            # why reads the agent's turns where agent investigate writes them.
+            "investigations": INVESTIGATION_DIRECTORY,
         }
     return {
         **shared,

@@ -11,26 +11,37 @@ Nothing here is inferred. A decision is about a host only when the record
 names that host, as its target or in the per-host evidence of its check,
 run or verify stage. A group pattern is not expanded, because expanding
 it would need an inventory the record deliberately does not depend on.
+
+A decision an agent asked for is told with the turn that asked for it:
+the investigation records each tool call's decision and turn, and the
+turn's trace keeps the model's reasoning and the endpoint's ids.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import escape
 from typing import TYPE_CHECKING, cast
 
+from jsonschema import ValidationError
+
 from cloudfall.decision import ApprovalChannel, DecisionStatus, Requirement
 from cloudfall.domain import Hostname, ResourceId
+from cloudfall.investigation import INVESTIGATION_SCHEMA, StepOutcome
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
+    from pathlib import Path
 
     from cloudfall.decision import Approval, Decision, DecisionStore, RunRecord
+    from cloudfall.validation import SchemaCatalog
 
 _ERROR_INSTANT_INVALID = "why_instant_invalid"
 _ERROR_WINDOW_INVERTED = "why_window_inverted"
 _ERROR_STATUS_UNKNOWN = "why_status_unknown"
+_ERROR_INVESTIGATION_INVALID = "why_investigation_invalid"
 
 
 class WhyError(RuntimeError):
@@ -165,15 +176,109 @@ class Explanation:
     decision: Decision
     hosts: tuple[str, ...]
     story: tuple[str, ...]
+    proposer: Proposer | None = None
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the explanation with the record it is drawn from."""
-        return {
+        document: dict[str, object] = {
             "id": self.decision.decision_id.value,
             "hosts": list(self.hosts),
             "story": list(self.story),
             "decision": self.decision.as_document(),
         }
+        if self.proposer is not None:
+            document["agent"] = self.proposer.as_dict()
+        return document
+
+
+@dataclass(frozen=True, slots=True)
+class Proposer:
+    """The agent turn that asked for a decision, as its investigation recorded it."""
+
+    investigation: str
+    model: str
+    endpoint: str
+    alert: str
+    turn: int | None
+    """None in a record written before a step kept its turn."""
+    reasoning: str | None
+    response_id: str | None
+    request_id: str | None
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the turn for the answer, as the investigation has it."""
+        document: dict[str, object] = {
+            "investigation": self.investigation,
+            "model": self.model,
+            "endpoint": self.endpoint,
+            "alert": self.alert,
+        }
+        optional = {
+            "turn": self.turn,
+            "reasoning": self.reasoning,
+            "responseId": self.response_id,
+            "requestId": self.request_id,
+        }
+        document.update({key: value for key, value in optional.items() if value})
+        return document
+
+    def sentences(self) -> tuple[str, ...]:
+        """Tell who asked for the decision, and what it was thinking then."""
+        where = f"in turn {self.turn} of" if self.turn is not None else "in"
+        # An alert that ends its own sentence is not given a second stop.
+        stop = "" if self.alert.rstrip().endswith((".", "!", "?")) else "."
+        asked = (
+            f"The agent {self.model} at {self.endpoint} asked for it {where} "
+            f"investigation {self.investigation}, working the alert "
+            f'"{self.alert.strip()}"{stop}'
+        )
+        if self.turn is None:
+            return (
+                asked,
+                "That investigation predates recording which turn made each "
+                "call, so its reasoning is in its trace but not tied to this one.",
+            )
+        if self.reasoning is None:
+            return (asked, "The endpoint returned no reasoning for that turn.")
+        served = ", ".join(
+            f"{label} {value}"
+            for label, value in (
+                ("response", self.response_id),
+                ("request", self.request_id),
+            )
+            if value is not None
+        )
+        return (
+            asked,
+            "Its reasoning in that turn, as the endpoint returned it: "
+            f'"{self.reasoning}"' + (f" ({served})." if served else "."),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Investigations:
+    """Which agent turn asked for each decision, from the investigation records."""
+
+    proposers: Mapping[str, Proposer]
+
+    @classmethod
+    def load(cls, directory: Path, catalog: SchemaCatalog) -> Investigations:
+        """Read every investigation record in the directory; none is no link.
+
+        A record that is not valid JSON or does not match its schema is
+        refused: an answer drawn from it could cite a turn that never was.
+        A decision a later call only repeated keeps the turn that asked first.
+        """
+        proposers: dict[str, Proposer] = {}
+        if not directory.is_dir():
+            return cls(proposers)
+        for path in sorted(directory.glob("*.json")):
+            document = _investigation(path, catalog)
+            metadata = cast("Mapping[str, str]", document["metadata"])
+            spec = cast("Mapping[str, object]", document["spec"])
+            for decision, proposer in _proposers(metadata["id"], spec):
+                proposers.setdefault(decision, proposer)
+        return cls(proposers)
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,23 +300,32 @@ class WhyAnswer:
         }
 
 
-def answer(store: DecisionStore, query: WhyQuery) -> WhyAnswer:
+def answer(
+    store: DecisionStore,
+    query: WhyQuery,
+    investigations: Investigations | None = None,
+) -> WhyAnswer:
     """Answer the question from the record, newest decision first."""
     matched = [decision for decision in store.list() if query.matches(decision)]
     matched.sort(key=lambda decision: decision.proposed_at, reverse=True)
+    proposers = investigations.proposers if investigations is not None else {}
     return WhyAnswer(
         query=query,
         directory=str(store.directory),
-        explanations=tuple(explain(decision) for decision in matched),
+        explanations=tuple(
+            explain(decision, proposers.get(decision.decision_id.value))
+            for decision in matched
+        ),
     )
 
 
-def explain(decision: Decision) -> Explanation:
-    """Tell one decision from its record alone."""
+def explain(decision: Decision, proposer: Proposer | None = None) -> Explanation:
+    """Tell one decision from its record, and the agent turn that asked for it."""
     return Explanation(
         decision=decision,
         hosts=tuple(sorted(hosts_of(decision))),
-        story=tuple(_story(decision)),
+        story=tuple(_story(decision, proposer)),
+        proposer=proposer,
     )
 
 
@@ -367,10 +481,12 @@ def _status(value: object) -> DecisionStatus:
         raise WhyError(_ERROR_STATUS_UNKNOWN, message) from error
 
 
-def _story(decision: Decision) -> Iterable[str]:
+def _story(decision: Decision, proposer: Proposer | None) -> Iterable[str]:
     """Yield the record as sentences: saw, proposed, checked, approved, ended."""
     yield _saw(decision)
     yield _proposed(decision)
+    if proposer is not None:
+        yield from proposer.sentences()
     yield _checked(decision)
     if decision.replay is not None:
         yield (
@@ -487,3 +603,57 @@ def _ended(decision: Decision) -> str:
 
 def _present(value: object) -> bool:
     return value is not None and not (isinstance(value, str) and not value.strip())
+
+
+def _investigation(path: Path, catalog: SchemaCatalog) -> Mapping[str, object]:
+    try:
+        document = cast(
+            "Mapping[str, object]", json.loads(path.read_text(encoding="utf-8"))
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        message = f"investigation record is not valid JSON: {path}: {error}"
+        raise WhyError(_ERROR_INVESTIGATION_INVALID, message) from error
+    try:
+        catalog.validate_named(INVESTIGATION_SCHEMA, document)
+    except ValidationError as error:
+        field = ".".join(str(part) for part in error.absolute_path) or "(root)"
+        message = (
+            f"investigation record does not match its schema: {path}: "
+            f"{field}: {error.message}"
+        )
+        raise WhyError(_ERROR_INVESTIGATION_INVALID, message) from error
+    return document
+
+
+def _proposers(
+    identifier: str, spec: Mapping[str, object]
+) -> Iterable[tuple[str, Proposer]]:
+    """Yield each decision the investigation's own calls recorded, with its turn."""
+    model = cast("Mapping[str, str]", spec["model"])
+    trace = {
+        int(cast("int", turn["turn"])): turn
+        for turn in cast("Sequence[Mapping[str, object]]", spec.get("trace", ()))
+    }
+    for step in cast("Sequence[Mapping[str, object]]", spec["steps"]):
+        decision = step.get("decision")
+        if decision is None or step["outcome"] == StepOutcome.REPEATED.value:
+            continue
+        number = cast("int | None", step.get("turn"))
+        turn = trace.get(number, {}) if number is not None else {}
+        yield (
+            str(decision),
+            Proposer(
+                investigation=identifier,
+                model=model["name"],
+                endpoint=model["endpoint"],
+                alert=str(spec["alert"]),
+                turn=number,
+                reasoning=_text(turn.get("reasoning")),
+                response_id=_text(turn.get("responseId")),
+                request_id=_text(turn.get("requestId")),
+            ),
+        )
+
+
+def _text(value: object) -> str | None:
+    return value if isinstance(value, str) and value.strip() else None

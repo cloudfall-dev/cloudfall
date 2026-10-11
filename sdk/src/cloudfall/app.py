@@ -256,7 +256,13 @@ from cloudfall.validation import (
     ValidatedConfig,
     validate_config,
 )
-from cloudfall.why import WhyError, WhyQuery, answer, render_why_document
+from cloudfall.why import (
+    Investigations,
+    WhyError,
+    WhyQuery,
+    answer,
+    render_why_document,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -3166,10 +3172,18 @@ class WhyArgs(DecisionsArgs):
         default=(),
         description="Only decisions with this status (repeatable)",
     )
+    investigations: Path = Flag(
+        default=Path(INVESTIGATION_DIRECTORY),
+        description=(
+            "Directory holding the investigation records, to tell which agent "
+            f"turn asked for each decision (default: {INVESTIGATION_DIRECTORY})"
+        ),
+    )
 
     def __post_init__(self) -> None:
         """Refuse a time the question cannot be asked with."""
         DecisionsArgs.__post_init__(self)
+        _inside_project(self.investigations, "investigations")
         try:
             self.query()
         except WhyError as error:
@@ -3212,11 +3226,11 @@ class WhyPayload(Payload):
 )
 def why(args: WhyArgs, _ctx: Ctx) -> WhyPayload:
     """Answer from the record alone: no catalog, no fleet."""
-    store = DecisionStore(
-        directory=args.root / args.decisions, catalog=SchemaCatalog(args.schemas)
-    )
+    catalog = SchemaCatalog(args.schemas)
+    store = DecisionStore(directory=args.root / args.decisions, catalog=catalog)
     try:
-        result = answer(store, args.query())
+        investigations = Investigations.load(args.root / args.investigations, catalog)
+        result = answer(store, args.query(), investigations)
     except (DecisionError, WhyError) as error:
         raise Exit.RECORD_INVALID(error.detail, context={"code": error.code}) from error
     return WhyPayload(result.as_dict())
