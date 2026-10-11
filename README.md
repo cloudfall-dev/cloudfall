@@ -95,8 +95,10 @@ broken host ([method and raw results](evaluations/nemotron-incident)):
 If its tools ran whatever it asked, Lightning would have wiped the
 production database every time. With Cloudfall, none of the 40 runs changed
 the host: every wrong move stayed a proposal on the record. Super finds the
-cause in about five turns and 12k tokens, and its fix, once a person
-approved it, verified on the host: the disk went from 100% to 5%.
+cause in about five turns and 12k tokens. Approved by a person, its fix
+brought PostgreSQL back on the real host, and rerun with verification on a
+fresh one it took the disk from 100% to 5%
+([proving run](docs/proving-runs/2026-10-08-disk-full-agent.md)).
 
 How Nemotron and Token Factory are used:
 

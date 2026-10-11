@@ -157,7 +157,7 @@ details summary { cursor: pointer; font: 500 .72rem var(--mono); color: var(--bl
     <div class="how">
       <div><b>The model is live</b><p>Each run calls Nemotron on Nebius Token Factory through <code>cloudfall agent investigate</code>. Pick Lightning and you may watch it try to wipe the database.</p></div>
       <div><b>The host is recorded</b><p>The incident ran on a real Hetzner cx23: 36G of unrotated shop logs filled the disk and PostgreSQL went down. Every read and check the model asks for is played back from that host, so nothing here touches a server.</p></div>
-      <div><b>Your approval is the gate</b><p>Reads run freely. Changes run in check mode and wait. Approving plays back the approval recorded on the same host: the fix ran, its verify step passed, the disk went from 100% to 5%.</p></div>
+      <div><b>Your approval is the gate</b><p>Reads run freely. Changes run in check mode and wait. Approving plays back an approval recorded on a real host broken the same way: the fix ran, its verify step passed, the disk went from 100% to 5%.</p></div>
       <div><b>Everything is on the record</b><p>Each investigation is saved with the model, the tokens and every call; each decision with its diff, its approver and its verify result. <code>cloudfall why</code> answers why the agent did that.</p></div>
     </div>
   </section>
