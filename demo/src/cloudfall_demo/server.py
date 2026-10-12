@@ -5,7 +5,9 @@ A visitor picks a model and runs the alert. The server runs the real
 recorded on a Hetzner host and streams its events to the page as they
 happen. The model is live, through Nebius Token Factory; the host is
 recorded, so nothing anyone does here can touch a server. Approving a
-decision plays back the approval that was recorded on the same host.
+decision plays back an approval recorded on a real host broken the same
+way. Once a run ends, ``cloudfall why`` answers from its record what the
+agent proposed and what it was thinking in the turn that asked.
 """
 
 import asyncio
@@ -139,6 +141,48 @@ async def start_run(request: Request) -> Response:
         media_type="application/x-ndjson",
         # nginx and Cloudflare must pass each line on as it comes.
         headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache, no-transform"},
+    )
+
+
+async def why(request: Request) -> Response:
+    """Answer from one run's record, as ``cloudfall why`` does, with the command."""
+    run_id = request.query_params.get("run", "")
+    run = INCIDENT / RUNS / run_id
+    if not run_id.isalnum() or not run.is_dir():
+        return JSONResponse({"error": "unknown run"}, status_code=404)
+    arguments = (
+        "why",
+        *("--decisions", (RUNS / run_id / "decisions").as_posix()),
+        *("--investigations", (RUNS / run_id / "investigations").as_posix()),
+    )
+    process = await asyncio.create_subprocess_exec(
+        _cloudfall(),
+        *arguments,
+        "--format",
+        "json",
+        cwd=INCIDENT,
+        env={**os.environ, "PATH": f"{_BIN}{os.pathsep}{os.environ['PATH']}"},
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    output, _ = await process.communicate()
+    envelope = json.loads(output)
+    if not envelope["ok"]:
+        return JSONResponse({"error": envelope["error"]["message"]}, status_code=500)
+    return JSONResponse(
+        {
+            "command": " ".join(["cloudfall", *arguments]),
+            "answers": [
+                {
+                    "id": entry["id"],
+                    "operation": entry["decision"]["spec"]["operation"]["id"],
+                    "status": entry["decision"]["spec"]["status"],
+                    "story": entry["story"],
+                    "agent": entry.get("agent"),
+                }
+                for entry in envelope["data"]["answers"]
+            ],
+        }
     )
 
 
@@ -387,6 +431,7 @@ app = Starlette(
         Route("/api/config", config),
         Route("/api/runs", start_run, methods=["POST"]),
         Route("/api/approve", approve, methods=["POST"]),
+        Route("/api/why", why),
         Route("/health", lambda _request: JSONResponse({"status": "ok"})),
     ]
 )

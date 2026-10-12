@@ -112,6 +112,13 @@ details summary { cursor: pointer; font: 500 .72rem var(--mono); color: var(--bl
 .command { font: .72rem var(--mono); background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 12px; overflow-wrap: anywhere }
 .tools { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px }
 .tools button { border: 1.5px solid var(--line); background: var(--card); color: var(--ink); border-radius: 8px; padding: 5px 12px; font: 600 .82rem var(--body); cursor: pointer }
+#record[hidden] { display: none }
+.answer { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-top: 12px }
+.answer .top { display: flex; justify-content: space-between; gap: 8px; align-items: center; flex-wrap: wrap }
+.answer b { font: 700 1rem var(--display) }
+.answer ol { margin: 10px 0 0; padding-left: 22px; font-size: .9rem }
+.answer li { margin-bottom: 5px; overflow-wrap: anywhere }
+.answer li.agent { background: color-mix(in srgb, var(--sun) 10%, transparent); border-left: 3px solid var(--sun); padding: 4px 8px; border-radius: 0 8px 8px 0; list-style-position: inside; margin-left: -22px }
 </style>
 </head>
 <body>
@@ -142,6 +149,12 @@ details summary { cursor: pointer; font: 500 .72rem var(--mono); color: var(--bl
       <div id="decisions"><p class="empty">Changes the agent proposes land here, checked but not run. You approve them, or not.</p></div>
     </div>
   </div>
+
+  <section class="more" id="record" hidden>
+    <h2>Ask the record why</h2>
+    <p class="status">After the run, Cloudfall answers from the files it wrote alone, not from the model: what was proposed, how it was checked, what gate it waits at, and which turn of which model asked for it, with that turn's reasoning.</p>
+    <div id="answers"></div>
+  </section>
 
   <section class="more">
     <h2>40 runs on a real broken host</h2>
@@ -343,6 +356,25 @@ function showFinding(event) {
   $("#timeline").append(box);
 }
 
+async function showRecord() {
+  const response = await fetch(`/api/why?run=${encodeURIComponent(state.run)}`);
+  const result = await response.json();
+  if (!response.ok) return;
+  const shown = result.answers.filter((entry) => entry.status !== "ran");
+  const answers = shown.map((entry) => el("div", { class: "answer" },
+    el("div", { class: "top" }, el("b", {}, entry.operation), el("span", { class: `badge b-${entry.status}` }, entry.status)),
+    el("code", { class: "ids" }, entry.id),
+    el("ol", {}, ...entry.story.map((sentence) =>
+      el("li", { class: /^(The agent |Its reasoning |That investigation )/.test(sentence) ? "agent" : "" }, sentence)))));
+  const reads = result.answers.length - shown.length;
+  $("#answers").replaceChildren(
+    el("div", { class: "command" }, el("span", { class: "label" }, "the server runs"), "$ " + result.command),
+    ...answers,
+    el("p", { class: "status" }, shown.length ? `${reads} read operation${reads === 1 ? "" : "s"} ran freely and are on the record too; the raw answer has them.` : "The model proposed no change; its reads are on the record."),
+    rawDetails("raw answer", JSON.stringify(result, null, 2)));
+  $("#record").hidden = false;
+}
+
 function download() {
   const blob = new Blob([state.raw.join("\n") + "\n"], { type: "application/x-ndjson" });
   const link = el("a", { href: URL.createObjectURL(blob), download: `cloudfall-investigation-${state.run}.ndjson` });
@@ -351,10 +383,12 @@ function download() {
 
 async function run() {
   $("#run").disabled = true;
+  state.run = null;
   state.decisions.clear();
   state.events.clear();
   state.raw = [];
   $("#timeline").replaceChildren();
+  $("#record").hidden = true;
   $("#decisions").replaceChildren(el("p", { class: "empty" }, "Nothing proposed yet."));
   $("#status").textContent = "Running…";
   thinking(true);
@@ -385,6 +419,7 @@ async function run() {
     thinking(false);
     $("#run").disabled = false;
   }
+  if (state.run) await showRecord();
 }
 
 function handle(text, line) {
