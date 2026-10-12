@@ -137,7 +137,7 @@ wheels = [
 [[package]]
 name = "cloudfall"
 version = "0.6.0"
-source = { git = "https://github.com/cloudfall-dev/cloudfall?rev=210e0b6ded549f699657c792e825e689646ba2de#210e0b6ded549f699657c792e825e689646ba2de" }
+source = { git = "https://github.com/cloudfall-dev/cloudfall?rev=6b4807884de7cfe800548bbd90ad868a1393267c#6b4807884de7cfe800548bbd90ad868a1393267c" }
 dependencies = [
     { name = "ansible-core" },
     { name = "jsonschema", extra = ["format"] },
@@ -164,7 +164,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cloudfall", git = "https://github.com/cloudfall-dev/cloudfall?rev=210e0b6ded549f699657c792e825e689646ba2de" },
+    { name = "cloudfall", git = "https://github.com/cloudfall-dev/cloudfall?rev=6b4807884de7cfe800548bbd90ad868a1393267c" },
     { name = "starlette", specifier = ">=0.46,<2" },
     { name = "uvicorn", specifier = ">=0.34,<1" },
 ]
