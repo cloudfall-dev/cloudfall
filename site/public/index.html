@@ -92,6 +92,7 @@ a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px }
 .b-try { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 18px }
 .b-try code { font: 500 13px var(--b-mono); background: var(--b-paper); border: 1.5px dashed var(--b-ink); border-radius: 8px; padding: 7px 12px; overflow-wrap: anywhere }
 .b-try button { font: 700 13px var(--b-body); background: transparent; border: 0; color: var(--b-blue); cursor: pointer; padding: 4px }
+@media (max-width: 560px) { .b-links a, footer .links a { display: inline-block; padding-block: 11px } .b-links { row-gap: 0 } .b-try button { padding: 12px 8px } }
 .b-try button:focus-visible { outline: 2px solid var(--b-blue); border-radius: 4px }
 .b-try small { width: 100%; color: var(--b-dim); font-size: .85rem }
 .b-aside code { font: 500 .85em var(--b-mono); background: var(--b-paper); padding: 1px 5px; border-radius: 4px }
@@ -368,8 +369,8 @@ footer .b-brand { color: var(--b-ink); text-decoration: none; font-size: 1.1rem 
       </ol>
     </div>
     <div class="b-cta" style="margin-top:0">
-      <a class="b-btn primary" href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/neon-migration-guide.md#step-1-declare-the-postgresql-service">Put one client's PostgreSQL under the gate</a>
-      <a class="b-btn" href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/brownfield-design.md">Bring your Ansible repo</a>
+      <a class="b-btn primary" href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/brownfield-design.md">Bring your Ansible repo</a>
+      <a class="b-btn" href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/getting-started.md">Read the getting-started guide</a>
     </div>
   </div>
 
@@ -473,7 +474,7 @@ footer .b-brand { color: var(--b-ink); text-decoration: none; font-size: 1.1rem 
   <div class="b-sec">
     <div class="b-final" id="pilot">
       <div><h3>Want us to set it up with you? The pilot is free.</h3><p>We're taking three outside teams this quarter. We move one app or one client fleet onto Cloudfall together with you, and you keep running it. Write to <span class="b-mail">pilot@cloudfall.dev</span></p></div>
-      <div class="b-cta" style="margin-top:0"><a class="b-btn primary" href="mailto:pilot@cloudfall.dev?subject=Cloudfall%20pilot">Email about a pilot</a><a class="b-btn" href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/neon-migration-guide.md#step-1-declare-the-postgresql-service">Start with one PostgreSQL</a></div>
+      <div class="b-cta" style="margin-top:0"><a class="b-btn primary" href="mailto:pilot@cloudfall.dev?subject=Cloudfall%20pilot">Email about a pilot</a><a class="b-btn" href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/getting-started.md">Try it yourself first</a></div>
     </div>
   </div>
 </main>
@@ -506,7 +507,7 @@ document.querySelectorAll("[data-copy]").forEach(btn => {
 (() => {
   const items = [
     { name: "Render", href: "https://github.com/cloudfall-dev/cloudfall/blob/main/docs/render-migration-guide.md", note: 'Import your <code>render.yaml</code>: apps, data and a DNS cutover that pauses until you flip it.' },
-    { name: "Neon", href: "https://github.com/cloudfall-dev/cloudfall/blob/main/docs/neon-migration-guide.md#step-1-declare-the-postgresql-service", note: 'One <code>Service</code> file: PostgreSQL on your server, nightly backups, a daily check that the backup restores.' },
+    { name: "Neon", href: "https://github.com/cloudfall-dev/cloudfall/blob/main/docs/neon-migration-guide.md#step-1-declare-the-postgresql-service", note: 'PostgreSQL next to your app on your server: nightly backups and a daily check that the backup restores.' },
   ];
   const btn = document.getElementById("rot-btn"), word = document.getElementById("rot-word"), note = document.getElementById("rot-note");
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;

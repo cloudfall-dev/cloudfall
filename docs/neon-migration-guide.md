@@ -60,13 +60,22 @@ simply absent:
   (a Hetzner Cloud VPS is the proven reference), or a fresh one plus an
   hour to get there
 - The Neon application's connection details and console access
+- The application that uses the database, declared in the same project
+  so Cloudfall deploys it on the server (see Step 1)
 - Python 3.14 and [`uv`](https://docs.astral.sh/uv/) on the machine you
   run Cloudfall from
 
 ## Step 1: declare the PostgreSQL service
 
-One `Service` resource, with the major version matching Neon's (the Neon
-console shows it under application settings):
+Each database belongs to an application Cloudfall deploys on the same
+server: `databases[].application` names a declared `Application`, and that
+application needs at least one component. Declare the application first
+([getting started](getting-started.md)). A database on its own, for an app
+that stays on another host, is not supported yet
+([#81](https://github.com/cloudfall-dev/cloudfall/issues/81)).
+
+Then one `Service` resource, with the major version matching Neon's (the
+Neon console shows it under application settings):
 
 ```yaml
 ---
@@ -186,10 +195,9 @@ database will produce.
 
 ## Step 5: cut over the application
 
-Point the application's `DATABASE_URL` at the migrated database. For a
-co-located app this is the local peer-authenticated socket URL (no
-password, no TLS, no pooler); for an app elsewhere, route it the same
-way as any other declared service. Deploy, watch health, and keep writes
+Point the application's `DATABASE_URL` at the migrated database. The app
+runs on the same server, so this is the local peer-authenticated socket URL
+(no password, no TLS, no pooler). Deploy, watch health, and keep writes
 frozen until the app is verified against the new database.
 
 ## Step 6: wind down Neon
