@@ -216,7 +216,7 @@ Every playbook or role the team already runs becomes an operation:
 id: deploy
 playbook: playbooks/deploy.yml
 risk: mutating
-targets: component
+targets: host
 inputs:
   version: string
 preconditions:
