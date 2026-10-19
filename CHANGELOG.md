@@ -6,6 +6,39 @@ Notable changes to Cloudfall. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-19
+
+### Fixed
+
+- A decision records a host `changed` when any task of the play changed it,
+  not only the last one. The check preview, the execution and the verify run
+  read each host's counts from the play recap through a callback the SDK
+  ships (`cloudfall_host_stats`), in place of Ansible's `tree` callback,
+  which keeps only the last task's result: a run whose recap said
+  `changed=2` was recorded `changed: []`, and a verify run that changed a
+  host was recorded `verified`. The callback is added ahead of the callback
+  directories the team's `ansible.cfg` names, not in place of them (#76)
+- The Neon guide says each database belongs to an application Cloudfall
+  deploys on the same server, and no longer suggests an app on another host
+  can reach it; the brownfield design's operation example uses a target
+  scope the schema accepts (`host`); the site no longer offers a PostgreSQL
+  on its own, and its navigation and footer links are easier to tap on a
+  phone (#81)
+
+### Added
+
+- `cloudfall why` tells which agent turn asked for a decision. Each step of
+  an investigation record now keeps the `turn` that made its call (optional
+  in `agent-investigation.schema.json`; older records have none). `why`
+  reads the investigation records (`--investigations`, default
+  `investigations`, served to MCP clients from the same place) and adds to a
+  decision's story the model, the endpoint, the alert, the turn, and that
+  turn's reasoning with the endpoint's response and request ids; the answer
+  carries the same as `agent`. A decision a later call only repeated keeps
+  the turn that asked first. An investigation record that is not valid JSON
+  or does not match its schema stops `why` with `RECORD_INVALID`
+  (`why_investigation_invalid`) (#78)
+
 ## [0.6.0] - 2026-10-10
 
 ### Added
@@ -828,7 +861,8 @@ on disposable Hetzner Cloud Debian 13 servers (see
   exposed freely, every server-changing tool gated behind a two-step
   confirmation handshake
 
-[Unreleased]: https://github.com/cloudfall-dev/cloudfall/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/cloudfall-dev/cloudfall/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/cloudfall-dev/cloudfall/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/cloudfall-dev/cloudfall/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/cloudfall-dev/cloudfall/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/cloudfall-dev/cloudfall/compare/v0.4.0...v0.5.0
