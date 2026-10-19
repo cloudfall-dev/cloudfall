@@ -42,11 +42,10 @@ quiet_minutes = 30
 github_release = true
 dispatch = ["publish.yml"]
 
-# X.Y.Z, promoted from an rc soaked 3 days, once the milestone titled with the version
+# X.Y.Z, promoted from the newest rc, no soak, once the milestone titled with the version
 # (0.6.0) has closed issues and none open: the milestone is the only trigger, so it gates
 [lanes.stable]
 promote_from = "rc"
-min_soak_days = 3
 milestone = true
 github_release = true
 dispatch = ["publish.yml"]
