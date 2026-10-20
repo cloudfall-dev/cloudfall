@@ -220,6 +220,20 @@
         - not ansible_check_mode
         - cloudfall_deploy_component.healthCheck.type == "none"
 
+    - name: Read the service unit restart count before settling
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - show
+          - --property=NRestarts
+          - --value
+          - "{{ cloudfall_deploy_component.service.name }}.service"
+      register: cloudfall_deploy_unit_restarts_before
+      changed_when: false
+      when:
+        - not ansible_check_mode
+        - cloudfall_deploy_component.healthCheck.type == "none"
+
     - name: Let the service unit settle
       ansible.builtin.pause:
         seconds: "{{ cloudfall_deploy_unit_settle_seconds }}"
@@ -236,6 +250,36 @@
           - "{{ cloudfall_deploy_component.service.name }}.service"
       register: cloudfall_deploy_unit_settled
       changed_when: false
+      when:
+        - not ansible_check_mode
+        - cloudfall_deploy_component.healthCheck.type == "none"
+
+    - name: Read the service unit restart count after settling
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - show
+          - --property=NRestarts
+          - --value
+          - "{{ cloudfall_deploy_component.service.name }}.service"
+      register: cloudfall_deploy_unit_restarts_after
+      changed_when: false
+      when:
+        - not ansible_check_mode
+        - cloudfall_deploy_component.healthCheck.type == "none"
+
+    - name: Gate the release on a service unit that did not restart while settling
+      ansible.builtin.assert:
+        that:
+          - cloudfall_deploy_unit_restarts_before.stdout is match('^[0-9]+$')
+          - cloudfall_deploy_unit_restarts_after.stdout is match('^[0-9]+$')
+          - cloudfall_deploy_unit_restarts_after.stdout | int
+            == cloudfall_deploy_unit_restarts_before.stdout | int
+        fail_msg: >-
+          {{ cloudfall_deploy_component.service.name }}.service restarted
+          while settling (NRestarts {{
+            cloudfall_deploy_unit_restarts_before.stdout
+          }} to {{ cloudfall_deploy_unit_restarts_after.stdout }})
       when:
         - not ansible_check_mode
         - cloudfall_deploy_component.healthCheck.type == "none"

@@ -18,9 +18,19 @@ ROLE = ROOT / "engine" / "ansible" / "roles" / "cloudfall_deploy"
 ACTIVATE = "Activate the release behind the health gate"
 HTTP_GATE = "Gate the release on its declared health check"
 UNIT_STARTED = "Gate the release on an active service unit"
+RESTARTS_BEFORE = "Read the service unit restart count before settling"
 UNIT_SETTLE = "Let the service unit settle"
 UNIT_SETTLED = "Gate the release on a service unit still active after settling"
-UNIT_GATE = [UNIT_STARTED, UNIT_SETTLE, UNIT_SETTLED]
+RESTARTS_AFTER = "Read the service unit restart count after settling"
+NO_RESTART = "Gate the release on a service unit that did not restart while settling"
+UNIT_GATE = [
+    UNIT_STARTED,
+    RESTARTS_BEFORE,
+    UNIT_SETTLE,
+    UNIT_SETTLED,
+    RESTARTS_AFTER,
+    NO_RESTART,
+]
 RESTORE = "Restore the previous release symlink"
 RESTART_RESTORED = "Restart the restored release"
 STOP_FIRST = "Stop the failed first release"
@@ -126,6 +136,48 @@ def test_an_inactive_unit_fails_its_gate_task(name: str) -> None:
     assert "failed_when" not in task
     assert "ignore_errors" not in task
     assert task["changed_when"] is False
+
+
+@pytest.mark.parametrize("name", [RESTARTS_BEFORE, RESTARTS_AFTER])
+def test_the_restart_count_is_read_from_systemd(name: str) -> None:
+    task = _task(name, _section("block"))
+    command = task["ansible.builtin.command"]
+    assert isinstance(command, dict)
+
+    assert command["argv"][:4] == [
+        "/usr/bin/systemctl",
+        "show",
+        "--property=NRestarts",
+        "--value",
+    ]
+    assert task["changed_when"] is False
+
+
+def _settled(before: str, after: str) -> bool:
+    """Whether the no-restart assertion holds for these ``NRestarts`` readings."""
+    assertion = _task(NO_RESTART, _section("block"))["ansible.builtin.assert"]
+    assert isinstance(assertion, dict)
+    variables: dict[str, object] = {
+        "cloudfall_deploy_unit_restarts_before": {"stdout": before},
+        "cloudfall_deploy_unit_restarts_after": {"stdout": after},
+    }
+    return all(_holds(c, variables) for c in assertion["that"])
+
+
+def test_a_unit_that_did_not_restart_while_settling_passes() -> None:
+    assert _settled("0", "0")
+    assert _settled("3", "3")
+
+
+def test_a_crash_looping_unit_fails_even_when_active_at_the_second_check() -> None:
+    """``Restart=on-failure`` can bring a crashing worker back before the check."""
+    assert not _settled("0", "1")
+    assert not _settled("2", "5")
+
+
+@pytest.mark.parametrize(("before", "after"), [("", ""), ("0", "[not set]")])
+def test_an_unreadable_restart_count_fails_the_gate(before: str, after: str) -> None:
+    assert not _settled(before, after)
 
 
 def test_the_unit_settles_for_the_role_default_before_its_second_check() -> None:
