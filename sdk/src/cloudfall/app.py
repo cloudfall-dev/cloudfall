@@ -23,7 +23,7 @@ import threading
 # treaty reads a handler's annotations at registration, so a streaming
 # handler's Iterator and a provided MCP tool's Mapping must exist at runtime.
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from http import HTTPStatus
 from importlib.metadata import version
@@ -105,11 +105,14 @@ from cloudfall.decision import (
     ApprovalChannel,
     ApprovalRequest,
     CheckRunner,
+    Decision,
     DecisionError,
     DecisionStatus,
     DecisionStore,
+    ObservationClock,
     ProposalRequest,
     Requirement,
+    Staleness,
     Targets,
     approve,
     propose,
@@ -745,6 +748,25 @@ class DecisionsArgs(RepositoryArgs):
             directory=self.root / self.decisions, catalog=SchemaCatalog(self.schemas)
         )
 
+    def clock(self) -> ObservationClock:
+        """Read the observations the records' bases name, to tell what is stale."""
+        return ObservationClock(repository=self.root)
+
+
+_STALE_DESCRIPTION = (
+    "Only proposals a host in their basis has been observed again since"
+)
+
+
+def _with_staleness(
+    decision: Decision, staleness: Staleness | None
+) -> dict[str, object]:
+    """Return the record document, with whether an open proposal is stale."""
+    document = decision.as_document()
+    if staleness is not None:
+        document.update(staleness.as_dict())
+    return document
+
 
 class CatalogPayload(Payload):
     """``operations list``: every declared operation and the risk counts."""
@@ -778,6 +800,7 @@ class ListDecisionsArgs(DecisionsArgs):
         default=(),
         description="Only decisions with this status (repeatable)",
     )
+    stale: bool = Flag(default=False, description=_STALE_DESCRIPTION)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -830,17 +853,25 @@ def operations_show(args: ShowOperationArgs, _ctx: Ctx) -> OperationPayload:
             "List what still waits for an approval",
             "cloudfall decisions list --status proposed",
         ),
+        (
+            "List the proposals made on evidence observed again since",
+            "cloudfall decisions list --stale",
+        ),
     ],
 )
 def decisions_list(args: ListDecisionsArgs, _ctx: Ctx) -> DecisionsPayload:
     """Answer every decision record: the record outlives the catalog."""
     store = args.store()
+    clock = args.clock()
     try:
-        documents = [
-            decision.as_document()
-            for decision in store.list()
-            if not args.status or decision.status in args.status
-        ]
+        documents: list[dict[str, object]] = []
+        for decision in store.list():
+            if args.status and decision.status not in args.status:
+                continue
+            staleness = clock.staleness(decision)
+            if args.stale and (staleness is None or not staleness.stale):
+                continue
+            documents.append(_with_staleness(decision, staleness))
     except DecisionError as error:
         raise _record_invalid(error) from error
     return DecisionsPayload(
@@ -859,11 +890,14 @@ def decisions_show(args: ShowDecisionArgs, _ctx: Ctx) -> DecisionPayload:
     """Answer one decision record, or say there is none."""
     try:
         decision = args.store().load(args.decision)
+        staleness = args.clock().staleness(decision)
     except DecisionError as error:
         if error.code == ERROR_DECISION_MISSING:
             raise Exit.NOT_FOUND(error.detail, context={"code": error.code}) from error
         raise _record_invalid(error) from error
-    return DecisionPayload({"status": "ok", "decision": decision.as_document()})
+    return DecisionPayload(
+        {"status": "ok", "decision": _with_staleness(decision, staleness)}
+    )
 
 
 # operator list, show
@@ -2013,6 +2047,25 @@ def _decision_failed(error: DecisionError) -> Exception:
     return Exit.PRECONDITION(error.detail, context={"code": error.code})
 
 
+def _stale_warning(decision: Decision, staleness: Staleness | None) -> str:
+    """Name each host observed again since the proposal, for the person approving.
+
+    A stale proposal is still approved when the person says so: with
+    observations on a timer every proposal goes stale within minutes.
+    """
+    if staleness is None or not staleness.stale:
+        return ""
+    hosts = "; ".join(
+        f"{host} was observed again at {observed} "
+        f"(the proposal saw {decision.basis.observed_at[host]})"
+        for host, observed in sorted(staleness.newer.items())
+    )
+    return (
+        f"This proposal is stale: {hosts}. Check mode ran against the older "
+        "evidence. "
+    )
+
+
 @operations.command(
     "propose",
     description=(
@@ -2140,10 +2193,15 @@ def decisions_approve(args: ApproveDecisionArgs, ctx: Ctx) -> Decided:
         refuse_unapprovable(decision)
     except DecisionError as error:
         raise _decision_failed(error) from error
+    try:
+        staleness = args.clock().staleness(decision)
+    except DecisionError as error:
+        raise _record_invalid(error) from error
     # Off a terminal this ends with PERSON_REQUIRED, and a mistyped id with
     # ATTESTATION_MISMATCH, before anything runs: --yes never approves.
     attestation = ctx.attest(
-        f"The diff is at {decision.check.diff.path}. Type the decision id to "
+        f"{_stale_warning(decision, staleness)}The diff is at "
+        f"{decision.check.diff.path}. Type the decision id to "
         f"approve {decision.decision_id.value} and run it",
         expected=decision.decision_id.value,
     )
@@ -3172,6 +3230,7 @@ class WhyArgs(DecisionsArgs):
         default=(),
         description="Only decisions with this status (repeatable)",
     )
+    stale: bool = Flag(default=False, description=_STALE_DESCRIPTION)
     investigations: Path = Flag(
         default=Path(INVESTIGATION_DIRECTORY),
         description=(
@@ -3191,13 +3250,14 @@ class WhyArgs(DecisionsArgs):
 
     def query(self) -> WhyQuery:
         """Return the question, as the record is filtered by it."""
-        return WhyQuery.from_boundary(
+        query = WhyQuery.from_boundary(
             host=self.host,
             operation=self.operation.value if self.operation is not None else None,
             since=self.since,
             until=self.until,
             status=tuple(entry.value for entry in self.status),
         )
+        return replace(query, stale=self.stale)
 
 
 class WhyPayload(Payload):
@@ -3230,7 +3290,7 @@ def why(args: WhyArgs, _ctx: Ctx) -> WhyPayload:
     store = DecisionStore(directory=args.root / args.decisions, catalog=catalog)
     try:
         investigations = Investigations.load(args.root / args.investigations, catalog)
-        result = answer(store, args.query(), investigations)
+        result = answer(store, args.query(), investigations, args.clock())
     except (DecisionError, WhyError) as error:
         raise Exit.RECORD_INVALID(error.detail, context={"code": error.code}) from error
     return WhyPayload(result.as_dict())

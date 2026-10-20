@@ -35,7 +35,14 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
     from pathlib import Path
 
-    from cloudfall.decision import Approval, Decision, DecisionStore, RunRecord
+    from cloudfall.decision import (
+        Approval,
+        Decision,
+        DecisionStore,
+        ObservationClock,
+        RunRecord,
+        Staleness,
+    )
     from cloudfall.validation import SchemaCatalog
 
 _ERROR_INSTANT_INVALID = "why_instant_invalid"
@@ -103,6 +110,8 @@ class WhyQuery:
     since: Instant | None = None
     until: Instant | None = None
     statuses: frozenset[DecisionStatus] = frozenset()
+    stale: bool = False
+    """Only the proposals whose basis hosts have been observed again since."""
 
     def __post_init__(self) -> None:
         """Refuse a window that ends before it starts."""
@@ -150,11 +159,17 @@ class WhyQuery:
             result["until"] = self.until.as_string()
         if self.statuses:
             result["status"] = sorted(status.value for status in self.statuses)
+        if self.stale:
+            result["stale"] = True
         return result
 
-    def matches(self, decision: Decision) -> bool:
+    def matches(
+        self, decision: Decision, staleness: Staleness | None = None
+    ) -> bool:
         """Return whether one decision is part of the answer."""
         if self.operation is not None and decision.operation_id != self.operation:
+            return False
+        if self.stale and (staleness is None or not staleness.stale):
             return False
         if self.statuses and decision.status not in self.statuses:
             return False
@@ -177,14 +192,19 @@ class Explanation:
     hosts: tuple[str, ...]
     story: tuple[str, ...]
     proposer: Proposer | None = None
+    staleness: Staleness | None = None
+    """Whether an open proposal was made on evidence observed again since."""
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the explanation with the record it is drawn from."""
+        record = self.decision.as_document()
+        if self.staleness is not None:
+            record.update(self.staleness.as_dict())
         document: dict[str, object] = {
             "id": self.decision.decision_id.value,
             "hosts": list(self.hosts),
             "story": list(self.story),
-            "decision": self.decision.as_document(),
+            "decision": record,
         }
         if self.proposer is not None:
             document["agent"] = self.proposer.as_dict()
@@ -304,28 +324,42 @@ def answer(
     store: DecisionStore,
     query: WhyQuery,
     investigations: Investigations | None = None,
+    clock: ObservationClock | None = None,
 ) -> WhyAnswer:
-    """Answer the question from the record, newest decision first."""
-    matched = [decision for decision in store.list() if query.matches(decision)]
-    matched.sort(key=lambda decision: decision.proposed_at, reverse=True)
+    """Answer the question from the record, newest decision first.
+
+    With a ``clock``, each open proposal says whether it is stale; without
+    one, nothing is, so a ``stale`` question matches nothing.
+    """
+    matched: list[tuple[Decision, Staleness | None]] = []
+    for decision in store.list():
+        staleness = clock.staleness(decision) if clock is not None else None
+        if query.matches(decision, staleness):
+            matched.append((decision, staleness))
+    matched.sort(key=lambda entry: entry[0].proposed_at, reverse=True)
     proposers = investigations.proposers if investigations is not None else {}
     return WhyAnswer(
         query=query,
         directory=str(store.directory),
         explanations=tuple(
-            explain(decision, proposers.get(decision.decision_id.value))
-            for decision in matched
+            explain(decision, proposers.get(decision.decision_id.value), staleness)
+            for decision, staleness in matched
         ),
     )
 
 
-def explain(decision: Decision, proposer: Proposer | None = None) -> Explanation:
+def explain(
+    decision: Decision,
+    proposer: Proposer | None = None,
+    staleness: Staleness | None = None,
+) -> Explanation:
     """Tell one decision from its record, and the agent turn that asked for it."""
     return Explanation(
         decision=decision,
         hosts=tuple(sorted(hosts_of(decision))),
         story=tuple(_story(decision, proposer)),
         proposer=proposer,
+        staleness=staleness,
     )
 
 

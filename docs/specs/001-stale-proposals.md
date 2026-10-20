@@ -1,6 +1,6 @@
 # S-001: Stale proposals
 
-status: approved
+status: built
 
 ## Problem
 
@@ -66,4 +66,16 @@ them.
 
 ## Issues
 
+- cloudfall-dev/cloudfall#97: S-001-1, S-001-2, S-001-3, S-001-4, S-001-5, S-001-6, S-001-7, S-001-8, S-001-9
+
 ## Verification
+
+- S-001-1: proposed `deploy` on a tmp project with `hz1` observed at 09:00, rewrote `hz1.json` to 09:30, ran `cloudfall decisions list`; and `test_s001_1_a_newer_observation_makes_the_proposal_stale`, the proposal read `"stale": true, "staleHosts": ["hz1"]`
+- S-001-2: `cloudfall decisions list` on the same project before the rewrite, plus `test_s001_2_the_same_missing_or_no_observation_is_not_stale`, `test_s001_2_a_basis_that_names_no_host_is_never_stale` and `test_s001_2_times_compare_as_moments_not_as_text`, each read `"stale": false` with no `staleHosts`
+- S-001-3: `decisions list`, `decisions show` and `cloudfall why` on the tmp project's `ran` facts record, plus `test_s001_3_a_decision_that_is_not_proposed_carries_no_staleness` over verified, ran and superseded records, carried neither key
+- S-001-4: `cloudfall decisions list --stale` and `--stale --status proposed` on the tmp project, plus `test_s001_4_the_stale_filter_keeps_only_the_stale_and_combines_with_status`, returned only the stale proposal, the same set both ways
+- S-001-5: `cloudfall why --stale` on the tmp project, plus `test_s001_5_why_stale_keeps_only_the_stale_and_reports_them`, returned only the stale proposal with `stale` and `staleHosts` identical to `decisions list`
+- S-001-6: `cloudfall decisions show deploy-20261020094012` on the tmp project, plus `test_s001_6_show_reports_a_stale_proposal`, reported `"stale": true, "staleHosts": ["hz1"]`
+- S-001-7: `git hash-object` of both tmp records before and after `decisions list`, `decisions show` and `why`, plus `test_s001_7_working_out_staleness_writes_nothing` (byte and mtime compare), the bytes were unchanged
+- S-001-8: `test_s001_8_approve_names_the_stale_hosts_and_still_runs` runs `decisions approve` at a simulated terminal against a real `ansible-playbook`; the prompt named `web-1 was observed again at 2026-09-21T16:02:10Z` and the decision ended `verified` (no terminal was available to run it by hand)
+- S-001-9: wrote invalid JSON to the tmp project's `hz1.json` and ran `cloudfall decisions list`, plus `test_s001_9_an_observation_file_that_is_not_json_is_record_invalid`, it exited `RECORD_INVALID` (86) naming `tmp/s001/tmp/observed/hz1.json`
