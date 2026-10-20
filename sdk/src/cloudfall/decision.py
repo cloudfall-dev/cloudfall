@@ -82,6 +82,7 @@ ERROR_DECISION_REPLAYED = "decision_replayed"
 _ERROR_APPROVER_UNKNOWN = "decision_approver_unknown"
 _ERROR_CHANNEL_UNKNOWN = "decision_approval_channel_unknown"
 ERROR_RECORD_INVALID = "decision_record_invalid"
+ERROR_OBSERVATION_INVALID = "decision_observation_invalid"
 
 
 class DecisionError(RuntimeError):
@@ -240,6 +241,113 @@ class Basis:
             "observations": str(self.observations),
             "observedAt": dict(sorted(self.observed_at.items())),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class Staleness:
+    """Which hosts a proposal's basis names have been observed again since.
+
+    Worked out when the record is read and never stored: the record stays
+    what it was when the proposal was made, and the observations say what
+    has happened since.
+    """
+
+    newer: Mapping[str, str]
+    """Each stale host and the later ``observedAt`` its observation file holds."""
+
+    @property
+    def stale(self) -> bool:
+        """Return whether any host the basis names was observed again since."""
+        return bool(self.newer)
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the staleness beside a decision at system boundaries."""
+        result: dict[str, object] = {"stale": self.stale}
+        if self.stale:
+            result["staleHosts"] = sorted(self.newer)
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationClock:
+    """When each host was last observed, read from the folders bases name.
+
+    A relative basis folder is the repository's, as ``propose`` records it.
+    Each folder is read once, however many decisions cite it.
+    """
+
+    repository: Path
+    _folders: dict[Path, dict[str, tuple[str, Path]]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+
+    def staleness(self, decision: Decision) -> Staleness | None:
+        """Return whether one decision is stale; None when it is not ``proposed``.
+
+        Only an open proposal can be stale: every other status is final.
+        A host the basis names whose observation file is gone does not count.
+        """
+        if decision.status is not DecisionStatus.PROPOSED:
+            return None
+        if not decision.basis.observed_at:
+            return Staleness(newer={})
+        latest = self._latest(decision.basis.observations)
+        newer: dict[str, str] = {}
+        for host, recorded in sorted(decision.basis.observed_at.items()):
+            current = latest.get(host)
+            if current is None:
+                continue
+            observed, path = current
+            then = _observation_moment(recorded, f"decision {decision.decision_id}")
+            if _observation_moment(observed, str(path)) > then:
+                newer[host] = observed
+        return Staleness(newer=newer)
+
+    def _latest(self, observations: Path) -> dict[str, tuple[str, Path]]:
+        folder = (
+            observations
+            if observations.is_absolute()
+            else self.repository / observations
+        )
+        cached = self._folders.get(folder)
+        if cached is not None:
+            return cached
+        latest: dict[str, tuple[str, Path]] = {}
+        if folder.exists() and not folder.is_dir():
+            message = f"basis observations are not a folder: {folder}"
+            raise DecisionError(ERROR_OBSERVATION_INVALID, message)
+        if folder.is_dir():
+            for path in sorted(folder.glob("*.json")):
+                observed = _observed_at(path)
+                if observed is not None:
+                    latest[path.stem] = (observed, path)
+        self._folders[folder] = latest
+        return latest
+
+
+def _observed_at(path: Path) -> str | None:
+    """Return the ``spec.observedAt`` one observation file holds, as written."""
+    try:
+        document = cast("object", json.loads(path.read_text(encoding="utf-8")))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        message = f"observation file is not valid JSON: {path}: {error}"
+        raise DecisionError(ERROR_OBSERVATION_INVALID, message) from error
+    if not isinstance(document, dict):
+        return None
+    spec = document.get("spec")
+    if isinstance(spec, dict) and isinstance(spec.get("observedAt"), str):
+        return str(spec["observedAt"])
+    return None
+
+
+def _observation_moment(value: str, source: str) -> datetime:
+    """Parse an observation time; a naive one is UTC, as the record writes it."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        message = f"observation time is not ISO 8601: {source}: {value!r}"
+        raise DecisionError(ERROR_OBSERVATION_INVALID, message) from error
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 class ApprovalChannel(StrEnum):
