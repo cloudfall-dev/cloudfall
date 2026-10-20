@@ -203,7 +203,42 @@
       until: >-
         cloudfall_deploy_health.status
         in cloudfall_deploy_component.healthCheck.expectedStatuses
-      when: not ansible_check_mode
+      when:
+        - not ansible_check_mode
+        - cloudfall_deploy_component.healthCheck.type == "http"
+
+    - name: Gate the release on an active service unit
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - is-active
+          - --quiet
+          - "{{ cloudfall_deploy_component.service.name }}.service"
+      register: cloudfall_deploy_unit_started
+      changed_when: false
+      when:
+        - not ansible_check_mode
+        - cloudfall_deploy_component.healthCheck.type == "none"
+
+    - name: Let the service unit settle
+      ansible.builtin.pause:
+        seconds: "{{ cloudfall_deploy_unit_settle_seconds }}"
+      when:
+        - not ansible_check_mode
+        - cloudfall_deploy_component.healthCheck.type == "none"
+
+    - name: Gate the release on a service unit still active after settling
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - is-active
+          - --quiet
+          - "{{ cloudfall_deploy_component.service.name }}.service"
+      register: cloudfall_deploy_unit_settled
+      changed_when: false
+      when:
+        - not ansible_check_mode
+        - cloudfall_deploy_component.healthCheck.type == "none"
   rescue:
     - name: Restore the previous release symlink
       ansible.builtin.file:
