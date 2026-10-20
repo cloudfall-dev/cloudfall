@@ -238,6 +238,7 @@ per-table row counts and writes a receipt. See the
 | [Operator](docs/operator-guide.md) | The always-on operator, proposals, approvals, autonomy policy |
 | [Disk-full incident](examples/disk-full-incident) | `agent investigate` with Nemotron on a real broken host, live or replayed |
 | [Secrets](docs/secrets-guide.md) | sops/age secrets rendered into per-component env files |
+| [CI deploy](docs/ci-deploy-guide.md) | Deploying from GitHub Actions with per-environment keys and required reviewers |
 | [Logging](docs/logging-service-guide.md) | Loki, Grafana and Alloy behind an mTLS gateway |
 | [Storage](docs/new-server-storage-guide.md) | Destructive, new-server-only RAID provisioning ([design](docs/hybrid-storage-design.md)) |
 | [Architecture](ARCHITECTURE.md) | Module boundaries and the long-term fleet vision |

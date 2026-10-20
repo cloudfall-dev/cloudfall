@@ -71,6 +71,9 @@ shows them); project playbooks by path, with `--roles` directories searched
 before the bundled roles. To move a project to a newer Cloudfall commit, bump
 `rev` and run `uv sync`.
 
+To deploy from a pipeline instead of your own machine, so a merge to `main`
+updates staging, see the [CI deploy guide](ci-deploy-guide.md).
+
 ## The agent contract
 
 Humans and AI agents both edit the resources and both run the CLI, with a
