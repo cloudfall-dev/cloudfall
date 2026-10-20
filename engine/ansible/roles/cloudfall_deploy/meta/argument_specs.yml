@@ -95,6 +95,9 @@ argument_specs:
       cloudfall_deploy_receipt_directory:
         type: str
         default: ""
+      cloudfall_deploy_unit_settle_seconds:
+        type: int
+        default: 10
       cloudfall_deploy_uv_version:
         type: str
         default: "0.12.10"
