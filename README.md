@@ -113,6 +113,14 @@ How Nemotron and Token Factory are used:
   model's calls from a real run's recorded output, so any model can be
   tried on a real incident again and again without a host. The hosted demo
   runs that way
+- **Token Factory sped up the work.** Its OpenAI-compatible tool calling
+  worked on the first call for all four Nemotron models, so trying another
+  model is one string, and the 40-run evaluation needed no GPUs or model
+  deployment of our own
+- **Other Nebius services.** Token Factory is the only one at runtime. The
+  evaluation is also packaged as a container for a Nebius Serverless Job
+  ([Dockerfile](evaluations/nemotron-incident/Dockerfile)); we could not run
+  it there, because AI Cloud was not activated for our tenant
 
 Try it without a server, from a clone of this repository, with a
 [Token Factory](https://tokenfactory.nebius.com) API key:
