@@ -248,6 +248,30 @@ def test_s004_17_the_tool_takes_a_domain_and_refuses_an_unknown_one(
     assert not (project / "tmp" / "inventory.json").exists()
 
 
+@pytest.mark.parametrize("domain", ["h1,h2", "all", "*", "h1:h2", "!h1", "CRM"])
+def test_s004_17_a_domain_that_is_no_resource_id_is_refused(
+    domain: str, tmp_path: Path
+) -> None:
+    """A value Ansible's --limit would read as a pattern never reaches it."""
+    project = _project(tmp_path)
+    server = StdioServerParameters(
+        command=sys.executable,
+        args=[*SERVE, "--project", str(project)],
+        cwd=str(tmp_path),
+    )
+
+    _, answer = asyncio.run(
+        _call(
+            server,
+            "converge_domains",
+            {"domain": domain, "confirm_destructive": True},
+        )
+    )
+
+    assert answer["ok"] is False, answer
+    assert not (project / "tmp" / "inventory.json").exists()
+
+
 def _receipt(directory: Path, spec: dict[str, object]) -> None:
     directory.mkdir(parents=True)
     receipt = {
