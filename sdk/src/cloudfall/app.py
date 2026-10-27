@@ -166,6 +166,7 @@ from cloudfall.lifecycle import (
     ERROR_EXECUTION_FAILED,
     STEP_TIMEOUT_SECONDS,
     DeployOptions,
+    DomainApply,
     DomainsRun,
     EngineContext,
     ExecutionStep,
@@ -173,6 +174,8 @@ from cloudfall.lifecycle import (
     LifecyclePreview,
     StepRun,
     StepRunner,
+    SystemNameResolver,
+    apply_domain,
     backup_service,
     build_release_artifact,
     converge_domains,
@@ -182,6 +185,7 @@ from cloudfall.lifecycle import (
     migrate_data,
     preview_data_migration,
     preview_deploy,
+    preview_domain_apply,
     preview_restart,
     preview_rollback,
     restart,
@@ -4050,6 +4054,96 @@ def data_copy(
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error
     return DataMigratePayload({**body, "effect": "updated"})
+
+
+domains = app.group(
+    "domains", description="Converge declared Domains on their proxy servers"
+)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DomainApplyArgs(EngineArgs):
+    """Arguments of ``domains apply``."""
+
+    domain: ResourceId = Arg(description="Domain to apply, by its metadata.id")
+    issue_certificate: bool = Flag(
+        default=False,
+        description=(
+            "Check on the controller that every name of the Domain resolves to "
+            "its proxy server, then issue its certificate when none exists yet"
+        ),
+    )
+    deployments: Path = Flag(
+        default=Path("tmp/deployments"),
+        description="Deployment receipt directory (default: tmp/deployments)",
+    )
+    yes: bool = Flag(
+        default=False,
+        confirm=True,
+        description=(
+            "Change the proxy server; without it the command validates the "
+            "request and only shows what it would do"
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        """Keep relative paths inside the project."""
+        EngineArgs.__post_init__(self)
+        _inside_project(self.deployments, "deployments")
+
+
+class DomainApplyPayload(Payload):
+    """``domains apply``: the plan without --yes, the receipt with it."""
+
+    command = "domains apply"
+    writes = True
+
+
+@domains.command(
+    "apply",
+    description=(
+        "Render one Domain's virtual host on its proxy server alone, issuing "
+        "its certificate with --issue-certificate; without --yes it shows the plan"
+    ),
+    danger_level="mutating",
+    exit_codes=_LIFECYCLE_EXIT_CODES,
+    timeout=None,
+    has_network_io=True,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0"},
+    supports_raw_payload=True,
+    examples=[
+        ("Show the plan", "cloudfall domains apply crm-site"),
+        (
+            "Apply it and issue its certificate",
+            "cloudfall domains apply crm-site --issue-certificate --yes",
+        ),
+    ],
+)
+def domains_apply(
+    args: DomainApplyArgs, ctx: Ctx, fleet: Fleet
+) -> DomainApplyPayload:
+    """Converge the Domain on its proxy server alone, or show the plan."""
+    context = args.context(fleet, ctx)
+    request = DomainApply(
+        domain_id=args.domain,
+        issue_certificate=args.issue_certificate,
+        receipt_directory=fleet.path(args.deployments),
+    )
+    try:
+        if not args.yes:
+            preview = preview_domain_apply(context, request, SystemNameResolver())
+            return DomainApplyPayload(
+                {
+                    **preview.as_dict(),
+                    "instruction": _PLAN_INSTRUCTION,
+                    "effect": "would_update",
+                }
+            )
+        applied = apply_domain(context, request, SystemNameResolver())
+    except LifecycleError as error:
+        raise _lifecycle_failed(error) from error
+    return DomainApplyPayload({**applied.as_dict(), "effect": "updated"})
 
 
 # mcp serve: the fleet check before serving, and the tools beside the commands

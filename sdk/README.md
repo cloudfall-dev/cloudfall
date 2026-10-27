@@ -57,11 +57,18 @@ uv run cloudfall restart --project config/examples crm-backend --yes
 uv run cloudfall health --project config/examples crm-backend
 ```
 
-`deploy`, `rollback`, `restart`, and `data copy` change servers only with
-`--yes`. Without it they run every controller-side check (declared component,
-verified artifact, declared database, source URL file) and print a `plan`
-naming the target servers, exit `0`, so a request can be reviewed before it
-runs.
+`deploy`, `rollback`, `restart`, `data copy`, and `domains apply` change
+servers only with `--yes`. Without it they run every controller-side check
+(declared component, verified artifact, declared database, source URL file,
+DNS for a certificate) and print a `plan` naming the target servers, exit `0`,
+so a request can be reviewed before it runs.
+
+`domains apply <domain>` runs `domains.yml` on the Domain's proxy server
+alone and renders only that Domain, so no baseline, firewall or service task
+runs; it is safe on a server whose baseline another project owns. With
+`--issue-certificate` it first checks that the Domain's names resolve to the
+proxy server (a `proxied` Domain skips the check), then issues the certificate
+when none exists yet.
 
 `deploy` refuses to run when the built artifact is missing, misidentified, or
 fails digest verification, and refuses to report success if the engine wrote
