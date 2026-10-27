@@ -15,7 +15,15 @@
           {{ cloudfall_domains_issue_certificates | default(false) | bool }}
         cloudfall_nginx_site_receipt_directory: >-
           {{ cloudfall_domains_receipt_directory | default("") }}
-      loop: "{{ cloudfall_domains | default([]) }}"
+      # cloudfall_domains_domain_id limits the run to one Domain.
+      loop: >-
+        {{
+          cloudfall_domains | default([])
+          | selectattr('id', 'equalto', cloudfall_domains_domain_id)
+          | list
+          if cloudfall_domains_domain_id is defined
+          else cloudfall_domains | default([])
+        }}
       loop_control:
         loop_var: cloudfall_domain_item
         label: "{{ cloudfall_domain_item.id }}"
