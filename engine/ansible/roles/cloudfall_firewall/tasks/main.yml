@@ -10,12 +10,35 @@
       Cloudfall firewall management requires Debian, systemd, and a declared
       default-deny ruleset with at least one allowed inbound rule
 
+- name: Refuse a source-restricted rule that opens to every address
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudfall_firewall_ruleset.allowedInbound
+        | selectattr('sources', 'defined')
+        | map(attribute='sources')
+        | select('equalto', [])
+        | list
+        | length == 0
+      - >-
+        cloudfall_firewall_ruleset.allowedInbound
+        | selectattr('sources', 'defined')
+        | map(attribute='sources')
+        | flatten
+        | select('in', ['0.0.0.0/0', '::/0'])
+        | list
+        | length == 0
+    fail_msg: >-
+      A firewall rule restricted to sources needs at least one, and none may
+      be 0.0.0.0/0 or ::/0
+
 - name: Refuse a ruleset that would block the control connection
   ansible.builtin.assert:
     that:
       - >-
         ansible_port | default(22) | int in (
           cloudfall_firewall_ruleset.allowedInbound
+          | rejectattr('sources', 'defined')
           | selectattr('protocol', 'equalto', 'tcp')
           | map(attribute='port')
           | map('int')

@@ -406,8 +406,9 @@ def test_the_role_argument_spec_takes_an_owned_database() -> None:
 
     assert "required" not in database["application"]
     assert database["passwordRef"]["options"]["key"]["required"] is True
-    # Remote access is #123's: until it converges, the spec refuses it.
-    assert "remoteAccess" not in options["cloudfall_postgresql_service"]["options"][
-        "postgresql"
-    ]["options"]
+    remote_access = options["cloudfall_postgresql_service"]["options"]["postgresql"][
+        "options"
+    ]["remoteAccess"]["options"]
+    assert remote_access["listenAddress"]["required"] is True
+    assert remote_access["allowedSources"]["elements"] == "str"
     assert options["cloudfall_postgresql_password_files"]["type"] == "dict"

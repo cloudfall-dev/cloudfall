@@ -142,3 +142,9 @@ Touches `config/schemas/v1/service.schema.json`, `sdk/src/cloudfall/validation.p
 - cloudfall-dev/cloudfall#123: S-006-8, S-006-9, S-006-10
 
 ## Verification
+
+`remoteAccess` has not run against a live Debian host yet: the files were rendered from a validated project with the role templates, the role's decisions were evaluated with Ansible's templating, and the `pg_hba.conf` tasks ran under `ansible-playbook` on the controller against a copy of Debian's file with a stand-in for `psql`. PostgreSQL's real parse of the file, the restart onto the new listener, TLS with the snakeoil pair, and `nft` loading the rules are unexercised.
+
+- S-006-8: `test_s006_8_remote_access_renders_listener_tls_hba_and_firewall` and `test_s006_8_the_firewall_entry_carries_its_sources` (`engine/tests/test_postgresql_remote_access.py`) rendered `listen_addresses = '127.0.0.1,10.0.0.2'`, `ssl = on`, the block line `hostssl billing billing 10.0.0.0/24 scram-sha-256` (none for the application database `crm`), and `ip saddr 10.0.0.0/24 tcp dport 5432 accept` as the only rule for port 5432; `test_s006_8_s006_10_the_hba_block_opens_then_closes_leaving_the_rest` wrote exactly that line between the Cloudfall markers, reloaded once, and left Debian's lines unchanged
+- S-006-9: not run; it needs the live proving run on two hosts
+- S-006-10: `test_s006_10_without_remote_access_the_service_renders_closed` rendered `listen_addresses = '127.0.0.1'`, no rule for port 5432, and the block state `absent`; `test_s006_8_s006_10_the_hba_block_opens_then_closes_leaving_the_rest` then removed the block and the file read byte-identical to Debian's

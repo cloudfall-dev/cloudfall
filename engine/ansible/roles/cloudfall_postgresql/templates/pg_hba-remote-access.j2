@@ -1,0 +1,5 @@
+{% for database in cloudfall_postgresql_service.postgresql.databases if database.passwordRef is defined %}
+{% for source in cloudfall_postgresql_service.postgresql.remoteAccess.allowedSources %}
+hostssl {{ database.name }} {{ database.owner }} {{ source }} scram-sha-256
+{% endfor %}
+{% endfor %}

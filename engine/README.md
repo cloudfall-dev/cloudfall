@@ -115,7 +115,9 @@ The firewall role renders `/etc/nftables.conf` from the rendered
 SSH port), validates it with `nft --check` before installation, and refuses
 any ruleset that does not allow the control connection's SSH port. The
 managed table replaces the complete ruleset; hosts whose profile declares no
-firewall are left unmanaged.
+firewall are left unmanaged. An entry with a `sources` list (a PostgreSQL
+service's `remoteAccess`) renders one `ip saddr`/`ip6 saddr` rule per source
+and never counts as the SSH port.
 
 The access role installs active environment-scoped `SshPublicKey` resources
 for root, validates the complete OpenSSH configuration, and only then
@@ -158,6 +160,13 @@ of every database restores into a scratch database before dropping it:
 ```console
 sudo -u postgres /usr/local/sbin/cloudfall-postgresql-restore-check
 ```
+
+A service that declares `postgresql.remoteAccess` also listens on its
+`listenAddress` with `ssl = on` (the `ssl-cert` snakeoil pair); a change to
+the listener restarts the cluster. Its `pg_hba.conf` gains a block between
+Cloudfall markers with one `hostssl` SCRAM line per owned database and source,
+applied with `pg_reload_conf()` only after `pg_hba_file_rules` reports no
+error; a service without `remoteAccess` has the block removed.
 
 ## Build and deploy component releases
 

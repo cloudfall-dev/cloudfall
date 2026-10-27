@@ -12,6 +12,35 @@
       PostgreSQL deployment requires its declared Debian server and a
       loopback-only bind address
 
+- name: Refuse remote access that is not narrowed to declared sources
+  ansible.builtin.assert:
+    that:
+      - cloudfall_postgresql_remote_access.listenAddress | length > 0
+      - >-
+        cloudfall_postgresql_remote_access.listenAddress
+        not in ['*', '0.0.0.0', '::', 'localhost']
+      - "',' not in cloudfall_postgresql_remote_access.listenAddress"
+      - "\"'\" not in cloudfall_postgresql_remote_access.listenAddress"
+      - cloudfall_postgresql_remote_access.allowedSources | length > 0
+      - >-
+        cloudfall_postgresql_remote_access.allowedSources
+        | select('in', ['0.0.0.0/0', '::/0'])
+        | list
+        | length == 0
+      - >-
+        cloudfall_postgresql_service.postgresql.databases
+        | selectattr('passwordRef', 'defined')
+        | list
+        | length > 0
+    fail_msg: >-
+      remoteAccess of service {{ cloudfall_postgresql_service.id }} needs one
+      listen address that is not a wildcard, at least one source that is not
+      0.0.0.0/0 or ::/0, and a database with an owner
+  vars:
+    cloudfall_postgresql_remote_access: >-
+      {{ cloudfall_postgresql_service.postgresql.remoteAccess }}
+  when: cloudfall_postgresql_service.postgresql.remoteAccess is defined
+
 - name: Require a staged password for every owner role
   ansible.builtin.assert:
     that:
@@ -91,6 +120,26 @@
     cache_valid_time: 3600
     policy_rc_d: 101
 
+- name: Install the snakeoil certificate pair for remote access
+  ansible.builtin.apt:
+    name: ssl-cert
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: cloudfall_postgresql_service.postgresql.remoteAccess is defined
+
+- name: Let PostgreSQL read the snakeoil key
+  ansible.builtin.user:
+    name: postgres
+    groups:
+      - ssl-cert
+    append: true
+  # The server reads its key at start, so a new group needs a restart.
+  notify: Restart PostgreSQL
+  when: cloudfall_postgresql_service.postgresql.remoteAccess is defined
+
+# listen_addresses and ssl only change at server start: a changed file
+# restarts the cluster through the handler, flushed before readiness.
 - name: Install the managed cluster configuration
   ansible.builtin.template:
     src: cloudfall.conf.j2
@@ -131,6 +180,94 @@
   delay: 5
   until: cloudfall_postgresql_readiness.rc == 0
   when: not ansible_check_mode
+
+# The block is written with remoteAccess and removed without it, so an
+# earlier opening never lingers; lines outside the markers stay untouched.
+- name: Converge the remote access block of pg_hba.conf
+  vars:
+    cloudfall_postgresql_hba_path: >-
+      /etc/postgresql/{{
+        cloudfall_postgresql_service.postgresql.majorVersion
+      }}/main/pg_hba.conf
+  block:
+    - name: Write or remove the Cloudfall block in pg_hba.conf
+      ansible.builtin.blockinfile:
+        path: "{{ cloudfall_postgresql_hba_path }}"
+        marker: "{{ cloudfall_postgresql_hba_marker }}"
+        block: >-
+          {{
+            lookup('ansible.builtin.template', 'pg_hba-remote-access.j2')
+            if cloudfall_postgresql_service.postgresql.remoteAccess is defined
+            else ''
+          }}
+        state: >-
+          {{
+            'present'
+            if cloudfall_postgresql_service.postgresql.remoteAccess is defined
+            else 'absent'
+          }}
+      register: cloudfall_postgresql_hba
+
+    # pg_hba_file_rules parses the file on disk; reload only a file it reads.
+    - name: Refuse a pg_hba.conf PostgreSQL cannot read
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/psql
+          - --port
+          - "{{ cloudfall_postgresql_service.bind.port }}"
+          - --tuples-only
+          - --no-align
+          - --command
+          - >-
+            SELECT line_number || ': ' || error
+            FROM pg_hba_file_rules WHERE error IS NOT NULL
+      become: true
+      become_user: postgres
+      register: cloudfall_postgresql_hba_errors
+      changed_when: false
+      failed_when: >-
+        cloudfall_postgresql_hba_errors.rc != 0
+        or cloudfall_postgresql_hba_errors.stdout_lines | length > 0
+      when:
+        - not ansible_check_mode
+        - cloudfall_postgresql_hba is changed
+
+    - name: Reload PostgreSQL to apply pg_hba.conf
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/psql
+          - --port
+          - "{{ cloudfall_postgresql_service.bind.port }}"
+          - --tuples-only
+          - --no-align
+          - --command
+          - SELECT pg_reload_conf()
+      become: true
+      become_user: postgres
+      register: cloudfall_postgresql_hba_reload
+      changed_when: true
+      failed_when: >-
+        cloudfall_postgresql_hba_reload.rc != 0
+        or cloudfall_postgresql_hba_reload.stdout | trim != 't'
+      when:
+        - not ansible_check_mode
+        - cloudfall_postgresql_hba is changed
+  rescue:
+    - name: Close remote access when pg_hba.conf could not be applied
+      ansible.builtin.blockinfile:
+        path: "{{ cloudfall_postgresql_hba_path }}"
+        marker: "{{ cloudfall_postgresql_hba_marker }}"
+        state: absent
+
+    - name: Stop on a pg_hba.conf that was not applied
+      ansible.builtin.fail:
+        msg: >-
+          pg_hba.conf of service {{ cloudfall_postgresql_service.id }} was not
+          reloaded and its Cloudfall block was removed:
+          {{
+            cloudfall_postgresql_hba_errors.stdout_lines | default([])
+            | join('; ')
+          }}
 
 - name: Read existing PostgreSQL roles
   ansible.builtin.command:

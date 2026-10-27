@@ -28,6 +28,12 @@ argument_specs:
                 required: true
               description:
                 type: str
+              sources:
+                type: list
+                elements: str
+                description: >-
+                  CIDRs the rule is restricted to, one rule per source; an
+                  entry without sources accepts every address
       cloudfall_firewall_configuration_path:
         type: path
         default: /etc/nftables.conf

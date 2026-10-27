@@ -67,6 +67,16 @@ argument_specs:
                       key:
                         type: str
                         required: true
+              remoteAccess:
+                type: dict
+                options:
+                  listenAddress:
+                    type: str
+                    required: true
+                  allowedSources:
+                    type: list
+                    elements: str
+                    required: true
           backup:
             type: dict
             required: true
@@ -98,6 +108,18 @@ argument_specs:
         type: path
         default: /var/lib/postgresql/.cloudfall-owner-password
         description: Host path an owner role's password is staged at, 0600
+      cloudfall_postgresql_ssl_cert_file:
+        type: path
+        default: /etc/ssl/certs/ssl-cert-snakeoil.pem
+        description: Server certificate of remoteAccess, the ssl-cert snakeoil
+      cloudfall_postgresql_ssl_key_file:
+        type: path
+        default: /etc/ssl/private/ssl-cert-snakeoil.key
+        description: Server key of remoteAccess, the ssl-cert snakeoil
+      cloudfall_postgresql_hba_marker:
+        type: str
+        default: "# {mark} CLOUDFALL MANAGED REMOTE ACCESS"
+        description: Markers of the remoteAccess block in pg_hba.conf
       cloudfall_postgresql_metrics_role:
         type: str
         default: alloy
