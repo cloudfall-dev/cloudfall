@@ -32,13 +32,36 @@
         | selectattr('passwordRef', 'defined')
         | list
         | length > 0
+      # pg_hba.conf reads these bare words as keywords, not names: a database
+      # named all would open every database, an owner named all every role.
+      - >-
+        cloudfall_postgresql_service.postgresql.databases
+        | selectattr('passwordRef', 'defined')
+        | map(attribute='name')
+        | select('in', cloudfall_postgresql_hba_keywords)
+        | list
+        | length == 0
+      - >-
+        cloudfall_postgresql_service.postgresql.databases
+        | selectattr('passwordRef', 'defined')
+        | map(attribute='owner')
+        | select('in', cloudfall_postgresql_hba_keywords)
+        | list
+        | length == 0
     fail_msg: >-
       remoteAccess of service {{ cloudfall_postgresql_service.id }} needs one
       listen address that is not a wildcard, at least one source that is not
-      0.0.0.0/0 or ::/0, and a database with an owner
+      0.0.0.0/0 or ::/0, and a database with an owner, and no owned database
+      or owner named {{ cloudfall_postgresql_hba_keywords | join(', ') }}
   vars:
     cloudfall_postgresql_remote_access: >-
       {{ cloudfall_postgresql_service.postgresql.remoteAccess }}
+    cloudfall_postgresql_hba_keywords:
+      - all
+      - sameuser
+      - samerole
+      - samegroup
+      - replication
   when: cloudfall_postgresql_service.postgresql.remoteAccess is defined
 
 - name: Require a staged password for every owner role

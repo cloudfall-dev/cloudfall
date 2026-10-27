@@ -304,11 +304,27 @@ def _remote_access_guard() -> tuple[list[str], dict[str, object]]:
     return that, cast("dict[str, object]", task["vars"])
 
 
-def _guard_service(access: dict[str, object]) -> dict[str, object]:
+def _guard_service(
+    access: dict[str, object], databases: list[dict[str, object]] | None = None
+) -> dict[str, object]:
     return {
         "id": "postgresql-main",
-        "postgresql": {"databases": [BILLING], "remoteAccess": access},
+        "postgresql": {"databases": databases or [BILLING], "remoteAccess": access},
     }
+
+
+def _guard_holds(service: dict[str, object]) -> bool:
+    """Evaluate the remote access guard with its task vars templated."""
+    that, task_vars = _remote_access_guard()
+    variables: dict[str, object] = {"cloudfall_postgresql_service": service}
+    templar = Templar(loader=DataLoader(), variables=variables)
+    for name, value in task_vars.items():
+        variables[name] = (
+            templar.template(trust_as_template(value))
+            if isinstance(value, str)
+            else value
+        )
+    return _holds(that, variables)
 
 
 @pytest.mark.parametrize(
@@ -335,28 +351,31 @@ def _guard_service(access: dict[str, object]) -> dict[str, object]:
 def test_the_role_refuses_remote_access_open_to_everyone(
     access: dict[str, object],
 ) -> None:
-    that, task_vars = _remote_access_guard()
-    service = _guard_service(access)
-    variables: dict[str, object] = {"cloudfall_postgresql_service": service}
-    alias = Templar(loader=DataLoader(), variables=variables).template(
-        trust_as_template(str(task_vars["cloudfall_postgresql_remote_access"]))
-    )
-
-    assert not _holds(
-        that, {**variables, "cloudfall_postgresql_remote_access": alias}
-    )
+    assert not _guard_holds(_guard_service(access))
 
 
 def test_the_role_accepts_remote_access_narrowed_to_sources() -> None:
-    that, task_vars = _remote_access_guard()
-    variables: dict[str, object] = {
-        "cloudfall_postgresql_service": _guard_service(REMOTE_ACCESS)
-    }
-    alias = Templar(loader=DataLoader(), variables=variables).template(
-        trust_as_template(str(task_vars["cloudfall_postgresql_remote_access"]))
-    )
+    assert _guard_holds(_guard_service(REMOTE_ACCESS))
 
-    assert _holds(that, {**variables, "cloudfall_postgresql_remote_access": alias})
+
+@pytest.mark.parametrize(
+    ("name", "owner"),
+    [
+        ("all", "billing"),
+        ("billing", "all"),
+        ("sameuser", "billing"),
+        ("samerole", "billing"),
+        ("replication", "billing"),
+    ],
+)
+def test_the_role_refuses_an_owned_name_pg_hba_reads_as_a_keyword(
+    name: str, owner: str
+) -> None:
+    # "hostssl all billing ..." would let billing reach every database,
+    # application databases included; "hostssl billing all ..." every role.
+    database = {**BILLING, "name": name, "owner": owner}
+
+    assert not _guard_holds(_guard_service(REMOTE_ACCESS, [database]))
 
 
 def _firewall_asserts() -> dict[str, list[str]]:
