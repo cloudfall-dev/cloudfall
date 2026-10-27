@@ -126,4 +126,8 @@ copy.
 
 ## Issues
 
+- cloudfall-dev/cloudfall#124: S-007-1, S-007-2, S-007-3, S-007-4, S-007-5, S-007-14
+- cloudfall-dev/cloudfall#125: S-007-6, S-007-7, S-007-8, S-007-9, S-007-10, S-007-11
+- cloudfall-dev/cloudfall#126: S-007-12, S-007-13
+
 ## Verification
