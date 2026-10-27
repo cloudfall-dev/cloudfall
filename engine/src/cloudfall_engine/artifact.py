@@ -72,6 +72,7 @@ _ERROR_TOOL_MISSING = "artifact_build_tool_missing"
 _ERROR_TOOL_UNSUPPORTED = "artifact_build_tool_unsupported"
 _ERROR_STEP_FAILED = "artifact_build_step_failed"
 _ERROR_INCLUDE_MISSING = "artifact_include_missing"
+_ERROR_INCLUDE_OUTSIDE = "artifact_include_outside_checkout"
 _ERROR_TRACKED_FILE_MISSING = "artifact_tracked_file_missing"
 
 
@@ -492,6 +493,17 @@ def _require_includes(build: ComponentBuild, source_root: Path) -> None:
             )
             raise ArtifactBuildError(
                 _ERROR_INCLUDE_MISSING, detail, {"path": include.value}
+            )
+        # The path itself may be a symlink (archived as one, never followed),
+        # but no directory above it may lead out of the checkout.
+        parent = (source_root / include.value).parent.resolve()
+        if not parent.is_relative_to(source_root.resolve()):
+            detail = (
+                f"artifact.include path {include.value} leads out of the "
+                "checkout through a symlink"
+            )
+            raise ArtifactBuildError(
+                _ERROR_INCLUDE_OUTSIDE, detail, {"path": include.value}
             )
 
 

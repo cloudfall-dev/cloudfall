@@ -490,6 +490,26 @@ def test_s002_8_a_missing_include_path_writes_no_artifact(tmp_path: Path) -> Non
     assert fixture.written() == []
 
 
+def test_s002_8_an_include_through_a_symlink_out_of_the_checkout_is_refused(
+    tmp_path: Path,
+) -> None:
+    """A tracked symlink must not let an include path package outside files."""
+    outside = tmp_path / "outside" / "secrets"
+    outside.mkdir(parents=True)
+    (outside / "id_rsa").write_text("PRIVATE KEY\n", encoding="utf-8")
+    fixture = _fixture(tmp_path, include=["web/dist", "web/link/secrets"])
+    (fixture.repository / "web" / "link").symlink_to(tmp_path / "outside")
+    fixture.commit("<h1>linked</h1>\n")
+
+    exit_code, envelope, _ = fixture.build("main")
+
+    assert exit_code == ARTIFACT_BUILD_FAILED
+    context = _failure(envelope)
+    assert context["code"] == "artifact_include_outside_checkout"
+    assert context["path"] == "web/link/secrets"
+    assert fixture.written() == []
+
+
 def test_s002_9_step_stdout_stays_out_of_the_json_envelope(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
 
