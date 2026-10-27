@@ -82,9 +82,8 @@ from cloudfall_engine.playbook import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
-    from cloudfall.secrets import OwnedRolePassword
-
     from cloudfall.domain import BuildTimeoutSeconds
+    from cloudfall.secrets import OwnedRolePassword
     from treaty import Completed
 
 app = App(
