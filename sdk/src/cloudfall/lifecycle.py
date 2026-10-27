@@ -573,11 +573,12 @@ def proxy_addresses(
     """
     addresses: set[IpAddress] = set()
     try:
-        ip_address(server.address.value)
+        parsed = ip_address(server.address.value)
     except ValueError:
         addresses.update(resolver.resolve(Hostname(server.address.value)))
     else:
-        addresses.add(IpAddress(server.address.value))
+        # The schema takes any IPv6 spelling (2001:DB8::10); compare canonically.
+        addresses.add(IpAddress(str(parsed)))
     if server.network is not None:
         addresses.add(IpAddress(server.network.ipv4.value))
     return frozenset(addresses)

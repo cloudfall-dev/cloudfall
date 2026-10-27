@@ -298,6 +298,26 @@ def test_a_proxy_server_address_that_is_an_ip_is_taken_as_it_is(
     assert resolver.asked == ["crm.example.test", "www.crm.example.test"]
 
 
+def test_a_non_canonical_ipv6_proxy_address_still_matches(tmp_path: Path) -> None:
+    """The schema takes ``2001:DB8::10``; a resolver answers ``2001:db8::10``."""
+    project = _project(tmp_path)
+    server = project / "servers" / "h2.yaml"
+    document = yaml.safe_load(server.read_text(encoding="utf-8"))
+    document["spec"]["address"] = "2001:DB8:0::10"
+    server.write_text(yaml.safe_dump(document), encoding="utf-8")
+    resolver = _resolver(
+        crm_example_test="2001:db8::10", www_crm_example_test="2001:db8::10"
+    )
+
+    planned = preview_domain_apply(
+        _context(project, _Recorder(tmp_path / "unused")),
+        _request(project, issue_certificate=True),
+        resolver,
+    )
+
+    assert planned.dns_check is DnsCheck.VERIFIED
+
+
 def test_without_issue_certificate_dns_is_not_checked(tmp_path: Path) -> None:
     project = _project(tmp_path)
     resolver = _resolver(www_crm_example_test=ELSEWHERE)
