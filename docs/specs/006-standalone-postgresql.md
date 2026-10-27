@@ -137,4 +137,8 @@ Touches `config/schemas/v1/service.schema.json`, `sdk/src/cloudfall/validation.p
 
 ## Issues
 
+- cloudfall-dev/cloudfall#121: S-006-1, S-006-2, S-006-3, S-006-4, S-006-11
+- cloudfall-dev/cloudfall#122: S-006-5, S-006-6, S-006-7, S-006-12, S-006-13
+- cloudfall-dev/cloudfall#123: S-006-8, S-006-9, S-006-10
+
 ## Verification

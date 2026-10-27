@@ -134,4 +134,8 @@ validate`, and the `build_artifact` MCP tool.
 
 ## Issues
 
+- cloudfall-dev/cloudfall#113: S-002-1, S-002-11
+- cloudfall-dev/cloudfall#114: S-002-14, S-002-15
+- cloudfall-dev/cloudfall#115: S-002-2, S-002-3, S-002-4, S-002-5, S-002-6, S-002-7, S-002-8, S-002-9, S-002-10, S-002-12, S-002-13
+
 ## Verification

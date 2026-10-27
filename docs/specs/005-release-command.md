@@ -125,4 +125,7 @@ Touches `config/schemas/v1/component.schema.json`,
 
 ## Issues
 
+- cloudfall-dev/cloudfall#119: S-005-1, S-005-2, S-005-3, S-005-4, S-005-5, S-005-6, S-005-7, S-005-10, S-005-11
+- cloudfall-dev/cloudfall#120: S-005-8, S-005-9
+
 ## Verification

@@ -122,4 +122,8 @@ the `converge_domains` MCP tool.
 
 ## Issues
 
+- cloudfall-dev/cloudfall#116: S-004-2, S-004-11, S-004-12, S-004-13, S-004-17
+- cloudfall-dev/cloudfall#117: S-004-1, S-004-3, S-004-5, S-004-6, S-004-7, S-004-8, S-004-9, S-004-10
+- cloudfall-dev/cloudfall#118: S-004-4, S-004-14, S-004-15, S-004-16
+
 ## Verification
