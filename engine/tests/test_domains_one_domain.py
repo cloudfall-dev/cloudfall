@@ -151,6 +151,21 @@ def test_s004_11_a_run_with_no_vhost_there_records_null(tmp_path: Path) -> None:
     assert spec["configurationSha256"] == _sha256(RENDERED)
 
 
+def test_s004_11_a_vhost_linked_into_place_is_hashed_through_the_link(
+    tmp_path: Path,
+) -> None:
+    """Debian keeps vhosts as links into sites-available; hash what it reads."""
+    hand_written = "server { listen 80; server_name crm.example.test; }\n"
+    target = tmp_path / "sites-available.conf"
+    target.write_text(hand_written, encoding="utf-8")
+    vhost = tmp_path / "crm.example.test.conf"
+    vhost.symlink_to(target)
+
+    spec = _run(tmp_path, vhost)
+
+    assert spec["previousConfigurationSha256"] == _sha256(hand_written)
+
+
 def test_s004_11_the_replaced_vhost_is_hashed_before_the_first_render() -> None:
     """The second render would see only this run's own file."""
     tasks = DataLoader().load_from_file(str(TASKS / "main.yml"))
