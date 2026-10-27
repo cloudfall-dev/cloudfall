@@ -120,6 +120,12 @@ argument_specs:
         type: str
         default: "# {mark} CLOUDFALL MANAGED REMOTE ACCESS"
         description: Markers of the remoteAccess block in pg_hba.conf
+      cloudfall_postgresql_state_directory:
+        type: path
+        default: /var/lib/cloudfall/postgresql
+        description: >-
+          Host directory of the role's state, such as a service's pending
+          pg_hba.conf reload, one file per service id
       cloudfall_postgresql_metrics_role:
         type: str
         default: alloy
