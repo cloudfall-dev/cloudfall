@@ -172,6 +172,38 @@ def test_s002_11_absolute_or_climbing_paths_are_refused(
 
 
 @pytest.mark.parametrize(
+    ("original", "replacement"),
+    [
+        ("workingDirectory: web\n      command: [pnpm, build]",
+         'workingDirectory: "we\\tb"\n      command: [pnpm, build]'),
+        ("workingDirectory: web\n      command: [pnpm, build]",
+         'workingDirectory: "web\\n"\n      command: [pnpm, build]'),
+        ("include: [web/dist]", 'include: ["web/dist\\n"]'),
+        ('pnpm: "9.0.0"', '"pnpm\\n": "9.0.0"'),
+        ('pnpm: "9.0.0"', 'pnpm: "9.0.0\\n"'),
+    ],
+    ids=[
+        "tab-in-working-directory",
+        "newline-ending-working-directory",
+        "newline-ending-include",
+        "newline-ending-tool-name",
+        "newline-ending-tool-version",
+    ],
+)
+def test_s002_11_control_characters_the_inventory_refuses_fail_validation(
+    tmp_path: Path, original: str, replacement: str
+) -> None:
+    project_directory = _project_with_component_spec(
+        tmp_path, _BUILD_BLOCK.replace(original, replacement)
+    )
+
+    with pytest.raises(ConfigValidationError) as error:
+        validate_config(project_directory, SCHEMAS)
+
+    assert error.value.issue.code == "schema_validation_failed"
+
+
+@pytest.mark.parametrize(
     ("extra", "dependent"),
     [
         ('  buildTools:\n    node: "22.0.0"\n', "buildTools"),

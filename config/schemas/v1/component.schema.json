@@ -215,10 +215,14 @@
         "buildTools": {
           "type": "object",
           "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/controlCharacterFree"
+          },
           "patternProperties": {
             "^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$": {
               "type": "string",
-              "pattern": "^[0-9]{1,9}(?:\\.[0-9]{1,9}){0,7}$"
+              "pattern": "^[0-9]{1,9}(?:\\.[0-9]{1,9}){0,7}$",
+              "$ref": "#/$defs/controlCharacterFree"
             }
           },
           "additionalProperties": false
@@ -296,7 +300,13 @@
     "relativePath": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$",
+      "$ref": "#/$defs/controlCharacterFree"
+    },
+    "controlCharacterFree": {
+      "not": {
+        "pattern": "[\\u0000-\\u001f\\u007f]"
+      }
     }
   },
   "required": [
