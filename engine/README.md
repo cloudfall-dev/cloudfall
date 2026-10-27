@@ -192,7 +192,10 @@ new release directory (or its `workingDirectory`), with the component's
 rules, and is stopped after `timeoutSeconds`. A failure or a timeout fails the
 deploy before any server's `current` moves; a success is recorded under
 `releaseCommand` in every release receipt of that deploy. The command must be
-safe while the old release still serves traffic. Rollback activates an already-retained
+safe while the old release still serves traffic. `deploy` without `--yes` shows
+it as `release_command` (command, resolved working directory, timeout and
+server), `null` for a component without one. Rollback never runs the release
+command, and its plan says so with `release_command_skipped: true`. Rollback activates an already-retained
 release without re-transferring an artifact and requires the declared health
 check to pass; it deliberately does not auto-restore on failure, because a
 failed rollback is an incident, not a deployment.

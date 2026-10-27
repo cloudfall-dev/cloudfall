@@ -89,7 +89,12 @@ from cloudfall.catalog import (
     RiskLevel,
     load_catalog,
 )
-from cloudfall.commands import CLI_COMMANDS, snake_case, snake_case_keys
+from cloudfall.commands import (
+    CLI_COMMANDS,
+    KEY_PROPERTIES,
+    snake_case,
+    snake_case_keys,
+)
 from cloudfall.dashboard import RefreshInterval, build_dashboard
 from cloudfall.dashboard_server import (
     DashboardHTTPServer,
@@ -393,6 +398,34 @@ class Payload:
         self.body = dict(body)
 
 
+_FIXED_SHAPES = {
+    snake_case(key): fields for key, fields in KEY_PROPERTIES.items()
+}
+
+
+def _key_schema(name: str, kind: str, *, optional: bool) -> dict[str, object]:
+    """Return the schema of one data key, by its snake_case name."""
+    schema: dict[str, object] = {"type": [kind, "null"] if optional else kind}
+    properties = _FIXED_SHAPES.get(name)
+    if properties is None and kind in {"array", "object"}:
+        # The domain writes each array in the order it means: a ranking,
+        # a timeline, the order checks ran in, and a stored record keeps
+        # its own. treaty would sort them, nested ones included.
+        schema["x-ordered"] = True
+    if properties is not None:
+        # A fixed shape: treaty writes a missing one as null, not as {}, and
+        # orders only its own arrays, which carry x-ordered themselves.
+        schema["properties"] = {
+            snake_case(field): _key_schema(
+                snake_case(field), field_kind, optional=False
+            )
+            for field, field_kind in properties.items()
+        }
+        schema["required"] = [snake_case(field) for field in properties]
+        schema["additionalProperties"] = False
+    return schema
+
+
 def _shape_keys(command: str) -> tuple[tuple[str, str, bool], ...]:
     """Return each data key of the command's output: name, JSON type, optional."""
     contract = next(
@@ -423,13 +456,7 @@ def _shape_keys(command: str) -> tuple[tuple[str, str, bool], ...]:
 def _payload_schema(cls: type[Payload]) -> dict[str, object]:
     properties: dict[str, object] = {}
     for name, kind, optional in _shape_keys(cls.command):
-        schema: dict[str, object] = {"type": [kind, "null"] if optional else kind}
-        if kind in {"array", "object"}:
-            # The domain writes each array in the order it means: a ranking,
-            # a timeline, the order checks ran in, and a stored record keeps
-            # its own. treaty would sort them, nested ones included.
-            schema["x-ordered"] = True
-        properties[name] = schema
+        properties[name] = _key_schema(name, kind, optional=optional)
     if cls.writes:
         properties["effect"] = {"type": "string"}
     return {

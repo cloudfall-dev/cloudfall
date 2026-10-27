@@ -87,7 +87,7 @@ KEY_TYPES: dict[str, str] = {
         ("completed", "count", "exitCode", "openProposals", "resources", "tasks"),
         "integer",
     ),
-    "healthy": "boolean",
+    **dict.fromkeys(("healthy", "releaseCommandSkipped"), "boolean"),
     **dict.fromkeys(
         (
             "added", "answers", "components", "decisions", "declaredKeys",
@@ -102,12 +102,27 @@ KEY_TYPES: dict[str, str] = {
     **dict.fromkeys(
         (
             "ansible", "byKind", "byRisk", "dashboard", "decision", "error",
-            "inventory", "operation", "proposal", "query", "summary",
+            "inventory", "operation", "proposal", "query", "releaseCommand",
+            "summary",
         ),
         "object",
     ),
 }
 """The JSON type of each output key, by name; a shape overrides one as ``name:type``."""
+
+KEY_PROPERTIES: dict[str, dict[str, str]] = {
+    "releaseCommand": {
+        "command": "array",
+        "workingDirectory": "string",
+        "timeoutSeconds": "integer",
+        "server": "string",
+    },
+}
+"""The named properties of an object key that has a fixed shape, by key name.
+
+Such an object is written as ``null`` when the command has none, where an
+open object would be written as ``{}``.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -465,7 +480,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "activate one built release behind its health check",
         gate=_YES,
         output=(
-            _plan("component", "release"),
+            _plan("component", "release", "releaseCommand"),
             _shape(*_EXECUTED, "release", "receipt", when="with `--yes`"),
         ),
     ),
@@ -476,7 +491,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "switch one component back to an existing release",
         gate=_YES,
         output=(
-            _plan("component", "release"),
+            _plan("component", "release", "releaseCommandSkipped?"),
             _shape(*_EXECUTED, "release", when="with `--yes`"),
         ),
     ),
