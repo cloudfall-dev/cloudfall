@@ -25,7 +25,6 @@ if TYPE_CHECKING:
 _FIRST_COMPONENT_PORT = 8100
 _MAX_TCP_PORT = 65535
 _DEFAULT_PYTHON_VERSION = "3.14"
-_DEFAULT_NODE_VERSION = "22"
 _DEFAULT_POSTGRES_MAJOR = "16"
 _POSTGRES_SERVICE_ID = "postgresql-main"
 _RESOURCE_SLUG_MAX = 63
@@ -285,7 +284,7 @@ def _import_service(
             _CATEGORY_UNSUPPORTED,
             name,
             "container runtimes are a tracked decision; only native python "
-            "and node services import today",
+            "services import today",
         )
         return
     if service_type not in {"web", "worker", "pserv"}:
@@ -295,23 +294,28 @@ def _import_service(
             f"service type {service_type!r} is not supported by the importer",
         )
         return
-    if runtime not in {"python", "node"}:
+    if runtime == "node":
+        state.gap(
+            _CATEGORY_UNSUPPORTED,
+            name,
+            "node services do not deploy yet: only python with uv runs on the "
+            "server, so no Component is written for this service",
+        )
+        return
+    if runtime != "python":
         state.gap(
             _CATEGORY_UNSUPPORTED,
             name,
             f"runtime {runtime!r} is not supported by the importer",
         )
         return
-    _import_component(
-        raw_service, name, service_type, runtime, targets, groups, state
-    )
+    _import_component(raw_service, name, service_type, targets, groups, state)
 
 
 def _import_component(  # noqa: PLR0913 - one boundary mapping, many inputs.
     raw_service: Mapping[str, object],
     name: str,
     service_type: str,
-    runtime: str,
     targets: ImportTargets,
     groups: Mapping[str, Sequence[Mapping[str, object]]],
     state: _ImportState,
@@ -376,7 +380,7 @@ def _import_component(  # noqa: PLR0913 - one boundary mapping, many inputs.
         "spec": {
             "application": targets.application_id.value,
             "repository": _repository(raw_service, repo),
-            "runtime": _runtime(runtime, resolved, name, state),
+            "runtime": _python_runtime(resolved, name, state),
             "deployment": {
                 "strategy": "artifact-symlink",
                 "servers": [targets.server_id.value],
@@ -409,46 +413,29 @@ def _repository(
     return repository
 
 
-def _runtime(
-    runtime: str,
+def _python_runtime(
     resolved: Mapping[str, str],
     name: str,
     state: _ImportState,
 ) -> dict[str, object]:
-    if runtime == "python":
-        version = resolved.get("PYTHON_VERSION", _DEFAULT_PYTHON_VERSION)
-        if "PYTHON_VERSION" not in resolved:
-            state.gap(
-                _CATEGORY_ASSUMPTION,
-                name,
-                f"no PYTHON_VERSION declared; assuming "
-                f"{_DEFAULT_PYTHON_VERSION}",
-            )
-        state.gap(
-            _CATEGORY_ACTION,
-            name,
-            "Cloudfall deploys python components with uv sync --frozen; the "
-            "repository needs pyproject.toml and uv.lock",
-        )
-        return {
-            "type": "python",
-            "version": version,
-            "packageManager": "uv",
-        }
-    version = resolved.get("NODE_VERSION", _DEFAULT_NODE_VERSION)
-    if "NODE_VERSION" not in resolved:
+    version = resolved.get("PYTHON_VERSION", _DEFAULT_PYTHON_VERSION)
+    if "PYTHON_VERSION" not in resolved:
         state.gap(
             _CATEGORY_ASSUMPTION,
             name,
-            f"no NODE_VERSION declared; assuming {_DEFAULT_NODE_VERSION}",
+            f"no PYTHON_VERSION declared; assuming {_DEFAULT_PYTHON_VERSION}",
         )
     state.gap(
         _CATEGORY_ACTION,
         name,
-        "node components are modeled in state but the deploy role supports "
-        "uv-managed python only in this slice",
+        "Cloudfall deploys python components with uv sync --frozen; the "
+        "repository needs pyproject.toml and uv.lock",
     )
-    return {"type": "node", "version": version, "packageManager": "npm"}
+    return {
+        "type": "python",
+        "version": version,
+        "packageManager": "uv",
+    }
 
 
 def _health_check(

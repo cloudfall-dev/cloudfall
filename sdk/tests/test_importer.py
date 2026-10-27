@@ -174,6 +174,39 @@ def test_importer_reports_gaps_for_unsupported_services(
     assert "## Required actions" in report
 
 
+@pytest.mark.parametrize("runtime_key", ["runtime", "env"])
+def test_s002_15_node_web_service_is_a_gap_not_a_component(
+    tmp_path: Path, runtime_key: str
+) -> None:
+    blueprint = tmp_path / "render.yaml"
+    blueprint.write_text(
+        BLUEPRINT.replace(
+            "envVarGroups:",
+            "  - type: web\n"
+            "    name: acme-web\n"
+            f"    {runtime_key}: node\n"
+            "    repo: https://github.com/example/acme-web.git\n"
+            "    startCommand: node server.js\n"
+            "    domains:\n"
+            "      - web.example.test\n"
+            "envVarGroups:",
+        ),
+        encoding="utf-8",
+    )
+    targets = _targets(tmp_path)
+
+    result = import_render_blueprint(blueprint, targets, SCHEMAS)
+
+    assert result.components == ("acme-api", "acme-worker")
+    assert result.domains == ("acme-example-test",)
+    assert not (targets.project_directory / "components" / "acme-web.yaml").exists()
+    assert "web-example-test" not in result.domains
+    node_gaps = [gap for gap in result.gaps if gap.subject == "acme-web"]
+    assert [gap.category for gap in node_gaps] == ["unsupported"]
+    assert "node" in node_gaps[0].detail
+    assert "acme-web" in result.report.read_text(encoding="utf-8")
+
+
 def test_importer_rejects_a_application_that_cannot_own_a_linux_user(
     tmp_path: Path,
 ) -> None:

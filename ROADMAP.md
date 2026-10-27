@@ -136,9 +136,9 @@ records an explicit origin skip when origin and proxy share a host.
   [guided data-migration report](docs/proving-runs/2026-09-08-guided-data-migration.md))
 - Cutover generator: DNS TTL lowering, parallel-run verification, switch, and
   a rollback window (DNS steps surface in the import report today)
-- v1 limitation: native Python and Node builds; container runtimes are a
-  tracked decision ✔ (documented and enforced — container services land in
-  the gap report)
+- v1 limitation: native Python (uv) services; Node and container runtimes
+  are not deployable ✔ (documented and enforced: `config validate` refuses a
+  Node runtime, and Node and container services land in the gap report)
 
 Exit: a real PaaS application migrated onto one host with its data, TLS,
 monitoring, and rollback path. **Met on 2026-09-08** in two stages: a

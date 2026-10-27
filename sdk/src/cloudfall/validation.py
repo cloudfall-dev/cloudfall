@@ -27,6 +27,8 @@ from cloudfall.domain import (
     ResourceId,
     ResourceKey,
     ResourceKind,
+    RuntimePackageManager,
+    RuntimeType,
     SourceLocation,
 )
 
@@ -43,6 +45,12 @@ _SCHEMA_FILES: Mapping[ResourceKind, str] = {
     ResourceKind.OPERATOR_POLICY: "operator-policy.schema.json",
 }
 _YAML_SUFFIXES = frozenset({".yaml", ".yml"})
+# The schema enums keep node, pm2, npm, pnpm and yarn as reserved values; the
+# deploy role runs only these (S-002-14).
+_DEPLOYABLE_RUNTIME: Mapping[str, str] = {
+    "type": RuntimeType.PYTHON.value,
+    "packageManager": RuntimePackageManager.UV.value,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -515,6 +523,7 @@ def _validate_component_references(
         document.source,
         ("spec", "application"),
     )
+    _validate_component_runtime(spec, document.source)
     deployment = _required_mapping(spec, "deployment", document.source)
     _validate_install_root(deployment, application_id, document.source)
     _validate_component_build(spec, document.source)
@@ -1512,6 +1521,26 @@ def _validate_component_build(
                 ),
                 source=source,
                 field_path=("spec", "build", index, "command", 0),
+            )
+            raise ConfigValidationError(issue)
+
+
+def _validate_component_runtime(
+    spec: Mapping[str, object], source: SourceLocation
+) -> None:
+    runtime = _required_mapping(spec, "runtime", source)
+    for field, deployable in _DEPLOYABLE_RUNTIME.items():
+        value = runtime.get(field)
+        if value != deployable:
+            issue = ValidationIssue(
+                code="component_runtime_unsupported",
+                message=(
+                    f"runtime.{field} {value!r} is reserved and cannot deploy: "
+                    "only runtime.type 'python' with runtime.packageManager "
+                    "'uv' deploys today"
+                ),
+                source=source,
+                field_path=("spec", "runtime", field),
             )
             raise ConfigValidationError(issue)
 

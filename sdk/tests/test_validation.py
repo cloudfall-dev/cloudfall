@@ -74,6 +74,52 @@ def test_component_install_root_must_stay_below_application_root(
     assert error.value.issue.code == "component_install_root_invalid"
 
 
+@pytest.mark.parametrize(
+    ("original", "replacement", "field"),
+    [
+        ("type: python", "type: node", "type"),
+        ("type: python", "type: pm2", "type"),
+        ("packageManager: uv", "packageManager: npm", "packageManager"),
+        ("packageManager: uv", "packageManager: pnpm", "packageManager"),
+        ("packageManager: uv", "packageManager: yarn", "packageManager"),
+    ],
+    ids=["node", "pm2", "npm", "pnpm", "yarn"],
+)
+def test_s002_14_reserved_runtimes_are_refused_as_config_invalid(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    original: str,
+    replacement: str,
+    field: str,
+) -> None:
+    project_directory = tmp_path / "config"
+    shutil.copytree(ROOT / "config" / "examples", project_directory)
+    component_path = project_directory / "components" / "crm-backend.yaml"
+    component_path.write_text(
+        component_path.read_text(encoding="utf-8").replace(original, replacement, 1),
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "config",
+            "validate",
+            "--project",
+            str(project_directory),
+            "--schemas",
+            str(SCHEMAS),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 80
+    assert payload["error"]["code"] == "CONFIG_INVALID"
+    context = payload["error"]["context"]
+    assert context["code"] == "component_runtime_unsupported"
+    assert context["field"] == f"spec.runtime.{field}"
+    assert f"runtime.{field}" in context["message"]
+
+
 def test_server_type_rejects_duplicate_configuration_paths(
     tmp_path: Path,
 ) -> None:
