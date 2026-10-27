@@ -12,16 +12,18 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 from dataclasses import dataclass
 from enum import StrEnum
+from ipaddress import ip_address
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Protocol, cast
 
 from jsonschema.exceptions import ValidationError
 
-from cloudfall.domain import AbsolutePath
+from cloudfall.domain import AbsolutePath, DnsMode, Hostname, IpAddress, TlsMode
 from cloudfall.inventory import PlatformInventory
 from cloudfall.secrets import (
     SecretsError,
@@ -44,14 +46,18 @@ if TYPE_CHECKING:
     from cloudfall.inventory import (
         ComponentInventory,
         DomainInventory,
+        ServerInventory,
         ServiceInventory,
     )
     from cloudfall.secrets import OwnedRolePassword, SopsSecretProvider
 
 _ARTIFACT_SCHEMA = "artifact.schema.json"
 _OUTPUT_TAIL_CHARACTERS = 2000
+_DNS_PROBE_PORT = 443
 _ERROR_COMPONENT_MISSING = "lifecycle_component_missing"
 _ERROR_DOMAIN_MISSING = "lifecycle_domain_missing"
+_ERROR_DOMAIN_TLS_DISABLED = "domains_tls_disabled"
+_ERROR_DOMAIN_DNS_UNVERIFIED = "domains_dns_unverified"
 _ERROR_ARTIFACT_MISSING = "lifecycle_artifact_missing"
 _ERROR_ARTIFACT_METADATA = "lifecycle_artifact_metadata_invalid"
 _ERROR_ARTIFACT_IDENTITY = "lifecycle_artifact_identity_mismatch"
@@ -506,16 +512,229 @@ def converge_domains(context: EngineContext, run: DomainsRun) -> None:
     One Domain is looked up in the validated config first, so an unknown id
     is refused before the inventory render and before any SSH connection.
     """
+    if run.domain_id is None:
+        run_engine_playbook(context, "domains.yml", _domains_vars(run))
+        return
+    _converge_one_domain(context, _domain(context, run.domain_id), run)
+
+
+def _domains_vars(run: DomainsRun) -> dict[str, object]:
     extra_vars: dict[str, object] = {
         "cloudfall_domains_issue_certificates": run.issue_certificates,
         "cloudfall_domains_receipt_directory": str(run.receipt_directory),
     }
-    if run.domain_id is None:
-        run_engine_playbook(context, "domains.yml", extra_vars)
-        return
-    proxy_server = _domain(context, run.domain_id).proxy.server_id
-    extra_vars["cloudfall_domains_domain_id"] = run.domain_id.value
-    run_engine_playbook(context, "domains.yml", extra_vars, limit=proxy_server)
+    if run.domain_id is not None:
+        extra_vars["cloudfall_domains_domain_id"] = run.domain_id.value
+    return extra_vars
+
+
+def _converge_one_domain(
+    context: EngineContext, domain: DomainInventory, run: DomainsRun
+) -> None:
+    run_engine_playbook(
+        context, "domains.yml", _domains_vars(run), limit=domain.proxy.server_id
+    )
+
+
+class NameResolver(Protocol):
+    """Resolves a public name on the controller, as a browser would."""
+
+    def resolve(self, name: Hostname) -> frozenset[IpAddress]:
+        """Return every address ``name`` resolves to; empty when none."""
+        ...
+
+
+class SystemNameResolver:
+    """The controller's own resolver, through ``getaddrinfo``."""
+
+    def resolve(self, name: Hostname) -> frozenset[IpAddress]:
+        """Return the name's addresses; a name that does not resolve has none."""
+        try:
+            records = socket.getaddrinfo(
+                name.value, _DNS_PROBE_PORT, type=socket.SOCK_STREAM
+            )
+        except socket.gaierror:
+            return frozenset()
+        # A scoped link-local address (fe80::1%en0) is no public answer.
+        return frozenset(
+            IpAddress.from_boundary(str(record[4][0]))
+            for record in records
+            if "%" not in str(record[4][0])
+        )
+
+
+def proxy_addresses(
+    server: ServerInventory, resolver: NameResolver
+) -> frozenset[IpAddress]:
+    """Return the addresses a name pointed at ``server`` may resolve to.
+
+    The server's address (or what its hostname resolves to) and its declared
+    ``network.ipv4``, as the migration's ``dns-verify`` step computes them.
+    """
+    addresses: set[IpAddress] = set()
+    try:
+        ip_address(server.address.value)
+    except ValueError:
+        addresses.update(resolver.resolve(Hostname(server.address.value)))
+    else:
+        addresses.add(IpAddress(server.address.value))
+    if server.network is not None:
+        addresses.add(IpAddress(server.network.ipv4.value))
+    return frozenset(addresses)
+
+
+class DnsCheck(StrEnum):
+    """What the controller-side DNS check of ``domains apply`` found."""
+
+    VERIFIED = "verified"
+    SKIPPED_PROXIED = "skipped-proxied"
+
+
+@dataclass(frozen=True, slots=True)
+class DomainApply:
+    """One ``domains apply`` request."""
+
+    domain_id: ResourceId
+    issue_certificate: bool
+    receipt_directory: Path
+
+
+@dataclass(frozen=True, slots=True)
+class DomainApplied:
+    """What ``domains apply`` checked, and would run or ran, for one Domain."""
+
+    domain_id: ResourceId
+    server: ResourceId
+    issue_certificate: bool
+    dns_check: DnsCheck | None
+    receipt: Path | None = None
+    """The receipt the run wrote; ``None`` for a plan."""
+
+    @property
+    def would_run(self) -> str:
+        """Say what the run changes, and where."""
+        certificate = (
+            ", issue its certificate by webroot when none exists yet, render it "
+            "again with TLS, and enable certbot.timer"
+            if self.issue_certificate
+            else ""
+        )
+        return (
+            f"render Domain {self.domain_id} as a managed Nginx virtual host on "
+            f"{self.server} alone through domains.yml{certificate}; no baseline, "
+            "firewall or service task runs"
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the plan, or with a receipt the run, for agent consumers."""
+        result: dict[str, object] = {
+            "status": "plan" if self.receipt is None else "ok",
+            "action": "domains-apply",
+            "domain": self.domain_id.value,
+            "servers": [self.server.value],
+        }
+        if self.receipt is None:
+            result["wouldRun"] = self.would_run
+        else:
+            result["receipt"] = str(self.receipt)
+        if self.dns_check is not None:
+            result["dnsCheck"] = self.dns_check.value
+        return result
+
+
+def preview_domain_apply(
+    context: EngineContext, request: DomainApply, resolver: NameResolver
+) -> DomainApplied:
+    """Run every controller-side check of ``domains apply``; change nothing.
+
+    The Domain must be declared, ``--issue-certificate`` needs ``tls.mode:
+    required``, and a ``dns-only`` Domain's names must resolve to its proxy
+    server before a certificate is asked for. Nothing here renders the
+    inventory or contacts a server.
+    """
+    state = validate_config(context.project_directory, context.schema_directory)
+    inventory = PlatformInventory.from_state(state)
+    domain = _find_domain(inventory, request.domain_id)
+    dns_check = None
+    if request.issue_certificate:
+        if domain.tls_mode is TlsMode.DISABLED:
+            detail = (
+                f"domain {domain.resource_id} declares tls.mode: disabled, so "
+                "there is no certificate to issue; drop --issue-certificate"
+            )
+            raise LifecycleError(_ERROR_DOMAIN_TLS_DISABLED, detail)
+        servers = {server.resource_id: server for server in inventory.servers}
+        dns_check = _check_domain_dns(
+            domain, servers[domain.proxy.server_id], resolver
+        )
+    return DomainApplied(
+        domain_id=domain.resource_id,
+        server=domain.proxy.server_id,
+        issue_certificate=request.issue_certificate,
+        dns_check=dns_check,
+    )
+
+
+def apply_domain(
+    context: EngineContext, request: DomainApply, resolver: NameResolver
+) -> DomainApplied:
+    """Converge one Domain on its proxy server alone, and return its receipt.
+
+    The checks of :func:`preview_domain_apply` run first, so a refused
+    request renders no inventory and runs no playbook.
+    """
+    checked = preview_domain_apply(context, request, resolver)
+    run_engine_playbook(
+        context,
+        "domains.yml",
+        _domains_vars(
+            DomainsRun(
+                issue_certificates=request.issue_certificate,
+                receipt_directory=request.receipt_directory,
+                domain_id=request.domain_id,
+            )
+        ),
+        limit=checked.server,
+    )
+    receipt = request.receipt_directory / f"{request.domain_id.value}.json"
+    if not receipt.is_file():
+        detail = f"domains.yml reported success but wrote no receipt: {receipt}"
+        raise LifecycleError(_ERROR_RECEIPT_MISSING, detail)
+    return DomainApplied(
+        domain_id=checked.domain_id,
+        server=checked.server,
+        issue_certificate=checked.issue_certificate,
+        dns_check=checked.dns_check,
+        receipt=receipt,
+    )
+
+
+def _check_domain_dns(
+    domain: DomainInventory, server: ServerInventory, resolver: NameResolver
+) -> DnsCheck:
+    """Require every name of a ``dns-only`` Domain to reach its proxy server."""
+    if domain.edge.mode is DnsMode.PROXIED:
+        return DnsCheck.SKIPPED_PROXIED
+    expected = proxy_addresses(server, resolver)
+    failing: list[str] = []
+    for name in (domain.primary_name, *domain.aliases):
+        resolved = resolver.resolve(name)
+        if not resolved & expected:
+            answer = _address_list(resolved) if resolved else "nothing"
+            failing.append(f"{name.value} resolves to {answer}")
+    if failing:
+        detail = (
+            f"point these names of domain {domain.resource_id} at proxy server "
+            f"{server.resource_id} ({_address_list(expected) or 'no known address'})"
+            ", wait for "
+            "propagation, and rerun: " + "; ".join(failing)
+        )
+        raise LifecycleError(_ERROR_DOMAIN_DNS_UNVERIFIED, detail)
+    return DnsCheck.VERIFIED
+
+
+def _address_list(addresses: frozenset[IpAddress]) -> str:
+    return ", ".join(sorted(address.value for address in addresses))
 
 
 ERROR_SERVICES_SECRET = "lifecycle_services_secret_unavailable"  # noqa: S105 - a code
@@ -1027,7 +1246,12 @@ def _component(
 
 def _domain(context: EngineContext, domain_id: ResourceId) -> DomainInventory:
     state = validate_config(context.project_directory, context.schema_directory)
-    inventory = PlatformInventory.from_state(state)
+    return _find_domain(PlatformInventory.from_state(state), domain_id)
+
+
+def _find_domain(
+    inventory: PlatformInventory, domain_id: ResourceId
+) -> DomainInventory:
     domain = next(
         (
             candidate

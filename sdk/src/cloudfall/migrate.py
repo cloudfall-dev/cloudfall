@@ -11,11 +11,9 @@ resume at the first incomplete step.
 from __future__ import annotations
 
 import json
-import socket
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from ipaddress import ip_address
 from typing import TYPE_CHECKING, cast
 
 from cloudfall.audit import AuditStatus, audit_inventory
@@ -30,9 +28,11 @@ from cloudfall.inventory import PlatformInventory
 from cloudfall.lifecycle import (
     DeployOptions,
     LifecycleError,
+    SystemNameResolver,
     build_release_artifact,
     deploy,
     migrate_data,
+    proxy_addresses,
     run_engine_playbook,
     run_services_playbook,
     services_passwords,
@@ -666,16 +666,10 @@ def _verify_dns(inventory: PlatformInventory) -> dict[str, object]:
 
 
 def _expected_addresses(server: ServerInventory) -> set[str]:
-    addresses: set[str] = set()
-    try:
-        ip_address(server.address.value)
-    except ValueError:
-        addresses.update(_resolve_names(server.address.value))
-    else:
-        addresses.add(server.address.value)
-    if server.network is not None:
-        addresses.add(server.network.ipv4.value)
-    return addresses
+    return {
+        address.value
+        for address in proxy_addresses(server, SystemNameResolver())
+    }
 
 
 def _resolved_addresses(
@@ -688,16 +682,6 @@ def _resolved_addresses(
     except OSError:
         return set()
     return {address.value for address in resolved}
-
-
-def _resolve_names(hostname: str) -> set[str]:
-    try:
-        records = socket.getaddrinfo(
-            hostname, _DNS_PROBE_PORT, type=socket.SOCK_STREAM
-        )
-    except OSError:
-        return set()
-    return {str(record[4][0]) for record in records}
 
 
 def _verify_audit(config: AgentConfig) -> dict[str, object]:

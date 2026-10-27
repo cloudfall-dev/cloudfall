@@ -64,6 +64,7 @@ def test_every_yes_gated_command_is_classified_as_changing_servers() -> None:
         "rollback",
         "restart",
         "data copy",
+        "domains apply",
         "migrate",
     }
     assert gated <= changing

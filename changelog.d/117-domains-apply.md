@@ -1,0 +1,3 @@
+### Added
+
+- `cloudfall domains apply <domain> [--issue-certificate] [--yes]` converges one Domain: `domains.yml` runs on its proxy server alone and renders only it, so no baseline, firewall or service task runs. Without `--yes` it exits 0 with a plan. `--issue-certificate` refuses a Domain with `tls.mode: disabled`, and first checks on the controller that the primary name and every alias resolve to the proxy server (`PRECONDITION`, `domains_dns_unverified`, naming each failing name); a `proxied` Domain skips the check (`dnsCheck: "skipped-proxied"`). With `--yes` it answers the receipt path under `--deployments` (#117)

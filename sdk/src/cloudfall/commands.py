@@ -77,9 +77,10 @@ KEY_TYPES: dict[str, str] = {
     **dict.fromkeys(
         (
             "action", "application", "component", "database", "detail",
-            "directory", "environmentFile", "health", "instruction", "output",
-            "pass", "path", "project", "receipt", "release", "report",
-            "service", "sha256", "status", "step", "verification", "wouldRun",
+            "directory", "dnsCheck", "domain", "environmentFile", "health",
+            "instruction", "output", "pass", "path", "project", "receipt",
+            "release", "report", "service", "sha256", "status", "step",
+            "verification", "wouldRun",
         ),
         "string",
     ),
@@ -520,6 +521,26 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
                 "verification",
                 "receipt",
                 when="with `--yes`",
+            ),
+        ),
+    ),
+    CommandContract(
+        "cloudfall",
+        "domains apply",
+        CommandEffect.SERVERS,
+        "render one Domain's virtual host, and its certificate on request, on "
+        "its proxy server alone; no baseline, firewall or service task runs",
+        gate=_YES,
+        output=(
+            _plan("domain", "dnsCheck?"),
+            _shape(
+                "status",
+                "action",
+                "domain",
+                "servers",
+                "dnsCheck?",
+                "receipt",
+                when="with `--yes`; `dnsCheck` only with `--issue-certificate`",
             ),
         ),
     ),
