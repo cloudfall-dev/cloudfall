@@ -19,6 +19,7 @@ from jsonschema.exceptions import SchemaError, ValidationError
 from referencing import Registry, Resource
 
 from cloudfall.domain import (
+    IpAddress,
     IpNetworkCidr,
     OpenSshPublicKey,
     RawDocument,
@@ -751,6 +752,7 @@ def _validate_service_remote_access(  # noqa: PLR0913
             field_path=field_path,
         )
         raise ConfigValidationError(issue)
+    _validate_remote_access_listen_address(document, remote_access, field_path)
     server_spec = _required_mapping(server.content, "spec", server.source)
     server_type_id = _resource_id_value(server_spec, "serverType", server.source)
     server_type = _require_resource(
@@ -820,6 +822,36 @@ def _validate_service_remote_access(  # noqa: PLR0913
                 field_path=source_path,
             )
             raise ConfigValidationError(issue)
+
+
+def _validate_remote_access_listen_address(
+    document: ResourceDocument,
+    remote_access: Mapping[str, object],
+    field_path: tuple[str | int, ...],
+) -> None:
+    """Refuse a listen address that is a wildcard or not canonical."""
+    listen_path = (*field_path, "listenAddress")
+    try:
+        listen_address = IpAddress.from_boundary(remote_access.get("listenAddress"))
+    except (TypeError, ValueError) as error:
+        issue = ValidationIssue(
+            code="service_remote_access_listen_invalid",
+            message=f"listen address is not one canonical IP address: {error}",
+            source=document.source,
+            field_path=listen_path,
+        )
+        raise ConfigValidationError(issue) from error
+    if listen_address.is_unspecified:
+        issue = ValidationIssue(
+            code="service_remote_access_listen_invalid",
+            message=(
+                f"listen address {listen_address.value} is a wildcard; name one "
+                "address of the server"
+            ),
+            source=document.source,
+            field_path=listen_path,
+        )
+        raise ConfigValidationError(issue)
 
 
 def _validate_service_uniqueness(documents: Sequence[ResourceDocument]) -> None:

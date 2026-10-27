@@ -310,3 +310,27 @@ def test_remote_access_listen_address_is_one_address(
     )
 
     assert _refusal(project).issue.code == "schema_validation_failed"
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["::0", "0:0:0:0:0:0:0:0", "fd00::0002"],
+    ids=["wildcard-short", "wildcard-long", "non-canonical"],
+)
+def test_remote_access_listen_address_is_one_canonical_address(
+    tmp_path: Path, address: str
+) -> None:
+    remote_access = {"listenAddress": address, "allowedSources": ["10.0.0.0/24"]}
+    project = _standalone_project(
+        tmp_path, _owned_service([_billing()], remote_access=remote_access)
+    )
+
+    error = _refusal(project)
+
+    assert error.issue.code == "service_remote_access_listen_invalid"
+    assert error.issue.field_path == (
+        "spec",
+        "postgresql",
+        "remoteAccess",
+        "listenAddress",
+    )

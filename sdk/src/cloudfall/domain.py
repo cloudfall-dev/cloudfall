@@ -246,6 +246,11 @@ class IpAddress:
             message = f"IP address is not canonical: {self.value!r}"
             raise ValueError(message)
 
+    @property
+    def is_unspecified(self) -> bool:
+        """Return whether the address is the wildcard of its family."""
+        return ip_address(self.value).is_unspecified
+
     @classmethod
     def from_boundary(cls, value: object) -> IpAddress:
         """Coerce a boundary value into an IP address."""
