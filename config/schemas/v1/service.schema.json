@@ -10,6 +10,72 @@
       "maxLength": 63,
       "pattern": "^[a-z][a-z0-9_]*$"
     },
+    "postgresRoleName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "secretValueReference": {
+      "type": "object",
+      "properties": {
+        "environment": {
+          "$ref": "common.schema.json#/$defs/resourceId"
+        },
+        "path": {
+          "$ref": "common.schema.json#/$defs/absolutePath"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        }
+      },
+      "required": [
+        "environment",
+        "path",
+        "key"
+      ],
+      "additionalProperties": false
+    },
+    "remoteAccess": {
+      "type": "object",
+      "properties": {
+        "listenAddress": {
+          "type": "string",
+          "anyOf": [
+            {
+              "format": "ipv4"
+            },
+            {
+              "format": "ipv6"
+            }
+          ],
+          "not": {
+            "enum": [
+              "0.0.0.0",
+              "::"
+            ]
+          }
+        },
+        "allowedSources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 49
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "listenAddress",
+        "allowedSources"
+      ],
+      "additionalProperties": false
+    },
     "systemdCalendar": {
       "type": "string",
       "minLength": 1,
@@ -83,16 +149,50 @@
                   },
                   "application": {
                     "$ref": "common.schema.json#/$defs/resourceId"
+                  },
+                  "owner": {
+                    "$ref": "#/$defs/postgresRoleName"
+                  },
+                  "passwordRef": {
+                    "$ref": "#/$defs/secretValueReference"
                   }
                 },
                 "required": [
-                  "name",
-                  "application"
+                  "name"
                 ],
-                "additionalProperties": false
+                "additionalProperties": false,
+                "oneOf": [
+                  {
+                    "required": [
+                      "application"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "owner"
+                    ]
+                  }
+                ],
+                "dependentRequired": {
+                  "owner": [
+                    "passwordRef"
+                  ]
+                },
+                "dependentSchemas": {
+                  "application": {
+                    "not": {
+                      "required": [
+                        "passwordRef"
+                      ]
+                    }
+                  }
+                }
               },
               "minItems": 1,
               "uniqueItems": true
+            },
+            "remoteAccess": {
+              "$ref": "#/$defs/remoteAccess"
             }
           },
           "required": [

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from ipaddress import IPv4Address as StandardIPv4Address
 from ipaddress import IPv6Network as StandardIPv6Network
-from ipaddress import ip_address
+from ipaddress import ip_address, ip_network
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -691,6 +691,66 @@ class PostgresDatabaseName:
     def from_boundary(cls, value: object) -> PostgresDatabaseName:
         """Coerce a boundary value into a database name."""
         return cls(_required_string(value, "PostgreSQL database name"))
+
+
+@dataclass(frozen=True, slots=True)
+class PostgresRoleName:
+    """Validated PostgreSQL role name safe for quoted identifiers."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Enforce the database-name pattern state uses for roles."""
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", self.value):
+            message = f"invalid PostgreSQL role name: {self.value!r}"
+            raise ValueError(message)
+
+    @classmethod
+    def from_boundary(cls, value: object) -> PostgresRoleName:
+        """Coerce a boundary value into a role name."""
+        return cls(_required_string(value, "PostgreSQL role name"))
+
+
+@dataclass(frozen=True, slots=True)
+class SecretKeyName:
+    """Validated key of one ``KEY=VALUE`` line in a secret source."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Enforce the dotenv key syntax the secrets reader accepts."""
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,254}", self.value):
+            message = f"invalid secret key name: {self.value!r}"
+            raise ValueError(message)
+
+    @classmethod
+    def from_boundary(cls, value: object) -> SecretKeyName:
+        """Coerce a boundary value into a secret key name."""
+        return cls(_required_string(value, "secret key name"))
+
+
+@dataclass(frozen=True, slots=True)
+class IpNetworkCidr:
+    """Validated canonical IPv4 or IPv6 network in CIDR notation."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Enforce a canonical network with no host bits set."""
+        parsed = ip_network(self.value, strict=True)
+        if str(parsed) != self.value:
+            message = f"IP network is not canonical: {self.value!r}"
+            raise ValueError(message)
+
+    @property
+    def is_unrestricted(self) -> bool:
+        """Return whether the network matches every address of its family."""
+        return ip_network(self.value).prefixlen == 0
+
+    @classmethod
+    def from_boundary(cls, value: object) -> IpNetworkCidr:
+        """Coerce a boundary value into an IP network."""
+        return cls(_required_string(value, "IP network"))
 
 
 @dataclass(frozen=True, slots=True)
