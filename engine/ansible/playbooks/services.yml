@@ -11,6 +11,13 @@
         name: cloudfall_postgresql
       vars:
         cloudfall_postgresql_service: "{{ cloudfall_service_item }}"
+        # Controller paths of the staged owner passwords cloudfall passes
+        # as cloudfall_services_password_files; never the values.
+        cloudfall_postgresql_password_files: >-
+          {{
+            (cloudfall_services_password_files | default({}))
+            [cloudfall_service_item.id] | default({})
+          }}
       loop: >-
         {{
           cloudfall_services | default([])

@@ -34,6 +34,8 @@ from cloudfall.lifecycle import (
     deploy,
     migrate_data,
     run_engine_playbook,
+    run_services_playbook,
+    services_passwords,
 )
 from cloudfall.observation import load_observations
 from cloudfall.operations import (
@@ -58,6 +60,7 @@ if TYPE_CHECKING:
 
     from cloudfall.agent_tools import AgentConfig
     from cloudfall.inventory import DomainInventory, ServerInventory
+    from cloudfall.secrets import OwnedRolePassword
 
     Runner = Callable[[], dict[str, object]]
 
@@ -154,10 +157,22 @@ def execute_migration(
         return _envelope("plan", steps)
 
     releases = _recover_releases(steps, options)
+    # An owner password that can't be read stops the run before any step,
+    # so no playbook starts (S-006-7).
+    passwords = (
+        _services_passwords(config)
+        if any(
+            step.step_id == "services" and step.status is StepStatus.PENDING
+            for step in steps
+        )
+        else ()
+    )
     resolved_runners = (
         runners
         if runners is not None
-        else _build_runners(config, options, inventory, releases, steps)
+        else _build_runners(
+            config, options, inventory, releases, steps, passwords
+        )
     )
     for step in steps:
         if step.status is StepStatus.COMPLETED:
@@ -405,17 +420,18 @@ def _recover_releases(
     return releases
 
 
-def _build_runners(
+def _build_runners(  # noqa: PLR0913 - the run's whole contract.
     config: AgentConfig,
     options: MigrateOptions,
     inventory: PlatformInventory,
     releases: dict[str, str],
     steps: list[PlanStep],
+    passwords: tuple[OwnedRolePassword, ...],
 ) -> dict[str, Runner]:
     context = config.context()
     runners: dict[str, Runner] = {
         "baseline": lambda: _playbook(config, "baseline.yml", {}),
-        "services": lambda: _playbook(config, "services.yml", {}),
+        "services": lambda: _services(config, passwords),
         "ttl-lower": lambda: _lower_ttl(inventory),
         "parallel-run": lambda: _parallel_run(inventory),
         "rollback-window": lambda: _rollback_window(steps),
@@ -534,6 +550,23 @@ def _playbook(
 ) -> dict[str, object]:
     run_engine_playbook(config.context(), playbook_name, extra_vars)
     return {"playbook": playbook_name}
+
+
+def _services_passwords(config: AgentConfig) -> tuple[OwnedRolePassword, ...]:
+    try:
+        return services_passwords(config.context(), config.secret_provider())
+    except LifecycleError as error:
+        raise MigrateError(error.code, error.detail) from error
+
+
+def _services(
+    config: AgentConfig, passwords: tuple[OwnedRolePassword, ...]
+) -> dict[str, object]:
+    run_services_playbook(config.context(), passwords)
+    detail: dict[str, object] = {"playbook": "services.yml"}
+    if passwords:
+        detail["ownedRoles"] = [password.as_dict() for password in passwords]
+    return detail
 
 
 def _domain_vars(config: AgentConfig) -> dict[str, object]:

@@ -23,7 +23,11 @@ from typing import TYPE_CHECKING, Protocol, cast
 from cloudfall.audit import AuditStatus, audit_inventory
 from cloudfall.decision import ApprovalChannel
 from cloudfall.domain import AlertSeverity, ResourceId
-from cloudfall.lifecycle import LifecycleError, run_engine_playbook
+from cloudfall.lifecycle import (
+    LifecycleError,
+    converge_services,
+    run_engine_playbook,
+)
 from cloudfall.observation import load_observations
 
 if TYPE_CHECKING:
@@ -33,6 +37,7 @@ if TYPE_CHECKING:
     from cloudfall.audit import AuditReport
     from cloudfall.inventory import OperatorPolicyInventory, PlatformInventory
     from cloudfall.lifecycle import EngineContext
+    from cloudfall.secrets import SopsSecretProvider
     from cloudfall.validation import SchemaCatalog
 
 _PROPOSAL_SCHEMA = "operator-proposal.schema.json"
@@ -738,8 +743,13 @@ def _open_count(store: ProposalStore) -> int:
 
 def engine_executor(
     context: EngineContext,
+    secrets: SopsSecretProvider,
 ) -> Callable[[OperatorProposal], None]:
-    """Executor running the proposal's engine entry point."""
+    """Executor running the proposal's engine entry point.
+
+    ``converge-services`` reads every owner role's password from ``secrets``
+    first, so a missing one fails before any playbook runs.
+    """
 
     def _execute(proposal: OperatorProposal) -> None:
         playbook = _OPERATION_PLAYBOOKS.get(proposal.operation_kind)
@@ -749,6 +759,9 @@ def engine_executor(
                 f"{proposal.operation_kind.value}"
             )
             raise OperatorError(_ERROR_OPERATION_UNSUPPORTED, message)
+        if proposal.operation_kind is OperationKind.CONVERGE_SERVICES:
+            converge_services(context, secrets)
+            return
         run_engine_playbook(context, playbook, {})
 
     return _execute

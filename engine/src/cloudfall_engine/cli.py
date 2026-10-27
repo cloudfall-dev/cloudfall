@@ -6,22 +6,43 @@ each command. Ansible and git run through ``ctx.run``; Ansible's play log
 streams to stderr as plain text.
 """
 
+import dataclasses
 import json
 import os
+import shutil
 from dataclasses import dataclass
 from functools import partial
 from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Self, cast
 
-from cloudfall.domain import ResourceId
-from cloudfall.inventory import PlatformInventory
+from cloudfall.commands import snake_case_keys
+from cloudfall.domain import (
+    AbsolutePath,
+    PostgresDatabaseName,
+    PostgresRoleName,
+    ResourceId,
+    SecretKeyName,
+)
+from cloudfall.inventory import (
+    OwnedPostgresDatabase,
+    PlatformInventory,
+    SecretValueReference,
+)
 from cloudfall.project import (
     PROJECT_DIRECTORY_VARIABLE,
     ProjectError,
     resolve_project_directory,
 )
 from cloudfall.resources import default_engine_directory, default_schema_directory
+from cloudfall.secrets import (
+    ERROR_DECRYPT_FAILED,
+    ERROR_SOPS_MISSING,
+    SecretsError,
+    SopsSecretProvider,
+    owned_role_passwords,
+    staged_password_files,
+)
 from cloudfall.validation import ConfigValidationError, validate_config
 from treaty import (
     App,
@@ -54,7 +75,9 @@ from cloudfall_engine.playbook import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Mapping, Sequence
+
+    from cloudfall.secrets import OwnedRolePassword
 
 app = App(
     "cloudfall-engine",
@@ -367,19 +390,29 @@ class RunArgs(EngineArgs):
     syntax_check: bool = Flag(
         default=False, description="Only check the playbook syntax"
     )
+    secrets_dir: Path = Flag(
+        default=Path("secrets"),
+        description=(
+            "sops-encrypted secrets directory services.yml reads owner role "
+            "passwords from (default: secrets)"
+        ),
+        secret=False,
+    )
 
     def __post_init__(self) -> None:
         """Report a missing playbook, inventory, or role directory as input."""
         _playbook_run(self)
 
 
-def _playbook_run(args: RunArgs) -> PlaybookRun:
+def _playbook_run(
+    args: RunArgs, staged_vars: tuple[str, ...] = ()
+) -> PlaybookRun:
     try:
         return PlaybookRun(
             playbook=resolve_playbook(args.playbook, args.engine),
             inventory_file=args.inventory,
             role_directories=args.roles,
-            extra_vars=args.extra_vars,
+            extra_vars=(*args.extra_vars, *staged_vars),
             tags=args.tags,
             limit=args.limit,
             check=args.dry_run,
@@ -397,6 +430,114 @@ class Played:
     effect: str
     playbook: Path
     inventory: Path
+    owned_roles: list[dict[str, object]] = Out(
+        default_factory=list, ordered=True, high_entropy=False
+    )
+    """Each owner role password services.yml set: its passwordRef, its key,
+    and the value's SHA-256, never the value"""
+
+
+SERVICES_PLAYBOOK = "services.yml"
+
+
+def _sops_decrypt(ctx: Ctx) -> Callable[[Path], str]:
+    """Decrypt one sops file through ``ctx.run``."""
+
+    def decrypt(source: Path) -> str:
+        binary = shutil.which("sops")
+        if binary is None:
+            message = (
+                "the sops binary is not installed; install sops and age, and "
+                "set SOPS_AGE_KEY_FILE to your age key"
+            )
+            raise SecretsError(ERROR_SOPS_MISSING, message)
+        done = ctx.run([binary, "--decrypt", str(source)], check=False)
+        if done.returncode != 0:
+            message = f"sops could not decrypt {source}: {done.stderr.strip()[:300]}"
+            raise SecretsError(ERROR_DECRYPT_FAILED, message)
+        return done.stdout
+
+    return decrypt
+
+
+def _rendered_owned_databases(
+    inventory_file: Path,
+) -> tuple[tuple[ResourceId, OwnedPostgresDatabase], ...]:
+    """Read every owned database, with its service, from a rendered inventory."""
+    document = cast("object", json.loads(inventory_file.read_text(encoding="utf-8")))
+    inventory = _rendered_mapping(document, "inventory")
+    group = _rendered_mapping(inventory.get("all"), "all")
+    children = _rendered_mapping(group.get("children"), "all.children")
+    servers = _rendered_mapping(children.get("cloudfall_servers"), "cloudfall_servers")
+    hosts = _rendered_mapping(servers.get("hosts"), "cloudfall_servers.hosts")
+    owned: list[tuple[ResourceId, OwnedPostgresDatabase]] = []
+    for host in hosts.values():
+        services = _rendered_mapping(host, "host").get("cloudfall_services", [])
+        if not isinstance(services, list):
+            message = f"cloudfall_services is not a list in {inventory_file}"
+            raise TypeError(message)
+        for raw_service in services:
+            service = _rendered_mapping(raw_service, "service")
+            if service.get("serviceKind") != "postgresql":
+                continue
+            postgresql = _rendered_mapping(service.get("postgresql"), "postgresql")
+            databases = postgresql.get("databases")
+            if not isinstance(databases, list):
+                message = f"postgresql.databases is not a list in {inventory_file}"
+                raise TypeError(message)
+            for raw_database in databases:
+                database = _rendered_mapping(raw_database, "database")
+                if "passwordRef" not in database:
+                    continue
+                reference = _rendered_mapping(database["passwordRef"], "passwordRef")
+                owned.append(
+                    (
+                        ResourceId.from_boundary(service.get("id")),
+                        OwnedPostgresDatabase(
+                            name=PostgresDatabaseName.from_boundary(
+                                database.get("name")
+                            ),
+                            owner=PostgresRoleName.from_boundary(database.get("owner")),
+                            password_ref=SecretValueReference(
+                                environment=ResourceId.from_boundary(
+                                    reference.get("environment")
+                                ),
+                                path=AbsolutePath.from_boundary(reference.get("path")),
+                                key=SecretKeyName.from_boundary(reference.get("key")),
+                            ),
+                        ),
+                    )
+                )
+    return tuple(owned)
+
+
+def _rendered_mapping(value: object, name: str) -> Mapping[str, object]:
+    if not isinstance(value, dict):
+        message = f"rendered inventory {name} is not a mapping"
+        raise TypeError(message)
+    return cast("Mapping[str, object]", value)
+
+
+def _services_passwords(
+    args: RunArgs, run: PlaybookRun, ctx: Ctx
+) -> tuple[OwnedRolePassword, ...]:
+    """Decrypt the owner passwords the bundled services.yml sets, before it starts."""
+    if args.syntax_check or run.playbook != resolve_playbook(
+        SERVICES_PLAYBOOK, args.engine
+    ):
+        return ()
+    try:
+        databases = _rendered_owned_databases(args.inventory)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        message = f"the inventory is not a rendered Cloudfall inventory: {error}"
+        raise ParseError(message, context={"flag": "inventory"}) from error
+    provider = SopsSecretProvider(
+        secrets_directory=args.secrets_dir, decrypt=_sops_decrypt(ctx)
+    )
+    try:
+        return owned_role_passwords(databases, provider)
+    except SecretsError as error:
+        raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
 
 
 @playbook.command(
@@ -426,8 +567,27 @@ class Played:
     ],
 )
 def run_playbook(args: RunArgs, ctx: Ctx) -> Played:
-    """Run ansible-playbook in the foreground and report how it ended."""
-    run = _playbook_run(args)
+    """Run ansible-playbook in the foreground and report how it ended.
+
+    The bundled services.yml gets each owner role password staged in a 0600
+    file outside the project, removed when the run ends; only the file paths
+    cross the command line.
+    """
+    passwords = _services_passwords(args, _playbook_run(args), ctx)
+    with staged_password_files(passwords) as staged:
+        played = _run_ansible(
+            args, ctx, _playbook_run(args, (json.dumps(staged),) if staged else ())
+        )
+    return dataclasses.replace(
+        played,
+        owned_roles=[
+            cast("dict[str, object]", snake_case_keys(password.as_dict()))
+            for password in passwords
+        ],
+    )
+
+
+def _run_ansible(args: RunArgs, ctx: Ctx, run: PlaybookRun) -> Played:
     try:
         command = playbook_command(run, args.engine)
     except PlaybookError as error:

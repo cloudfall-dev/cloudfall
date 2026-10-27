@@ -12,6 +12,22 @@
       PostgreSQL deployment requires its declared Debian server and a
       loopback-only bind address
 
+- name: Require a staged password for every owner role
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudfall_postgresql_service.postgresql.databases
+        | selectattr('passwordRef', 'defined')
+        | map(attribute='owner')
+        | reject('in', cloudfall_postgresql_password_files)
+        | list
+        | length == 0
+    fail_msg: >-
+      An owner role of service {{ cloudfall_postgresql_service.id }} has no
+      staged password; run services.yml through cloudfall (converge_services,
+      cloudfall migrate, operator approve, or cloudfall-engine playbook run
+      services.yml), which reads each passwordRef from --secrets-dir
+
 - name: Validate the declared backup calendar expression
   ansible.builtin.command:
     argv:
@@ -132,7 +148,7 @@
   changed_when: false
   when: not ansible_check_mode
 
-- name: Create missing application login roles
+- name: Create missing database owner login roles
   ansible.builtin.command:
     argv:
       - /usr/bin/psql
@@ -153,6 +169,20 @@
     - not ansible_check_mode
     - item not in cloudfall_postgresql_existing_roles.stdout_lines
   changed_when: true
+
+- name: Set each owner role password from its staged file
+  ansible.builtin.include_tasks: owner_password.yml
+  loop: >-
+    {{
+      cloudfall_postgresql_service.postgresql.databases
+      | selectattr('passwordRef', 'defined')
+      | map(attribute='owner')
+      | unique
+      | list
+    }}
+  loop_control:
+    loop_var: cloudfall_postgresql_owner
+  when: not ansible_check_mode
 
 - name: Create the metrics monitoring role
   ansible.builtin.command:
@@ -219,6 +249,51 @@
   when:
     - not ansible_check_mode
     - item.name not in cloudfall_postgresql_existing_databases.stdout_lines
+  changed_when: true
+
+- name: Read the owners of existing PostgreSQL databases
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/psql
+      - --port
+      - "{{ cloudfall_postgresql_service.bind.port }}"
+      - --tuples-only
+      - --no-align
+      - --command
+      - SELECT datname || '=' || pg_get_userbyid(datdba) FROM pg_database
+  become: true
+  become_user: postgres
+  register: cloudfall_postgresql_database_owners
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - >-
+      cloudfall_postgresql_service.postgresql.databases
+      | selectattr('passwordRef', 'defined') | list | length > 0
+
+- name: Give each owned database to its declared owner role
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/psql
+      - --port
+      - "{{ cloudfall_postgresql_service.bind.port }}"
+      - --command
+      - ALTER DATABASE "{{ item.name }}" OWNER TO "{{ item.owner }}"
+  become: true
+  become_user: postgres
+  loop: >-
+    {{
+      cloudfall_postgresql_service.postgresql.databases
+      | selectattr('passwordRef', 'defined')
+      | list
+    }}
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - not ansible_check_mode
+    - >-
+      item.name ~ '=' ~ item.owner
+      not in cloudfall_postgresql_database_owners.stdout_lines
   changed_when: true
 
 - name: Create the backup directory

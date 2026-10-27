@@ -4,3 +4,5 @@ cloudfall_postgresql_repository_key_url: >-
   https://www.postgresql.org/media/keys/ACCC4CF8.asc
 cloudfall_postgresql_repository_key_path: /etc/apt/keyrings/postgresql.asc
 cloudfall_postgresql_repository_url: https://apt.postgresql.org/pub/repos/apt
+cloudfall_postgresql_password_files: {}
+cloudfall_postgresql_password_path: /var/lib/postgresql/.cloudfall-owner-password

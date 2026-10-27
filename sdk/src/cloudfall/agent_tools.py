@@ -8,12 +8,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from cloudfall.lifecycle import (
     EngineContext,
     StepRunner,
     subprocess_step,
 )
+from cloudfall.secrets import SopsSecretProvider
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +45,14 @@ class AgentConfig:
     gateway_key_path: Path | None = None
     run: StepRunner = subprocess_step
     """Starts each engine step: ``subprocess`` here, ``ctx.run`` under treaty."""
+    decrypt: Callable[[Path], str] | None = None
+    """Decrypts one sops file: ``sops`` here, through ``ctx.run`` under treaty."""
+
+    def secret_provider(self) -> SopsSecretProvider:
+        """Return the reader of the secrets directory owner passwords come from."""
+        return SopsSecretProvider(
+            secrets_directory=self.secrets_directory, decrypt=self.decrypt
+        )
 
     def context(self) -> EngineContext:
         """Return the engine execution context shared by mutating tools."""
