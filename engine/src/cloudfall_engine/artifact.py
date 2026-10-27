@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import shlex
 import shutil
 import tarfile
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from cloudfall.validation import (
     ConfigValidationError,
@@ -21,13 +23,33 @@ from cloudfall.validation import (
 from jsonschema.exceptions import ValidationError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
-    from cloudfall.inventory import ComponentInventory, PlatformInventory
+    from cloudfall.domain import BuildTimeoutSeconds
+    from cloudfall.inventory import (
+        ComponentBuild,
+        ComponentInventory,
+        PlatformInventory,
+    )
     from treaty import Completed
 
     Runner = Callable[[Sequence[str]], Completed]
-    """Runs one git argv to completion without raising on a non-zero exit"""
+    """Runs one argv (git, a tool's ``--version``) without raising on non-zero"""
+
+
+class StepRunner(Protocol):
+    """Runs one build step's argv in a directory, its output kept off stdout.
+
+    It answers the completed run without raising on a non-zero exit, and
+    raises ``BuildStepTimeoutError`` when the step outruns ``timeout``.
+    """
+
+    def __call__(
+        self, argv: Sequence[str], *, cwd: Path, timeout: BuildTimeoutSeconds
+    ) -> Completed:
+        """Run ``argv`` in ``cwd`` for at most ``timeout``."""
+        ...
+
 
 _ARTIFACT_SCHEMA = "artifact.schema.json"
 GIT_TIMEOUT_SECONDS = 600
@@ -35,20 +57,38 @@ GIT_MINIMUM_VERSION = "2.24.0"
 """The first git with ``--end-of-options``, which ref resolution passes"""
 _SHORT_COMMIT_LENGTH = 7
 GIT_REF_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@^~-]{0,199}")
+_TOOL_VERSION_PATTERN = re.compile(r"[0-9]{1,9}(?:\.[0-9]{1,9}){0,7}")
+BUILD_STEP_VARIABLES = ("PATH", "HOME", "LANG", "TMPDIR")
+"""The only controller variables a build step sees, besides ``CI=true``"""
+_ENV_TOOL = "env"
+"""Starts each build step with ``env -i``, so it inherits nothing else"""
+_STDERR_TAIL_CHARACTERS = 500
 _ERROR_COMPONENT_MISSING = "artifact_component_missing"
 _ERROR_SUBDIRECTORY_MISSING = "artifact_subdirectory_missing"
 _ERROR_REF_INVALID = "artifact_ref_invalid"
 _ERROR_GIT_MISSING = "artifact_git_missing"
 _ERROR_GIT_FAILED = "artifact_git_failed"
+_ERROR_TOOL_MISSING = "artifact_build_tool_missing"
+_ERROR_TOOL_UNSUPPORTED = "artifact_build_tool_unsupported"
+_ERROR_STEP_FAILED = "artifact_build_step_failed"
+_ERROR_INCLUDE_MISSING = "artifact_include_missing"
+_ERROR_INCLUDE_OUTSIDE = "artifact_include_outside_checkout"
+_ERROR_TRACKED_FILE_MISSING = "artifact_tracked_file_missing"
 
 
 class ArtifactBuildError(RuntimeError):
     """Fail-fast artifact build error with a stable machine-readable code."""
 
-    def __init__(self, code: str, message: str) -> None:
-        """Record the failure code and human-readable detail."""
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        context: Mapping[str, object] | None = None,
+    ) -> None:
+        """Record the failure code, human-readable detail, and its facts."""
         self.code = code
         self.detail = message
+        self.context: dict[str, object] = dict(context or {})
         super().__init__(f"{code}: {message}")
 
     def as_dict(self) -> dict[str, object]:
@@ -57,6 +97,34 @@ class ArtifactBuildError(RuntimeError):
             "status": "error",
             "error": {"code": self.code, "message": self.detail},
         }
+
+
+class BuildStepTimeoutError(RuntimeError):
+    """A build step ran past its own ``timeoutSeconds`` and was stopped."""
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedTool:
+    """A build tool found on the controller's ``PATH`` and the version it read."""
+
+    name: str
+    path: str
+    version: str
+
+
+@dataclass(frozen=True, slots=True)
+class _BuildHost:
+    """What build steps run with: the tools, ``env``, and the step variables."""
+
+    tools: Mapping[str, _ResolvedTool]
+    env_path: str
+    variables: tuple[tuple[str, str], ...] = field(default=())
+
+    def argv(self, command: Sequence[str]) -> tuple[str, ...]:
+        """Start the step's tool through ``env -i`` with the step variables."""
+        assignments = tuple(f"{name}={value}" for name, value in self.variables)
+        tool = self.tools[command[0]].path
+        return (self.env_path, "-i", *assignments, tool, *command[1:])
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +157,7 @@ class BuiltArtifact:
         }
 
 
-def build_artifact(  # noqa: PLR0913 - the build inputs plus its git runner.
+def build_artifact(  # noqa: PLR0913 - the build inputs plus its runners.
     inventory: PlatformInventory,
     component_id: str,
     git_ref: str,
@@ -97,14 +165,22 @@ def build_artifact(  # noqa: PLR0913 - the build inputs plus its git runner.
     schema_directory: Path,
     *,
     run: Runner,
+    run_step: StepRunner,
+    environment: Mapping[str, str],
 ) -> BuiltArtifact:
-    """Clone the component repository at a ref and package a release.
+    """Clone the component repository at a ref, build it, and package it.
 
-    ``run`` starts git: the CLI passes ``ctx.run``, so treaty owns its time
-    limit, locale, and cancellation.
+    ``run`` starts git and each build tool's ``--version``; ``run_step``
+    starts the build steps. The CLI passes ``ctx.run`` for both, so treaty
+    owns their time limits and cancellation, and step output goes to stderr.
+    ``environment`` is the controller's: build tools are looked up on its
+    ``PATH``, and a step sees only its ``BUILD_STEP_VARIABLES`` and
+    ``CI=true``. A component without ``build`` runs none of this.
     """
     component = _component(inventory, component_id)
     _validate_ref(git_ref)
+    build = component.build
+    host = None if build is None else _build_host(build, environment, run)
     built_at = datetime.now(tz=UTC)
     built_at_text = built_at.strftime("%Y-%m-%dT%H:%M:%SZ")
     with tempfile.TemporaryDirectory(prefix="cloudfall-artifact-") as workdir:
@@ -138,6 +214,13 @@ def build_artifact(  # noqa: PLR0913 - the build inputs plus its git runner.
                 raise ArtifactBuildError(
                     _ERROR_SUBDIRECTORY_MISSING, detail
                 )
+        tracked: tuple[str, ...] = ()
+        if build is not None and host is not None:
+            # The tracked files are read before any step can touch the index.
+            tracked = _tracked_files(run, source_root)
+            _run_steps(build, host, source_root, run_step)
+            _require_includes(build, source_root)
+            _require_tracked(tracked, source_root)
 
         release = (
             f"{built_at.strftime('%Y%m%dT%H%M%SZ')}"
@@ -146,10 +229,25 @@ def build_artifact(  # noqa: PLR0913 - the build inputs plus its git runner.
         component_directory = output_directory / component_id
         component_directory.mkdir(parents=True, exist_ok=True)
         archive_path = component_directory / f"{release}.tar.gz"
-        _write_archive(source_root, archive_path)
+        if build is None:
+            _write_archive(source_root, archive_path)
+        else:
+            _write_built_archive(source_root, archive_path, tracked, build)
 
     digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
     size_bytes = archive_path.stat().st_size
+    spec: dict[str, object] = {
+        "component": component_id,
+        "release": release,
+        "gitRef": git_ref,
+        "gitCommit": commit,
+        "builtAt": built_at_text,
+        "archive": archive_path.name,
+        "archiveSha256": digest,
+        "sizeBytes": size_bytes,
+    }
+    if build is not None and host is not None:
+        spec["build"] = _build_record(build, host)
     metadata = {
         "apiVersion": "cloudfall/v1",
         "kind": "Artifact",
@@ -157,16 +255,7 @@ def build_artifact(  # noqa: PLR0913 - the build inputs plus its git runner.
             "id": component_id,
             "description": f"Release artifact for {component_id}",
         },
-        "spec": {
-            "component": component_id,
-            "release": release,
-            "gitRef": git_ref,
-            "gitCommit": commit,
-            "builtAt": built_at_text,
-            "archive": archive_path.name,
-            "archiveSha256": digest,
-            "sizeBytes": size_bytes,
-        },
+        "spec": spec,
     }
     catalog = SchemaCatalog(schema_directory)
     try:
@@ -265,3 +354,232 @@ def _write_archive(source_root: Path, archive_path: Path) -> None:
 
     with tarfile.open(archive_path, "w:gz") as archive:
         archive.add(source_root, arcname=".", filter=_skip_git)
+
+
+def _build_host(
+    build: ComponentBuild, environment: Mapping[str, str], run: Runner
+) -> _BuildHost:
+    """Check every build tool before anything is cloned (S-002 step 1)."""
+    search_path = environment.get("PATH", "")
+    tools: dict[str, _ResolvedTool] = {}
+    for tool in build.tools:
+        name = tool.name.value
+        path = _which(name, search_path)
+        found = _tool_version(run, name, path)
+        minimum = tool.minimum_version.value
+        if _version_key(found) < _version_key(minimum):
+            detail = (
+                f"build tool {name} is {found}, older than the {minimum} "
+                "spec.buildTools requires"
+            )
+            raise ArtifactBuildError(
+                _ERROR_TOOL_UNSUPPORTED,
+                detail,
+                {"tool": name, "found": found, "minimum": minimum},
+            )
+        tools[name] = _ResolvedTool(name=name, path=path, version=found)
+    variables = tuple(
+        (name, environment[name])
+        for name in BUILD_STEP_VARIABLES
+        if name in environment
+    )
+    return _BuildHost(
+        tools=tools,
+        env_path=_which(_ENV_TOOL, search_path),
+        variables=(*variables, ("CI", "true")),
+    )
+
+
+def _which(name: str, search_path: str) -> str:
+    path = shutil.which(name, path=search_path)
+    if path is None:
+        detail = f"build tool {name} is not on the controller's PATH"
+        raise ArtifactBuildError(_ERROR_TOOL_MISSING, detail, {"tool": name})
+    if "=" in path:
+        # ``env -i`` would read the path as a variable assignment.
+        detail = f"build tool {name} resolves to a path with '=': {path}"
+        raise ArtifactBuildError(_ERROR_TOOL_UNSUPPORTED, detail, {"tool": name})
+    return path
+
+
+def _tool_version(run: Runner, name: str, path: str) -> str:
+    completed = run((path, "--version"))
+    match = (
+        _TOOL_VERSION_PATTERN.search(completed.stdout)
+        or _TOOL_VERSION_PATTERN.search(completed.stderr)
+        if completed.returncode == 0
+        else None
+    )
+    if match is None:
+        detail = (
+            f"build tool {name} printed no version for --version "
+            f"(exit code {completed.returncode})"
+        )
+        raise ArtifactBuildError(
+            _ERROR_TOOL_UNSUPPORTED, detail, {"tool": name, "found": None}
+        )
+    return match.group(0)
+
+
+def _version_key(version: str) -> tuple[int, ...]:
+    parts = [int(part) for part in version.split(".")]
+    return tuple(parts + [0] * (8 - len(parts)))
+
+
+def _tracked_files(run: Runner, source_root: Path) -> tuple[str, ...]:
+    listed = _run_git(run, "-C", str(source_root), "ls-files", "-z")
+    return tuple(path for path in listed.split("\0") if path)
+
+
+def _run_steps(
+    build: ComponentBuild,
+    host: _BuildHost,
+    source_root: Path,
+    run_step: StepRunner,
+) -> None:
+    for index, step in enumerate(build.steps):
+        command = step.command.value
+        context: dict[str, object] = {
+            "step": index,
+            "workingDirectory": step.working_directory.value,
+            "argv": list(command),
+        }
+        label = f"build step {index} ({shlex.join(command)})"
+        directory = source_root / step.working_directory.value
+        if not directory.is_dir():
+            detail = (
+                f"{label}: working directory "
+                f"{step.working_directory.value} does not exist"
+            )
+            raise ArtifactBuildError(
+                _ERROR_STEP_FAILED, detail, {**context, "exitCode": None}
+            )
+        try:
+            completed = run_step(
+                host.argv(command), cwd=directory, timeout=step.timeout_seconds
+            )
+        except BuildStepTimeoutError as error:
+            detail = (
+                f"{label} ran past its {step.timeout_seconds.value}s timeout "
+                "and was stopped"
+            )
+            raise ArtifactBuildError(
+                _ERROR_STEP_FAILED,
+                detail,
+                {
+                    **context,
+                    "exitCode": None,
+                    "timeoutSeconds": step.timeout_seconds.value,
+                },
+            ) from error
+        if completed.returncode != 0:
+            tail = completed.stderr.strip()[-_STDERR_TAIL_CHARACTERS:]
+            detail = f"{label} exited with code {completed.returncode}"
+            if tail:
+                detail = f"{detail}: {tail}"
+            raise ArtifactBuildError(
+                _ERROR_STEP_FAILED,
+                detail,
+                {**context, "exitCode": completed.returncode},
+            )
+
+
+def _require_includes(build: ComponentBuild, source_root: Path) -> None:
+    for include in build.include:
+        if not os.path.lexists(source_root / include.value):
+            detail = (
+                f"artifact.include path {include.value} does not exist "
+                "after the build steps"
+            )
+            raise ArtifactBuildError(
+                _ERROR_INCLUDE_MISSING, detail, {"path": include.value}
+            )
+        # The path itself may be a symlink (archived as one, never followed),
+        # but no directory above it may lead out of the checkout.
+        parent = (source_root / include.value).parent.resolve()
+        if not parent.is_relative_to(source_root.resolve()):
+            detail = (
+                f"artifact.include path {include.value} leads out of the "
+                "checkout through a symlink"
+            )
+            raise ArtifactBuildError(
+                _ERROR_INCLUDE_OUTSIDE, detail, {"path": include.value}
+            )
+
+
+def _require_tracked(tracked: Sequence[str], source_root: Path) -> None:
+    """Refuse a build whose steps deleted a file git tracks at the commit."""
+    for name in tracked:
+        if not os.path.lexists(source_root / name):
+            detail = (
+                f"tracked file {name} was deleted by the build steps; the "
+                "archive must hold every file git tracks at the commit"
+            )
+            raise ArtifactBuildError(
+                _ERROR_TRACKED_FILE_MISSING, detail, {"path": name}
+            )
+
+
+def _write_built_archive(
+    source_root: Path,
+    archive_path: Path,
+    tracked: Sequence[str],
+    build: ComponentBuild,
+) -> None:
+    """Package the tracked files plus every ``artifact.include`` path.
+
+    Whatever else the steps left behind (``node_modules/``, caches) stays out.
+    ``_require_tracked`` has already checked every tracked file is there.
+    """
+    entries: set[Path] = {Path(name) for name in tracked}
+    for include in build.include:
+        entries.update(_include_entries(source_root, Path(include.value)))
+    for entry in tuple(entries):
+        entries.update(entry.parents)
+    entries.discard(Path())
+    ordered = sorted(
+        (entry for entry in entries if ".git" not in entry.parts),
+        key=lambda entry: entry.parts,
+    )
+    with tarfile.open(archive_path, "w:gz") as archive:
+        archive.add(source_root, arcname=".", recursive=False, filter=_owned_by_root)
+        for entry in ordered:
+            archive.add(
+                source_root / entry,
+                arcname=f"./{entry.as_posix()}",
+                recursive=False,
+                filter=_owned_by_root,
+            )
+
+
+def _include_entries(source_root: Path, include: Path) -> set[Path]:
+    top = source_root / include
+    if top.is_symlink() or not top.is_dir():
+        return {include}
+    entries = {include}
+    for directory, directories, files in os.walk(top):
+        base = Path(directory).relative_to(source_root)
+        entries.update(base / name for name in (*directories, *files))
+    return entries
+
+
+def _owned_by_root(info: tarfile.TarInfo) -> tarfile.TarInfo:
+    info.uid = 0
+    info.gid = 0
+    info.uname = "root"
+    info.gname = "root"
+    return info
+
+
+def _build_record(build: ComponentBuild, host: _BuildHost) -> dict[str, object]:
+    """``spec.build`` of the metadata: the steps as run and the tool versions."""
+    return {
+        "steps": [
+            {
+                "workingDirectory": step.working_directory.value,
+                "command": list(step.command.value),
+            }
+            for step in build.steps
+        ],
+        "tools": {name: tool.version for name, tool in host.tools.items()},
+    }

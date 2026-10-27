@@ -46,6 +46,50 @@
         "sizeBytes": {
           "type": "integer",
           "minimum": 1
+        },
+        "build": {
+          "type": "object",
+          "properties": {
+            "steps": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "workingDirectory": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "command": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "required": [
+                  "workingDirectory",
+                  "command"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "tools": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "type": "string",
+                "pattern": "^[0-9]{1,9}(?:\\.[0-9]{1,9}){0,7}$"
+              }
+            }
+          },
+          "required": [
+            "steps",
+            "tools"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [

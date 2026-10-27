@@ -19,6 +19,8 @@ from cloudfall_engine.cli import main
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from cloudfall.domain import BuildTimeoutSeconds
+
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
 EXAMPLES = ROOT / "config" / "examples"
@@ -94,6 +96,13 @@ def _git_never_runs(argv: Sequence[str]) -> NoReturn:
     raise AssertionError(message)
 
 
+def _step_never_runs(
+    argv: Sequence[str], *, cwd: Path, timeout: BuildTimeoutSeconds
+) -> NoReturn:
+    message = f"no build step runs for refused input: {argv} in {cwd} ({timeout})"
+    raise AssertionError(message)
+
+
 def test_builder_packages_a_hashed_release_with_metadata(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -155,6 +164,8 @@ def test_builder_rejects_an_unknown_component(tmp_path: Path) -> None:
             tmp_path / "artifacts",
             SCHEMAS,
             run=_git_never_runs,
+            run_step=_step_never_runs,
+            environment={},
         )
 
     assert error.value.code == "artifact_component_missing"
@@ -171,6 +182,8 @@ def test_builder_rejects_an_unsafe_git_ref(tmp_path: Path) -> None:
             tmp_path / "artifacts",
             SCHEMAS,
             run=_git_never_runs,
+            run_step=_step_never_runs,
+            environment={},
         )
 
     assert error.value.code == "artifact_ref_invalid"

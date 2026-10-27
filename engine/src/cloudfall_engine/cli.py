@@ -10,6 +10,7 @@ import dataclasses
 import json
 import os
 import shutil
+import time
 from dataclasses import dataclass
 from functools import partial
 from importlib.metadata import version
@@ -18,6 +19,7 @@ from typing import TYPE_CHECKING, Self, cast
 
 from cloudfall.commands import snake_case_keys
 from cloudfall.domain import (
+    ARTIFACT_CLONE_TIMEOUT_SECONDS,
     AbsolutePath,
     PostgresDatabaseName,
     PostgresRoleName,
@@ -47,8 +49,10 @@ from cloudfall.validation import ConfigValidationError, validate_config
 from treaty import (
     App,
     Arg,
+    CliExit,
     Ctx,
     Exit,
+    ExitCodeName,
     External,
     Flag,
     Out,
@@ -63,6 +67,7 @@ from cloudfall_engine.artifact import (
     GIT_REF_PATTERN,
     GIT_TIMEOUT_SECONDS,
     ArtifactBuildError,
+    BuildStepTimeoutError,
     build_artifact,
 )
 from cloudfall_engine.playbook import (
@@ -77,7 +82,9 @@ from cloudfall_engine.playbook import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
+    from cloudfall.domain import BuildTimeoutSeconds
     from cloudfall.secrets import OwnedRolePassword
+    from treaty import Completed
 
 app = App(
     "cloudfall-engine",
@@ -242,6 +249,27 @@ class BuildArgs(ProjectArgs):
         default=Path("tmp/artifacts"),
         description="Artifact output directory, relative to the project",
     )
+    # Its own field, in place of treaty's --timeout (REQ-C-012), so the
+    # handler can tell "not passed" (the computed limit) apart from 0.
+    timeout: float | None = Flag(
+        default=None,
+        description=(
+            "Seconds before the build aborts with TIMEOUT; 0 disables the limit "
+            "(default: 1800 for the clone plus every declared step's "
+            "timeoutSeconds)"
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        """Refuse a ``--timeout`` treaty's own flag would refuse."""
+        self.limit()
+
+    def limit(self) -> Timeout | None:
+        """Return the explicit ``--timeout``, ``None`` when not passed.
+
+        ``Timeout(None)`` for 0, which disables the limit.
+        """
+        return None if self.timeout is None else Timeout.parse(self.timeout)
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,13 +290,19 @@ class BuiltRelease:
 
 @artifact.command(
     "build",
-    description="Clone, package, and hash one component release",
+    description=(
+        "Clone, build (the component's declared steps), package, and hash "
+        "one component release"
+    ),
     danger_level="mutating",
     exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "ARTIFACT_BUILD_FAILED"],
-    timeout=3 * GIT_TIMEOUT_SECONDS,
+    # The limit depends on the component: BuildBudget applies the clone time
+    # plus every declared step's timeout, or BuildArgs.timeout when passed.
+    timeout=None,
     subprocess=Subprocess("git"),
     required_tools={"git": GIT_MINIMUM_VERSION},
     supports_raw_payload=True,
+    child_log=True,
     examples=[
         (
             "Package the main branch of one component",
@@ -277,7 +311,15 @@ class BuiltRelease:
     ],
 )
 def build(args: BuildArgs, ctx: Ctx, project: Project) -> BuiltRelease:
-    """Clone the component at ``--ref`` and package it under the project."""
+    """Clone the component at ``--ref``, build it, and package it.
+
+    Build step output streams to stderr, never into the envelope on stdout.
+    The run may take the clone time plus every declared step's timeout;
+    an explicit ``--timeout`` replaces that limit.
+    """
+    budget = BuildBudget.start(
+        args.limit(), _artifact_timeout(project, args.component)
+    )
     try:
         built = build_artifact(
             project.inventory,
@@ -285,13 +327,13 @@ def build(args: BuildArgs, ctx: Ctx, project: Project) -> BuiltRelease:
             args.ref,
             project.path(args.output_dir),
             args.schemas,
-            run=partial(
-                ctx.run, timeout=Timeout(GIT_TIMEOUT_SECONDS), check=False
-            ),
+            run=partial(_run_git_or_tool, ctx, budget),
+            run_step=partial(_run_build_step, ctx, budget),
+            environment=dict(os.environ),
         )
     except ArtifactBuildError as error:
         raise Exit.ARTIFACT_BUILD_FAILED(
-            error.detail, context={"code": error.code}
+            error.detail, context={"code": error.code, **error.context}
         ) from error
     except ConfigValidationError as error:
         raise _config_invalid(error) from error
@@ -307,6 +349,87 @@ def build(args: BuildArgs, ctx: Ctx, project: Project) -> BuiltRelease:
         size_bytes=built.size_bytes,
         built_at=built.built_at,
     )
+
+
+def _artifact_timeout(project: Project, component_id: ResourceId) -> int:
+    component = next(
+        (
+            candidate
+            for candidate in project.inventory.components
+            if candidate.resource_id == component_id
+        ),
+        None,
+    )
+    # An unknown component fails in build_artifact, before any child runs.
+    if component is None:
+        return ARTIFACT_CLONE_TIMEOUT_SECONDS
+    return component.artifact_timeout_seconds
+
+
+@dataclass(frozen=True, slots=True)
+class BuildBudget:
+    """The time limit of one ``artifact build`` run, shared by its children.
+
+    ``seconds`` is ``None`` and ``deadline`` too when ``--timeout 0``
+    disabled the limit; each child then keeps only its own.
+    """
+
+    seconds: float | None
+    deadline: float | None
+
+    @classmethod
+    def start(cls, explicit: Timeout | None, computed: int) -> Self:
+        """Start the clock: ``--timeout`` when passed, else ``computed``."""
+        seconds = float(computed) if explicit is None else explicit.seconds
+        if seconds is None:
+            return cls(None, None)
+        return cls(seconds, time.monotonic() + seconds)
+
+    def timeout(self, seconds: int) -> Timeout:
+        """Cut a child's own limit to what is left of the run's."""
+        if self.deadline is None or self.seconds is None:
+            return Timeout(seconds)
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise CliExit(
+                ExitCodeName("TIMEOUT"),
+                f"artifact build used its {self.seconds:g}s limit; pass a larger "
+                "--timeout, or 0 for none",
+                context={"timeout_ms": int(self.seconds * 1000)},
+            )
+        return Timeout(min(float(seconds), left))
+
+
+def _run_git_or_tool(
+    ctx: Ctx, budget: BuildBudget, argv: Sequence[str]
+) -> Completed:
+    return ctx.run(argv, timeout=budget.timeout(GIT_TIMEOUT_SECONDS), check=False)
+
+
+def _run_build_step(
+    ctx: Ctx,
+    budget: BuildBudget,
+    argv: Sequence[str],
+    *,
+    cwd: Path,
+    timeout: BuildTimeoutSeconds,
+) -> Completed:
+    """Run one build step, its output streamed to stderr as plain text."""
+    try:
+        return ctx.run(
+            argv,
+            cwd=cwd,
+            timeout=budget.timeout(timeout.value),
+            check=False,
+            stream="always",
+        )
+    except CliExit as error:
+        # Only the step's own limit is a step failure; running out of the
+        # command's time stays treaty's TIMEOUT.
+        own_limit = error.context.get("timeout_ms") == timeout.value * 1000
+        if error.name == ExitCodeName("TIMEOUT") and own_limit:
+            raise BuildStepTimeoutError(error.message) from error
+        raise
 
 
 playbook = app.group(

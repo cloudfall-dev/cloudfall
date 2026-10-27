@@ -164,7 +164,6 @@ from cloudfall.investigation import (
 )
 from cloudfall.lifecycle import (
     ERROR_EXECUTION_FAILED,
-    STEP_TIMEOUT_SECONDS,
     DeployOptions,
     DomainApply,
     DomainsRun,
@@ -1797,7 +1796,7 @@ def _step_runner(ctx: Ctx, directory: Path) -> StepRunner:
             step.argv,
             env=step.environment,
             cwd=directory,
-            timeout=Timeout(STEP_TIMEOUT_SECONDS),
+            timeout=Timeout(step.timeout_seconds),
             check=False,
         )
 
@@ -4428,8 +4427,9 @@ def _engine_tools(args: McpServeArgs, root: ServerRoot, ctx: Ctx) -> list[McpToo
         McpTool(
             name="build_artifact",
             description=(
-                "Clone, package, and hash one component release under the "
-                "artifacts directory, for deploy to ship"
+                "Clone, build (the component's declared build steps, on this "
+                "controller), package, and hash one component release under "
+                "the artifacts directory, for deploy to ship"
             ),
             input_schema={
                 "type": "object",

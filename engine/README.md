@@ -169,6 +169,21 @@ and writes schema-valid artifact metadata beside it:
 task artifact:build COMPONENT=crm-backend REF=main
 ```
 
+A component that declares `spec.build` (with `spec.buildTools` and
+`spec.artifact.include`, see `docs/specs/002-component-build-steps.md`) is
+built on the controller before it is packaged. Every `buildTools` entry must
+be on `PATH` at its minimum version before anything is cloned; then each step
+runs in order in the clean checkout, with only `PATH`, `HOME`, `LANG` and
+`TMPDIR` from the controller's environment plus `CI=true`, so cloud tokens and
+SOPS keys stay out of `package.json` scripts. Step output goes to stderr. The
+archive holds the files git tracks plus the `artifact.include` paths, such as
+a gitignored `web/dist`, and the metadata records the steps and the tool
+versions under `spec.build`. A failed or timed-out step, a missing include
+path, an include path that leads out of the checkout through a symlink, or a
+tracked file a step deleted writes no archive. The command may take
+1800 seconds for the clone plus every step's `timeoutSeconds`; an explicit
+`--timeout` replaces that limit, and `--timeout 0` disables it.
+
 `ansible/playbooks/deploy.yml` deploys one built release to the component's
 declared servers, one host at a time:
 
