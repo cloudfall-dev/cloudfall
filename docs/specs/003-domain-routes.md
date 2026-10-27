@@ -49,9 +49,11 @@ spec:
 
 `cloudfall config validate` checks routes:
 
-- A Domain declares exactly one of `proxy.upstream` or `routes` (`domain_route_source_invalid`
-  for neither or both). This replaces the "`proxy.upstream` required" rule the separate
-  bug-fix PR for #90 adds: a Domain with `routes` and no `proxy.upstream` is valid
+- A Domain declares at most one of `proxy.upstream` or `routes` (`domain_route_source_invalid`
+  for both). A Domain with neither stays valid, as settled on #90: a fleet may build that
+  Domain's route outside `cloudfall_nginx_site`. The separate fix for #90 makes the domains
+  playbook fail before any change for a Domain bound for `cloudfall_nginx_site` without
+  `proxy.upstream`; with routes, that check reads "`proxy.upstream` or `routes`"
 - `proxy.upstream` stays as shorthand for one `path: /` proxy route; an existing Domain with
   only `proxy.upstream` validates and renders unchanged
 - Every `path` starts with `/` and uses only letters, digits and `._~/-`, so a path can't
@@ -78,7 +80,8 @@ byte-identical vhost.
 The engine's Ansible inventory (`engine/src/cloudfall_engine/ansible_inventory.py`) resolves
 each static route to its served directory, `<installRoot>/current/<directory>`, when it builds
 the Domain variable, and `cloudfall_nginx_site` (`tasks/main.yml`, `meta/argument_specs.yml`)
-accepts `routes` and asserts "upstream or routes" instead of "upstream".
+accepts `routes` and asserts "upstream or routes" instead of "upstream"; the early check the
+#90 fix adds reads the same.
 
 The nginx worker must read the static files. Today `cloudfall_bootstrap` creates the
 application root, the install root and `releases/` with mode `0750` owned by the application
@@ -104,7 +107,7 @@ Touches `config/schemas/v1/domain.schema.json`, `sdk/src/cloudfall/inventory.py`
 - S-003-6: After `cloudfall rollback` of the static route's component, `GET /` serves the previous release's `index.html` without re-running the domains playbook or reloading nginx
 - S-003-7: An existing Domain with only `proxy.upstream` renders a vhost byte-identical to the one the template on origin/main renders, for TLS active and inactive and both nginx versions
 - S-003-8: A Domain with two routes for the same path fails `cloudfall config validate` with exit `CONFIG_INVALID` and code `domain_route_path_duplicate`
-- S-003-9: A Domain with both `proxy.upstream` and `routes`, or with neither, fails `cloudfall config validate` with code `domain_route_source_invalid`
+- S-003-9: A Domain with both `proxy.upstream` and `routes` fails `cloudfall config validate` with code `domain_route_source_invalid`, and a Domain with neither still passes it
 - S-003-10: A route path under `/.well-known/acme-challenge` fails with `domain_route_path_reserved`, and a static route path without a trailing `/` or a path with a space, `;` or `{` fails with `domain_route_path_invalid`
 - S-003-11: A static route naming a missing component fails with `resource_reference_missing`, and one whose component doesn't list the Domain's `proxy.server` fails with `domain_route_component_not_on_proxy`
 - S-003-12: A static route whose `directory` or `spaFallback` contains a `..` segment or is absolute, or whose `directory` is `.`, fails `cloudfall config validate`
