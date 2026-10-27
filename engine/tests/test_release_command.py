@@ -41,6 +41,7 @@ ACTIVATE = "Activate the release behind the health gate"
 SWITCH = "Switch the current release symlink"
 RECEIPT = "Write the release receipt on the controller"
 TIMEOUT_MARKER = "cloudfall-test-timeout"
+REFUSED_MARKER = "cloudfall-test-refused"
 
 FAKE_SYSTEMD_RUN = f"""#!/bin/sh
 # Stand-in for systemd-run --wait --pipe: chdir like --working-directory,
@@ -55,6 +56,10 @@ while [ "$1" != "--" ]; do
 done
 shift
 cd "$directory" || exit 200
+if [ -f "$directory/{REFUSED_MARKER}" ]; then
+  echo "Failed to start transient service unit: Unit already exists." >&2
+  exit 1
+fi
 "$@"
 status=$?
 if [ -f "$directory/{TIMEOUT_MARKER}" ]; then
@@ -129,12 +134,18 @@ def _local_inventory(tmp_path: Path) -> Path:
 
 
 def _run_release_command(
-    tmp_path: Path, arguments: list[str], *, timed_out: bool = False
+    tmp_path: Path,
+    arguments: list[str],
+    *,
+    timed_out: bool = False,
+    refused: bool = False,
 ) -> tuple[int, Path]:
     """Run the role's release command tasks; answer the exit code and result."""
     release_directory, working_directory, systemd_run = _release_tree(tmp_path)
     if timed_out:
         (working_directory / TIMEOUT_MARKER).write_text("", encoding="utf-8")
+    if refused:
+        (working_directory / REFUSED_MARKER).write_text("", encoding="utf-8")
     result_file = tmp_path / "result.json"
     variables = {
         "cloudfall_server_id": "b",
@@ -295,6 +306,20 @@ def test_s005_5_a_timed_out_release_command_fails_naming_the_timeout(
     assert exit_code == 82
     output = _captured_output(capsys)
     assert "timed out after 300 seconds and was stopped" in output
+
+
+def test_s005_4_a_unit_that_never_starts_names_systemd_run_s_reason(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A unit that never starts fails with systemd-run's own message."""
+    exit_code, result_file = _run_release_command(tmp_path, ["0"], refused=True)
+
+    assert exit_code == 82
+    output = _captured_output(capsys)
+    assert "exited with code 1" in output
+    assert "Failed to start transient service unit" in output
+    assert not (tmp_path / "releases" / "20261027T000000Z-abcdef1" / "table").exists()
+    assert not result_file.exists()
 
 
 def test_s005_5_the_timeout_is_the_unit_runtime_limit(tmp_path: Path) -> None:

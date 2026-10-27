@@ -80,6 +80,8 @@
       on {{ cloudfall_server_id }}; no server switched to release
       {{ cloudfall_deploy_release }}. Output ends: {{
         cloudfall_deploy_release_run.stdout[-cloudfall_deploy_release_failure_characters:]
+      }} systemd-run reported: {{
+        cloudfall_deploy_release_run.stderr[-cloudfall_deploy_release_failure_characters:]
       }}
   when: >-
     cloudfall_deploy_release_timed_out
