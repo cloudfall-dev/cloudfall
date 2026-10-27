@@ -658,6 +658,13 @@ def _audit_service_binds(
         exposed = tuple(
             listener for listener in on_port if listener.address not in accepted
         )
+        # A remoteAccess service must also listen on its listenAddress: one
+        # that failed to bind it has remote access down while it is declared.
+        if remote_access is not None:
+            declared_present = declared_present and any(
+                listener.address == remote_access.listen_address.value
+                for listener in on_port
+            )
         desired: dict[str, object] = {
             "protocol": "tcp",
             "address": address,

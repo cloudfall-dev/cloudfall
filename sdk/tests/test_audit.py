@@ -475,7 +475,7 @@ def _rendered_remote_access_rules() -> list[dict[str, object]]:
 def _remote_access_observations(
     tmp_path: Path,
     rules: list[dict[str, object]],
-    listener: str = REMOTE_LISTENER,
+    listeners: tuple[str, ...] = (REMOTE_LISTENER,),
 ) -> Path:
     observations = tmp_path / "observed"
     shutil.copytree(COMPLIANT, observations)
@@ -485,7 +485,8 @@ def _remote_access_observations(
     table = json.loads(spec["firewall"]["managedTableJson"])
     table["nftables"].extend(rules)
     spec["firewall"]["managedTableJson"] = json.dumps(table)
-    spec["network"]["listeningSockets"] += f"\n{listener}"
+    for listener in listeners:
+        spec["network"]["listeningSockets"] += f"\n{listener}"
     h1.write_text(json.dumps(content), encoding="utf-8")
     return observations
 
@@ -568,12 +569,25 @@ def test_remote_access_listener_on_an_undeclared_address_is_drift(
 ) -> None:
     project = _remote_access_project(tmp_path)
     observations = _remote_access_observations(
-        tmp_path, _rendered_remote_access_rules(), listener
+        tmp_path, _rendered_remote_access_rules(), (REMOTE_LISTENER, listener)
     )
 
     bind = _h1_check(project, observations, "services.bind[postgresql-main]")
 
     assert bind.status is AuditStatus.DRIFT
+
+
+def test_remote_access_without_its_listener_is_drift(tmp_path: Path) -> None:
+    """A PostgreSQL that failed to bind listenAddress has remote access down."""
+    project = _remote_access_project(tmp_path)
+    observations = _remote_access_observations(
+        tmp_path, _rendered_remote_access_rules(), ()
+    )
+
+    bind = _h1_check(project, observations, "services.bind[postgresql-main]")
+
+    assert bind.status is AuditStatus.DRIFT
+    assert bind.observed == {"listeners": ["127.0.0.1:5432"]}
 
 
 def test_a_server_without_remote_access_audits_as_before() -> None:
