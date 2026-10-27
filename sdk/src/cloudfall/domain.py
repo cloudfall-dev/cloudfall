@@ -24,6 +24,11 @@ _LINUX_USER_PATTERN = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _PACKAGE_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9+.-]{0,199}$")
 _SERVICE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9@_.:-]+\.service$")
 _SYSTEMD_UNIT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9@_.:-]+\.(?:service|timer)$")
+_BUILD_TOOL_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,63}")
+_BUILD_TOOL_VERSION_PATTERN = re.compile(r"[0-9]{1,9}(?:\.[0-9]{1,9}){0,7}")
+_CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
+BUILD_STEP_DEFAULT_TIMEOUT_SECONDS = 900
+BUILD_STEP_MAXIMUM_TIMEOUT_SECONDS = 3600
 _FILE_MODE_PATTERN = re.compile(r"^0[0-7]{3}$")
 _SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 _MAX_HOSTNAME_LENGTH = 253
@@ -673,6 +678,124 @@ class ServiceCommand:
             message = "service command must be a list of strings"
             raise TypeError(message)
         return cls(tuple(value))
+
+
+@dataclass(frozen=True, slots=True)
+class RelativeRepositoryPath:
+    """Path inside a component's packaged root: relative, never climbing out."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Reject absolute paths, ``..`` segments, and control characters."""
+        if (
+            not self.value
+            or _CONTROL_CHARACTER_PATTERN.search(self.value)
+            or self.value.startswith("/")
+            or ".." in self.value.split("/")
+        ):
+            message = f"invalid relative repository path: {self.value!r}"
+            raise ValueError(message)
+
+    @classmethod
+    def from_boundary(cls, value: object) -> RelativeRepositoryPath:
+        """Coerce a boundary value into a relative repository path."""
+        return cls(_required_string(value, "relative repository path"))
+
+
+@dataclass(frozen=True, slots=True)
+class BuildToolName:
+    """Executable a component build step runs, looked up on ``PATH``."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Accept a bare executable name only, never a path."""
+        if not _BUILD_TOOL_NAME_PATTERN.fullmatch(self.value):
+            message = f"invalid build tool name: {self.value!r}"
+            raise ValueError(message)
+
+    @classmethod
+    def from_boundary(cls, value: object) -> BuildToolName:
+        """Coerce a boundary value into a build tool name."""
+        return cls(_required_string(value, "build tool name"))
+
+
+@dataclass(frozen=True, slots=True)
+class BuildToolVersion:
+    """Minimum dotted numeric version of a build tool."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Accept one to eight dotted numeric parts."""
+        if not _BUILD_TOOL_VERSION_PATTERN.fullmatch(self.value):
+            message = f"invalid build tool version: {self.value!r}"
+            raise ValueError(message)
+
+    @classmethod
+    def from_boundary(cls, value: object) -> BuildToolVersion:
+        """Coerce a boundary value into a build tool version."""
+        return cls(_required_string(value, "build tool version"))
+
+
+@dataclass(frozen=True, slots=True)
+class BuildCommand:
+    """Argv list of one component build step, never a shell string."""
+
+    value: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """Reject empty argv lists, empty arguments, and NUL bytes."""
+        if not self.value:
+            message = "build command must not be empty"
+            raise ValueError(message)
+        for argument in self.value:
+            if not argument or "\x00" in argument:
+                message = f"invalid build command argument: {argument!r}"
+                raise ValueError(message)
+
+    @property
+    def executable(self) -> BuildToolName:
+        """The tool the step runs: ``command[0]``."""
+        return BuildToolName(self.value[0])
+
+    @classmethod
+    def from_boundary(cls, value: object) -> BuildCommand:
+        """Coerce a boundary argv list into a build command."""
+        if not isinstance(value, list) or not all(
+            isinstance(item, str) for item in value
+        ):
+            message = "build command must be a list of strings"
+            raise TypeError(message)
+        return cls(tuple(value))
+
+
+@dataclass(frozen=True, slots=True)
+class BuildTimeoutSeconds:
+    """Time limit of one build step: 1 to 3600 seconds, 900 by default."""
+
+    value: int = BUILD_STEP_DEFAULT_TIMEOUT_SECONDS
+
+    def __post_init__(self) -> None:
+        """Reject booleans and values outside 1..3600."""
+        if (
+            isinstance(self.value, bool)
+            or not isinstance(self.value, int)
+            or not 1 <= self.value <= BUILD_STEP_MAXIMUM_TIMEOUT_SECONDS
+        ):
+            message = f"invalid build step timeout: {self.value!r}"
+            raise ValueError(message)
+
+    @classmethod
+    def from_boundary(cls, value: object) -> BuildTimeoutSeconds:
+        """Coerce a boundary value, defaulting when it is absent."""
+        if value is None:
+            return cls()
+        if not isinstance(value, int) or isinstance(value, bool):
+            message = "build step timeout must be an integer"
+            raise TypeError(message)
+        return cls(value)
 
 
 @dataclass(frozen=True, slots=True)

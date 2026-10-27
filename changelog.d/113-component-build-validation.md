@@ -1,0 +1,3 @@
+### Added
+
+- A Component can declare `spec.buildTools` (tool name to minimum version), `spec.build` (ordered steps, each a `workingDirectory` inside the packaged root, an argv `command` and an optional `timeoutSeconds` from 1 to 3600, default 900) and `spec.artifact.include` (relative paths the build produces); `cloudfall config validate` refuses a step whose `command[0]` is not in `buildTools` (`component_build_tool_undeclared`), an absolute or `..` path, and `buildTools` or `artifact` without `build`. Validation only: `artifact build` does not run the steps yet. Components without `build` validate as before (#113)
