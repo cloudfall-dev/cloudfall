@@ -1,0 +1,3 @@
+### Added
+
+- A PostgreSQL `Service` database may name an `owner` role and its `passwordRef` (`environment`, `path`, `key` in the secrets store) instead of an `application`, so a project of a server and its database alone validates; `spec.postgresql.remoteAccess` declares a listen address and the client networks allowed in. `config validate` refuses an entry with both or neither of `application` and `owner`, an `owner` without `passwordRef` or a `passwordRef` next to `application`, a reserved owner (`service_database_owner_reserved`), and a `remoteAccess` with no owner database, no firewall, the port already open, or a source of every address. Converging these declarations comes later: until then the PostgreSQL role refuses them before any task runs (#121)

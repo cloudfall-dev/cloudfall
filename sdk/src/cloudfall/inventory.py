@@ -30,6 +30,7 @@ from cloudfall.domain import (
     HttpScheme,
     HttpStatusCode,
     IpAddress,
+    IpNetworkCidr,
     Ipv4Address,
     Ipv6NetworkCidr,
     LinuxUser,
@@ -44,6 +45,7 @@ from cloudfall.domain import (
     PositiveCount,
     PostgresDatabaseName,
     PostgresMajorVersion,
+    PostgresRoleName,
     PromqlExpression,
     ProviderServerId,
     RaidLevel,
@@ -57,6 +59,7 @@ from cloudfall.domain import (
     RuntimePackageManager,
     RuntimeType,
     RuntimeVersion,
+    SecretKeyName,
     SecretScope,
     ServerLifecycle,
     ServiceCommand,
@@ -713,12 +716,62 @@ class PostgresDatabase:
 
 
 @dataclass(frozen=True, slots=True)
+class SecretValueReference:
+    """Pointer to one key of one secret source; never carries the value."""
+
+    environment: ResourceId
+    path: AbsolutePath
+    key: SecretKeyName
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the reference itself (references are not secret)."""
+        return {
+            "environment": self.environment.value,
+            "path": self.path.value,
+            "key": self.key.value,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class OwnedPostgresDatabase:
+    """One PostgreSQL database owned by a declared role, not an application."""
+
+    name: PostgresDatabaseName
+    owner: PostgresRoleName
+    password_ref: SecretValueReference
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the database with its role and password reference."""
+        return {
+            "name": self.name.value,
+            "owner": self.owner.value,
+            "passwordRef": self.password_ref.as_dict(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PostgresRemoteAccess:
+    """Listener and client networks for outside apps reaching owned roles."""
+
+    listen_address: IpAddress
+    allowed_sources: tuple[IpNetworkCidr, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the remote access declaration."""
+        return {
+            "listenAddress": self.listen_address.value,
+            "allowedSources": [source.value for source in self.allowed_sources],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class PostgresqlService:
     """PostgreSQL-specific service contract."""
 
     major_version: PostgresMajorVersion
     package_version: PackageVersion | None
-    databases: tuple[PostgresDatabase, ...]
+    databases: tuple[PostgresDatabase | OwnedPostgresDatabase, ...]
+    remote_access: PostgresRemoteAccess | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -799,6 +852,10 @@ class ServiceInventory:
             if self.postgresql.package_version is not None:
                 postgresql["packageVersion"] = (
                     self.postgresql.package_version.value
+                )
+            if self.postgresql.remote_access is not None:
+                postgresql["remoteAccess"] = (
+                    self.postgresql.remote_access.as_dict()
                 )
             result["postgresql"] = postgresql
         if self.redis is not None:
@@ -1730,6 +1787,11 @@ def _service_inventory(
                     raw_postgresql.get("databases"), "service databases"
                 )
             ),
+            remote_access=(
+                _postgres_remote_access(_mapping(raw_postgresql, "remoteAccess"))
+                if "remoteAccess" in raw_postgresql
+                else None
+            ),
         )
     redis = None
     if service_kind is ServiceKind.REDIS:
@@ -1842,7 +1904,18 @@ def _service_metrics_enabled(
 def _postgres_database(
     content: Mapping[str, object],
     applications_by_id: Mapping[ResourceId, ApplicationInventory],
-) -> PostgresDatabase:
+) -> PostgresDatabase | OwnedPostgresDatabase:
+    if "owner" in content:
+        password_ref = _mapping(content, "passwordRef")
+        return OwnedPostgresDatabase(
+            name=PostgresDatabaseName.from_boundary(content.get("name")),
+            owner=PostgresRoleName.from_boundary(content.get("owner")),
+            password_ref=SecretValueReference(
+                environment=ResourceId.from_boundary(password_ref.get("environment")),
+                path=AbsolutePath.from_boundary(password_ref.get("path")),
+                key=SecretKeyName.from_boundary(password_ref.get("key")),
+            ),
+        )
     application_id = ResourceId.from_boundary(content.get("application"))
     application = applications_by_id.get(application_id)
     if application is None:
@@ -1854,6 +1927,19 @@ def _postgres_database(
         name=PostgresDatabaseName.from_boundary(content.get("name")),
         application_id=application_id,
         owner=application.linux_user,
+    )
+
+
+def _postgres_remote_access(content: Mapping[str, object]) -> PostgresRemoteAccess:
+    raw_sources = content.get("allowedSources")
+    if not isinstance(raw_sources, list) or not raw_sources:
+        message = "validated remote access sources are not a non-empty list"
+        raise ValueError(message)
+    return PostgresRemoteAccess(
+        listen_address=IpAddress.from_boundary(content.get("listenAddress")),
+        allowed_sources=tuple(
+            IpNetworkCidr.from_boundary(source) for source in raw_sources
+        ),
     )
 
 

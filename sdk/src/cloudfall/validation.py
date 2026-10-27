@@ -19,6 +19,8 @@ from jsonschema.exceptions import SchemaError, ValidationError
 from referencing import Registry, Resource
 
 from cloudfall.domain import (
+    IpAddress,
+    IpNetworkCidr,
     OpenSshPublicKey,
     RawDocument,
     ResourceDocument,
@@ -612,8 +614,16 @@ def _validate_service_references(
         )
         raise ConfigValidationError(issue)
 
-    if spec.get("serviceKind") != "postgresql":
-        return
+    if spec.get("serviceKind") == "postgresql":
+        _validate_postgresql_service(document, spec, server, index)
+
+
+def _validate_postgresql_service(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    server: ResourceDocument,
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> None:
     postgresql = _required_mapping(spec, "postgresql", document.source)
     raw_databases = postgresql.get("databases")
     if not isinstance(raw_databases, list):
@@ -625,6 +635,7 @@ def _validate_service_references(
         )
         raise ConfigValidationError(issue)
     seen_names: set[object] = set()
+    databases: list[tuple[int, Mapping[str, object]]] = []
     for position, raw_database in enumerate(raw_databases):
         if not isinstance(raw_database, dict) or not all(
             isinstance(key, str) for key in raw_database
@@ -647,14 +658,201 @@ def _validate_service_references(
             )
             raise ConfigValidationError(issue)
         seen_names.add(name)
+        databases.append((position, database))
+    application_users: set[str] = set()
+    for position, database in databases:
+        if "application" not in database:
+            continue
         application_id = _resource_id_value(database, "application", document.source)
-        _require_resource(
+        application = _require_resource(
             index,
             ResourceKind.APPLICATION,
             application_id,
             document.source,
             ("spec", "postgresql", "databases", position, "application"),
         )
+        application_spec = _required_mapping(
+            application.content, "spec", application.source
+        )
+        linux_user = application_spec.get("linuxUser")
+        if isinstance(linux_user, str):
+            application_users.add(linux_user)
+    owners = _validate_service_database_owners(
+        document, databases, frozenset(application_users)
+    )
+    if "remoteAccess" in postgresql:
+        _validate_service_remote_access(
+            document,
+            spec,
+            _required_mapping(postgresql, "remoteAccess", document.source),
+            server,
+            index,
+            has_owner=bool(owners),
+        )
+
+
+_RESERVED_POSTGRES_ROLES = frozenset({"postgres", "alloy"})
+
+
+def _validate_service_database_owners(
+    document: ResourceDocument,
+    databases: Sequence[tuple[int, Mapping[str, object]]],
+    application_users: frozenset[str],
+) -> tuple[str, ...]:
+    """Refuse an owner role Cloudfall or an application on the service holds."""
+    owners: list[str] = []
+    for position, database in databases:
+        owner = database.get("owner")
+        if owner is None:
+            continue
+        if not isinstance(owner, str):
+            issue = ValidationIssue(
+                code="internal_state_shape_invalid",
+                message="validated service database owner is not a string",
+                source=document.source,
+                field_path=("spec", "postgresql", "databases", position, "owner"),
+            )
+            raise ConfigValidationError(issue)
+        if owner in _RESERVED_POSTGRES_ROLES or owner in application_users:
+            holder = (
+                "a role Cloudfall reserves"
+                if owner in _RESERVED_POSTGRES_ROLES
+                else "the Linux user of an Application with a database on "
+                "this service"
+            )
+            issue = ValidationIssue(
+                code="service_database_owner_reserved",
+                message=f"database owner {owner!r} is {holder}",
+                source=document.source,
+                field_path=("spec", "postgresql", "databases", position, "owner"),
+            )
+            raise ConfigValidationError(issue)
+        owners.append(owner)
+    return tuple(owners)
+
+
+def _validate_service_remote_access(  # noqa: PLR0913
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    remote_access: Mapping[str, object],
+    server: ResourceDocument,
+    index: Mapping[ResourceKey, ResourceDocument],
+    *,
+    has_owner: bool,
+) -> None:
+    """Refuse a way in that serves no owner role or opens the port to all."""
+    field_path: tuple[str | int, ...] = ("spec", "postgresql", "remoteAccess")
+    if not has_owner:
+        issue = ValidationIssue(
+            code="service_remote_access_unused",
+            message=(
+                "remoteAccess needs a database with an owner: databases named "
+                "by an application stay socket-only"
+            ),
+            source=document.source,
+            field_path=field_path,
+        )
+        raise ConfigValidationError(issue)
+    _validate_remote_access_listen_address(document, remote_access, field_path)
+    server_spec = _required_mapping(server.content, "spec", server.source)
+    server_type_id = _resource_id_value(server_spec, "serverType", server.source)
+    server_type = _require_resource(
+        index,
+        ResourceKind.HOST_PROFILE,
+        server_type_id,
+        server.source,
+        ("spec", "serverType"),
+    )
+    server_type_spec = _required_mapping(
+        server_type.content, "spec", server_type.source
+    )
+    if "firewall" not in server_type_spec:
+        issue = ValidationIssue(
+            code="service_remote_access_unfirewalled",
+            message=(
+                f"ServerType/{server_type_id} of Server/{server.key.resource_id} "
+                "declares no firewall to restrict remoteAccess to its sources"
+            ),
+            source=document.source,
+            field_path=field_path,
+        )
+        raise ConfigValidationError(issue)
+    bind = _required_mapping(spec, "bind", document.source)
+    port = bind.get("port")
+    firewall = _required_mapping(server_type_spec, "firewall", server_type.source)
+    raw_rules = firewall.get("allowedInbound")
+    rules = raw_rules if isinstance(raw_rules, list) else []
+    for rule in rules:
+        if (
+            isinstance(rule, dict)
+            and rule.get("port") == port
+            and rule.get("protocol") == "tcp"
+        ):
+            issue = ValidationIssue(
+                code="service_remote_access_port_open",
+                message=(
+                    f"ServerType/{server_type_id} already opens tcp port {port} "
+                    "to every address; remoteAccess would not restrict it"
+                ),
+                source=document.source,
+                field_path=field_path,
+            )
+            raise ConfigValidationError(issue)
+    raw_sources = remote_access.get("allowedSources")
+    sources = raw_sources if isinstance(raw_sources, list) else []
+    for position, raw_source in enumerate(sources):
+        source_path = (*field_path, "allowedSources", position)
+        try:
+            source = IpNetworkCidr.from_boundary(raw_source)
+        except (TypeError, ValueError) as error:
+            issue = ValidationIssue(
+                code="service_remote_access_source_invalid",
+                message=f"allowed source is not a canonical CIDR: {error}",
+                source=document.source,
+                field_path=source_path,
+            )
+            raise ConfigValidationError(issue) from error
+        if source.is_unrestricted:
+            issue = ValidationIssue(
+                code="service_remote_access_open",
+                message=(
+                    f"allowed source {source.value} matches every address; "
+                    "name the networks the outside app connects from"
+                ),
+                source=document.source,
+                field_path=source_path,
+            )
+            raise ConfigValidationError(issue)
+
+
+def _validate_remote_access_listen_address(
+    document: ResourceDocument,
+    remote_access: Mapping[str, object],
+    field_path: tuple[str | int, ...],
+) -> None:
+    """Refuse a listen address that is a wildcard or not canonical."""
+    listen_path = (*field_path, "listenAddress")
+    try:
+        listen_address = IpAddress.from_boundary(remote_access.get("listenAddress"))
+    except (TypeError, ValueError) as error:
+        issue = ValidationIssue(
+            code="service_remote_access_listen_invalid",
+            message=f"listen address is not one canonical IP address: {error}",
+            source=document.source,
+            field_path=listen_path,
+        )
+        raise ConfigValidationError(issue) from error
+    if listen_address.is_unspecified:
+        issue = ValidationIssue(
+            code="service_remote_access_listen_invalid",
+            message=(
+                f"listen address {listen_address.value} is a wildcard; name one "
+                "address of the server"
+            ),
+            source=document.source,
+            field_path=listen_path,
+        )
+        raise ConfigValidationError(issue)
 
 
 def _validate_service_uniqueness(documents: Sequence[ResourceDocument]) -> None:
