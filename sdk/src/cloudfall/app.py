@@ -164,7 +164,6 @@ from cloudfall.investigation import (
 )
 from cloudfall.lifecycle import (
     ERROR_EXECUTION_FAILED,
-    STEP_TIMEOUT_SECONDS,
     DeployOptions,
     DomainsRun,
     EngineContext,
@@ -1793,7 +1792,7 @@ def _step_runner(ctx: Ctx, directory: Path) -> StepRunner:
             step.argv,
             env=step.environment,
             cwd=directory,
-            timeout=Timeout(STEP_TIMEOUT_SECONDS),
+            timeout=Timeout(step.timeout_seconds),
             check=False,
         )
 

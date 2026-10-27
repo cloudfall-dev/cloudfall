@@ -72,6 +72,7 @@ _ERROR_TOOL_MISSING = "artifact_build_tool_missing"
 _ERROR_TOOL_UNSUPPORTED = "artifact_build_tool_unsupported"
 _ERROR_STEP_FAILED = "artifact_build_step_failed"
 _ERROR_INCLUDE_MISSING = "artifact_include_missing"
+_ERROR_TRACKED_FILE_MISSING = "artifact_tracked_file_missing"
 
 
 class ArtifactBuildError(RuntimeError):
@@ -218,6 +219,7 @@ def build_artifact(  # noqa: PLR0913 - the build inputs plus its runners.
             tracked = _tracked_files(run, source_root)
             _run_steps(build, host, source_root, run_step)
             _require_includes(build, source_root)
+            _require_tracked(tracked, source_root)
 
         release = (
             f"{built_at.strftime('%Y%m%dT%H%M%SZ')}"
@@ -493,6 +495,19 @@ def _require_includes(build: ComponentBuild, source_root: Path) -> None:
             )
 
 
+def _require_tracked(tracked: Sequence[str], source_root: Path) -> None:
+    """Refuse a build whose steps deleted a file git tracks at the commit."""
+    for name in tracked:
+        if not os.path.lexists(source_root / name):
+            detail = (
+                f"tracked file {name} was deleted by the build steps; the "
+                "archive must hold every file git tracks at the commit"
+            )
+            raise ArtifactBuildError(
+                _ERROR_TRACKED_FILE_MISSING, detail, {"path": name}
+            )
+
+
 def _write_built_archive(
     source_root: Path,
     archive_path: Path,
@@ -502,13 +517,9 @@ def _write_built_archive(
     """Package the tracked files plus every ``artifact.include`` path.
 
     Whatever else the steps left behind (``node_modules/``, caches) stays out.
-    A tracked file a step deleted is not packaged.
+    ``_require_tracked`` has already checked every tracked file is there.
     """
-    entries: set[Path] = set()
-    for name in tracked:
-        relative = Path(name)
-        if os.path.lexists(source_root / relative):
-            entries.add(relative)
+    entries: set[Path] = {Path(name) for name in tracked}
     for include in build.include:
         entries.update(_include_entries(source_root, Path(include.value)))
     for entry in tuple(entries):

@@ -16,11 +16,14 @@ from cloudfall.domain import ReleaseId, ResourceId
 from cloudfall.lifecycle import (
     DeployOptions,
     EngineContext,
+    ExecutionStep,
     LifecycleError,
+    StepRun,
     build_release_artifact,
     deploy,
     plan_deploy,
     plan_health,
+    subprocess_step,
     verify_artifact,
 )
 from cloudfall.validation import SchemaCatalog
@@ -382,6 +385,50 @@ def test_release_artifact_build_reads_the_engine_envelope(tmp_path: Path) -> Non
     assert built["status"] == "ok"
     assert isinstance(built["release"], str)
     assert Path(str(built["archive"])).is_file()
+
+
+def test_s002_7_the_sdk_leaves_the_build_limit_to_the_engine(
+    tmp_path: Path,
+) -> None:
+    """The SDK and MCP path must not cut a build at ``STEP_TIMEOUT_SECONDS``.
+
+    The engine allows the clone plus every declared step timeout, which can
+    add up past one hour, so the artifact step carries no limit of its own.
+    """
+    recorded: list[ExecutionStep] = []
+
+    def record(step: ExecutionStep) -> StepRun:
+        recorded.append(step)
+        return subprocess_step(step)
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git("-C", str(repository), "-c", "init.defaultBranch=main", "init", "--quiet")
+    (repository / "app.py").write_text("print('crm')\n", encoding="utf-8")
+    _git("-C", str(repository), "add", ".")
+    _git("-C", str(repository), "commit", "--quiet", "--message", "initial")
+    project = tmp_path / "project"
+    shutil.copytree(EXAMPLES, project)
+    component = project / "components" / "crm-backend.yaml"
+    component.write_text(
+        component.read_text(encoding="utf-8").replace(
+            "https://github.com/example/crm-backend.git", f"file://{repository}"
+        ),
+        encoding="utf-8",
+    )
+    context = EngineContext(
+        project_directory=project,
+        schema_directory=SCHEMAS,
+        engine_directory=ENGINE,
+        inventory_file=tmp_path / "inventory.json",
+        run=record,
+    )
+
+    build_release_artifact(
+        context, ResourceId("crm-backend"), "main", tmp_path / "artifacts"
+    )
+
+    assert [step.timeout_seconds for step in recorded] == [None]
 
 
 def test_backup_receipt_schema_accepts_the_playbook_shape() -> None:

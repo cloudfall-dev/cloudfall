@@ -178,9 +178,10 @@ runs in order in the clean checkout, with only `PATH`, `HOME`, `LANG` and
 SOPS keys stay out of `package.json` scripts. Step output goes to stderr. The
 archive holds the files git tracks plus the `artifact.include` paths, such as
 a gitignored `web/dist`, and the metadata records the steps and the tool
-versions under `spec.build`. A failed step or a missing include path writes
-no archive. The command's time limit (1800 seconds) covers the clone and every
-step; pass `--timeout` for longer builds.
+versions under `spec.build`. A failed or timed-out step, a missing include
+path, or a tracked file a step deleted writes no archive. The command may take
+1800 seconds for the clone plus every step's `timeoutSeconds`; an explicit
+`--timeout` replaces that limit.
 
 `ansible/playbooks/deploy.yml` deploys one built release to the component's
 declared servers, one host at a time:

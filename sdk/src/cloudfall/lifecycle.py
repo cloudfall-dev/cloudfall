@@ -82,6 +82,10 @@ class LifecycleError(RuntimeError):
         }
 
 
+STEP_TIMEOUT_SECONDS = 3600
+"""How long one step (an inventory render or a playbook run) may take."""
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionStep:
     """One subprocess invocation with explicit environment additions."""
@@ -89,6 +93,8 @@ class ExecutionStep:
     description: str
     argv: tuple[str, ...]
     environment: Mapping[str, str]
+    timeout_seconds: int | None = STEP_TIMEOUT_SECONDS
+    """The runner's limit on the step; ``None`` for a step that bounds itself."""
 
 
 class StepRun(Protocol):
@@ -113,10 +119,6 @@ class StepRun(Protocol):
 type StepRunner = Callable[[ExecutionStep], StepRun]
 """Runs one step to completion without raising on a non-zero exit."""
 
-STEP_TIMEOUT_SECONDS = 3600
-"""How long one step (an inventory render or a playbook run) may take."""
-
-
 def subprocess_step(step: ExecutionStep) -> StepRun:
     """Run one step as a child process, the runner outside treaty commands."""
     try:
@@ -125,11 +127,11 @@ def subprocess_step(step: ExecutionStep) -> StepRun:
             check=False,
             capture_output=True,
             text=True,
-            timeout=STEP_TIMEOUT_SECONDS,
+            timeout=step.timeout_seconds,
             env={**os.environ, **step.environment},
         )
     except subprocess.TimeoutExpired as error:
-        detail = f"{step.description} exceeded {STEP_TIMEOUT_SECONDS} seconds"
+        detail = f"{step.description} exceeded {step.timeout_seconds} seconds"
         raise LifecycleError(ERROR_EXECUTION_FAILED, detail) from error
 
 
@@ -586,6 +588,9 @@ def build_release_artifact(
         description="build release artifact",
         argv=argv,
         environment={},
+        # The engine limits the build to the clone time plus the component's
+        # declared step timeouts, which can add up past STEP_TIMEOUT_SECONDS.
+        timeout_seconds=None,
     )
     output = _execute_step_with_output(step, context.run)
     # The engine answers one treaty envelope: the build is under ``data``.

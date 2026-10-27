@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -23,8 +24,10 @@ from typing import Any, cast
 import pytest
 import yaml
 from ansible.parsing.dataloader import DataLoader
-from cloudfall.validation import SchemaCatalog
-from cloudfall_engine.cli import main
+from cloudfall.domain import ARTIFACT_CLONE_TIMEOUT_SECONDS
+from cloudfall.inventory import PlatformInventory
+from cloudfall.validation import SchemaCatalog, validate_config
+from cloudfall_engine.cli import BuildBudget, main
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -79,6 +82,8 @@ elif arguments[0] == "sleep":
     time.sleep(60)
 elif arguments[0] == "noop":
     print("nothing to do")
+elif arguments[0] == "clean":
+    pathlib.Path("package.json").unlink()
 else:
     sys.exit(64)
 """
@@ -146,7 +151,9 @@ class _Fixture:
         )
         return listed.splitlines()
 
-    def build(self, ref: str) -> tuple[int, dict[str, Any], str]:
+    def build(
+        self, ref: str, *extra: str
+    ) -> tuple[int, dict[str, Any], str]:
         """Run ``artifact build``; answer its exit code, envelope, and stderr."""
         completed = subprocess.run(  # noqa: S603 - the CLI under test.
             [
@@ -166,6 +173,7 @@ class _Fixture:
                 str(self.artifacts),
                 "--format",
                 "json",
+                *extra,
             ],
             env={
                 "PATH": str(self.bin),
@@ -211,6 +219,7 @@ def _fixture(  # noqa: PLR0913 - one knob per criterion.
     build: bool = True,
     node: str | None = "v22.3.0",
     pnpm: str = "9.1.0",
+    timeouts: dict[int, int] | None = None,
 ) -> _Fixture:
     fixture = _Fixture(tmp_path)
     repository = fixture.repository
@@ -237,9 +246,8 @@ def _fixture(  # noqa: PLR0913 - one knob per criterion.
             {"workingDirectory": "web", "command": command}
             for command in (steps if steps is not None else [INSTALL, BUILD])
         ]
-        for step in spec["build"]:
-            if step["command"] == ["pnpm", "sleep"]:
-                step["timeoutSeconds"] = 1
+        for index, seconds in (timeouts or {}).items():
+            spec["build"][index]["timeoutSeconds"] = seconds
         spec["artifact"] = {"include": include or ["web/dist"]}
     path.write_text(yaml.safe_dump(document), encoding="utf-8")
 
@@ -377,16 +385,72 @@ def test_s002_7_a_failing_step_names_itself_and_writes_nothing(tmp_path: Path) -
 
 
 def test_s002_7_a_step_past_its_timeout_fails_the_build(tmp_path: Path) -> None:
-    fixture = _fixture(tmp_path, steps=[["pnpm", "sleep"], BUILD])
+    """The step's own ``timeoutSeconds`` fires, not the command's limit."""
+    fixture = _fixture(
+        tmp_path, steps=[INSTALL, ["pnpm", "sleep"], BUILD], timeouts={1: 2}
+    )
 
     exit_code, envelope, _ = fixture.build("main")
 
     assert exit_code == ARTIFACT_BUILD_FAILED
     context = _failure(envelope)
     assert context["code"] == "artifact_build_step_failed"
-    assert context["step"] == 0
-    assert context["timeoutSeconds"] == 1
-    assert "1s timeout" in envelope["error"]["message"]
+    assert context["step"] == 1
+    assert context["argv"] == ["pnpm", "sleep"]
+    assert context["timeoutSeconds"] == 2
+    assert "2s timeout" in envelope["error"]["message"]
+    assert fixture.written() == []
+
+
+def test_s002_7_the_run_limit_covers_every_declared_step(tmp_path: Path) -> None:
+    """The run allows the clone plus every declared step timeout.
+
+    Three one-hour steps outlast both the old 1800 s command limit and the
+    SDK's 3600 s step limit.
+    """
+    fixture = _fixture(
+        tmp_path,
+        steps=[INSTALL, BUILD, ["pnpm", "noop"]],
+        timeouts={0: 3600, 1: 3600, 2: 3600},
+    )
+    inventory = PlatformInventory.from_state(
+        validate_config(fixture.project, SCHEMAS)
+    )
+    component = next(
+        c for c in inventory.components if c.resource_id.value == "crm-backend"
+    )
+
+    seconds = component.artifact_timeout_seconds
+    budget = BuildBudget(seconds, time.monotonic() + seconds)
+
+    assert seconds == ARTIFACT_CLONE_TIMEOUT_SECONDS + 3 * 3600
+    assert budget.timeout(3600).seconds == 3600
+
+
+def test_s002_7_an_explicit_timeout_still_wins(tmp_path: Path) -> None:
+    """``--timeout`` caps the run below a step's own limit: treaty's TIMEOUT."""
+    fixture = _fixture(tmp_path, steps=[["pnpm", "sleep"], BUILD], timeouts={0: 30})
+
+    exit_code, envelope, _ = fixture.build("main", "--timeout", "3")
+
+    assert exit_code != ARTIFACT_BUILD_FAILED
+    assert envelope["error"]["code"] == "TIMEOUT"
+    assert fixture.written() == []
+
+
+def test_s002_3_a_step_that_deletes_a_tracked_file_writes_no_artifact(
+    tmp_path: Path,
+) -> None:
+    """Every file ``git ls-files`` lists must be in the tarball, or none is."""
+    fixture = _fixture(tmp_path, steps=[INSTALL, ["pnpm", "clean"], BUILD])
+
+    exit_code, envelope, _ = fixture.build("main")
+
+    assert exit_code == ARTIFACT_BUILD_FAILED
+    context = _failure(envelope)
+    assert context["code"] == "artifact_tracked_file_missing"
+    assert context["path"] == "web/package.json"
+    assert "web/package.json" in envelope["error"]["message"]
     assert fixture.written() == []
 
 

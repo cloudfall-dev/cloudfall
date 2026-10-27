@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from cloudfall.domain import (
+    ARTIFACT_CLONE_TIMEOUT_SECONDS,
     AbsolutePath,
     AlertDuration,
     AlertSeverity,
@@ -592,6 +593,14 @@ class ComponentInventory:
     environment: tuple[tuple[str, str], ...] = ()
     build: ComponentBuild | None = None
     release: ComponentRelease | None = None
+
+    @property
+    def artifact_timeout_seconds(self) -> int:
+        """How long ``artifact build`` may run: the clone plus every step's limit."""
+        steps = () if self.build is None else self.build.steps
+        return ARTIFACT_CLONE_TIMEOUT_SECONDS + sum(
+            step.timeout_seconds.value for step in steps
+        )
 
     @property
     def release_server_id(self) -> ResourceId:

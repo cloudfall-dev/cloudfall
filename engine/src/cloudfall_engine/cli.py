@@ -10,6 +10,7 @@ import dataclasses
 import json
 import os
 import shutil
+import time
 from dataclasses import dataclass
 from functools import partial
 from importlib.metadata import version
@@ -18,6 +19,7 @@ from typing import TYPE_CHECKING, Self, cast
 
 from cloudfall.commands import snake_case_keys
 from cloudfall.domain import (
+    ARTIFACT_CLONE_TIMEOUT_SECONDS,
     AbsolutePath,
     PostgresDatabaseName,
     PostgresRoleName,
@@ -274,7 +276,9 @@ class BuiltRelease:
     ),
     danger_level="mutating",
     exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "ARTIFACT_BUILD_FAILED"],
-    timeout=3 * GIT_TIMEOUT_SECONDS,
+    # The limit depends on the component: BuildBudget applies the clone time
+    # plus every declared step's timeout, unless --timeout is given.
+    timeout=None,
     subprocess=Subprocess("git"),
     required_tools={"git": GIT_MINIMUM_VERSION},
     supports_raw_payload=True,
@@ -290,7 +294,10 @@ def build(args: BuildArgs, ctx: Ctx, project: Project) -> BuiltRelease:
     """Clone the component at ``--ref``, build it, and package it.
 
     Build step output streams to stderr, never into the envelope on stdout.
+    The run may take the clone time plus every declared step's timeout;
+    an explicit ``--timeout`` replaces that limit.
     """
+    budget = BuildBudget.start(ctx, _artifact_timeout(project, args.component))
     try:
         built = build_artifact(
             project.inventory,
@@ -298,10 +305,8 @@ def build(args: BuildArgs, ctx: Ctx, project: Project) -> BuiltRelease:
             args.ref,
             project.path(args.output_dir),
             args.schemas,
-            run=partial(
-                ctx.run, timeout=Timeout(GIT_TIMEOUT_SECONDS), check=False
-            ),
-            run_step=partial(_run_build_step, ctx),
+            run=partial(_run_git_or_tool, ctx, budget),
+            run_step=partial(_run_build_step, ctx, budget),
             environment=dict(os.environ),
         )
     except ArtifactBuildError as error:
@@ -324,15 +329,74 @@ def build(args: BuildArgs, ctx: Ctx, project: Project) -> BuiltRelease:
     )
 
 
+def _artifact_timeout(project: Project, component_id: ResourceId) -> int:
+    component = next(
+        (
+            candidate
+            for candidate in project.inventory.components
+            if candidate.resource_id == component_id
+        ),
+        None,
+    )
+    # An unknown component fails in build_artifact, before any child runs.
+    if component is None:
+        return ARTIFACT_CLONE_TIMEOUT_SECONDS
+    return component.artifact_timeout_seconds
+
+
+@dataclass(frozen=True, slots=True)
+class BuildBudget:
+    """The time limit of one ``artifact build`` run, shared by its children.
+
+    ``deadline`` is ``None`` when ``--timeout`` was given: treaty's own
+    deadline then clamps every child, and this budget adds nothing.
+    """
+
+    seconds: int
+    deadline: float | None
+
+    @classmethod
+    def start(cls, ctx: Ctx, seconds: int) -> Self:
+        """Start the clock, unless an explicit ``--timeout`` governs the run."""
+        if ctx.remaining is not None:
+            return cls(seconds, None)
+        return cls(seconds, time.monotonic() + seconds)
+
+    def timeout(self, seconds: int) -> Timeout:
+        """Cut a child's own limit to what is left of the run's."""
+        if self.deadline is None:
+            return Timeout(seconds)
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise CliExit(
+                ExitCodeName("TIMEOUT"),
+                f"artifact build used its {self.seconds}s limit (the clone plus "
+                "every declared step timeout); pass --timeout for more",
+                context={"timeout_ms": self.seconds * 1000},
+            )
+        return Timeout(min(float(seconds), left))
+
+
+def _run_git_or_tool(
+    ctx: Ctx, budget: BuildBudget, argv: Sequence[str]
+) -> Completed:
+    return ctx.run(argv, timeout=budget.timeout(GIT_TIMEOUT_SECONDS), check=False)
+
+
 def _run_build_step(
-    ctx: Ctx, argv: Sequence[str], *, cwd: Path, timeout: BuildTimeoutSeconds
+    ctx: Ctx,
+    budget: BuildBudget,
+    argv: Sequence[str],
+    *,
+    cwd: Path,
+    timeout: BuildTimeoutSeconds,
 ) -> Completed:
     """Run one build step, its output streamed to stderr as plain text."""
     try:
         return ctx.run(
             argv,
             cwd=cwd,
-            timeout=Timeout(timeout.value),
+            timeout=budget.timeout(timeout.value),
             check=False,
             stream="always",
         )

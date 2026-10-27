@@ -29,6 +29,8 @@ _BUILD_TOOL_VERSION_PATTERN = re.compile(r"[0-9]{1,9}(?:\.[0-9]{1,9}){0,7}")
 _CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
 BUILD_STEP_DEFAULT_TIMEOUT_SECONDS = 900
 BUILD_STEP_MAXIMUM_TIMEOUT_SECONDS = 3600
+ARTIFACT_CLONE_TIMEOUT_SECONDS = 1800
+"""Time ``artifact build`` allows for cloning and packaging, besides the steps"""
 _FILE_MODE_PATTERN = re.compile(r"^0[0-7]{3}$")
 _SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 _MAX_HOSTNAME_LENGTH = 253
