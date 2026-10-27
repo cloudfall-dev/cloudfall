@@ -1,3 +1,10 @@
 # Managed by Cloudfall. Local changes will be overwritten.
+{% if cloudfall_postgresql_service.postgresql.remoteAccess is defined %}
+listen_addresses = '{{ cloudfall_postgresql_service.bind.address }},{{ cloudfall_postgresql_service.postgresql.remoteAccess.listenAddress }}'
+ssl = on
+ssl_cert_file = '{{ cloudfall_postgresql_ssl_cert_file }}'
+ssl_key_file = '{{ cloudfall_postgresql_ssl_key_file }}'
+{% else %}
 listen_addresses = '{{ cloudfall_postgresql_service.bind.address }}'
+{% endif %}
 port = {{ cloudfall_postgresql_service.bind.port }}
