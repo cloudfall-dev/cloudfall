@@ -135,7 +135,8 @@ project, and only that file's path reaches Ansible. The role copies the file
 to the host as `0600`, `psql` reads it there, PostgreSQL stores the password as
 SCRAM-SHA-256, and both files are removed when the run ends. Every task that
 sees it runs with `no_log`. The answer's `owned_roles` names the reference,
-the key, and the value's SHA-256; the password is set on every converge, so a
+the key, and the value's SHA-256 (an operator proposal keeps them as
+`ownedRoles` in its receipt's `outcome`); the password is set on every converge, so a
 rotation is a commit in the private repository and a services converge.
 
 ## Drift detection

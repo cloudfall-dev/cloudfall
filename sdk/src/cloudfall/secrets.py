@@ -22,6 +22,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from cloudfall.domain import (
+    AbsolutePath,
+    PostgresRoleName,
+    ResourceId,
+    SecretKeyName,
+)
 from cloudfall.inventory import (
     OwnedPostgresDatabase,
     PlatformInventory,
@@ -30,9 +36,8 @@ from cloudfall.inventory import (
 from cloudfall.validation import SchemaCatalog, validate_config
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator
+    from collections.abc import Callable, Iterable, Iterator, Mapping
 
-    from cloudfall.domain import PostgresRoleName, ResourceId
     from cloudfall.inventory import ComponentInventory, SecretReference
     from cloudfall.lifecycle import EngineContext
 
@@ -158,8 +163,40 @@ class OwnedRolePassword:
         """Return the hex SHA-256 of the value, for receipts and answers."""
         return hashlib.sha256(self.value.encode("utf-8")).hexdigest()
 
+    def record(self) -> OwnedRoleRecord:
+        """Return what may be recorded of this password: never the value."""
+        return OwnedRoleRecord(
+            service=self.service,
+            owner=self.owner,
+            reference=self.reference,
+            sha256=self.sha256,
+        )
+
     def as_dict(self) -> dict[str, object]:
         """Serialize the reference, the key, and the hash; never the value."""
+        return self.record().as_dict()
+
+
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass(frozen=True, slots=True)
+class OwnedRoleRecord:
+    """One owner role password a converge set, as answers and receipts name it."""
+
+    service: ResourceId
+    owner: PostgresRoleName
+    reference: SecretValueReference
+    sha256: str
+
+    def __post_init__(self) -> None:
+        """Hold a hex SHA-256 digest only."""
+        if not _SHA256_PATTERN.fullmatch(self.sha256):
+            message = f"not a hex SHA-256 digest: {self.sha256!r}"
+            raise ValueError(message)
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the reference, the key, and the hash."""
         return {
             "service": self.service.value,
             "owner": self.owner.value,
@@ -167,6 +204,24 @@ class OwnedRolePassword:
             "key": self.reference.key.value,
             "sha256": self.sha256,
         }
+
+    @classmethod
+    def from_dict(cls, content: Mapping[str, object]) -> OwnedRoleRecord:
+        """Read one record back from a schema-validated receipt."""
+        reference = content.get("passwordRef")
+        if not isinstance(reference, dict):
+            message = "owned role record has no passwordRef mapping"
+            raise TypeError(message)
+        return cls(
+            service=ResourceId.from_boundary(content.get("service")),
+            owner=PostgresRoleName.from_boundary(content.get("owner")),
+            reference=SecretValueReference(
+                environment=ResourceId.from_boundary(reference.get("environment")),
+                path=AbsolutePath.from_boundary(reference.get("path")),
+                key=SecretKeyName.from_boundary(reference.get("key")),
+            ),
+            sha256=str(content.get("sha256")),
+        )
 
 
 def owned_databases(

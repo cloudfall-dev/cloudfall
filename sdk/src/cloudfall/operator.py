@@ -29,6 +29,7 @@ from cloudfall.lifecycle import (
     run_engine_playbook,
 )
 from cloudfall.observation import load_observations
+from cloudfall.secrets import OwnedRoleRecord
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
@@ -39,6 +40,9 @@ if TYPE_CHECKING:
     from cloudfall.lifecycle import EngineContext
     from cloudfall.secrets import SopsSecretProvider
     from cloudfall.validation import SchemaCatalog
+
+type Executor = Callable[[OperatorProposal], tuple[OwnedRoleRecord, ...] | None]
+"""Runs one proposal's operation; returns the owner passwords it set, if any."""
 
 _PROPOSAL_SCHEMA = "operator-proposal.schema.json"
 _FINGERPRINT_LENGTH = 16
@@ -189,15 +193,20 @@ class ProposalOutcome:
     verified_at: str | None
     result: str
     detail: str
+    owned_roles: tuple[OwnedRoleRecord, ...] = ()
+    """Owner role passwords the run set: reference, key and hash, never a value."""
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the outcome for the proposal receipt."""
-        return {
+        result: dict[str, object] = {
             "executedAt": self.executed_at,
             "verifiedAt": self.verified_at,
             "result": self.result,
             "detail": self.detail,
         }
+        if self.owned_roles:
+            result["ownedRoles"] = [role.as_dict() for role in self.owned_roles]
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -614,6 +623,10 @@ def _proposal_from_document(document: Mapping[str, object]) -> OperatorProposal:
             verified_at=cast("str | None", raw_outcome["verifiedAt"]),
             result=cast("str", raw_outcome["result"]),
             detail=cast("str", raw_outcome["detail"]),
+            owned_roles=tuple(
+                OwnedRoleRecord.from_dict(cast("Mapping[str, object]", role))
+                for role in cast("list[object]", raw_outcome.get("ownedRoles", []))
+            ),
         )
     raw_service = operation.get("service")
     return OperatorProposal(
@@ -744,14 +757,14 @@ def _open_count(store: ProposalStore) -> int:
 def engine_executor(
     context: EngineContext,
     secrets: SopsSecretProvider,
-) -> Callable[[OperatorProposal], None]:
+) -> Executor:
     """Executor running the proposal's engine entry point.
 
     ``converge-services`` reads every owner role's password from ``secrets``
     first, so a missing one fails before any playbook runs.
     """
 
-    def _execute(proposal: OperatorProposal) -> None:
+    def _execute(proposal: OperatorProposal) -> tuple[OwnedRoleRecord, ...]:
         playbook = _OPERATION_PLAYBOOKS.get(proposal.operation_kind)
         if playbook is None:
             message = (
@@ -760,9 +773,10 @@ def engine_executor(
             )
             raise OperatorError(_ERROR_OPERATION_UNSUPPORTED, message)
         if proposal.operation_kind is OperationKind.CONVERGE_SERVICES:
-            converge_services(context, secrets)
-            return
+            passwords = converge_services(context, secrets)
+            return tuple(password.record() for password in passwords)
         run_engine_playbook(context, playbook, {})
+        return ()
 
     return _execute
 
@@ -845,7 +859,7 @@ class ApproveOptions:
 def approve(  # noqa: PLR0913 - the run's contract plus how the approval came.
     store: ProposalStore,
     proposal_id: ResourceId,
-    executor: Callable[[OperatorProposal], None],
+    executor: Executor,
     verifier: Callable[[OperatorProposal], bool],
     options: ApproveOptions | None = None,
     *,
@@ -896,7 +910,7 @@ def _execution_failure_detail(error: OperatorError | LifecycleError) -> str:
 def _execute_and_verify(  # noqa: PLR0913 - internal execution contract.
     store: ProposalStore,
     proposal: OperatorProposal,
-    executor: Callable[[OperatorProposal], None],
+    executor: Executor,
     verifier: Callable[[OperatorProposal], bool],
     approval: ApprovalRecord,
     options: ApproveOptions | None = None,
@@ -904,7 +918,7 @@ def _execute_and_verify(  # noqa: PLR0913 - internal execution contract.
     resolved_options = options if options is not None else ApproveOptions()
     executed_at = _utc_now()
     try:
-        executor(proposal)
+        owned_roles = executor(proposal) or ()
     except (OperatorError, LifecycleError) as error:
         failed = replace(
             proposal,
@@ -928,6 +942,7 @@ def _execute_and_verify(  # noqa: PLR0913 - internal execution contract.
             verified_at=None,
             result="failed",
             detail="executed, verification pending",
+            owned_roles=owned_roles,
         ),
     )
     store.update(executed)
@@ -945,6 +960,7 @@ def _execute_and_verify(  # noqa: PLR0913 - internal execution contract.
                         "trigger evidence resolved after convergence; "
                         "observed outcome matches the declared state"
                     ),
+                    owned_roles=owned_roles,
                 ),
             )
             store.update(verified)
@@ -962,6 +978,7 @@ def _execute_and_verify(  # noqa: PLR0913 - internal execution contract.
                         f"{int(resolved_options.verify_timeout_seconds)}s; "
                         "remediation did not restore the declared state"
                     ),
+                    owned_roles=owned_roles,
                 ),
             )
             store.update(failed)
@@ -1062,12 +1079,16 @@ class AutonomyReport:
 
     executed: tuple[tuple[str, str], ...]
     withheld: tuple[tuple[str, str], ...]
+    owned_roles: Mapping[str, tuple[OwnedRoleRecord, ...]] = field(
+        default_factory=dict
+    )
+    """Owner role passwords each executed proposal set, by proposal id."""
 
     def as_dict(self) -> dict[str, object]:
         """Serialize for structured run output."""
         return {
             "executed": [
-                {"proposal": proposal_id, "status": status}
+                _executed_entry(proposal_id, status, self.owned_roles.get(proposal_id))
                 for proposal_id, status in self.executed
             ],
             "withheld": [
@@ -1080,7 +1101,7 @@ class AutonomyReport:
 def autonomous_pass(  # noqa: PLR0913 - boundary mirrors approve().
     store: ProposalStore,
     inventory: PlatformInventory,
-    executor: Callable[[OperatorProposal], None],
+    executor: Executor,
     verifier_for: Callable[
         [OperatorProposal], Callable[[OperatorProposal], bool]
     ],
@@ -1097,6 +1118,7 @@ def autonomous_pass(  # noqa: PLR0913 - boundary mirrors approve().
     }
     executed: list[tuple[str, str]] = []
     withheld: list[tuple[str, str]] = []
+    owned_roles: dict[str, tuple[OwnedRoleRecord, ...]] = {}
     for proposal in store.list():
         if proposal.status is not ProposalStatus.PROPOSED:
             continue
@@ -1127,7 +1149,20 @@ def autonomous_pass(  # noqa: PLR0913 - boundary mirrors approve().
             options,
         )
         executed.append((result.resource_id.value, result.status.value))
-    return AutonomyReport(executed=tuple(executed), withheld=tuple(withheld))
+        if result.outcome is not None and result.outcome.owned_roles:
+            owned_roles[result.resource_id.value] = result.outcome.owned_roles
+    return AutonomyReport(
+        executed=tuple(executed), withheld=tuple(withheld), owned_roles=owned_roles
+    )
+
+
+def _executed_entry(
+    proposal_id: str, status: str, owned_roles: tuple[OwnedRoleRecord, ...] | None
+) -> dict[str, object]:
+    entry: dict[str, object] = {"proposal": proposal_id, "status": status}
+    if owned_roles:
+        entry["ownedRoles"] = [role.as_dict() for role in owned_roles]
+    return entry
 
 
 def gateway_feed(

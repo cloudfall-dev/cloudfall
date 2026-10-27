@@ -22,6 +22,7 @@ import pytest
 import yaml
 from cloudfall.agent_tools import AgentConfig
 from cloudfall.cli import main
+from cloudfall.decision import ApprovalChannel
 from cloudfall.domain import ResourceId
 from cloudfall.inventory import PlatformInventory
 from cloudfall.lifecycle import (
@@ -33,13 +34,24 @@ from cloudfall.lifecycle import (
 )
 from cloudfall.migrate import MigrateError, MigrateOptions, execute_migration
 from cloudfall.operator import (
+    AutonomyReport,
     OperationKind,
     ProposalStatus,
+    ProposalStore,
+    approve,
     engine_executor,
     propose_for_drift,
 )
-from cloudfall.secrets import PASSWORD_FILES_VARIABLE, SopsSecretProvider
-from cloudfall.validation import ConfigValidationError, validate_config
+from cloudfall.secrets import (
+    PASSWORD_FILES_VARIABLE,
+    OwnedRoleRecord,
+    SopsSecretProvider,
+)
+from cloudfall.validation import (
+    ConfigValidationError,
+    SchemaCatalog,
+    validate_config,
+)
 from cloudfall_engine.ansible_inventory import render_ansible_inventory
 from mcp import ClientSession, StdioServerParameters, stdio_client
 from mcp.types import TextContent
@@ -54,6 +66,13 @@ PASSWORD_REF = {
     "environment": "production",
     "path": "/billing/postgresql",
     "key": "BILLING_PASSWORD",
+}
+OWNED_ROLE: dict[str, object] = {
+    "service": "postgresql-billing",
+    "owner": "billing",
+    "passwordRef": PASSWORD_REF,
+    "key": "BILLING_PASSWORD",
+    "sha256": PASSWORD_SHA256,
 }
 
 
@@ -303,23 +322,61 @@ def test_s006_7_the_operator_marks_the_proposal_failed_and_runs_nothing(
 
 
 # proves: S-006-6
-def test_s006_6_the_operator_converge_stages_the_password(tmp_path: Path) -> None:
+def test_s006_6_operator_approve_answers_and_receipts_the_hash_only(
+    tmp_path: Path,
+) -> None:
     project = _project(tmp_path)
     secrets = _secrets(project, f"BILLING_PASSWORD={PASSWORD}\n")
     recorder = Recorder()
-    execute = engine_executor(_context(project, recorder), _provider(secrets))
+    store = ProposalStore(
+        directory=project / "tmp" / "operator" / "proposals",
+        catalog=SchemaCatalog(SCHEMAS),
+    )
+    proposal = propose_for_drift(
+        ResourceId("h1"),
+        ("services.bind[postgresql-billing]",),
+        OperationKind.CONVERGE_SERVICES,
+        "2026-10-27T10:00:00Z",
+    )
+    store.save(proposal)
 
-    execute(
-        propose_for_drift(
-            ResourceId("h1"),
-            ("services.bind[postgresql-billing]",),
-            OperationKind.CONVERGE_SERVICES,
-            "2026-10-27T10:00:00Z",
-        )
+    approved = approve(
+        store,
+        proposal.resource_id,
+        engine_executor(_context(project, recorder), _provider(secrets)),
+        lambda _: True,
+        via=ApprovalChannel.TERMINAL,
     )
 
     assert recorder.staged["postgresql-billing/billing"][0] == PASSWORD
+    answer = approved.as_document()
+    outcome = cast("dict[str, dict[str, object]]", answer["spec"])["outcome"]
+    assert outcome["ownedRoles"] == [OWNED_ROLE]
+    receipt = (store.directory / f"{proposal.resource_id.value}.json").read_text(
+        encoding="utf-8"
+    )
+    assert json.loads(receipt)["spec"]["outcome"]["ownedRoles"] == [OWNED_ROLE]
+    assert store.load(proposal.resource_id) == approved
+    assert PASSWORD not in json.dumps(answer)
+    assert PASSWORD not in receipt
     assert all(PASSWORD not in " ".join(step.argv) for step in recorder.steps)
+    assert PASSWORD not in _everything_written(project)
+
+
+# proves: S-006-6
+def test_s006_6_operator_run_names_the_hash_of_each_executed_proposal() -> None:
+    record = OwnedRoleRecord.from_dict(OWNED_ROLE)
+
+    report = AutonomyReport(
+        executed=(("op-a", "verified"), ("op-b", "verified")),
+        withheld=(),
+        owned_roles={"op-a": (record,)},
+    )
+
+    assert report.as_dict()["executed"] == [
+        {"proposal": "op-a", "status": "verified", "ownedRoles": [OWNED_ROLE]},
+        {"proposal": "op-b", "status": "verified"},
+    ]
 
 
 def _agent_config(project: Path, recorder: Recorder, secrets: Path) -> AgentConfig:

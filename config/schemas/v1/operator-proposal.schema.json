@@ -247,6 +247,62 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 1000
+            },
+            "ownedRoles": {
+              "description": "Owner role passwords the run set: the reference, the key, and the value's SHA-256, never the value",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "service": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+                  },
+                  "owner": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                  },
+                  "passwordRef": {
+                    "type": "object",
+                    "properties": {
+                      "environment": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+                      },
+                      "path": {
+                        "type": "string",
+                        "pattern": "^/"
+                      },
+                      "key": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,254}$"
+                      }
+                    },
+                    "required": [
+                      "environment",
+                      "path",
+                      "key"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "key": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,254}$"
+                  },
+                  "sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                },
+                "required": [
+                  "service",
+                  "owner",
+                  "passwordRef",
+                  "key",
+                  "sha256"
+                ],
+                "additionalProperties": false
+              }
             }
           },
           "required": [

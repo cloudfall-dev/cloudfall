@@ -203,6 +203,7 @@ from cloudfall.operator import (
     AlertFeed,
     ApproveOptions,
     DriftCheck,
+    Executor,
     OperatorError,
     PassKind,
     ProposalStatus,
@@ -2709,7 +2710,7 @@ class OperatorEngineArgs(ProposalArgs):
 
     def executor(
         self, fleet: Fleet, ctx: Ctx
-    ) -> Callable[[OperatorProposal], None]:
+    ) -> Executor:
         """Return the runner of a proposal's operation, reading owner passwords."""
         return engine_executor(
             self.context(fleet, ctx),
