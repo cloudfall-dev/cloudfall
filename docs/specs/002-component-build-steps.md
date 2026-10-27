@@ -1,6 +1,6 @@
 # S-002: Component build steps
 
-status: approved
+status: built
 
 ## Problem
 
@@ -139,3 +139,19 @@ validate`, and the `build_artifact` MCP tool.
 - cloudfall-dev/cloudfall#115: S-002-2, S-002-3, S-002-4, S-002-5, S-002-6, S-002-7, S-002-8, S-002-9, S-002-10, S-002-12, S-002-13
 
 ## Verification
+
+- S-002-1: `test_s002_1_component_with_build_steps_validates`, `test_s002_1_existing_component_without_build_is_unchanged` and `test_s002_1_build_step_timeout_accepts_its_bounds` (`sdk/tests/test_component_build_validation.py`) passed, and `cloudfall config validate --project config/examples` still exits 0
+- S-002-2: `test_s002_2_the_tarball_holds_the_gitignored_build_output` runs `cloudfall-engine artifact build --ref <sha>` as a child process with stand-in `node` and `pnpm` on a temporary `PATH`; the tarball held `./web/dist/index.html` although the fixture's `.gitignore` lists `web/dist/`
+- S-002-3: `test_s002_3_the_tarball_holds_every_tracked_file_and_no_node_modules` compared the tarball against `git ls-tree -r` at the commit: every tracked file, no `node_modules` entry, no `.git`
+- S-002-4: `test_s002_4_the_metadata_records_the_steps_and_tool_versions` read `spec.build.steps` (both steps in order) and `spec.build.tools` `{"node": "22.3.0", "pnpm": "9.1.0"}` from the versions the stand-ins printed (`v22.3.0`, `9.1.0`), and validated the file against `artifact.schema.json`
+- S-002-5: `test_s002_5_a_missing_tool_fails_before_any_clone` exited 81 with `artifact_build_tool_missing` and `tool: node`; the logging `git` wrapper on `PATH` recorded no `clone`, and no file was written
+- S-002-6: `test_s002_6_an_old_tool_names_the_tool_and_both_versions` (`node` printing `v20.11.1` against `22.0.0`) and `test_s002_6_a_tool_that_prints_no_version_is_unsupported` exited 81 with `artifact_build_tool_unsupported`, naming the tool and both versions
+- S-002-7: `test_s002_7_a_failing_step_names_itself_and_writes_nothing` exited 81 with `artifact_build_step_failed`, `step: 1`, `argv: ["pnpm", "fail"]`, `exitCode: 3` and the step's stderr tail; `test_s002_7_a_step_past_its_timeout_fails_the_build` covered a 1-second `timeoutSeconds`; neither left a `.tar.gz` or `.json` in the output directory
+- S-002-8: `test_s002_8_a_missing_include_path_writes_no_artifact` exited 81 with `artifact_include_missing` naming `web/dist` and wrote nothing
+- S-002-9: `test_s002_9_step_stdout_stays_out_of_the_json_envelope` and `test_s002_9_stdout_is_exactly_one_envelope` parsed the command's whole stdout as one JSON envelope, on success and on a failed step; the steps' stdout lines were on stderr
+- S-002-10: `test_s002_10_a_step_sees_ci_and_none_of_the_controller_secrets` set `HCLOUD_TOKEN` and `SOPS_AGE_KEY` for the command; the environment the build step dumped into the archive had `CI=true`, the controller's `PATH`, `HOME` and `LANG`, and neither secret
+- S-002-11: the `test_s002_11_*` tests in `sdk/tests/test_component_build_validation.py` passed (undeclared tool, absolute and `..` paths, `buildTools` or `artifact` without `build`, malformed steps)
+- S-002-12: `test_s002_12_deploy_and_rollback_carry_the_built_files` builds two releases, runs the `cloudfall_deploy` role's own path, digest, unpack and switch tasks and then `rollback.yml`'s switch tasks under `ansible-playbook` against a directory on the controller (ownership dropped, no systemd); `releases/<release>/web/dist/index.html` held each build's page and `current/web/dist/` followed the deploy and the rollback. It needs GNU tar for `unarchive`, so it runs on CI's Linux runner; on macOS the same flow passed with the unpack done by `tar -xzf`. Not run against a live Debian host
+- S-002-13: `test_s002_13_a_component_without_build_packages_the_clean_tree` found the archive equal to the clean checkout's tracked files and directories, no `git ls-files` run and no `spec.build` key; `test_s002_13_the_built_archive_lists_entries_like_the_plain_one` checked a build adds only its include paths
+- S-002-14: `test_s002_14_reserved_runtimes_are_refused_as_config_invalid` (`sdk/tests/test_validation.py`) passed
+- S-002-15: `test_s002_15_node_web_service_is_a_gap_not_a_component` (`sdk/tests/test_importer.py`) passed

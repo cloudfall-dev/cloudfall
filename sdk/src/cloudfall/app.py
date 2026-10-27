@@ -4334,8 +4334,9 @@ def _engine_tools(args: McpServeArgs, root: ServerRoot, ctx: Ctx) -> list[McpToo
         McpTool(
             name="build_artifact",
             description=(
-                "Clone, package, and hash one component release under the "
-                "artifacts directory, for deploy to ship"
+                "Clone, build (the component's declared build steps, on this "
+                "controller), package, and hash one component release under "
+                "the artifacts directory, for deploy to ship"
             ),
             input_schema={
                 "type": "object",

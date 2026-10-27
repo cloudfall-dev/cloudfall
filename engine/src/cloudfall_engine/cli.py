@@ -47,8 +47,10 @@ from cloudfall.validation import ConfigValidationError, validate_config
 from treaty import (
     App,
     Arg,
+    CliExit,
     Ctx,
     Exit,
+    ExitCodeName,
     External,
     Flag,
     Out,
@@ -63,6 +65,7 @@ from cloudfall_engine.artifact import (
     GIT_REF_PATTERN,
     GIT_TIMEOUT_SECONDS,
     ArtifactBuildError,
+    BuildStepTimeoutError,
     build_artifact,
 )
 from cloudfall_engine.playbook import (
@@ -78,6 +81,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from cloudfall.secrets import OwnedRolePassword
+
+    from cloudfall.domain import BuildTimeoutSeconds
+    from treaty import Completed
 
 app = App(
     "cloudfall-engine",
@@ -262,13 +268,17 @@ class BuiltRelease:
 
 @artifact.command(
     "build",
-    description="Clone, package, and hash one component release",
+    description=(
+        "Clone, build (the component's declared steps), package, and hash "
+        "one component release"
+    ),
     danger_level="mutating",
     exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "ARTIFACT_BUILD_FAILED"],
     timeout=3 * GIT_TIMEOUT_SECONDS,
     subprocess=Subprocess("git"),
     required_tools={"git": GIT_MINIMUM_VERSION},
     supports_raw_payload=True,
+    child_log=True,
     examples=[
         (
             "Package the main branch of one component",
@@ -277,7 +287,10 @@ class BuiltRelease:
     ],
 )
 def build(args: BuildArgs, ctx: Ctx, project: Project) -> BuiltRelease:
-    """Clone the component at ``--ref`` and package it under the project."""
+    """Clone the component at ``--ref``, build it, and package it.
+
+    Build step output streams to stderr, never into the envelope on stdout.
+    """
     try:
         built = build_artifact(
             project.inventory,
@@ -288,10 +301,12 @@ def build(args: BuildArgs, ctx: Ctx, project: Project) -> BuiltRelease:
             run=partial(
                 ctx.run, timeout=Timeout(GIT_TIMEOUT_SECONDS), check=False
             ),
+            run_step=partial(_run_build_step, ctx),
+            environment=dict(os.environ),
         )
     except ArtifactBuildError as error:
         raise Exit.ARTIFACT_BUILD_FAILED(
-            error.detail, context={"code": error.code}
+            error.detail, context={"code": error.code, **error.context}
         ) from error
     except ConfigValidationError as error:
         raise _config_invalid(error) from error
@@ -307,6 +322,27 @@ def build(args: BuildArgs, ctx: Ctx, project: Project) -> BuiltRelease:
         size_bytes=built.size_bytes,
         built_at=built.built_at,
     )
+
+
+def _run_build_step(
+    ctx: Ctx, argv: Sequence[str], *, cwd: Path, timeout: BuildTimeoutSeconds
+) -> Completed:
+    """Run one build step, its output streamed to stderr as plain text."""
+    try:
+        return ctx.run(
+            argv,
+            cwd=cwd,
+            timeout=Timeout(timeout.value),
+            check=False,
+            stream="always",
+        )
+    except CliExit as error:
+        # Only the step's own limit is a step failure; running out of the
+        # command's time stays treaty's TIMEOUT.
+        own_limit = error.context.get("timeout_ms") == timeout.value * 1000
+        if error.name == ExitCodeName("TIMEOUT") and own_limit:
+            raise BuildStepTimeoutError(error.message) from error
+        raise
 
 
 playbook = app.group(
