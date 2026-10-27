@@ -206,13 +206,24 @@
 
 # The block is written with remoteAccess and removed without it, so an
 # earlier opening never lingers; lines outside the markers stay untouched.
+# A reload that failed leaves a marker file, so the next run reloads even
+# though the file on disk no longer changes.
 - name: Converge the remote access block of pg_hba.conf
   vars:
     cloudfall_postgresql_hba_path: >-
       /etc/postgresql/{{
         cloudfall_postgresql_service.postgresql.majorVersion
       }}/main/pg_hba.conf
+    cloudfall_postgresql_hba_reload_marker: >-
+      {{ cloudfall_postgresql_state_directory }}/{{
+        cloudfall_postgresql_service.id
+      }}.pg_hba-reload-pending
   block:
+    - name: Read whether an earlier pg_hba.conf reload is pending
+      ansible.builtin.stat:
+        path: "{{ cloudfall_postgresql_hba_reload_marker }}"
+      register: cloudfall_postgresql_hba_pending
+
     - name: Write or remove the Cloudfall block in pg_hba.conf
       ansible.builtin.blockinfile:
         path: "{{ cloudfall_postgresql_hba_path }}"
@@ -253,7 +264,9 @@
         or cloudfall_postgresql_hba_errors.stdout_lines | length > 0
       when:
         - not ansible_check_mode
-        - cloudfall_postgresql_hba is changed
+        - >-
+          cloudfall_postgresql_hba is changed
+          or cloudfall_postgresql_hba_pending.stat.exists
 
     - name: Reload PostgreSQL to apply pg_hba.conf
       ansible.builtin.command:
@@ -274,8 +287,37 @@
         or cloudfall_postgresql_hba_reload.stdout | trim != 't'
       when:
         - not ansible_check_mode
-        - cloudfall_postgresql_hba is changed
+        - >-
+          cloudfall_postgresql_hba is changed
+          or cloudfall_postgresql_hba_pending.stat.exists
+
+    - name: Clear the pending pg_hba.conf reload once it applied
+      ansible.builtin.file:
+        path: "{{ cloudfall_postgresql_hba_reload_marker }}"
+        state: absent
+      when:
+        - not ansible_check_mode
+        - cloudfall_postgresql_hba_pending.stat.exists
   rescue:
+    # PostgreSQL may still serve the lines of the last reload: record that a
+    # reload is owed before the file changes again.
+    - name: Create the PostgreSQL role state directory
+      ansible.builtin.file:
+        path: "{{ cloudfall_postgresql_state_directory }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Record that pg_hba.conf still needs a reload
+      ansible.builtin.copy:
+        dest: "{{ cloudfall_postgresql_hba_reload_marker }}"
+        content: |
+          {{ cloudfall_postgresql_service.id }}: pg_hba.conf reload pending
+        owner: root
+        group: root
+        mode: "0600"
+
     - name: Close remote access when pg_hba.conf could not be applied
       ansible.builtin.blockinfile:
         path: "{{ cloudfall_postgresql_hba_path }}"
@@ -286,7 +328,8 @@
       ansible.builtin.fail:
         msg: >-
           pg_hba.conf of service {{ cloudfall_postgresql_service.id }} was not
-          reloaded and its Cloudfall block was removed:
+          reloaded and its Cloudfall block was removed; the next converge
+          reloads it:
           {{
             cloudfall_postgresql_hba_errors.stdout_lines | default([])
             | join('; ')

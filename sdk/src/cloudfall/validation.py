@@ -698,9 +698,44 @@ def _validate_postgresql_service(
             index,
             has_owner=bool(owners),
         )
+        _validate_remote_access_names(document, databases)
 
 
 _RESERVED_POSTGRES_ROLES = frozenset({"postgres", "alloy"})
+# pg_hba.conf reads these bare words as keywords, not names: a database named
+# all would open every database to its owner, an owner named all every role.
+_PG_HBA_KEYWORDS = frozenset(
+    {"all", "sameuser", "samerole", "samegroup", "replication"}
+)
+
+
+def _validate_remote_access_names(
+    document: ResourceDocument,
+    databases: Sequence[tuple[int, Mapping[str, object]]],
+) -> None:
+    """Refuse an owned database or owner pg_hba.conf would read as a keyword."""
+    for position, database in databases:
+        if "owner" not in database:
+            continue
+        for field_name in ("name", "owner"):
+            value = database.get(field_name)
+            if value in _PG_HBA_KEYWORDS:
+                issue = ValidationIssue(
+                    code="service_remote_access_name_reserved",
+                    message=(
+                        f"database {field_name} {value!r} is a pg_hba.conf "
+                        "keyword; remoteAccess cannot name it in a hostssl line"
+                    ),
+                    source=document.source,
+                    field_path=(
+                        "spec",
+                        "postgresql",
+                        "databases",
+                        position,
+                        field_name,
+                    ),
+                )
+                raise ConfigValidationError(issue)
 
 
 def _validate_service_database_owners(

@@ -334,3 +334,39 @@ def test_remote_access_listen_address_is_one_canonical_address(
         "remoteAccess",
         "listenAddress",
     )
+
+
+PG_HBA_KEYWORDS = ["all", "sameuser", "samerole", "samegroup", "replication"]
+
+
+@pytest.mark.parametrize("keyword", PG_HBA_KEYWORDS)
+@pytest.mark.parametrize("field_name", ["name", "owner"])
+def test_remote_access_refuses_a_name_pg_hba_reads_as_a_keyword(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    keyword: str,
+    field_name: str,
+) -> None:
+    database = _billing(**{field_name: keyword})
+    project = _standalone_project(
+        tmp_path, _owned_service([database], remote_access=REMOTE_ACCESS)
+    )
+
+    exit_code, document = _validate(project, capsys)
+
+    assert exit_code == 80
+    assert document["error"]["code"] == "CONFIG_INVALID"
+    context = document["error"]["context"]
+    assert context["code"] == "service_remote_access_name_reserved"
+    assert context["field"] == f"spec.postgresql.databases.0.{field_name}"
+
+
+@pytest.mark.parametrize("keyword", PG_HBA_KEYWORDS)
+@pytest.mark.parametrize("field_name", ["name", "owner"])
+def test_a_keyword_name_validates_without_remote_access(
+    tmp_path: Path, keyword: str, field_name: str
+) -> None:
+    database = _billing(**{field_name: keyword})
+    project = _standalone_project(tmp_path, _owned_service([database]))
+
+    assert validate_config(project, SCHEMAS).resource_count == 3

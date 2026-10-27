@@ -438,12 +438,23 @@ if "pg_hba_file_rules" in command:
     if errors.exists():
         print(errors.read_text(), end="")
 elif "pg_reload_conf" in command:
+    if log.joinpath("reload-fails").exists():
+        print("f")
+        sys.exit()
     with log.joinpath("reloads").open("a") as reloads:
         reloads.write("reload\\n")
     print("t")
 else:
     sys.exit("unexpected psql command: " + command)
 """
+
+
+def _state(tmp_path: Path) -> Path:
+    return tmp_path / "state"
+
+
+def _pending_reload(tmp_path: Path) -> Path:
+    return _state(tmp_path) / "postgresql-main.pg_hba-reload-pending"
 
 
 def _hba_play(
@@ -461,11 +472,16 @@ def _hba_play(
         if task["name"] == "Converge the remote access block of pg_hba.conf"
     )
     block["vars"]["cloudfall_postgresql_hba_path"] = str(hba)
-    for task in block["block"]:
+    for task in [*block["block"], *block["rescue"]]:
         command = task.get("ansible.builtin.command")
         if command is not None:
             command["argv"][0] = str(psql)
             del task["become"], task["become_user"]
+        # The test runs unprivileged; the host's files stay root's.
+        for module in ("ansible.builtin.file", "ansible.builtin.copy"):
+            if module in task:
+                task[module].pop("owner", None)
+                task[module].pop("group", None)
     templates = tmp_path / "templates"
     templates.mkdir(exist_ok=True)
     shutil.copy(POSTGRESQL / "templates" / "pg_hba-remote-access.j2", templates)
@@ -480,6 +496,7 @@ def _hba_play(
                 "cloudfall_postgresql_hba_marker": _defaults()[
                     "cloudfall_postgresql_hba_marker"
                 ],
+                "cloudfall_postgresql_state_directory": str(_state(tmp_path)),
             },
             "tasks": [block],
         }
@@ -584,3 +601,54 @@ def test_a_pg_hba_conf_postgresql_cannot_read_is_never_reloaded(
     assert _reloads(log) == 0
     # The opening is closed again, so it never takes effect at a later restart.
     assert hba.read_text(encoding="utf-8") == DEBIAN_HBA
+
+
+def test_a_failed_reload_is_owed_until_a_later_converge_applies_it(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path, REMOTE_ACCESS)
+    opened = _service(_host(_inventory(project)))
+    _project(tmp_path, None)
+    closed = _service(_host(_inventory(project)))
+    log = tmp_path / "psql-log"
+    log.mkdir()
+    hba = tmp_path / "pg_hba.conf"
+    hba.write_text(DEBIAN_HBA, encoding="utf-8")
+    opening = _converge_hba(tmp_path, opened, hba, log)
+    (log / "reload-fails").touch()
+
+    failed = _converge_hba(tmp_path, closed, hba, log)
+    marker_after_failure = _pending_reload(tmp_path).read_text(encoding="utf-8")
+    (log / "reload-fails").unlink()
+    retried = _converge_hba(tmp_path, closed, hba, log)
+    reloads_after_retry = _reloads(log)
+    settled = _converge_hba(tmp_path, closed, hba, log)
+
+    assert opening.returncode == 0, opening.stdout + opening.stderr
+    assert failed.returncode != 0
+    assert marker_after_failure == "postgresql-main: pg_hba.conf reload pending\n"
+    # The file no longer changes, yet the owed reload runs and is cleared.
+    assert retried.returncode == 0, retried.stdout + retried.stderr
+    assert reloads_after_retry == 2
+    assert not _pending_reload(tmp_path).exists()
+    # With neither a change nor a marker, nothing reloads or reports a change.
+    assert settled.returncode == 0, settled.stdout + settled.stderr
+    assert _reloads(log) == 2
+    assert "changed=0" in settled.stdout
+    assert hba.read_text(encoding="utf-8") == DEBIAN_HBA
+
+
+def test_a_pg_hba_conf_postgresql_cannot_read_owes_a_reload(
+    tmp_path: Path,
+) -> None:
+    opened = _service(_host(_inventory(_project(tmp_path, REMOTE_ACCESS))))
+    log = tmp_path / "psql-log"
+    log.mkdir()
+    (log / "errors").write_text('3: invalid connection type "hostsssl"\n')
+    hba = tmp_path / "pg_hba.conf"
+    hba.write_text(DEBIAN_HBA, encoding="utf-8")
+
+    done = _converge_hba(tmp_path, opened, hba, log)
+
+    assert done.returncode != 0
+    assert _pending_reload(tmp_path).exists()

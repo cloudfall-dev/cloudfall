@@ -9,3 +9,4 @@ cloudfall_postgresql_password_path: /var/lib/postgresql/.cloudfall-owner-passwor
 cloudfall_postgresql_ssl_cert_file: /etc/ssl/certs/ssl-cert-snakeoil.pem
 cloudfall_postgresql_ssl_key_file: /etc/ssl/private/ssl-cert-snakeoil.key
 cloudfall_postgresql_hba_marker: "# {mark} CLOUDFALL MANAGED REMOTE ACCESS"
+cloudfall_postgresql_state_directory: /var/lib/cloudfall/postgresql

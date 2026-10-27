@@ -79,8 +79,10 @@ same `bind.port` serves both addresses. With `remoteAccess` declared:
 on the service names an `owner` (`service_remote_access_unused`), when the server's server
 type declares no `firewall` (`service_remote_access_unfirewalled`), when that firewall's
 `allowedInbound` already opens the service port to everyone
-(`service_remote_access_port_open`), or when a source is `0.0.0.0/0` or `::/0`
-(`service_remote_access_open`). With `remoteAccess` absent, PostgreSQL listens on
+(`service_remote_access_port_open`), when a source is `0.0.0.0/0` or `::/0`
+(`service_remote_access_open`), or when an `owner` database or its owner is named `all`,
+`sameuser`, `samerole`, `samegroup` or `replication`, words `pg_hba.conf` reads as keywords
+(`service_remote_access_name_reserved`). Without `remoteAccess` those names stay allowed. With `remoteAccess` absent, PostgreSQL listens on
 `127.0.0.1` only, `pg_hba.conf` keeps no Cloudfall block (a block left by an earlier
 declaration is removed), and no PostgreSQL rule is added to nftables. Closed is the default.
 
@@ -118,7 +120,7 @@ Touches `config/schemas/v1/service.schema.json`, `sdk/src/cloudfall/validation.p
 - S-006-8: With `remoteAccess` of `listenAddress: 10.0.0.2` and `allowedSources: [10.0.0.0/24]`, the converged `cloudfall.conf` reads `listen_addresses = '127.0.0.1,10.0.0.2'` and `ssl = on`, the Cloudfall block in `pg_hba.conf` holds exactly `hostssl billing billing 10.0.0.0/24 scram-sha-256`, and the rendered nftables ruleset holds `ip saddr 10.0.0.0/24 tcp dport 5432 accept` and no unrestricted rule for port 5432
 - S-006-9: On a proving pair of hosts, `psql` from an address in `allowedSources` as `billing` with `sslmode=require` connects, from an address outside it gets no connection, and from an allowed address with `sslmode=disable` is refused with `no pg_hba.conf entry`
 - S-006-10: Removing `remoteAccess` and converging baseline and services leaves `listen_addresses = '127.0.0.1'`, no Cloudfall block in `pg_hba.conf`, and no rule for the service port in nftables
-- S-006-11: `remoteAccess` fails `cloudfall config validate` with `CONFIG_INVALID` and code `service_remote_access_unused` when no database names an `owner`, `service_remote_access_unfirewalled` when the server type declares no `firewall`, `service_remote_access_port_open` when its `allowedInbound` opens the service port, and `service_remote_access_open` for a source of `0.0.0.0/0` or `::/0`
+- S-006-11: `remoteAccess` fails `cloudfall config validate` with `CONFIG_INVALID` and code `service_remote_access_unused` when no database names an `owner`, `service_remote_access_unfirewalled` when the server type declares no `firewall`, `service_remote_access_port_open` when its `allowedInbound` opens the service port, `service_remote_access_open` for a source of `0.0.0.0/0` or `::/0`, and `service_remote_access_name_reserved` for an `owner` database or owner named `all`, `sameuser`, `samerole`, `samegroup` or `replication`
 - S-006-12: For the project in `config/examples`, `cloudfall-engine inventory render` writes a byte-identical inventory before and after the change, and the rendered `cloudfall.conf`, `nftables.conf`, backup script, and restore-check script are identical
 - S-006-13: For the service of S-006-1, the backup script writes `billing-<timestamp>.dump`, the restore drill restores it and passes, and `cloudfall data copy <service> --database billing --source-url-file <file> --yes` restores as role `billing` and writes a receipt with `spec.owner` of `billing`
 
