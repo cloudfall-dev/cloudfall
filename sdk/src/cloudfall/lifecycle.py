@@ -23,6 +23,12 @@ from jsonschema.exceptions import ValidationError
 
 from cloudfall.domain import AbsolutePath
 from cloudfall.inventory import PlatformInventory
+from cloudfall.secrets import (
+    SecretsError,
+    owned_databases,
+    owned_role_passwords,
+    staged_password_files,
+)
 from cloudfall.validation import SchemaCatalog, validate_config
 
 if TYPE_CHECKING:
@@ -40,6 +46,7 @@ if TYPE_CHECKING:
         DomainInventory,
         ServiceInventory,
     )
+    from cloudfall.secrets import OwnedRolePassword, SopsSecretProvider
 
 _ARTIFACT_SCHEMA = "artifact.schema.json"
 _OUTPUT_TAIL_CHARACTERS = 2000
@@ -509,6 +516,47 @@ def converge_domains(context: EngineContext, run: DomainsRun) -> None:
     proxy_server = _domain(context, run.domain_id).proxy.server_id
     extra_vars["cloudfall_domains_domain_id"] = run.domain_id.value
     run_engine_playbook(context, "domains.yml", extra_vars, limit=proxy_server)
+
+
+ERROR_SERVICES_SECRET = "lifecycle_services_secret_unavailable"  # noqa: S105 - a code
+"""An owner role's password could not be read; no playbook ran."""
+
+
+def services_passwords(
+    context: EngineContext, provider: SopsSecretProvider
+) -> tuple[OwnedRolePassword, ...]:
+    """Decrypt every owner role's password before ``services.yml`` may run.
+
+    A missing file or key fails here, naming the expected path and key, so
+    the converge stops before any playbook starts.
+    """
+    state = validate_config(context.project_directory, context.schema_directory)
+    inventory = PlatformInventory.from_state(state)
+    try:
+        return owned_role_passwords(owned_databases(inventory), provider)
+    except SecretsError as error:
+        raise LifecycleError(ERROR_SERVICES_SECRET, error.message) from error
+
+
+def run_services_playbook(
+    context: EngineContext, passwords: tuple[OwnedRolePassword, ...]
+) -> None:
+    """Run ``services.yml`` with each owner password staged in a 0600 file.
+
+    The files live in a private temp dir outside the project, removed when
+    the run ends, whether it passed or failed.
+    """
+    with staged_password_files(passwords) as extra_vars:
+        run_engine_playbook(context, "services.yml", extra_vars)
+
+
+def converge_services(
+    context: EngineContext, provider: SopsSecretProvider
+) -> tuple[OwnedRolePassword, ...]:
+    """Converge every declared service; return the passwords it set, by hash."""
+    passwords = services_passwords(context, provider)
+    run_services_playbook(context, passwords)
+    return passwords
 
 
 def build_release_artifact(

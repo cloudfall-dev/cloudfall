@@ -15,22 +15,35 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+import tempfile
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from cloudfall.inventory import PlatformInventory
+from cloudfall.domain import (
+    AbsolutePath,
+    PostgresRoleName,
+    ResourceId,
+    SecretKeyName,
+)
+from cloudfall.inventory import (
+    OwnedPostgresDatabase,
+    PlatformInventory,
+    SecretValueReference,
+)
 from cloudfall.validation import SchemaCatalog, validate_config
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-    from pathlib import Path
+    from collections.abc import Callable, Iterable, Iterator, Mapping
 
-    from cloudfall.domain import ResourceId
     from cloudfall.inventory import ComponentInventory, SecretReference
     from cloudfall.lifecycle import EngineContext
 
 ERROR_SOPS_MISSING = "secrets_sops_missing"
+ERROR_KEY_MISSING = "secrets_key_missing"
+_ERROR_OWNER_CONFLICT = "secrets_owner_conflict"
 _ERROR_SOURCE_MISSING = "secrets_source_missing"
 _ERROR_SOURCE_INVALID = "secrets_source_invalid"
 _ERROR_COMPONENT_UNKNOWN = "secrets_component_unknown"
@@ -89,7 +102,9 @@ class SopsSecretProvider:
         )
         return _parse_dotenv(text, source)
 
-    def source_path(self, reference: SecretReference) -> Path:
+    def source_path(
+        self, reference: SecretReference | SecretValueReference
+    ) -> Path:
         """Return the encrypted file backing one reference."""
         relative = reference.path.value.lstrip("/")
         return (
@@ -97,6 +112,193 @@ class SopsSecretProvider:
             / reference.environment.value
             / f"{relative}.env"
         )
+
+    def fetch_value(self, reference: SecretValueReference) -> str:
+        """Decrypt one reference's fragment and return its one key's value.
+
+        A missing file, a missing key, or an empty value fails naming the
+        expected path and key, never a value.
+        """
+        source = self.source_path(reference)
+        key = reference.key.value
+        if not source.is_file():
+            message = (
+                f"secret source does not exist: expected {source} holding key "
+                f"{key}"
+            )
+            raise SecretsError(_ERROR_SOURCE_MISSING, message)
+        text = (
+            self.decrypt(source)
+            if self.decrypt is not None
+            else _sops_decrypt(source)
+        )
+        values = [value for name, value in _parse_dotenv(text, source) if name == key]
+        if not values:
+            message = f"secret key {key} is missing from {source}"
+            raise SecretsError(ERROR_KEY_MISSING, message)
+        if len(values) > 1:
+            message = f"secret key {key} appears more than once in {source}"
+            raise SecretsError(_ERROR_SOURCE_INVALID, message)
+        if not values[0]:
+            message = f"secret key {key} in {source} holds an empty value"
+            raise SecretsError(ERROR_KEY_MISSING, message)
+        return values[0]
+
+
+@dataclass(frozen=True, slots=True)
+class OwnedRolePassword:
+    """The decrypted password of one owner role, held only in memory.
+
+    ``value`` stays out of ``repr`` and out of ``as_dict``: what leaves this
+    object is the reference and the value's SHA-256.
+    """
+
+    service: ResourceId
+    owner: PostgresRoleName
+    reference: SecretValueReference
+    value: str = field(repr=False)
+
+    @property
+    def sha256(self) -> str:
+        """Return the hex SHA-256 of the value, for receipts and answers."""
+        return hashlib.sha256(self.value.encode("utf-8")).hexdigest()
+
+    def record(self) -> OwnedRoleRecord:
+        """Return what may be recorded of this password: never the value."""
+        return OwnedRoleRecord(
+            service=self.service,
+            owner=self.owner,
+            reference=self.reference,
+            sha256=self.sha256,
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the reference, the key, and the hash; never the value."""
+        return self.record().as_dict()
+
+
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass(frozen=True, slots=True)
+class OwnedRoleRecord:
+    """One owner role password a converge set, as answers and receipts name it."""
+
+    service: ResourceId
+    owner: PostgresRoleName
+    reference: SecretValueReference
+    sha256: str
+
+    def __post_init__(self) -> None:
+        """Hold a hex SHA-256 digest only."""
+        if not _SHA256_PATTERN.fullmatch(self.sha256):
+            message = f"not a hex SHA-256 digest: {self.sha256!r}"
+            raise ValueError(message)
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the reference, the key, and the hash."""
+        return {
+            "service": self.service.value,
+            "owner": self.owner.value,
+            "passwordRef": self.reference.as_dict(),
+            "key": self.reference.key.value,
+            "sha256": self.sha256,
+        }
+
+    @classmethod
+    def from_dict(cls, content: Mapping[str, object]) -> OwnedRoleRecord:
+        """Read one record back from a schema-validated receipt."""
+        reference = content.get("passwordRef")
+        if not isinstance(reference, dict):
+            message = "owned role record has no passwordRef mapping"
+            raise TypeError(message)
+        return cls(
+            service=ResourceId.from_boundary(content.get("service")),
+            owner=PostgresRoleName.from_boundary(content.get("owner")),
+            reference=SecretValueReference(
+                environment=ResourceId.from_boundary(reference.get("environment")),
+                path=AbsolutePath.from_boundary(reference.get("path")),
+                key=SecretKeyName.from_boundary(reference.get("key")),
+            ),
+            sha256=str(content.get("sha256")),
+        )
+
+
+def owned_databases(
+    inventory: PlatformInventory,
+) -> tuple[tuple[ResourceId, OwnedPostgresDatabase], ...]:
+    """Return every database owned by a declared role, with its service."""
+    return tuple(
+        (service.resource_id, database)
+        for service in inventory.services
+        if service.postgresql is not None
+        for database in service.postgresql.databases
+        if isinstance(database, OwnedPostgresDatabase)
+    )
+
+
+def owned_role_passwords(
+    databases: Iterable[tuple[ResourceId, OwnedPostgresDatabase]],
+    provider: SopsSecretProvider,
+) -> tuple[OwnedRolePassword, ...]:
+    """Decrypt the password of every owner role, once per service and role.
+
+    One role named by two databases of a service must name one reference.
+    """
+    passwords: dict[tuple[ResourceId, PostgresRoleName], OwnedRolePassword] = {}
+    for service_id, database in databases:
+        slot = (service_id, database.owner)
+        known = passwords.get(slot)
+        if known is not None:
+            if known.reference != database.password_ref:
+                message = (
+                    f"role {database.owner.value} of service {service_id.value} "
+                    "names two passwordRefs; every database it owns must name "
+                    "the same one"
+                )
+                raise SecretsError(_ERROR_OWNER_CONFLICT, message)
+            continue
+        passwords[slot] = OwnedRolePassword(
+            service=service_id,
+            owner=database.owner,
+            reference=database.password_ref,
+            value=provider.fetch_value(database.password_ref),
+        )
+    return tuple(passwords.values())
+
+
+PASSWORD_FILES_VARIABLE = "cloudfall_services_password_files"  # noqa: S105 - a name
+"""The ``services.yml`` variable mapping service, then owner, to a staged file."""
+
+
+@contextmanager
+def staged_password_files(
+    passwords: tuple[OwnedRolePassword, ...],
+) -> Iterator[dict[str, object]]:
+    """Write each password to a 0600 file in a private temp dir, then remove it.
+
+    Yields the extra vars ``services.yml`` reads: the controller paths only,
+    so the values never cross a command line, the inventory, or the project.
+    No passwords yields no variable, leaving the run as it was.
+    """
+    if not passwords:
+        yield {}
+        return
+    with tempfile.TemporaryDirectory(prefix="cloudfall-passwords-") as directory:
+        root = Path(directory)
+        root.chmod(0o700)
+        files: dict[str, dict[str, str]] = {}
+        for password in passwords:
+            path = root / f"{password.service.value}-{password.owner.value}"
+            descriptor = os.open(
+                path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _FILE_MODE
+            )
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(password.value)
+            files.setdefault(password.service.value, {})[password.owner.value] = str(
+                path
+            )
+        yield {PASSWORD_FILES_VARIABLE: files}
 
 
 def render_environment(

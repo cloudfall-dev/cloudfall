@@ -176,6 +176,7 @@ from cloudfall.lifecycle import (
     backup_service,
     build_release_artifact,
     converge_domains,
+    converge_services,
     deploy,
     health,
     migrate_data,
@@ -207,6 +208,7 @@ from cloudfall.operator import (
     AlertFeed,
     ApproveOptions,
     DriftCheck,
+    Executor,
     OperatorError,
     PassKind,
     ProposalStatus,
@@ -2717,12 +2719,33 @@ class OperatorEngineArgs(ProposalArgs):
         default=None,
         description="Alerts endpoint (default: derived from the declared gateway)",
     )
+    secrets_dir: Path = Flag(
+        default=Path("secrets"),
+        description=(
+            "sops-encrypted secrets directory owner role passwords are read "
+            "from (default: secrets)"
+        ),
+        secret=False,
+    )
 
     def __post_init__(self) -> None:
         """Keep relative paths inside the project."""
         ProposalArgs.__post_init__(self)
         _inside_project(self.inventory_file, "inventory-file")
         _inside_project(self.observed, "observed")
+        _inside_project(self.secrets_dir, "secrets-dir")
+
+    def executor(
+        self, fleet: Fleet, ctx: Ctx
+    ) -> Executor:
+        """Return the runner of a proposal's operation, reading owner passwords."""
+        return engine_executor(
+            self.context(fleet, ctx),
+            SopsSecretProvider(
+                secrets_directory=fleet.path(self.secrets_dir),
+                decrypt=_sops_decrypt(ctx),
+            ),
+        )
 
     def context(self, fleet: Fleet, ctx: Ctx) -> EngineContext:
         """Return the engine contract, with steps run through ``ctx.run``."""
@@ -2884,7 +2907,7 @@ def operator_approve(
         proposal = approve_proposal(
             store,
             args.proposal,
-            engine_executor(args.context(fleet, ctx)),
+            args.executor(fleet, ctx),
             verifier,
             ApproveOptions(verify_timeout_seconds=args.verify_timeout),
             via=ApprovalChannel(attestation.channel),
@@ -2999,7 +3022,7 @@ def operator_run(
             autonomous_pass,
             store,
             fleet.inventory,
-            engine_executor(args.context(fleet, ctx)),
+            args.executor(fleet, ctx),
             args.verifier_for(fleet, ctx, lambda: feed),
         )
     drift = None
@@ -3094,6 +3117,14 @@ class MigrateArgs(EngineArgs):
         default=False,
         description="Discard the persisted plan and start again",
     )
+    secrets_dir: Path = Flag(
+        default=Path("secrets"),
+        description=(
+            "sops-encrypted secrets directory owner role passwords are read "
+            "from (default: secrets)"
+        ),
+        secret=False,
+    )
 
     def __post_init__(self) -> None:
         """Refuse a malformed pair, and keep relative paths in the project."""
@@ -3105,6 +3136,7 @@ class MigrateArgs(EngineArgs):
             "releases",
             "artifacts",
             "plan_file",
+            "secrets_dir",
         ):
             _inside_project(getattr(self, flag), flag.replace("_", "-"))
         for option, entries in (
@@ -3148,7 +3180,9 @@ class MigrateArgs(EngineArgs):
             deployments_directory=fleet.path(self.deployments),
             releases_directory=fleet.path(self.releases),
             artifacts_directory=fleet.path(self.artifacts),
+            secrets_directory=fleet.path(self.secrets_dir),
             run=_step_runner(ctx, fleet.directory),
+            decrypt=_sops_decrypt(ctx),
         )
 
 
@@ -4170,8 +4204,61 @@ class Converged:
     playbook: str
 
 
+@dataclass(frozen=True, slots=True)
+class ServicesConverged:
+    """``converge_services``: the playbook run and each owner password it set.
+
+    ``owned_roles`` names each role's ``passwordRef``, its key, and the
+    value's SHA-256; never the value.
+    """
+
+    status: str
+    action: str
+    playbook: str
+    owned_roles: list[dict[str, object]] = Out(
+        default_factory=list, ordered=True, high_entropy=False
+    )
+
+
 _ENGINE_EXIT_CODES = ("PRECONDITION", "ENGINE_STEP_FAILED")
 _COMPONENT_PATTERN = r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+
+
+def _converge_services_handler(
+    args: McpServeArgs, root: ServerRoot, context: Callable[[Ctx], EngineContext]
+) -> Callable[[Mapping[str, object], Ctx], ServicesConverged]:
+    """Return ``converge_services``: owner passwords from ``--secrets-dir`` first."""
+
+    def converge_declared_services(
+        arguments: Mapping[str, object], call: Ctx
+    ) -> ServicesConverged:
+        del arguments  # the tool takes none
+        provider = SopsSecretProvider(
+            secrets_directory=root.path(args.secrets_dir),
+            decrypt=_sops_decrypt(call),
+        )
+        try:
+            passwords = converge_services(context(call), provider)
+        except LifecycleError as error:
+            raise _lifecycle_failed(error) from error
+        except ConfigValidationError as error:
+            raise _config_invalid(error) from error
+        return ServicesConverged(
+            status="ok",
+            action="converge-services",
+            playbook="services.yml",
+            owned_roles=[
+                cast("dict[str, object]", snake_case_keys(password.as_dict()))
+                for password in passwords
+            ],
+        )
+
+    converge_declared_services.__annotations__ = {
+        "arguments": Mapping[str, object],
+        "call": Ctx,
+        "return": ServicesConverged,
+    }
+    return converge_declared_services
 
 
 def _engine_tools(args: McpServeArgs, root: ServerRoot, ctx: Ctx) -> list[McpTool]:
@@ -4281,9 +4368,9 @@ def _engine_tools(args: McpServeArgs, root: ServerRoot, ctx: Ctx) -> list[McpToo
                 "every declared infrastructure service"
             ),
             input_schema=no_inputs,
-            handler=converge("converge-services", "services.yml", lambda _: {}),
+            handler=_converge_services_handler(args, root, context),
             danger_level="destructive",
-            exit_codes=_ENGINE_EXIT_CODES,
+            exit_codes=(*_ENGINE_EXIT_CODES, "CONFIG_INVALID"),
         ),
         McpTool(
             name="converge_domains",

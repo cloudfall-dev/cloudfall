@@ -52,10 +52,21 @@ argument_specs:
                     required: true
                   application:
                     type: str
-                    required: true
                   owner:
                     type: str
                     required: true
+                  passwordRef:
+                    type: dict
+                    options:
+                      environment:
+                        type: str
+                        required: true
+                      path:
+                        type: str
+                        required: true
+                      key:
+                        type: str
+                        required: true
           backup:
             type: dict
             required: true
@@ -77,6 +88,16 @@ argument_specs:
               enabled:
                 type: bool
                 required: true
+      cloudfall_postgresql_password_files:
+        type: dict
+        default: {}
+        description: >-
+          Controller path of each owner role's staged password file, by
+          role; the values never enter a variable
+      cloudfall_postgresql_password_path:
+        type: path
+        default: /var/lib/postgresql/.cloudfall-owner-password
+        description: Host path an owner role's password is staged at, 0600
       cloudfall_postgresql_metrics_role:
         type: str
         default: alloy

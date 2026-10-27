@@ -107,6 +107,38 @@ with `EnvironmentFile=`.
 A missing source fails fast with the exact expected path; a malformed line
 fails with its line number; an unreadable value never half-renders a file.
 
+## Database owner passwords
+
+A PostgreSQL database owned by a declared role names its password with a
+`passwordRef`, one key of one source in the same layout:
+
+```yaml
+# services/postgresql-billing.yaml (excerpt)
+databases:
+  - name: billing
+    owner: billing
+    passwordRef:
+      environment: production
+      path: /billing/postgresql
+      key: BILLING_PASSWORD
+```
+
+Every path that runs `services.yml` (the `converge_services` MCP tool, the
+`services` step of `cloudfall migrate`, `cloudfall operator approve` and
+`operator run`, and `cloudfall-engine playbook run services.yml`) reads
+`secrets/production/billing/postgresql.env` from its `--secrets-dir` (default
+`secrets`) before any playbook starts. A missing file or key stops it with
+`PRECONDITION`, naming the expected path and key.
+
+The value is written to a `0600` file in a private temp directory outside the
+project, and only that file's path reaches Ansible. The role copies the file
+to the host as `0600`, `psql` reads it there, PostgreSQL stores the password as
+SCRAM-SHA-256, and both files are removed when the run ends. Every task that
+sees it runs with `no_log`. The answer's `owned_roles` names the reference,
+the key, and the value's SHA-256 (an operator proposal keeps them as
+`ownedRoles` in its receipt's `outcome`); the password is set on every converge, so a
+rotation is a commit in the private repository and a services converge.
+
 ## Drift detection
 
 Rendering writes an `EnvironmentReceipt` (component, content hash, key
