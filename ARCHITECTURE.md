@@ -161,9 +161,10 @@ automatic or manual per application.
 ## Supported workloads
 
 Applications run as native systemd units on long-lived Debian hosts, not
-in containers. The primary stacks are Python (uv, Gunicorn/Uvicorn, Celery)
-and Node.js; anything that runs as a systemd service with a health endpoint
-fits the model.
+in containers. The deployable stack today is Python (uv, Gunicorn/Uvicorn,
+Celery); Node.js runtimes are reserved in the schema and refused by
+`cloudfall config validate` until they ship. Anything that runs as a systemd
+service with a health endpoint fits the model.
 
 ## Infrastructure model
 

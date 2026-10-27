@@ -47,7 +47,8 @@ Not imported today; each lands in the gap report instead of being guessed at:
 | Cron job (`type: cron`) | Recreate the schedule as a systemd timer; timers are modeled and audited |
 | Static site (`type: static`) | Serve via an Nginx site manually for now |
 | Redis / key-value (`type: redis`, `keyvalue`) | Not mapped by the importer; declare a Redis `Service` by hand (loopback-only, receipted RDB backups) and point the component at it |
-| Docker runtime (`runtime: docker` / `image`) | Not supported in v1; native Python and Node builds only |
+| Docker runtime (`runtime: docker` / `image`) | Not supported in v1; native Python services only |
+| Node service (`runtime: node`) | Not deployable yet: the server runs Python with uv only, so the importer writes no Component for it |
 
 ## What you need
 
