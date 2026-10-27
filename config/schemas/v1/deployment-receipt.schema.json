@@ -31,6 +31,17 @@
         },
         "configurationSha256": {
           "$ref": "common.schema.json#/$defs/sha256"
+        },
+        "previousConfigurationSha256": {
+          "description": "sha256 of the file at configurationPath before this run rendered it, or null when no file was there",
+          "anyOf": [
+            {
+              "$ref": "common.schema.json#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [

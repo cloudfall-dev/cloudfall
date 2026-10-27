@@ -105,6 +105,18 @@
         else ''
       }}
 
+# The receipt records what this run replaced, so a hand-written vhost the
+# render overwrites is not lost without a trace. It is hashed once, before
+# the first render: the second render below would only see this run's own.
+# A link is followed: stat gives no checksum for a link itself, and the file
+# it points to is what Nginx read.
+- name: Hash the virtual host this run replaces
+  ansible.builtin.stat:
+    path: "{{ cloudfall_nginx_site_domain.proxy.configurationPath }}"
+    checksum_algorithm: sha256
+    follow: true
+  register: cloudfall_nginx_site_replaced
+
 - name: Apply the virtual host before issuance
   ansible.builtin.include_tasks: apply_virtual_host.yml
 
@@ -212,6 +224,10 @@
               cloudfall_nginx_site_domain.proxy.configurationPath,
             'configurationSha256':
               cloudfall_nginx_site_applied.stat.checksum,
+            'previousConfigurationSha256':
+              cloudfall_nginx_site_replaced.stat.checksum
+              if cloudfall_nginx_site_replaced.stat.exists
+              else none,
           },
         } | to_nice_json
       }}

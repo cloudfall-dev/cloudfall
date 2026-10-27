@@ -28,11 +28,16 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from cloudfall.domain import ReleaseId, ResourceId
-    from cloudfall.inventory import ComponentInventory, ServiceInventory
+    from cloudfall.inventory import (
+        ComponentInventory,
+        DomainInventory,
+        ServiceInventory,
+    )
 
 _ARTIFACT_SCHEMA = "artifact.schema.json"
 _OUTPUT_TAIL_CHARACTERS = 2000
 _ERROR_COMPONENT_MISSING = "lifecycle_component_missing"
+_ERROR_DOMAIN_MISSING = "lifecycle_domain_missing"
 _ERROR_ARTIFACT_MISSING = "lifecycle_artifact_missing"
 _ERROR_ARTIFACT_METADATA = "lifecycle_artifact_metadata_invalid"
 _ERROR_ARTIFACT_IDENTITY = "lifecycle_artifact_identity_mismatch"
@@ -399,15 +404,48 @@ def run_engine_playbook(
     context: EngineContext,
     playbook_name: str,
     extra_vars: Mapping[str, object],
+    limit: ResourceId | None = None,
 ) -> None:
-    """Render inventory and run one engine playbook contract."""
+    """Render inventory and run one engine playbook contract.
+
+    ``limit`` narrows the run to one declared server, so no other host is
+    contacted.
+    """
     _execute_steps(
         (
             _render_inventory_step(context),
-            _playbook_step(context, playbook_name, extra_vars),
+            _playbook_step(context, playbook_name, extra_vars, limit),
         ),
         context.run,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class DomainsRun:
+    """What one ``domains.yml`` run covers."""
+
+    issue_certificates: bool
+    receipt_directory: Path
+    domain_id: ResourceId | None = None
+    """One Domain to converge on its proxy server alone; ``None`` for all."""
+
+
+def converge_domains(context: EngineContext, run: DomainsRun) -> None:
+    """Run ``domains.yml`` on every server, or for one Domain on its proxy.
+
+    One Domain is looked up in the validated config first, so an unknown id
+    is refused before the inventory render and before any SSH connection.
+    """
+    extra_vars: dict[str, object] = {
+        "cloudfall_domains_issue_certificates": run.issue_certificates,
+        "cloudfall_domains_receipt_directory": str(run.receipt_directory),
+    }
+    if run.domain_id is None:
+        run_engine_playbook(context, "domains.yml", extra_vars)
+        return
+    proxy_server = _domain(context, run.domain_id).proxy.server_id
+    extra_vars["cloudfall_domains_domain_id"] = run.domain_id.value
+    run_engine_playbook(context, "domains.yml", extra_vars, limit=proxy_server)
 
 
 def build_release_artifact(
@@ -859,6 +897,23 @@ def _component(
     return component
 
 
+def _domain(context: EngineContext, domain_id: ResourceId) -> DomainInventory:
+    state = validate_config(context.project_directory, context.schema_directory)
+    inventory = PlatformInventory.from_state(state)
+    domain = next(
+        (
+            candidate
+            for candidate in inventory.domains
+            if candidate.resource_id == domain_id
+        ),
+        None,
+    )
+    if domain is None:
+        detail = f"domain does not exist: {domain_id}"
+        raise LifecycleError(_ERROR_DOMAIN_MISSING, detail)
+    return domain
+
+
 def _server_list(servers: tuple[ResourceId, ...]) -> str:
     return ", ".join(server.value for server in servers)
 
@@ -887,18 +942,21 @@ def _playbook_step(
     context: EngineContext,
     playbook_name: str,
     extra_vars: Mapping[str, object],
+    limit: ResourceId | None = None,
 ) -> ExecutionStep:
     binary = shutil.which("ansible-playbook")
     if binary is None:
         detail = "ansible-playbook is not installed on this controller"
         raise LifecycleError(_ERROR_ANSIBLE_MISSING, detail)
     playbook = context.playbook(playbook_name)
+    limited = () if limit is None else ("--limit", limit.value)
     return ExecutionStep(
         description=f"run {playbook_name}",
         argv=(
             binary,
             "--inventory",
             str(context.inventory_file),
+            *limited,
             "--extra-vars",
             json.dumps(dict(extra_vars), sort_keys=True),
             str(playbook),

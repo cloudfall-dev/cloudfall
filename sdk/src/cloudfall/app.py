@@ -161,6 +161,7 @@ from cloudfall.lifecycle import (
     ERROR_EXECUTION_FAILED,
     STEP_TIMEOUT_SECONDS,
     DeployOptions,
+    DomainsRun,
     EngineContext,
     ExecutionStep,
     LifecycleError,
@@ -169,6 +170,7 @@ from cloudfall.lifecycle import (
     StepRunner,
     backup_service,
     build_release_artifact,
+    converge_domains,
     deploy,
     health,
     migrate_data,
@@ -4192,13 +4194,22 @@ def _engine_tools(args: McpServeArgs, root: ServerRoot, ctx: Ctx) -> list[McpToo
         }
         return run
 
-    def domain_vars(arguments: Mapping[str, object]) -> dict[str, object]:
-        return {
-            "cloudfall_domains_issue_certificates": bool(
-                arguments.get("issue_certificates", False)
-            ),
-            "cloudfall_domains_receipt_directory": str(root.path(args.deployments)),
-        }
+    def converge_domain_routes(
+        arguments: Mapping[str, object], call: Ctx
+    ) -> Converged:
+        domain = arguments.get("domain")
+        run = DomainsRun(
+            issue_certificates=bool(arguments.get("issue_certificates", False)),
+            receipt_directory=root.path(args.deployments),
+            domain_id=None if domain is None else ResourceId.from_boundary(domain),
+        )
+        try:
+            converge_domains(context(call), run)
+        except LifecycleError as error:
+            raise _lifecycle_failed(error) from error
+        except ConfigValidationError as error:
+            raise _config_invalid(error) from error
+        return Converged(status="ok", action="converge-domains", playbook="domains.yml")
 
     no_inputs: dict[str, object] = {
         "type": "object",
@@ -4251,16 +4262,20 @@ def _engine_tools(args: McpServeArgs, root: ServerRoot, ctx: Ctx) -> list[McpToo
             name="converge_domains",
             description=(
                 "Run domains.yml: render every declared domain route, and issue "
-                "missing certificates when issue_certificates is true"
+                "missing certificates when issue_certificates is true. Given a "
+                "domain, run only on that Domain's proxy server and render only it"
             ),
             input_schema={
                 "type": "object",
-                "properties": {"issue_certificates": {"type": "boolean"}},
+                "properties": {
+                    "issue_certificates": {"type": "boolean"},
+                    "domain": {"type": "string", "pattern": _COMPONENT_PATTERN},
+                },
                 "additionalProperties": False,
             },
-            handler=converge("converge-domains", "domains.yml", domain_vars),
+            handler=converge_domain_routes,
             danger_level="destructive",
-            exit_codes=_ENGINE_EXIT_CODES,
+            exit_codes=(*_ENGINE_EXIT_CODES, "CONFIG_INVALID"),
         ),
     ]
 
