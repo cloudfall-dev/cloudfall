@@ -211,6 +211,70 @@
             "$ref": "common.schema.json#/$defs/secretReference"
           },
           "uniqueItems": true
+        },
+        "buildTools": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/controlCharacterFree"
+          },
+          "patternProperties": {
+            "^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$": {
+              "type": "string",
+              "pattern": "^[0-9]{1,9}(?:\\.[0-9]{1,9}){0,7}$",
+              "$ref": "#/$defs/controlCharacterFree"
+            }
+          },
+          "additionalProperties": false
+        },
+        "build": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "workingDirectory": {
+                "$ref": "#/$defs/relativePath"
+              },
+              "command": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]+$"
+                },
+                "minItems": 1
+              },
+              "timeoutSeconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600,
+                "default": 900
+              }
+            },
+            "required": [
+              "workingDirectory",
+              "command"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "artifact": {
+          "type": "object",
+          "properties": {
+            "include": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/relativePath"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "include"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
@@ -221,7 +285,28 @@
         "service",
         "healthCheck"
       ],
+      "dependentRequired": {
+        "buildTools": [
+          "build"
+        ],
+        "artifact": [
+          "build"
+        ]
+      },
       "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$",
+      "$ref": "#/$defs/controlCharacterFree"
+    },
+    "controlCharacterFree": {
+      "not": {
+        "pattern": "[\\u0000-\\u001f\\u007f]"
+      }
     }
   },
   "required": [

@@ -515,6 +515,7 @@ def _validate_component_references(
     )
     deployment = _required_mapping(spec, "deployment", document.source)
     _validate_install_root(deployment, application_id, document.source)
+    _validate_component_build(spec, document.source)
     server_ids = _resource_id_list(deployment, "servers", document.source)
     for server_id in server_ids:
         _require_resource(
@@ -1274,6 +1275,47 @@ def _validate_install_root(
             field_path=("spec", "deployment", "installRoot"),
         )
         raise ConfigValidationError(issue)
+
+
+def _validate_component_build(
+    spec: Mapping[str, object], source: SourceLocation
+) -> None:
+    raw_steps = spec.get("build")
+    if raw_steps is None:
+        return
+    raw_tools = spec.get("buildTools")
+    tools = {} if raw_tools is None else _required_mapping(spec, "buildTools", source)
+    if not isinstance(raw_steps, list):
+        issue = ValidationIssue(
+            code="internal_state_shape_invalid",
+            message="validated build is not a list",
+            source=source,
+            field_path=("spec", "build"),
+        )
+        raise ConfigValidationError(issue)
+    for index, step in enumerate(raw_steps):
+        command = step.get("command") if isinstance(step, dict) else None
+        if not isinstance(command, list) or not command:
+            issue = ValidationIssue(
+                code="internal_state_shape_invalid",
+                message="validated build step command is not a non-empty list",
+                source=source,
+                field_path=("spec", "build", index, "command"),
+            )
+            raise ConfigValidationError(issue)
+        executable = command[0]
+        if executable not in tools:
+            issue = ValidationIssue(
+                code="component_build_tool_undeclared",
+                message=(
+                    f"build step {index} runs {executable!r}, which "
+                    "spec.buildTools does not declare; add it with its "
+                    "minimum version"
+                ),
+                source=source,
+                field_path=("spec", "build", index, "command", 0),
+            )
+            raise ConfigValidationError(issue)
 
 
 def _validate_alert_rule_references(

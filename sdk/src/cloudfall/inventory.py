@@ -10,6 +10,10 @@ from cloudfall.domain import (
     AlertDuration,
     AlertSeverity,
     AlertSummary,
+    BuildCommand,
+    BuildTimeoutSeconds,
+    BuildToolName,
+    BuildToolVersion,
     ByteSize,
     ConfigCapture,
     ConnectionAddress,
@@ -43,6 +47,7 @@ from cloudfall.domain import (
     PromqlExpression,
     ProviderServerId,
     RaidLevel,
+    RelativeRepositoryPath,
     RepositoryUrl,
     RequiredServiceState,
     RequiredServiceStatus,
@@ -481,6 +486,73 @@ class ComponentHealthCheck:
 
 
 @dataclass(frozen=True, slots=True)
+class ComponentBuildTool:
+    """One tool a build step runs and its minimum version."""
+
+    name: BuildToolName
+    minimum_version: BuildToolVersion
+
+
+@dataclass(frozen=True, slots=True)
+class ComponentBuildStep:
+    """One build step: an argv list run in a directory of the packaged root."""
+
+    working_directory: RelativeRepositoryPath
+    command: BuildCommand
+    timeout_seconds: BuildTimeoutSeconds
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the step contract."""
+        return {
+            "workingDirectory": self.working_directory.value,
+            "command": list(self.command.value),
+            "timeoutSeconds": self.timeout_seconds.value,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ComponentBuild:
+    """Controller-side build steps that run before a component is packaged."""
+
+    tools: tuple[ComponentBuildTool, ...]
+    steps: tuple[ComponentBuildStep, ...]
+    include: tuple[RelativeRepositoryPath, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Require steps, unique tools and includes, and declared executables."""
+        if not self.steps:
+            message = "component build requires at least one step"
+            raise ValueError(message)
+        tool_names = [tool.name for tool in self.tools]
+        if len(set(tool_names)) != len(tool_names):
+            message = "component build tools must be unique"
+            raise ValueError(message)
+        if len(set(self.include)) != len(self.include):
+            message = "component artifact include paths must be unique"
+            raise ValueError(message)
+        declared = frozenset(tool_names)
+        for index, step in enumerate(self.steps):
+            if step.command.executable not in declared:
+                message = (
+                    f"build step {index} runs {step.command.executable.value!r}, "
+                    "which spec.buildTools does not declare"
+                )
+                raise ValueError(message)
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the build contract in the Component spec's shape."""
+        result: dict[str, object] = {
+            "buildTools": {
+                tool.name.value: tool.minimum_version.value for tool in self.tools
+            },
+            "build": [step.as_dict() for step in self.steps],
+        }
+        if self.include:
+            result["artifact"] = {"include": [path.value for path in self.include]}
+        return result
+
+
+@dataclass(frozen=True, slots=True)
 class ComponentInventory:
     """Placement and deployment contract for one deployable component."""
 
@@ -495,6 +567,7 @@ class ComponentInventory:
     health_check: ComponentHealthCheck
     secret_refs: tuple[SecretReference, ...] = ()
     environment: tuple[tuple[str, str], ...] = ()
+    build: ComponentBuild | None = None
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the component for inventory consumers."""
@@ -511,6 +584,8 @@ class ComponentInventory:
         }
         if self.environment:
             result["environment"] = dict(self.environment)
+        if self.build is not None:
+            result.update(self.build.as_dict())
         return result
 
 
@@ -1470,6 +1545,46 @@ def _component_inventory(document: ResourceDocument) -> ComponentInventory:
         health_check=_component_health_check(health),
         secret_refs=_secret_references(spec.get("secretRefs")),
         environment=_declared_environment(spec.get("environment")),
+        build=_component_build(spec),
+    )
+
+
+def _component_build(spec: Mapping[str, object]) -> ComponentBuild | None:
+    if spec.get("build") is None:
+        if spec.get("buildTools") is not None or spec.get("artifact") is not None:
+            message = "validated component has buildTools or artifact without build"
+            raise ValueError(message)
+        return None
+    raw_tools = spec.get("buildTools")
+    tools = () if raw_tools is None else tuple(
+        ComponentBuildTool(
+            name=BuildToolName.from_boundary(name),
+            minimum_version=BuildToolVersion.from_boundary(version),
+        )
+        for name, version in _boundary_mapping(raw_tools, "build tools").items()
+    )
+    raw_artifact = spec.get("artifact")
+    include = () if raw_artifact is None else tuple(
+        RelativeRepositoryPath.from_boundary(item)
+        for item in _list(
+            _mapping(spec, "artifact").get("include"), "artifact include paths"
+        )
+    )
+    return ComponentBuild(
+        tools=tools,
+        steps=tuple(
+            ComponentBuildStep(
+                working_directory=RelativeRepositoryPath.from_boundary(
+                    step.get("workingDirectory")
+                ),
+                command=BuildCommand.from_boundary(step.get("command")),
+                timeout_seconds=BuildTimeoutSeconds.from_boundary(
+                    step.get("timeoutSeconds")
+                ),
+            )
+            for step in _mapping_list(spec.get("build"), "build steps")
+        ),
+        include=include,
     )
 
 
