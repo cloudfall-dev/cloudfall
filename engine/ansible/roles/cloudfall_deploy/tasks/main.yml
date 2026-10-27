@@ -143,6 +143,33 @@
     UV_PYTHON_INSTALL_DIR: "{{ cloudfall_deploy_shared_directory }}/uv/python"
   changed_when: true
 
+- name: Run the release command on the release server
+  ansible.builtin.include_tasks: release_command.yml
+  when:
+    - not ansible_check_mode
+    - cloudfall_deploy_component.release is defined
+    - cloudfall_deploy_component.release.server == cloudfall_server_id
+
+- name: Require the release command to have passed before switching
+  ansible.builtin.assert:
+    that:
+      - cloudfall_deploy_release_evidence is mapping
+      - cloudfall_deploy_release_evidence.exitCode == 0
+    fail_msg: >-
+      The release command of {{ cloudfall_deploy_component.id }} has not run
+      on its release server {{ cloudfall_deploy_component.release.server }}
+      in this deploy, so {{ cloudfall_server_id }} does not switch
+  vars:
+    cloudfall_deploy_release_evidence: >-
+      {{
+        hostvars[cloudfall_deploy_component.release.server]
+        .cloudfall_deploy_release_command_result
+        | default(none)
+      }}
+  when:
+    - not ansible_check_mode
+    - cloudfall_deploy_component.release is defined
+
 - name: Inspect the currently active release
   ansible.builtin.stat:
     path: "{{ cloudfall_deploy_current_link }}"
@@ -349,7 +376,15 @@
               else none
             ),
             'healthCheckPassed': true,
-          },
+          } | combine(
+            {
+              'releaseCommand': hostvars[
+                cloudfall_deploy_component.release.server
+              ].cloudfall_deploy_release_command_result,
+            }
+            if cloudfall_deploy_component.release is defined
+            else {}
+          ),
         } | to_nice_json
       }}
     dest: >-

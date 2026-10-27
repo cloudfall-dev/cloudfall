@@ -42,6 +42,44 @@
         },
         "healthCheckPassed": {
           "const": true
+        },
+        "releaseCommand": {
+          "type": "object",
+          "properties": {
+            "server": {
+              "$ref": "common.schema.json#/$defs/resourceId"
+            },
+            "command": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            },
+            "workingDirectory": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            },
+            "exitCode": {
+              "const": 0
+            },
+            "outputTail": {
+              "type": "string",
+              "maxLength": 2000
+            }
+          },
+          "required": [
+            "server",
+            "command",
+            "workingDirectory",
+            "exitCode",
+            "outputTail"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [

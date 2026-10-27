@@ -313,3 +313,70 @@ def test_cli_emits_structured_failure(
     assert payload["ok"] is False
     assert payload["error"]["code"] == "CONFIG_INVALID"
     assert payload["error"]["context"]["code"] == "resource_reference_missing"
+
+
+def _project_with_release(tmp_path: Path, release: object) -> Path:
+    project_directory = tmp_path / "config"
+    shutil.copytree(ROOT / "config" / "examples", project_directory)
+    component_path = project_directory / "components" / "crm-backend.yaml"
+    component = component_path.read_text(encoding="utf-8").replace(
+        "  healthCheck:\n",
+        f"  release: {json.dumps(release)}\n  healthCheck:\n",
+    )
+    component_path.write_text(component, encoding="utf-8")
+    return project_directory
+
+
+@pytest.mark.parametrize(
+    "release",
+    [
+        {"command": [".venv/bin/alembic"], "workingDirectory": "/srv/api"},
+        {"command": [".venv/bin/alembic"], "workingDirectory": "../api"},
+        {"command": [".venv/bin/alembic"], "workingDirectory": "services/../.."},
+        {"command": []},
+        {"command": [""]},
+        {"command": [".venv/bin/alembic"], "timeoutSeconds": 0},
+        {"command": [".venv/bin/alembic"], "timeoutSeconds": 1801},
+        {"workingDirectory": "services/api"},
+    ],
+)
+def test_s005_11_config_validate_refuses_a_malformed_release(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], release: object
+) -> None:
+    project_directory = _project_with_release(tmp_path, release)
+
+    exit_code = main(
+        [
+            "config",
+            "validate",
+            "--project",
+            str(project_directory),
+            "--schemas",
+            str(SCHEMAS),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 80
+    assert payload["error"]["code"] == "CONFIG_INVALID"
+    assert payload["error"]["context"]["code"] == "schema_validation_failed"
+
+
+@pytest.mark.parametrize(
+    "release",
+    [
+        {"command": [".venv/bin/alembic", "upgrade", "head"]},
+        {
+            "command": [".venv/bin/alembic", "upgrade", "head"],
+            "workingDirectory": "services/api",
+            "timeoutSeconds": 1800,
+        },
+        {"command": ["/usr/bin/true"], "timeoutSeconds": 1},
+    ],
+)
+def test_s005_11_config_validate_accepts_a_declared_release(
+    tmp_path: Path, release: object
+) -> None:
+    state = validate_config(_project_with_release(tmp_path, release), SCHEMAS)
+
+    assert state.counts_by_kind()["Component"] == 1

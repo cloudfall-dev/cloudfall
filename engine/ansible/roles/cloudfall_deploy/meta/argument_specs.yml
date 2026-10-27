@@ -80,6 +80,21 @@ argument_specs:
           retainUntilCleanup:
             type: bool
             required: true
+          release:
+            type: dict
+            options:
+              command:
+                type: list
+                elements: str
+                required: true
+              workingDirectory:
+                type: str
+              timeoutSeconds:
+                type: int
+                required: true
+              server:
+                type: str
+                required: true
       cloudfall_deploy_release:
         type: str
         required: true
@@ -98,6 +113,15 @@ argument_specs:
       cloudfall_deploy_unit_settle_seconds:
         type: int
         default: 10
+      cloudfall_deploy_systemd_run:
+        type: str
+        default: /usr/bin/systemd-run
+      cloudfall_deploy_release_output_characters:
+        type: int
+        default: 2000
+      cloudfall_deploy_release_failure_characters:
+        type: int
+        default: 500
       cloudfall_deploy_uv_version:
         type: str
         default: "0.12.10"

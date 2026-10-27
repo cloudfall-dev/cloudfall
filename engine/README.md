@@ -182,7 +182,17 @@ task health COMPONENT=crm-backend
 
 These tasks call the SDK's lifecycle commands, which verify the artifact and
 then execute the engine's `deploy.yml`, `rollback.yml`, `restart.yml`, and
-`health.yml` playbook contracts. Rollback activates an already-retained
+`health.yml` playbook contracts.
+
+A component's `release.command` (database migrations, say) runs once per
+deploy, on the first server of `deployment.servers`, which deploys before the
+others. It runs in a transient systemd unit as the application's user, in the
+new release directory (or its `workingDirectory`), with the component's
+`shared/env/<component>.env` loaded by the unit's own `EnvironmentFile=`
+rules, and is stopped after `timeoutSeconds`. A failure or a timeout fails the
+deploy before any server's `current` moves; a success is recorded under
+`releaseCommand` in every release receipt of that deploy. The command must be
+safe while the old release still serves traffic. Rollback activates an already-retained
 release without re-transferring an artifact and requires the declared health
 check to pass; it deliberately does not auto-restore on failure, because a
 failed rollback is an incident, not a deployment.
@@ -191,7 +201,8 @@ The deploy role transfers the artifact and refuses it if the digest does not
 match the build metadata, unpacks it under `releases/<release-id>/`,
 materializes locked dependencies with a pinned `uv` (`uv sync --frozen
 --no-dev`, with the managed Python toolchain and cache under the component's
-`shared/` directory), optionally installs an environment file, renders the
+`shared/` directory), optionally installs an environment file, runs the
+component's `release.command` when it declares one, renders the
 systemd unit from the declared service command, and then activates behind a
 health gate: symlink switch, restart, and the declared HTTP health check. If
 the health check fails, the previous release is restored and restarted

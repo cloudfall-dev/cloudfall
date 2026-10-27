@@ -1,0 +1,86 @@
+---
+# Runs the component's release command once against the unpacked release,
+# before the unit file changes and before current moves. A transient systemd
+# unit runs it, so the application user, the working directory, and the
+# EnvironmentFile= parsing are the ones the service unit gets.
+- name: Compute the release command invocation
+  ansible.builtin.set_fact:
+    cloudfall_deploy_release_working_directory: >-
+      {{ cloudfall_deploy_release_directory }}{{
+        '/' ~ cloudfall_deploy_component.release.workingDirectory
+        if cloudfall_deploy_component.release.workingDirectory is defined
+        else ''
+      }}
+    cloudfall_deploy_release_executable: >-
+      {{
+        cloudfall_deploy_component.release.command[0]
+        if cloudfall_deploy_component.release.command[0].startswith('/')
+        else cloudfall_deploy_release_directory ~ '/'
+        ~ cloudfall_deploy_component.release.command[0]
+      }}
+    cloudfall_deploy_release_timeout: >-
+      {{ cloudfall_deploy_component.release.timeoutSeconds }}
+
+- name: Run the release command against the new release
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          cloudfall_deploy_systemd_run,
+          '--unit=cloudfall-release-' ~ cloudfall_deploy_component.id,
+          '--wait',
+          '--pipe',
+          '--collect',
+          '--service-type=exec',
+          '--uid=' ~ cloudfall_deploy_component.application_user,
+          '--gid=' ~ cloudfall_deploy_component.application_user,
+          '--working-directory=' ~ cloudfall_deploy_release_working_directory,
+          '--property=EnvironmentFile=-' ~ cloudfall_deploy_shared_directory
+          ~ '/env/' ~ cloudfall_deploy_component.id ~ '.env',
+          '--property=RuntimeMaxSec=' ~ cloudfall_deploy_release_timeout,
+          '--property=TimeoutStopSec=10',
+          '--property=NoNewPrivileges=true',
+          '--property=PrivateTmp=true',
+          '--',
+          '/bin/sh',
+          '-c',
+          'exec "$@" 2>&1',
+          'cloudfall-release',
+          cloudfall_deploy_release_executable,
+        ]
+        + cloudfall_deploy_component.release.command[1:]
+      }}
+  register: cloudfall_deploy_release_run
+  changed_when: true
+  failed_when: false
+
+- name: Record the release command run
+  ansible.builtin.set_fact:
+    cloudfall_deploy_release_command_result:
+      server: "{{ cloudfall_server_id }}"
+      command: "{{ cloudfall_deploy_component.release.command }}"
+      workingDirectory: >-
+        {{ cloudfall_deploy_component.release.workingDirectory | default(none) }}
+      exitCode: "{{ cloudfall_deploy_release_run.rc }}"
+      outputTail: >-
+        {{ cloudfall_deploy_release_run.stdout[-cloudfall_deploy_release_output_characters:] }}
+    cloudfall_deploy_release_timed_out: >-
+      {{ 'Finished with result: timeout' in cloudfall_deploy_release_run.stderr }}
+
+- name: Fail the deployment when the release command failed
+  ansible.builtin.fail:
+    msg: >-
+      Release command {{ cloudfall_deploy_component.release.command | join(' ') }}
+      {{
+        'timed out after ' ~ cloudfall_deploy_release_timeout
+        ~ ' seconds and was stopped'
+        if cloudfall_deploy_release_timed_out
+        else 'exited with code ' ~ cloudfall_deploy_release_run.rc
+      }}
+      on {{ cloudfall_server_id }}; no server switched to release
+      {{ cloudfall_deploy_release }}. Output ends: {{
+        cloudfall_deploy_release_run.stdout[-cloudfall_deploy_release_failure_characters:]
+      }}
+  when: >-
+    cloudfall_deploy_release_timed_out
+    or cloudfall_deploy_release_run.rc != 0

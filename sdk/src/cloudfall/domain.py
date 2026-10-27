@@ -709,6 +709,89 @@ class RelativeRepositoryPath:
 
 
 @dataclass(frozen=True, slots=True)
+class CommandArgv:
+    """Validated argv of a command run directly, not through a unit file."""
+
+    value: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """Reject empty commands, empty arguments, and NUL bytes."""
+        if not self.value:
+            message = "command must not be empty"
+            raise ValueError(message)
+        for argument in self.value:
+            if not argument or "\x00" in argument:
+                message = f"invalid command argument: {argument!r}"
+                raise ValueError(message)
+
+    @classmethod
+    def from_boundary(cls, value: object) -> CommandArgv:
+        """Coerce a boundary value into a command argv."""
+        if not isinstance(value, list) or not all(
+            isinstance(item, str) for item in value
+        ):
+            message = "command must be a list of strings"
+            raise TypeError(message)
+        return cls(tuple(value))
+
+
+@dataclass(frozen=True, slots=True)
+class RelativeDirectory:
+    """A relative path that stays inside the directory it is resolved against."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Reject absolute paths, ``..`` segments, and control characters."""
+        if (
+            not self.value
+            or self.value.startswith("/")
+            or ".." in self.value.split("/")
+            or any(not character.isprintable() for character in self.value)
+        ):
+            message = f"invalid relative directory: {self.value!r}"
+            raise ValueError(message)
+
+    @classmethod
+    def from_boundary(cls, value: object) -> RelativeDirectory:
+        """Coerce a boundary value into a relative directory."""
+        return cls(_required_string(value, "relative directory"))
+
+
+_RELEASE_TIMEOUT_MINIMUM = 1
+_RELEASE_TIMEOUT_MAXIMUM = 1800
+_RELEASE_TIMEOUT_DEFAULT = 300
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseCommandTimeout:
+    """How long a release command may run before it is stopped, in seconds."""
+
+    value: int
+
+    def __post_init__(self) -> None:
+        """Keep the bound well under the limit on a whole playbook run."""
+        if isinstance(self.value, bool) or not (
+            _RELEASE_TIMEOUT_MINIMUM <= self.value <= _RELEASE_TIMEOUT_MAXIMUM
+        ):
+            message = f"invalid release command timeout: {self.value!r}"
+            raise ValueError(message)
+
+    @classmethod
+    def from_boundary(cls, value: object) -> ReleaseCommandTimeout:
+        """Coerce a boundary value, defaulting an absent one."""
+        if value is None:
+            return cls(_RELEASE_TIMEOUT_DEFAULT)
+        if isinstance(value, bool) or not isinstance(value, int):
+            message = (
+                f"release command timeout must be an integer, got "
+                f"{type(value).__name__}"
+            )
+            raise TypeError(message)
+        return cls(value)
+
+
+@dataclass(frozen=True, slots=True)
 class BuildToolName:
     """Executable a component build step runs, looked up on ``PATH``."""
 
