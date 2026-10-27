@@ -28,6 +28,7 @@ from cloudfall.domain import ARTIFACT_CLONE_TIMEOUT_SECONDS
 from cloudfall.inventory import PlatformInventory
 from cloudfall.validation import SchemaCatalog, validate_config
 from cloudfall_engine.cli import BuildBudget, main
+from treaty import Timeout
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -425,6 +426,29 @@ def test_s002_7_the_run_limit_covers_every_declared_step(tmp_path: Path) -> None
 
     assert seconds == ARTIFACT_CLONE_TIMEOUT_SECONDS + 3 * 3600
     assert budget.timeout(3600).seconds == 3600
+
+
+def test_s002_7_without_timeout_the_computed_limit_applies() -> None:
+    budget = BuildBudget.start(None, ARTIFACT_CLONE_TIMEOUT_SECONDS + 900)
+
+    assert budget.seconds == ARTIFACT_CLONE_TIMEOUT_SECONDS + 900
+    assert budget.deadline is not None
+    assert budget.timeout(900).seconds == 900
+
+
+def test_s002_7_timeout_zero_still_means_no_limit(tmp_path: Path) -> None:
+    """``--timeout 0`` disables the limit, as it does on every treaty command."""
+    budget = BuildBudget.start(Timeout.parse(0), ARTIFACT_CLONE_TIMEOUT_SECONDS)
+
+    assert budget.seconds is None
+    assert budget.deadline is None
+    assert budget.timeout(3600).seconds == 3600
+
+    fixture = _fixture(tmp_path)
+    exit_code, envelope, _ = fixture.build("main", "--timeout", "0")
+
+    assert exit_code == 0, envelope["error"]
+    assert Path(envelope["data"]["archive"]).is_file()
 
 
 def test_s002_7_an_explicit_timeout_still_wins(tmp_path: Path) -> None:

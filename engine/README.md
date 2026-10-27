@@ -181,7 +181,7 @@ a gitignored `web/dist`, and the metadata records the steps and the tool
 versions under `spec.build`. A failed or timed-out step, a missing include
 path, or a tracked file a step deleted writes no archive. The command may take
 1800 seconds for the clone plus every step's `timeoutSeconds`; an explicit
-`--timeout` replaces that limit.
+`--timeout` replaces that limit, and `--timeout 0` disables it.
 
 `ansible/playbooks/deploy.yml` deploys one built release to the component's
 declared servers, one host at a time:

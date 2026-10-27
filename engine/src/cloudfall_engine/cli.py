@@ -250,6 +250,27 @@ class BuildArgs(ProjectArgs):
         default=Path("tmp/artifacts"),
         description="Artifact output directory, relative to the project",
     )
+    # Its own field, in place of treaty's --timeout (REQ-C-012), so the
+    # handler can tell "not passed" (the computed limit) apart from 0.
+    timeout: float | None = Flag(
+        default=None,
+        description=(
+            "Seconds before the build aborts with TIMEOUT; 0 disables the limit "
+            "(default: 1800 for the clone plus every declared step's "
+            "timeoutSeconds)"
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        """Refuse a ``--timeout`` treaty's own flag would refuse."""
+        self.limit()
+
+    def limit(self) -> Timeout | None:
+        """Return the explicit ``--timeout``, ``None`` when not passed.
+
+        ``Timeout(None)`` for 0, which disables the limit.
+        """
+        return None if self.timeout is None else Timeout.parse(self.timeout)
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,7 +298,7 @@ class BuiltRelease:
     danger_level="mutating",
     exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "ARTIFACT_BUILD_FAILED"],
     # The limit depends on the component: BuildBudget applies the clone time
-    # plus every declared step's timeout, unless --timeout is given.
+    # plus every declared step's timeout, or BuildArgs.timeout when passed.
     timeout=None,
     subprocess=Subprocess("git"),
     required_tools={"git": GIT_MINIMUM_VERSION},
@@ -297,7 +318,9 @@ def build(args: BuildArgs, ctx: Ctx, project: Project) -> BuiltRelease:
     The run may take the clone time plus every declared step's timeout;
     an explicit ``--timeout`` replaces that limit.
     """
-    budget = BuildBudget.start(ctx, _artifact_timeout(project, args.component))
+    budget = BuildBudget.start(
+        args.limit(), _artifact_timeout(project, args.component)
+    )
     try:
         built = build_artifact(
             project.inventory,
@@ -348,31 +371,32 @@ def _artifact_timeout(project: Project, component_id: ResourceId) -> int:
 class BuildBudget:
     """The time limit of one ``artifact build`` run, shared by its children.
 
-    ``deadline`` is ``None`` when ``--timeout`` was given: treaty's own
-    deadline then clamps every child, and this budget adds nothing.
+    ``seconds`` is ``None`` and ``deadline`` too when ``--timeout 0``
+    disabled the limit; each child then keeps only its own.
     """
 
-    seconds: int
+    seconds: float | None
     deadline: float | None
 
     @classmethod
-    def start(cls, ctx: Ctx, seconds: int) -> Self:
-        """Start the clock, unless an explicit ``--timeout`` governs the run."""
-        if ctx.remaining is not None:
-            return cls(seconds, None)
+    def start(cls, explicit: Timeout | None, computed: int) -> Self:
+        """Start the clock: ``--timeout`` when passed, else ``computed``."""
+        seconds = float(computed) if explicit is None else explicit.seconds
+        if seconds is None:
+            return cls(None, None)
         return cls(seconds, time.monotonic() + seconds)
 
     def timeout(self, seconds: int) -> Timeout:
         """Cut a child's own limit to what is left of the run's."""
-        if self.deadline is None:
+        if self.deadline is None or self.seconds is None:
             return Timeout(seconds)
         left = self.deadline - time.monotonic()
         if left <= 0:
             raise CliExit(
                 ExitCodeName("TIMEOUT"),
-                f"artifact build used its {self.seconds}s limit (the clone plus "
-                "every declared step timeout); pass --timeout for more",
-                context={"timeout_ms": self.seconds * 1000},
+                f"artifact build used its {self.seconds:g}s limit; pass a larger "
+                "--timeout, or 0 for none",
+                context={"timeout_ms": int(self.seconds * 1000)},
             )
         return Timeout(min(float(seconds), left))
 
