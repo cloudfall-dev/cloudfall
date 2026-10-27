@@ -1,0 +1,3 @@
+### Added
+
+- Components: a `release.command` (with optional `workingDirectory` and `timeoutSeconds`, 1 to 1800, default 300) runs once per deploy on the first server of `deployment.servers`, which now deploys first, after the release's dependencies are materialized and before the unit file changes or `current` moves; it runs as the application's user with the component's env file loaded under systemd's `EnvironmentFile=` rules. A non-zero exit or a timeout fails the deploy with `ENGINE_STEP_FAILED` before any server switches, and a passing run is recorded as `releaseCommand` (server, command, exit code, last 2000 characters of output) in every release receipt of that deploy (#119)

@@ -15,6 +15,7 @@ from cloudfall.domain import (
     BuildToolName,
     BuildToolVersion,
     ByteSize,
+    CommandArgv,
     ConfigCapture,
     ConnectionAddress,
     DatacenterCode,
@@ -49,7 +50,9 @@ from cloudfall.domain import (
     PromqlExpression,
     ProviderServerId,
     RaidLevel,
+    RelativeDirectory,
     RelativeRepositoryPath,
+    ReleaseCommandTimeout,
     RepositoryUrl,
     RequiredServiceState,
     RequiredServiceStatus,
@@ -445,6 +448,23 @@ class ComponentService:
 
 
 @dataclass(frozen=True, slots=True)
+class ComponentRelease:
+    """Command a deploy runs once against a new release before it goes live."""
+
+    command: CommandArgv
+    working_directory: RelativeDirectory | None
+    timeout_seconds: ReleaseCommandTimeout
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the release command contract."""
+        result: dict[str, object] = {"command": list(self.command.value)}
+        if self.working_directory is not None:
+            result["workingDirectory"] = self.working_directory.value
+        result["timeoutSeconds"] = self.timeout_seconds.value
+        return result
+
+
+@dataclass(frozen=True, slots=True)
 class ComponentHttpHealthCheck:
     """HTTP endpoint contract for a component health gate."""
 
@@ -571,6 +591,12 @@ class ComponentInventory:
     secret_refs: tuple[SecretReference, ...] = ()
     environment: tuple[tuple[str, str], ...] = ()
     build: ComponentBuild | None = None
+    release: ComponentRelease | None = None
+
+    @property
+    def release_server_id(self) -> ResourceId:
+        """The server a release command runs on: the first deployment server."""
+        return self.server_ids[0]
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the component for inventory consumers."""
@@ -589,6 +615,8 @@ class ComponentInventory:
             result["environment"] = dict(self.environment)
         if self.build is not None:
             result.update(self.build.as_dict())
+        if self.release is not None:
+            result["release"] = self.release.as_dict()
         return result
 
 
@@ -1603,6 +1631,7 @@ def _component_inventory(document: ResourceDocument) -> ComponentInventory:
         secret_refs=_secret_references(spec.get("secretRefs")),
         environment=_declared_environment(spec.get("environment")),
         build=_component_build(spec),
+        release=_component_release(spec.get("release")),
     )
 
 
@@ -1642,6 +1671,26 @@ def _component_build(spec: Mapping[str, object]) -> ComponentBuild | None:
             for step in _mapping_list(spec.get("build"), "build steps")
         ),
         include=include,
+    )
+
+
+def _component_release(value: object) -> ComponentRelease | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        message = "validated component release is not a mapping"
+        raise TypeError(message)
+    raw_directory = value.get("workingDirectory")
+    return ComponentRelease(
+        command=CommandArgv.from_boundary(value.get("command")),
+        working_directory=(
+            None
+            if raw_directory is None
+            else RelativeDirectory.from_boundary(raw_directory)
+        ),
+        timeout_seconds=ReleaseCommandTimeout.from_boundary(
+            value.get("timeoutSeconds")
+        ),
     )
 
 

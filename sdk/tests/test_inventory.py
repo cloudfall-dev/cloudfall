@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 from cloudfall.cli import main
 from cloudfall.domain import (
+    CommandArgv,
     FirewallPolicy,
     NetworkProtocol,
+    RelativeDirectory,
+    ReleaseCommandTimeout,
     ResourceId,
     TcpPort,
 )
@@ -70,6 +74,55 @@ def test_firewall_requirement_rejects_duplicate_rules() -> None:
             policy=FirewallPolicy.DEFAULT_DENY,
             allowed_inbound=(rule, rule),
         )
+
+
+def test_s005_11_release_values_are_refused_outside_their_bounds() -> None:
+    assert ReleaseCommandTimeout.from_boundary(None).value == 300
+    assert ReleaseCommandTimeout.from_boundary(1800).value == 1800
+    for timeout in (0, 1801, True):
+        with pytest.raises((ValueError, TypeError)):
+            ReleaseCommandTimeout.from_boundary(timeout)
+    assert RelativeDirectory.from_boundary("services/api").value == "services/api"
+    for directory in ("/srv/api", "../api", "a/../b", "a/..", "a\nb"):
+        with pytest.raises(ValueError, match="invalid relative directory"):
+            RelativeDirectory.from_boundary(directory)
+    with pytest.raises(TypeError, match="non-empty string"):
+        RelativeDirectory.from_boundary("")
+    for argv in ([], [""], ["a\x00b"]):
+        with pytest.raises(ValueError, match="command"):
+            CommandArgv.from_boundary(argv)
+
+
+def test_s005_6_the_release_server_is_the_first_deployment_server(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "config"
+    shutil.copytree(EXAMPLES, project)
+    path = project / "components" / "crm-backend.yaml"
+    text = path.read_text(encoding="utf-8")
+    text = text.replace("      - h1\n      - h2\n", "      - h2\n      - h1\n")
+    text = text.replace(
+        "  healthCheck:\n",
+        "  release:\n    command: [.venv/bin/alembic, upgrade, head]\n"
+        "  healthCheck:\n",
+    )
+    path.write_text(text, encoding="utf-8")
+
+    inventory = PlatformInventory.from_state(validate_config(project, SCHEMAS))
+    component = inventory.components[0]
+
+    assert component.release_server_id == ResourceId("h2")
+    assert component.as_dict()["release"] == {
+        "command": [".venv/bin/alembic", "upgrade", "head"],
+        "timeoutSeconds": 300,
+    }
+
+
+def test_s005_10_a_component_without_release_serializes_as_before() -> None:
+    component = _inventory().components[0]
+
+    assert component.release is None
+    assert "release" not in component.as_dict()
 
 
 def test_inventory_exposes_typed_placement_queries() -> None:

@@ -277,6 +277,38 @@ def test_inventory_renders_environment_application_and_component_groups() -> Non
     assert logging_collectors == {"hosts": {"h1": {}, "h2": {}}}
     assert domain_origins == {"hosts": {"h1": {}}}
     assert children["ungrouped"] == {"hosts": {}}
+    assert children["cloudfall_release_servers"] == {"hosts": {}}
+
+
+def test_s005_6_a_release_renders_with_its_release_server(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    shutil.copytree(EXAMPLES, project)
+    path = project / "components" / "crm-backend.yaml"
+    text = path.read_text(encoding="utf-8")
+    text = text.replace("      - h1\n      - h2\n", "      - h2\n      - h1\n")
+    text = text.replace(
+        "  healthCheck:\n",
+        "  release:\n    command: [.venv/bin/alembic, upgrade, head]\n"
+        "    workingDirectory: services/api\n    timeoutSeconds: 60\n"
+        "  healthCheck:\n",
+    )
+    path.write_text(text, encoding="utf-8")
+    rendered = render_ansible_inventory(
+        PlatformInventory.from_state(validate_config(project, SCHEMAS))
+    )
+    hosts = _mapping_entry(
+        _mapping_entry(_inventory_children(rendered), "cloudfall_servers"), "hosts"
+    )
+
+    for host in ("h1", "h2"):
+        components = _mapping_entry(hosts, host)["cloudfall_components"]
+        assert isinstance(components, list)
+        assert components[0]["release"] == {
+            "command": [".venv/bin/alembic", "upgrade", "head"],
+            "workingDirectory": "services/api",
+            "timeoutSeconds": 60,
+            "server": "h2",
+        }
 
 
 def test_engine_cli_emits_ansible_json(

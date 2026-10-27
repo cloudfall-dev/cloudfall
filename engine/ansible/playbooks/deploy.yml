@@ -1,11 +1,14 @@
 ---
-- name: Deploy one Cloudfall component release
-  hosts: cloudfall_servers
-  become: true
-  gather_facts: true
-  any_errors_fatal: true
-  serial: 1
-  pre_tasks:
+# A component that declares a release command runs it once, on its release
+# server (the first entry of deployment.servers). That server deploys first,
+# in its own play, so the command has run before any server's current release
+# moves, and a failed command stops the playbook before the other plays start.
+- name: Select the release server of the deployed component
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+  tasks:
     - name: Require an explicit component and release selection
       ansible.builtin.assert:
         that:
@@ -17,7 +20,54 @@
           Deployment requires cloudfall_deploy_component_id,
           cloudfall_deploy_release, cloudfall_deploy_artifact_archive, and
           cloudfall_deploy_artifact_sha256 extra variables
-      run_once: true
+
+    - name: Deploy the release server first
+      ansible.builtin.add_host:
+        name: "{{ cloudfall_release_server_item }}"
+        groups: cloudfall_release_servers
+      loop: >-
+        {{
+          groups['cloudfall_servers'] | default([])
+          | map('extract', hostvars, 'cloudfall_components')
+          | flatten
+          | selectattr('id', 'equalto', cloudfall_deploy_component_id)
+          | selectattr('release', 'defined')
+          | map(attribute='release')
+          | map(attribute='server')
+          | unique
+          | list
+        }}
+      loop_control:
+        loop_var: cloudfall_release_server_item
+
+- name: Deploy one Cloudfall component release on its release server
+  hosts: cloudfall_release_servers
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  serial: 1
+  tasks:
+    - name: Deploy the selected component and run its release command
+      ansible.builtin.include_role:
+        name: cloudfall_deploy
+      vars:
+        cloudfall_deploy_component: "{{ cloudfall_component_item }}"
+      loop: >-
+        {{
+          cloudfall_components | default([])
+          | selectattr('id', 'equalto', cloudfall_deploy_component_id)
+          | list
+        }}
+      loop_control:
+        loop_var: cloudfall_component_item
+        label: "{{ cloudfall_component_item.id }}"
+
+- name: Deploy one Cloudfall component release
+  hosts: cloudfall_servers:!cloudfall_release_servers
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  serial: 1
   tasks:
     - name: Deploy the selected component on its declared servers
       ansible.builtin.include_role:

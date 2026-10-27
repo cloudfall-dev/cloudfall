@@ -4,6 +4,13 @@ cloudfall_deploy_receipt_directory: ""
 # A component without an HTTP health check passes its gate when its unit is
 # active right after the restart and still active this many seconds later.
 cloudfall_deploy_unit_settle_seconds: 10
+# A release command runs in a transient unit started by this binary.
+cloudfall_deploy_systemd_run: /usr/bin/systemd-run
+# The receipt keeps this much of the release command's output; a failure
+# message keeps less, so it stays inside the end of the Ansible log the
+# controller reports.
+cloudfall_deploy_release_output_characters: 2000
+cloudfall_deploy_release_failure_characters: 500
 cloudfall_deploy_uv_version: "0.12.10"
 cloudfall_deploy_uv_sha256: >-
   173d95a0c32d18c896c46ba6fafbf3cf9c14ab74b033f81b76c883ef492a976b

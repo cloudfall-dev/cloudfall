@@ -84,6 +84,9 @@ def render_ansible_inventory(inventory: PlatformInventory) -> dict[str, object]:
                 "cloudfall_logging_backends": {"hosts": logging_backend_hosts},
                 "cloudfall_logging_collectors": {"hosts": logging_collector_hosts},
                 "cloudfall_domain_origins": {"hosts": domain_origin_hosts},
+                # deploy.yml adds the deployed component's release server here,
+                # so the server that runs its release command deploys first.
+                "cloudfall_release_servers": {"hosts": {}},
             }
         }
     }
@@ -219,7 +222,7 @@ def _host_application(application: ApplicationInventory) -> dict[str, object]:
 def _host_component(
     component: ComponentInventory, application: ApplicationInventory
 ) -> dict[str, object]:
-    return {
+    variables: dict[str, object] = {
         "id": component.resource_id.value,
         "application": component.application_id.value,
         "application_user": application.linux_user.value,
@@ -230,6 +233,12 @@ def _host_component(
         "healthCheck": component.health_check.as_dict(),
         "retainUntilCleanup": component.retain_until_cleanup,
     }
+    if component.release is not None:
+        variables["release"] = {
+            **component.release.as_dict(),
+            "server": component.release_server_id.value,
+        }
+    return variables
 
 
 def _application_is_on_server(

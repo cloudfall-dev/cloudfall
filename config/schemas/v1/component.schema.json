@@ -124,6 +124,34 @@
           ],
           "additionalProperties": false
         },
+        "release": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            },
+            "workingDirectory": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000-\\u001f\\u007f]+$"
+            },
+            "timeoutSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1800,
+              "default": 300
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "additionalProperties": false
+        },
         "healthCheck": {
           "oneOf": [
             {
