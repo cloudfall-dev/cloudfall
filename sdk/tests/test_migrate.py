@@ -3,20 +3,33 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 from cloudfall.agent_tools import AgentConfig
 from cloudfall.cli import main
+from cloudfall.domain import (
+    ConnectionAddress,
+    Hostname,
+    Ipv4Address,
+    Ipv6NetworkCidr,
+)
+from cloudfall.inventory import PlatformInventory, ServerNetwork
 from cloudfall.migrate import (
     MigrateError,
     MigrateOptions,
+    _expected_addresses,
+    _resolve_names,
     execute_migration,
 )
+from cloudfall.validation import validate_config
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
+
+    from cloudfall.inventory import ServerInventory
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -251,3 +264,42 @@ def test_cli_migrate_rejects_malformed_component_pairs(
     assert "COMPONENT" in payload["error"]["message"] or "NAME=VALUE" in (
         payload["error"]["message"]
     )
+
+
+# dns-verify's proxy addresses, pinned as they were before domains apply.
+
+
+def _proxy_server(address: str) -> ServerInventory:
+    state = validate_config(EXAMPLES, SCHEMAS)
+    (server,) = (
+        server
+        for server in PlatformInventory.from_state(state).servers
+        if server.resource_id.value == "h2"
+    )
+    return replace(
+        server,
+        address=ConnectionAddress(address),
+        network=ServerNetwork(
+            ipv4=Ipv4Address("192.0.2.10"),
+            ipv6_cidr=Ipv6NetworkCidr("2001:db8::/64"),
+            reverse_dns=Hostname("h2.example.test"),
+        ),
+    )
+
+
+def test_dns_verify_counts_no_address_for_an_unresolvable_server_hostname() -> None:
+    """A hostname that does not resolve adds nothing and raises nothing.
+
+    ``.invalid`` never resolves (RFC 6761): offline the lookup fails, online
+    it answers NXDOMAIN, and both are an ``OSError`` dns-verify swallows.
+    """
+    server = _proxy_server("h2.cloudfall.invalid")
+
+    assert _resolve_names("h2.cloudfall.invalid") == set()
+    assert _expected_addresses(server) == {"192.0.2.10"}
+
+
+def test_dns_verify_keeps_a_scoped_link_local_address_as_written() -> None:
+    server = _proxy_server("fe80::1%eth0")
+
+    assert _expected_addresses(server) == {"fe80::1%eth0", "192.0.2.10"}
