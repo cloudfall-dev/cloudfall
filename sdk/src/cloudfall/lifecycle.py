@@ -13,9 +13,11 @@ import json
 import os
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from ipaddress import ip_address
 from pathlib import PurePosixPath
@@ -23,7 +25,14 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from jsonschema.exceptions import ValidationError
 
-from cloudfall.domain import AbsolutePath, DnsMode, Hostname, IpAddress, TlsMode
+from cloudfall.domain import (
+    AbsolutePath,
+    DnsMode,
+    Hostname,
+    IpAddress,
+    Sha256Digest,
+    TlsMode,
+)
 from cloudfall.inventory import PlatformInventory
 from cloudfall.secrets import (
     SecretsError,
@@ -31,6 +40,7 @@ from cloudfall.secrets import (
     owned_role_passwords,
     staged_password_files,
 )
+from cloudfall.service_evidence import EvidenceTimestamp, load_deployment_receipt
 from cloudfall.validation import SchemaCatalog, validate_config
 
 if TYPE_CHECKING:
@@ -50,6 +60,7 @@ if TYPE_CHECKING:
         ServiceInventory,
     )
     from cloudfall.secrets import OwnedRolePassword, SopsSecretProvider
+    from cloudfall.service_evidence import DeploymentReceipt
 
 _ARTIFACT_SCHEMA = "artifact.schema.json"
 _OUTPUT_TAIL_CHARACTERS = 2000
@@ -738,6 +749,199 @@ def _check_domain_dns(
 
 def _address_list(addresses: frozenset[IpAddress]) -> str:
     return ", ".join(sorted(address.value for address in addresses))
+
+
+@dataclass(frozen=True, slots=True)
+class DomainObserve:
+    """One ``domains observe`` request."""
+
+    domain_id: ResourceId
+    receipt_directory: Path
+    reading_file: Path
+    """Where ``domains-observe.yml`` hands its reading back, outside the project."""
+
+
+@dataclass(frozen=True, slots=True)
+class VhostReading:
+    """The Domain's virtual host file as read on its proxy server."""
+
+    path: AbsolutePath
+    sha256: Sha256Digest | None
+    """The file's hash; ``None`` when no file is there."""
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the reading."""
+        return {
+            "path": self.path.value,
+            "present": self.sha256 is not None,
+            "sha256": None if self.sha256 is None else self.sha256.value,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CertificateReading:
+    """The Domain's certificate as read on its proxy server."""
+
+    path: AbsolutePath
+    not_after: EvidenceTimestamp | None
+    """When the certificate expires; ``None`` when no certificate is there."""
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the reading."""
+        return {
+            "path": self.path.value,
+            "present": self.not_after is not None,
+            "notAfter": None if self.not_after is None else self.not_after.as_string(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DomainObserved:
+    """What ``domains observe`` read for one Domain on its proxy server."""
+
+    domain_id: ResourceId
+    server: ResourceId
+    vhost: VhostReading
+    certificate: CertificateReading
+    timer_enabled: bool
+    timer_active: bool
+    receipt: DeploymentReceipt | None
+    """The last ``domains.yml`` receipt for the Domain, if any."""
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the reading for agent consumers."""
+        receipt: dict[str, object] | None = None
+        if self.receipt is not None:
+            receipt = {
+                "configurationSha256": self.receipt.configuration_sha256.value,
+                "deployedAt": self.receipt.deployed_at.as_string(),
+                "matches": self.vhost.sha256 == self.receipt.configuration_sha256,
+            }
+        return {
+            "status": "ok",
+            "action": "domains-observe",
+            "domain": self.domain_id.value,
+            "server": self.server.value,
+            "vhost": self.vhost.as_dict(),
+            "receipt": receipt,
+            "certificate": self.certificate.as_dict(),
+            "certbotTimer": {
+                "enabled": self.timer_enabled,
+                "active": self.timer_active,
+            },
+        }
+
+
+def observe_domain(context: EngineContext, request: DomainObserve) -> DomainObserved:
+    """Read one Domain's vhost, certificate and timer on its proxy server.
+
+    The Domain and its receipt are checked first, so an unknown id renders
+    no inventory and contacts no server. ``domains-observe.yml`` only reads
+    on the server; its one write is the reading, at ``request.reading_file``.
+    """
+    state = validate_config(context.project_directory, context.schema_directory)
+    domain = _find_domain(PlatformInventory.from_state(state), request.domain_id)
+    receipt_path = request.receipt_directory / f"{domain.resource_id.value}.json"
+    receipt = (
+        load_deployment_receipt(receipt_path, context.schema_directory)
+        if receipt_path.is_file()
+        else None
+    )
+    run_engine_playbook(
+        context,
+        "domains-observe.yml",
+        {
+            "cloudfall_domains_domain_id": domain.resource_id.value,
+            "cloudfall_domains_observe_reading": str(request.reading_file.resolve()),
+        },
+        limit=domain.proxy.server_id,
+    )
+    reading = _domain_reading(request.reading_file)
+    if reading.get("domain") != domain.resource_id.value or reading.get(
+        "server"
+    ) != domain.proxy.server_id.value:
+        detail = (
+            f"domains-observe.yml read {reading.get('domain')} on "
+            f"{reading.get('server')}, not {domain.resource_id} on "
+            f"{domain.proxy.server_id}"
+        )
+        raise LifecycleError(ERROR_EXECUTION_FAILED, detail)
+    vhost = _reading_object(reading, "vhost")
+    certificate = _reading_object(reading, "certificate")
+    timer = _reading_object(reading, "certbotTimer")
+    return DomainObserved(
+        domain_id=domain.resource_id,
+        server=domain.proxy.server_id,
+        vhost=VhostReading(
+            path=AbsolutePath.from_boundary(vhost.get("path")),
+            sha256=_present(vhost, "sha256", Sha256Digest.from_boundary),
+        ),
+        certificate=CertificateReading(
+            path=AbsolutePath.from_boundary(certificate.get("path")),
+            not_after=_present(certificate, "notAfter", _certificate_expiry),
+        ),
+        timer_enabled=_reading_flag(timer, "enabled"),
+        timer_active=_reading_flag(timer, "active"),
+        receipt=receipt,
+    )
+
+
+def _domain_reading(path: Path) -> Mapping[str, object]:
+    if not path.is_file():
+        detail = f"domains-observe.yml reported success but wrote no reading: {path}"
+        raise LifecycleError(ERROR_EXECUTION_FAILED, detail)
+    raw = cast("object", json.loads(path.read_text(encoding="utf-8")))
+    if not isinstance(raw, dict):
+        detail = f"domains-observe.yml wrote a reading that is not an object: {path}"
+        raise LifecycleError(ERROR_EXECUTION_FAILED, detail)
+    return cast("Mapping[str, object]", raw)
+
+
+def _reading_object(reading: Mapping[str, object], key: str) -> Mapping[str, object]:
+    value = reading.get(key)
+    if not isinstance(value, dict):
+        detail = f"domains-observe.yml wrote no {key} object"
+        raise LifecycleError(ERROR_EXECUTION_FAILED, detail)
+    return cast("Mapping[str, object]", value)
+
+
+def _reading_flag(reading: Mapping[str, object], key: str) -> bool:
+    value = reading.get(key)
+    if not isinstance(value, bool):
+        detail = f"domains-observe.yml wrote {key}: {value!r}, not a boolean"
+        raise LifecycleError(ERROR_EXECUTION_FAILED, detail)
+    return value
+
+
+def _present[T](
+    reading: Mapping[str, object], key: str, parse: Callable[[object], T]
+) -> T | None:
+    """Parse ``key`` when ``present`` is true; require it absent otherwise."""
+    present = _reading_flag(reading, "present")
+    value = reading.get(key)
+    if not present:
+        if value is not None:
+            detail = f"domains-observe.yml wrote {key} for a file that is not there"
+            raise LifecycleError(ERROR_EXECUTION_FAILED, detail)
+        return None
+    try:
+        return parse(value)
+    except (TypeError, ValueError) as error:
+        detail = f"domains-observe.yml wrote {key}: {value!r}, which is invalid"
+        raise LifecycleError(ERROR_EXECUTION_FAILED, detail) from error
+
+
+def _certificate_expiry(value: object) -> EvidenceTimestamp:
+    """Parse ``openssl x509 -enddate``'s date, such as ``Jan  5 09:34:43 2027 GMT``."""
+    if not isinstance(value, str):
+        detail = f"domains-observe.yml wrote notAfter: {value!r}, not a date"
+        raise LifecycleError(ERROR_EXECUTION_FAILED, detail)
+    try:
+        seconds = ssl.cert_time_to_seconds(value.strip())
+    except ValueError as error:
+        detail = f"cannot read the certificate expiry {value!r}: {error}"
+        raise LifecycleError(ERROR_EXECUTION_FAILED, detail) from error
+    return EvidenceTimestamp(datetime.fromtimestamp(seconds, UTC))
 
 
 ERROR_SERVICES_SECRET = "lifecycle_services_secret_unavailable"  # noqa: S105 - a code

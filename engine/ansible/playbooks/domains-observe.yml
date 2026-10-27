@@ -1,0 +1,134 @@
+---
+# Read one Domain on its proxy server: the vhost file, the certificate and
+# certbot.timer. Every server task only reads (stat, or a command that
+# changes nothing), and runs in check mode too, so `--check` reads the same.
+# The one write is the reading itself, handed back to the controller at
+# cloudfall_domains_observe_reading, as backup.yml hands back its receipt.
+- name: Read one declared Domain on its proxy server without changing it
+  hosts: cloudfall_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Select the requested Domain on this host
+      ansible.builtin.set_fact:
+        cloudfall_domains_observe_matched: >-
+          {{
+            cloudfall_domains | default([])
+            | selectattr('id', 'equalto', cloudfall_domains_domain_id)
+            | list
+          }}
+
+    - name: Require the Domain to be proxied by this host
+      ansible.builtin.assert:
+        that:
+          - cloudfall_domains_observe_matched | length == 1
+        fail_msg: >-
+          Domain {{ cloudfall_domains_domain_id }} is not proxied by {{
+            cloudfall_server_id }}; nothing was read
+        quiet: true
+
+    - name: Name what this run reads
+      ansible.builtin.set_fact:
+        cloudfall_domains_observe_domain: >-
+          {{ cloudfall_domains_observe_matched | first }}
+        cloudfall_domains_observe_certificate_path: >-
+          {{
+            cloudfall_domains_observe_certificate_root
+            | default('/etc/letsencrypt/live')
+          }}/{{
+            (cloudfall_domains_observe_matched | first).primaryName
+          }}/fullchain.pem
+
+    # A link is followed, as cloudfall_nginx_site hashes the vhost it replaces.
+    - name: Hash the virtual host file
+      ansible.builtin.stat:
+        path: "{{ cloudfall_domains_observe_domain.proxy.configurationPath }}"
+        checksum_algorithm: sha256
+        follow: true
+      register: cloudfall_domains_observe_vhost
+
+    - name: Inspect the certificate file
+      ansible.builtin.stat:
+        path: "{{ cloudfall_domains_observe_certificate_path }}"
+        follow: true
+        get_checksum: false
+      register: cloudfall_domains_observe_certificate
+
+    - name: Read the certificate expiry
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - x509
+          - -noout
+          - -enddate
+          - -in
+          - "{{ cloudfall_domains_observe_certificate_path }}"
+      register: cloudfall_domains_observe_enddate
+      changed_when: false
+      check_mode: false
+      when: cloudfall_domains_observe_certificate.stat.exists
+
+    # is-enabled exits 1 for a disabled or missing unit, is-active 3 or 4 for
+    # an inactive or unknown one: readings, not failures.
+    - name: Read whether certbot.timer is enabled
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-enabled
+          - certbot.timer
+      register: cloudfall_domains_observe_timer_enabled
+      changed_when: false
+      failed_when: cloudfall_domains_observe_timer_enabled.rc not in [0, 1]
+      check_mode: false
+
+    - name: Read whether certbot.timer is active
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - certbot.timer
+      register: cloudfall_domains_observe_timer_active
+      changed_when: false
+      failed_when: cloudfall_domains_observe_timer_active.rc not in [0, 3, 4]
+      check_mode: false
+
+    - name: Hand the reading back to the controller
+      ansible.builtin.copy:
+        content: >-
+          {{
+            {
+              'domain': cloudfall_domains_observe_domain.id,
+              'server': cloudfall_server_id,
+              'vhost': {
+                'path': cloudfall_domains_observe_domain.proxy.configurationPath,
+                'present': cloudfall_domains_observe_vhost.stat.exists,
+                'sha256':
+                  cloudfall_domains_observe_vhost.stat.checksum
+                  if cloudfall_domains_observe_vhost.stat.exists
+                  else none,
+              },
+              'certificate': {
+                'path': cloudfall_domains_observe_certificate_path,
+                'present': cloudfall_domains_observe_certificate.stat.exists,
+                'notAfter':
+                  cloudfall_domains_observe_enddate.stdout
+                  | regex_replace('^notAfter=', '')
+                  if cloudfall_domains_observe_certificate.stat.exists
+                  else none,
+              },
+              'certbotTimer': {
+                'enabled':
+                  cloudfall_domains_observe_timer_enabled.stdout | trim
+                  == 'enabled',
+                'active':
+                  cloudfall_domains_observe_timer_active.stdout | trim
+                  == 'active',
+              },
+            } | to_nice_json
+          }}
+        dest: "{{ cloudfall_domains_observe_reading }}"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      check_mode: false

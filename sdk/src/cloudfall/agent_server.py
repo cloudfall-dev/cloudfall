@@ -292,6 +292,8 @@ PROJECT_COMMANDS = frozenset(
         "rollback",
         "restart",
         "data.copy",
+        "domains.apply",
+        "domains.observe",
         "migrate",
         "backup.run",
         "backup.verify",
@@ -411,10 +413,11 @@ Every result is an envelope: read ok, then data, else error.
 _PROJECT_INSTRUCTIONS = """\
 Cloudfall manages declarative infrastructure for dedicated Debian servers,
 in the one project this server was started for. Read-only tools validate
-the project and derive evidence. deploy, rollback, restart, migrate and
-data_copy change servers: called without yes they only return the plan;
-review it, then call again with yes: true. The converge_* tools converge
-every declared server and are destructive: they run only with
+the project and derive evidence; domains_observe reads one Domain on its
+proxy server and changes nothing. deploy, rollback, restart, migrate,
+data_copy and domains_apply change servers: called without yes they only
+return the plan; review it, then call again with yes: true. The converge_*
+tools converge every declared server and are destructive: they run only with
 confirm_destructive: true. Every change writes receipts; nothing reports
 success it cannot prove.
 

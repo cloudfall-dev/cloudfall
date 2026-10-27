@@ -256,6 +256,14 @@ applications cannot be spoofed by forged headers. When TLS is required the
 schema-valid deployment receipt on the controller; a failed run never emits
 a receipt.
 
+`ansible/playbooks/domains-observe.yml` reads one Domain
+(`cloudfall_domains_domain_id`) on its proxy server without changing it: the
+vhost file's sha256, the certificate's expiry (`openssl x509 -enddate`) and
+whether `certbot.timer` is enabled and active. Every server task is a `stat`
+or a command with `changed_when: false` that also runs in check mode; the one
+write is the reading, handed back to the controller at
+`cloudfall_domains_observe_reading`. `cloudfall domains observe` runs it.
+
 ## Read-only inspection role
 
 `ansible/roles/cloudfall_inspect` collects normalized evidence without changing the

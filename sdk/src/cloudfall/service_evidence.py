@@ -373,27 +373,44 @@ def load_deployment_receipts(
     receipts: list[DeploymentReceipt] = []
     index: dict[ResourceId, DeploymentReceipt] = {}
     for path, content in contents:
-        metadata = _mapping(content, "metadata")
-        spec = _mapping(content, "spec")
-        domain_id = ResourceId.from_boundary(spec.get("domain"))
-        _require_matching_identity(metadata, domain_id, path, "deployment")
-        if domain_id in index:
-            _raise_duplicate(domain_id, index[domain_id].source, path, "deployment")
-        receipt = DeploymentReceipt(
-            domain_id=domain_id,
-            server_id=ResourceId.from_boundary(spec.get("server")),
-            deployed_at=EvidenceTimestamp.from_boundary(spec.get("deployedAt")),
-            configuration_path=AbsolutePath.from_boundary(
-                spec.get("configurationPath")
-            ),
-            configuration_sha256=Sha256Digest.from_boundary(
-                spec.get("configurationSha256")
-            ),
-            source=path,
-        )
+        receipt = _deployment_receipt(path, content)
+        if receipt.domain_id in index:
+            _raise_duplicate(
+                receipt.domain_id, index[receipt.domain_id].source, path, "deployment"
+            )
         receipts.append(receipt)
-        index[domain_id] = receipt
+        index[receipt.domain_id] = receipt
     return DeploymentReceiptSet(receipts=tuple(receipts), _index=index)
+
+
+def load_deployment_receipt(path: Path, schema_directory: Path) -> DeploymentReceipt:
+    """Load one strictly validated deployment receipt file."""
+    content = _load_json(path)
+    _validate_document(
+        SchemaCatalog(schema_directory),
+        path,
+        content,
+        _DEPLOYMENT_RECEIPT_SCHEMA,
+        "deployment receipt",
+    )
+    return _deployment_receipt(path, content)
+
+
+def _deployment_receipt(path: Path, content: Mapping[str, object]) -> DeploymentReceipt:
+    metadata = _mapping(content, "metadata")
+    spec = _mapping(content, "spec")
+    domain_id = ResourceId.from_boundary(spec.get("domain"))
+    _require_matching_identity(metadata, domain_id, path, "deployment")
+    return DeploymentReceipt(
+        domain_id=domain_id,
+        server_id=ResourceId.from_boundary(spec.get("server")),
+        deployed_at=EvidenceTimestamp.from_boundary(spec.get("deployedAt")),
+        configuration_path=AbsolutePath.from_boundary(spec.get("configurationPath")),
+        configuration_sha256=Sha256Digest.from_boundary(
+            spec.get("configurationSha256")
+        ),
+        source=path,
+    )
 
 
 def load_domain_observations(
@@ -458,18 +475,28 @@ def _validated_json_documents(
     documents: list[tuple[Path, Mapping[str, object]]] = []
     for path in sorted(directory.rglob("*.json")):
         content = _load_json(path)
-        try:
-            catalog.validate_named(schema_name, content)
-        except ValidationError as error:
-            issue = ValidationIssue(
-                code=f"{concept.replace(' ', '_')}_schema_validation_failed",
-                message=error.message,
-                source=SourceLocation(path=path, document_number=1),
-                field_path=tuple(error.absolute_path),
-            )
-            raise ConfigValidationError(issue) from error
+        _validate_document(catalog, path, content, schema_name, concept)
         documents.append((path, content))
     return tuple(documents)
+
+
+def _validate_document(
+    catalog: SchemaCatalog,
+    path: Path,
+    content: Mapping[str, object],
+    schema_name: str,
+    concept: str,
+) -> None:
+    try:
+        catalog.validate_named(schema_name, content)
+    except ValidationError as error:
+        issue = ValidationIssue(
+            code=f"{concept.replace(' ', '_')}_schema_validation_failed",
+            message=error.message,
+            source=SourceLocation(path=path, document_number=1),
+            field_path=tuple(error.absolute_path),
+        )
+        raise ConfigValidationError(issue) from error
 
 
 def _load_json(path: Path) -> Mapping[str, object]:

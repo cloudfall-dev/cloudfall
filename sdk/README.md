@@ -70,6 +70,15 @@ runs; it is safe on a server whose baseline another project owns. With
 proxy server (a `proxied` Domain skips the check), then issues the certificate
 when none exists yet.
 
+`domains observe <domain>` is the server-side view of the same Domain. It runs
+the read-only `domains-observe.yml` on the proxy server alone and reports the
+vhost file (`present`, `sha256`), the certificate's `not_after`, whether
+`certbot.timer` is enabled and active, and whether the vhost still has the
+`configurationSha256` of the last receipt in `--deployments` (`receipt` is
+`null` before the first one). It changes nothing on the server or in the
+project, and a missing vhost is a reading that exits `0`. Both commands are
+MCP tools too: `domains_apply` keeps the `yes` gate.
+
 `deploy` refuses to run when the built artifact is missing, misidentified, or
 fails digest verification, and refuses to report success if the engine wrote
 no release receipt. `health` exits `0` when every declared server passes the
