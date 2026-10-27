@@ -335,6 +335,39 @@ def test_cli_data_migration_plan_checks_the_source_url_file(
     assert "u:p@" not in json.dumps(payload)
 
 
+def test_s007_14_data_copy_plan_names_the_selected_schemas(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source_url_file = tmp_path / "source.url"
+    source_url_file.write_text("postgresql://u:p@db.example.test/crm\n")
+    argv = [
+        "data",
+        "copy",
+        "postgresql-main",
+        "--database",
+        "crm",
+        "--source-url-file",
+        str(source_url_file),
+    ]
+
+    exit_code, payload = _cli_lifecycle(
+        [*argv, "--source-schema", "public", "--source-schema", "app"],
+        tmp_path,
+        capsys,
+    )
+    assert exit_code == 0
+    assert payload["meta"]["dry_run"] is True
+    assert "dump schemas app, public of the database" in str(
+        payload["data"]["would_run"]
+    )
+
+    exit_code, payload = _cli_lifecycle(argv, tmp_path, capsys)
+    assert exit_code == 0
+    assert "dump every non-system schema of the database" in str(
+        payload["data"]["would_run"]
+    )
+
+
 def _git(*arguments: str) -> None:
     subprocess.run(  # noqa: S603 - fixture repository setup.
         [

@@ -165,6 +165,7 @@ from cloudfall.investigation import (
 )
 from cloudfall.lifecycle import (
     ERROR_EXECUTION_FAILED,
+    DataCopySchemas,
     DeployOptions,
     DomainApply,
     DomainObserve,
@@ -3835,6 +3836,16 @@ class DataMigrateArgs(EngineArgs):
         # The flag names a file; the URL with its password never reaches argv.
         secret=False,
     )
+    # S-007 names this flag --schema, which treaty reserves for printing a
+    # command's schema (REQ-F-079); --source-schema pairs with
+    # --source-url-file instead.
+    source_schema: tuple[str, ...] = Flag(
+        default=(),
+        description=(
+            "Source schema to copy (repeatable); without it every non-system "
+            "schema of the source is copied"
+        ),
+    )
     data_migrations: Path = Flag(
         default=Path("tmp/data-migrations"),
         description="Migration receipt directory (default: tmp/data-migrations)",
@@ -4031,6 +4042,12 @@ data = app.group("data", description="Migrate data into declared services")
             "cloudfall data copy postgresql-main --database crm "
             "--source-url-file source.url",
         ),
+        (
+            "Copy only two schemas",
+            "cloudfall data copy postgresql-main --database crm "
+            "--source-url-file source.url --source-schema public "
+            "--source-schema app --yes",
+        ),
     ],
 )
 def data_copy(
@@ -4039,11 +4056,14 @@ def data_copy(
     """Restore the source database into the service, or show the plan."""
     context = args.context(fleet, ctx)
     source = fleet.path(args.source_url_file)
+    schemas = DataCopySchemas(args.source_schema)
     try:
         if not args.yes:
             return DataMigratePayload(
                 _plan(
-                    preview_data_migration(context, args.service, args.database, source)
+                    preview_data_migration(
+                        context, args.service, args.database, source, schemas
+                    )
                 )
             )
         body = migrate_data(
@@ -4052,6 +4072,7 @@ def data_copy(
             args.database,
             source,
             fleet.path(args.data_migrations),
+            schemas,
         )
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error

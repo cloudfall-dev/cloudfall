@@ -2,14 +2,35 @@
 cloudfall_data_migration_receipt_directory: ""
 cloudfall_data_migration_url_path: /root/.cloudfall-data-source-url
 cloudfall_data_migration_dump_path: /var/tmp/cloudfall-data-migration.dump
-# Exact per-table row counts in one deterministic query, so source and
-# target evidence can be compared verbatim.
+# Schemas to copy; empty copies every non-system schema of the source,
+# which is what a pg_dump without --schema dumps.
+cloudfall_data_migration_schemas: []
+# Every non-system schema of the source, as one JSON array line: the
+# schemas a pg_dump without --schema dumps.
+cloudfall_data_migration_source_schemas_query: >-
+  SELECT coalesce(json_agg(nspname::text ORDER BY nspname), '[]')
+  FROM pg_catalog.pg_namespace
+  WHERE nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+    AND nspname !~ '^pg_(toast_)?temp_'
+# Tables of the selected schemas on the target. The schema names arrive as
+# the psql variable cloudfall_data_schemas, a JSON array that psql quotes as
+# a literal, so no name is ever spliced into the SQL text.
+cloudfall_data_migration_target_tables_query: >-
+  SELECT count(*) FROM information_schema.tables
+  WHERE table_schema IN
+    (SELECT jsonb_array_elements_text(:'cloudfall_data_schemas'::jsonb))
+# Exact per-table row counts of the selected schemas in one deterministic
+# query, one schema,table,rows line per base table, so source and target
+# evidence can be compared verbatim. The schema names arrive as the psql
+# variable cloudfall_data_schemas, like the target tables query.
 cloudfall_data_migration_count_query: >-
-  SELECT table_name,
+  SELECT table_schema, table_name,
          (xpath('/row/c/text()',
                 query_to_xml(format('SELECT count(*) AS c FROM %I.%I',
                                     table_schema, table_name),
                              false, true, '')))[1]::text::bigint AS rows
   FROM information_schema.tables
-  WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-  ORDER BY table_name
+  WHERE table_schema IN
+    (SELECT jsonb_array_elements_text(:'cloudfall_data_schemas'::jsonb))
+    AND table_type = 'BASE TABLE'
+  ORDER BY table_schema, table_name

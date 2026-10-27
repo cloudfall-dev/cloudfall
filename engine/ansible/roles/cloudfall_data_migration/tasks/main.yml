@@ -39,18 +39,50 @@
         mode: "0600"
       no_log: true
 
-    - name: Count existing tables in the target database
+    - name: Read every non-system schema of the source
+      ansible.builtin.shell:
+        cmd: >-
+          psql
+          --dbname "$(cat {{ cloudfall_data_migration_url_path | quote }})"
+          --no-psqlrc --tuples-only --no-align
+          --set ON_ERROR_STOP=1
+        stdin: "{{ cloudfall_data_migration_source_schemas_query }};"
+      register: cloudfall_data_migration_source_schemas
+      changed_when: false
+      when: cloudfall_data_migration_schemas | length == 0
+
+    - name: Select the schemas to copy
+      ansible.builtin.set_fact:
+        cloudfall_data_migration_selected_schemas: >-
+          {{
+            (
+              cloudfall_data_migration_schemas
+              if cloudfall_data_migration_schemas | length > 0
+              else cloudfall_data_migration_source_schemas.stdout | from_json
+            ) | unique | sort
+          }}
+
+    - name: Pass the selected schemas to psql as one JSON variable
+      ansible.builtin.set_fact:
+        cloudfall_data_migration_schemas_variable: >-
+          cloudfall_data_schemas={{
+            cloudfall_data_migration_selected_schemas | to_json
+          }}
+
+    - name: Count existing tables of the selected schemas in the target
       ansible.builtin.command:
         argv:
           - /usr/bin/psql
           - --dbname
           - "{{ cloudfall_data_migration_database }}"
+          - --no-psqlrc
           - --tuples-only
           - --no-align
-          - --command
-          - >-
-            SELECT count(*) FROM information_schema.tables
-            WHERE table_schema = 'public'
+          - --set
+          - ON_ERROR_STOP=1
+          - --set
+          - "{{ cloudfall_data_migration_schemas_variable }}"
+        stdin: "{{ cloudfall_data_migration_target_tables_query }};"
       become: true
       become_user: postgres
       register: cloudfall_data_migration_target_tables
@@ -71,7 +103,11 @@
           pg_dump
           --dbname "$(cat {{ cloudfall_data_migration_url_path | quote }})"
           --no-owner --no-privileges --format custom
-          --file {{ cloudfall_data_migration_dump_path | quote }}
+          --file {{ cloudfall_data_migration_dump_path | quote }}{%
+            for schema in cloudfall_data_migration_schemas | unique | sort
+          %} --schema {{
+            ('"' ~ (schema | replace('"', '""')) ~ '"') | quote
+          }}{% endfor %}
       register: cloudfall_data_migration_dump
       retries: 3
       delay: 10
@@ -90,8 +126,10 @@
         cmd: >-
           psql
           --dbname "$(cat {{ cloudfall_data_migration_url_path | quote }})"
-          --csv --tuples-only
-          --command {{ cloudfall_data_migration_count_query | quote }}
+          --no-psqlrc --csv --tuples-only
+          --set ON_ERROR_STOP=1
+          --set {{ cloudfall_data_migration_schemas_variable | quote }}
+        stdin: "{{ cloudfall_data_migration_count_query }};"
       register: cloudfall_data_migration_source_counts
       changed_when: false
 
@@ -100,8 +138,9 @@
         that:
           - cloudfall_data_migration_source_counts.stdout_lines | length > 0
         fail_msg: >-
-          The source database contains no tables in schema public; there is
-          nothing to migrate
+          The source database contains no tables in schemas
+          {{ cloudfall_data_migration_selected_schemas | join(', ') }}; there
+          is nothing to migrate
 
     - name: Restore the dump into the declared database
       ansible.builtin.command:
@@ -124,10 +163,14 @@
           - /usr/bin/psql
           - --dbname
           - "{{ cloudfall_data_migration_database }}"
+          - --no-psqlrc
           - --csv
           - --tuples-only
-          - --command
-          - "{{ cloudfall_data_migration_count_query }}"
+          - --set
+          - ON_ERROR_STOP=1
+          - --set
+          - "{{ cloudfall_data_migration_schemas_variable }}"
+        stdin: "{{ cloudfall_data_migration_count_query }};"
       become: true
       become_user: postgres
       register: cloudfall_data_migration_restored_counts
@@ -144,6 +187,31 @@
           {{ cloudfall_data_migration_source_counts.stdout_lines }}
           versus restored
           {{ cloudfall_data_migration_restored_counts.stdout_lines }}
+
+    - name: Record the verified tables for the receipt
+      ansible.builtin.set_fact:
+        # One psql CSV line per table: schema,table,rows, where a name that
+        # holds a comma or a double quote arrives double-quoted.
+        cloudfall_data_migration_tables: >-
+          {%- set result = namespace(tables=[]) -%}
+          {%- for line in cloudfall_data_migration_source_counts.stdout_lines -%}
+          {%- set fields = (line | regex_findall(
+                '^("(?:[^"]|"")*"|[^,"]*),("(?:[^"]|"")*"|[^,"]*),([0-9]+)$'
+              ))[0] -%}
+          {%- set names = namespace(parts=[]) -%}
+          {%- for field in fields[:2] -%}
+          {%- set names.parts = names.parts + [
+                field[1:-1] | replace('""', '"')
+                if field.startswith('"') else field
+              ] -%}
+          {%- endfor -%}
+          {%- set result.tables = result.tables + [{
+                'schema': names.parts[0],
+                'table': names.parts[1],
+                'rows': fields[2] | int,
+              }] -%}
+          {%- endfor -%}
+          {{ result.tables }}
   always:
     - name: Remove the staged source connection URL
       ansible.builtin.file:
@@ -183,10 +251,8 @@
             'owner': cloudfall_data_migration_owner,
             'server': cloudfall_server_id,
             'migratedAt': ansible_facts['date_time']['iso8601'],
-            'tables': cloudfall_data_migration_source_counts.stdout_lines
-              | map('regex_replace', '^(.*),([0-9]+)$',
-                    '{"table": "\1", "rows": \2}')
-              | map('from_json') | list,
+            'schemas': cloudfall_data_migration_selected_schemas,
+            'tables': cloudfall_data_migration_tables,
             'verification': 'per-table row counts matched',
           },
         } | to_nice_json

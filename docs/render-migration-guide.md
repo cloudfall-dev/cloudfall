@@ -147,11 +147,13 @@ uv run cloudfall migrate --build acme-api=main --data acme=~/.render/acme-db.url
 ```
 
 Without `--yes` the command shows the plan. The engine dumps on the target
-host, restores over the peer-authenticated socket, refuses a non-empty
-target database, verifies per-table row counts, and writes a
-`DataMigrationReceipt`. The row-count check is the verify step: the
-migration is not done because the restore exited zero, it is done because
-the counts match.
+host, restores over the peer-authenticated socket, refuses a target
+database that already has tables in the copied schemas, verifies per-table
+row counts, and writes a `DataMigrationReceipt`. The row-count check is the
+verify step: the migration is not done because the restore exited zero, it
+is done because the counts match. The copy takes every non-system schema of
+the source; `data copy --source-schema NAME` (repeatable) takes only the
+named ones.
 
 ## Step 7: cut over DNS
 
