@@ -1,6 +1,6 @@
 # S-005: Release command
 
-status: approved
+status: built
 
 ## Problem
 
@@ -129,3 +129,17 @@ Touches `config/schemas/v1/component.schema.json`,
 - cloudfall-dev/cloudfall#120: S-005-8, S-005-9
 
 ## Verification
+
+No criterion has run against a live Debian host yet: the role's release command tasks ran under `ansible-playbook` on the controller with a stand-in for `systemd-run`, and `deploy.yml` ran against two local hosts with a recording role. The real `systemd-run` (exit code, the `Finished with result: timeout` line, `EnvironmentFile=` quoting) and `current`, unit and restart state on real servers are unexercised.
+
+- S-005-1: `test_s005_1_a_passing_release_command_records_its_run` and `test_s005_1_stderr_is_part_of_the_recorded_output`, the stand-in command created its table and the recorded run had the command, `exitCode: 0` and the combined output tail
+- S-005-2: `test_s005_2_the_release_command_runs_between_materialize_and_the_switch` (task order in the role) and `test_s005_2_the_command_runs_in_its_working_directory_as_the_user` (working directory, `--uid`/`--gid` of the application user)
+- S-005-3: `test_s005_3_the_command_loads_the_unit_environment_file`, the `EnvironmentFile=` line equals the unit template's
+- S-005-4: `test_s005_4_a_failing_release_command_fails_the_play_naming_its_exit`, `test_s005_4_a_unit_that_never_starts_names_systemd_run_s_reason` and `test_s005_4_a_failed_release_server_stops_every_other_server`, the message named the command and exit code 1 and no other server ran
+- S-005-5: `test_s005_5_a_timed_out_release_command_fails_naming_the_timeout` and `test_s005_5_the_timeout_is_the_unit_runtime_limit` (`RuntimeMaxSec=`)
+- S-005-6: `test_s005_6_the_release_server_deploys_first_and_runs_the_command_once` with `deployment.servers: [h2, h1]`, plus `test_s005_6_only_the_release_server_runs_the_command`, `test_s005_6_a_server_whose_release_server_has_not_passed_does_not_switch`, `test_s005_6_every_receipt_names_the_release_server`, `test_s005_6_the_release_server_is_the_first_deployment_server` and `test_s005_6_a_release_renders_with_its_release_server`
+- S-005-7: `test_s005_7_the_output_tail_keeps_the_last_2000_characters` and `test_s005_7_a_receipt_refuses_an_output_tail_over_2000_characters`
+- S-005-8: `test_s005_8_the_deploy_plan_shows_the_release_command`, `test_s005_8_the_plan_resolves_a_declared_working_directory_and_timeout` and `test_s005_8_a_component_without_release_shows_a_null_release_command`, `deploy` without `--yes` exited 0 with `release_command` (`working_directory` resolved to `<installRoot>/releases/<release>`, `timeout_seconds: 300` by default, `server: h2`) or `null`; the CLI pointed at an engine whose playbooks only leave a marker left none and rendered no inventory, while the same engine with `--yes` did leave one (`test_s005_8_the_marker_engine_does_record_a_playbook_run`)
+- S-005-9: `test_s005_9_the_rollback_plan_skips_the_release_command` showed `release_command_skipped: true`, `test_s005_9_a_rollback_without_release_skips_nothing` showed `null`, and `test_s005_9_the_rollback_run_includes_no_release_command_task` found no release command task in `rollback.yml` or what it includes
+- S-005-10: `test_s005_10_a_component_without_release_runs_no_new_task`, `test_s005_10_a_receipt_without_release_has_no_release_command`, `test_s005_10_a_component_without_release_deploys_in_inventory_order` and `test_s005_10_a_component_without_release_serializes_as_before`
+- S-005-11: `test_s005_11_config_validate_refuses_a_malformed_release`, `test_s005_11_config_validate_accepts_a_declared_release` and `test_s005_11_release_values_are_refused_outside_their_bounds`

@@ -16,10 +16,12 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Protocol, cast
 
 from jsonschema.exceptions import ValidationError
 
+from cloudfall.domain import AbsolutePath
 from cloudfall.inventory import PlatformInventory
 from cloudfall.validation import SchemaCatalog, validate_config
 
@@ -27,7 +29,12 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from pathlib import Path
 
-    from cloudfall.domain import ReleaseId, ResourceId
+    from cloudfall.domain import (
+        CommandArgv,
+        ReleaseCommandTimeout,
+        ReleaseId,
+        ResourceId,
+    )
     from cloudfall.inventory import (
         ComponentInventory,
         DomainInventory,
@@ -176,6 +183,54 @@ class LifecycleResult:
         return result
 
 
+@dataclass(frozen=True, slots=True)
+class ReleaseCommandPlan:
+    """The release command a deploy would run, resolved as the engine runs it.
+
+    The working directory is the absolute path on the release server: the
+    new release directory, or the declared ``workingDirectory`` under it.
+    """
+
+    server: ResourceId
+    command: CommandArgv
+    working_directory: AbsolutePath
+    timeout_seconds: ReleaseCommandTimeout
+
+    @classmethod
+    def for_release(
+        cls, component: ComponentInventory, release: ReleaseId
+    ) -> ReleaseCommandPlan | None:
+        """Resolve a component's release command, ``None`` when it has none."""
+        declared = component.release
+        if declared is None:
+            return None
+        directory = PurePosixPath(
+            component.install_root.value, "releases", release.value
+        )
+        if declared.working_directory is not None:
+            directory /= declared.working_directory.value
+        return cls(
+            server=component.release_server_id,
+            command=declared.command,
+            working_directory=AbsolutePath(str(directory)),
+            timeout_seconds=declared.timeout_seconds,
+        )
+
+    @property
+    def described(self) -> str:
+        """The command as one line, for a plan's ``wouldRun``."""
+        return " ".join(self.command.value)
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the plan's ``releaseCommand``."""
+        return {
+            "command": list(self.command.value),
+            "workingDirectory": self.working_directory.value,
+            "timeoutSeconds": self.timeout_seconds.value,
+            "server": self.server.value,
+        }
+
+
 class PreviewSubject(StrEnum):
     """Kind of declared resource a previewed action targets."""
 
@@ -197,6 +252,10 @@ class LifecyclePreview:
     release: ReleaseId | None
     servers: tuple[ResourceId, ...]
     effect: str
+    release_command: ReleaseCommandPlan | None = None
+    """The release command a deploy runs; set only on a deploy's plan."""
+    release_command_skipped: bool = False
+    """A declared release command this action does not run (a rollback)."""
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the preview for agent consumers."""
@@ -209,6 +268,10 @@ class LifecyclePreview:
         }
         if self.release is not None:
             result["release"] = self.release.value
+        if self.release_command is not None:
+            result["releaseCommand"] = self.release_command.as_dict()
+        if self.release_command_skipped:
+            result["releaseCommandSkipped"] = True
         return result
 
 
@@ -557,17 +620,26 @@ def preview_deploy(
     verify_artifact(
         artifact_directory, component_id, release, context.schema_directory
     )
+    release_command = ReleaseCommandPlan.for_release(component, release)
+    effect = (
+        f"deploy release {release.value} of component {component_id} to "
+        f"{_server_list(component.server_ids)} behind its health check, "
+        "rolling back automatically if the check fails"
+    )
+    if release_command is not None:
+        effect += (
+            f"; first run its release command {release_command.described} "
+            f"once on {release_command.server}, before any server switches "
+            "to the release"
+        )
     return LifecyclePreview(
         action="deploy",
         subject=PreviewSubject.COMPONENT,
         subject_id=component_id,
         release=release,
         servers=component.server_ids,
-        effect=(
-            f"deploy release {release.value} of component {component_id} to "
-            f"{_server_list(component.server_ids)} behind its health check, "
-            "rolling back automatically if the check fails"
-        ),
+        effect=effect,
+        release_command=release_command,
     )
 
 
@@ -577,20 +649,28 @@ def preview_rollback(
     """Validate a rollback without touching any server.
 
     Whether the release is still retained is known only to the servers; the
-    rollback itself fails if it is not.
+    rollback itself fails if it is not. A rollback never runs the release
+    command: a downgrade stays a human decision.
     """
     component = _component(context, component_id)
+    effect = (
+        f"switch component {component_id} on "
+        f"{_server_list(component.server_ids)} back to retained release "
+        f"{release.value} and restart it behind its health check"
+    )
+    if component.release is not None:
+        effect += (
+            "; its release command "
+            f"{' '.join(component.release.command.value)} is not run"
+        )
     return LifecyclePreview(
         action="rollback",
         subject=PreviewSubject.COMPONENT,
         subject_id=component_id,
         release=release,
         servers=component.server_ids,
-        effect=(
-            f"switch component {component_id} on "
-            f"{_server_list(component.server_ids)} back to retained release "
-            f"{release.value} and restart it behind its health check"
-        ),
+        effect=effect,
+        release_command_skipped=component.release is not None,
     )
 
 
