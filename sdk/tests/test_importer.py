@@ -174,8 +174,9 @@ def test_importer_reports_gaps_for_unsupported_services(
     assert "## Required actions" in report
 
 
+@pytest.mark.parametrize("runtime_key", ["runtime", "env"])
 def test_s002_15_node_web_service_is_a_gap_not_a_component(
-    tmp_path: Path,
+    tmp_path: Path, runtime_key: str
 ) -> None:
     blueprint = tmp_path / "render.yaml"
     blueprint.write_text(
@@ -183,7 +184,7 @@ def test_s002_15_node_web_service_is_a_gap_not_a_component(
             "envVarGroups:",
             "  - type: web\n"
             "    name: acme-web\n"
-            "    runtime: node\n"
+            f"    {runtime_key}: node\n"
             "    repo: https://github.com/example/acme-web.git\n"
             "    startCommand: node server.js\n"
             "    domains:\n"
@@ -196,7 +197,8 @@ def test_s002_15_node_web_service_is_a_gap_not_a_component(
 
     result = import_render_blueprint(blueprint, targets, SCHEMAS)
 
-    assert "acme-web" not in result.components
+    assert result.components == ("acme-api", "acme-worker")
+    assert result.domains == ("acme-example-test",)
     assert not (targets.project_directory / "components" / "acme-web.yaml").exists()
     assert "web-example-test" not in result.domains
     node_gaps = [gap for gap in result.gaps if gap.subject == "acme-web"]
