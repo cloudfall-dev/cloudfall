@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from cloudfall.domain import NetworkProtocol
-from cloudfall.inventory import firewall_rules_for_server
+from cloudfall.inventory import (
+    firewall_rules_for_server,
+    remote_access_rules_for_server,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -172,7 +174,7 @@ def _host_firewall(
     server_type: ServerTypeInventory,
     services: tuple[ServiceInventory, ...],
 ) -> dict[str, object]:
-    remote_access = _remote_access_rules(server, services)
+    remote_access = remote_access_rules_for_server(server, services)
     if server_type.firewall is None:
         if remote_access:
             message = (
@@ -187,42 +189,10 @@ def _host_firewall(
             "policy": server_type.firewall.policy.value,
             "allowedInbound": [
                 *(rule.as_dict() for rule in rules),
-                *remote_access,
+                *(rule.as_dict() for rule in remote_access),
             ],
         }
     }
-
-
-def _remote_access_rules(
-    server: ServerInventory, services: tuple[ServiceInventory, ...]
-) -> list[dict[str, object]]:
-    """Return one source-restricted inbound entry per remotely reachable service.
-
-    The entry carries ``sources``, so the firewall opens the service port to
-    the declared networks only; a service without ``remoteAccess`` adds none.
-    """
-    rules: list[dict[str, object]] = []
-    for service in services:
-        if service.server_id != server.resource_id or service.postgresql is None:
-            continue
-        remote_access = service.postgresql.remote_access
-        if remote_access is None:
-            continue
-        if any(source.is_unrestricted for source in remote_access.allowed_sources):
-            message = (
-                "PostgreSQL remoteAccess refuses a source of every address: "
-                f"{service.resource_id.value}"
-            )
-            raise ValueError(message)
-        rules.append(
-            {
-                "port": service.bind.port.value,
-                "protocol": NetworkProtocol.TCP.value,
-                "sources": [source.value for source in remote_access.allowed_sources],
-                "description": f"{service.resource_id.value} remoteAccess",
-            }
-        )
-    return rules
 
 
 def _host_logging(

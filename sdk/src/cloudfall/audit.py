@@ -7,9 +7,13 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from enum import StrEnum
+from ipaddress import ip_network
 from typing import TYPE_CHECKING, cast
 
-from cloudfall.inventory import firewall_rules_for_server
+from cloudfall.inventory import (
+    firewall_rules_for_server,
+    remote_access_rules_for_server,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -34,6 +38,8 @@ _MANAGED_FIREWALL_TABLE = "cloudfall"
 _MANAGED_FIREWALL_INPUT_CHAIN = "input"
 _MANAGED_FIREWALL_INPUT_POLICY = "drop"
 _LOOPBACK_ADDRESSES = frozenset({"127.0.0.1", "::1"})
+# An inbound rule without a saddr match accepts every source.
+_ANY_SOURCE = ""
 _MINIMUM_SOCKET_FIELDS = 5
 
 
@@ -209,7 +215,9 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
     checks.extend(_audit_packages(server_type, snapshot))
     checks.extend(_audit_services(server_type, snapshot))
     if server_type.firewall is not None:
-        checks.extend(_audit_firewall(server, server_type.firewall, snapshot))
+        checks.extend(
+            _audit_firewall(server, server_type.firewall, services, snapshot)
+        )
     checks.extend(_audit_service_binds(services, snapshot))
     checks.extend(_audit_alert_rules(alert_rules, snapshot))
     checks.extend(
@@ -431,12 +439,13 @@ class _ObservedFirewallTable:
     """Managed nftables table facts parsed from observation evidence."""
 
     input_policy: str | None
-    allowed_inbound: tuple[tuple[str, int], ...]
+    allowed_inbound: tuple[tuple[str, int, str], ...]
 
 
 def _audit_firewall(
     server: ServerInventory,
     firewall: FirewallRequirement,
+    services: tuple[ServiceInventory, ...],
     snapshot: ObservedServerSnapshot,
 ) -> tuple[AuditCheck, ...]:
     evidence = _mapping(snapshot.spec, "firewall")
@@ -448,8 +457,15 @@ def _audit_firewall(
         else None
     )
     expected_rules = sorted(
-        (rule.protocol.value, rule.port.value)
-        for rule in firewall_rules_for_server(firewall, server.ssh_port)
+        [
+            (rule.protocol.value, rule.port.value, _ANY_SOURCE)
+            for rule in firewall_rules_for_server(firewall, server.ssh_port)
+        ]
+        + [
+            (rule.protocol.value, rule.port.value, source.value)
+            for rule in remote_access_rules_for_server(server, services)
+            for source in rule.sources
+        ]
     )
     observed_rules = None if table is None else sorted(table.allowed_inbound)
     return (
@@ -470,15 +486,23 @@ def _audit_firewall(
         ),
         _comparison(
             "firewall.allowedInbound",
-            [f"{protocol}/{port}" for protocol, port in expected_rules],
+            [_inbound_label(rule) for rule in expected_rules],
             (
                 None
                 if observed_rules is None
-                else [f"{protocol}/{port}" for protocol, port in observed_rules]
+                else [_inbound_label(rule) for rule in observed_rules]
             ),
             matches=observed_rules == expected_rules,
         ),
     )
+
+
+def _inbound_label(rule: tuple[str, int, str]) -> str:
+    """Render ``tcp/22``, or ``tcp/5432 from 10.0.0.0/24`` for a source rule."""
+    protocol, port, source = rule
+    if source == _ANY_SOURCE:
+        return f"{protocol}/{port}"
+    return f"{protocol}/{port} from {source}"
 
 
 def _parse_managed_firewall_table(raw: str) -> _ObservedFirewallTable | None:
@@ -491,7 +515,7 @@ def _parse_managed_firewall_table(raw: str) -> _ObservedFirewallTable | None:
         return None
     entries = _mapping_values_sequence(document.get("nftables"))
     input_policy: str | None = None
-    allowed: list[tuple[str, int]] = []
+    allowed: list[tuple[str, int, str]] = []
     table_present = False
     for entry in entries:
         table = _optional_mapping(entry.get("table"))
@@ -524,9 +548,10 @@ def _parse_managed_firewall_table(raw: str) -> _ObservedFirewallTable | None:
 
 def _accepted_inbound_endpoint(
     rule: Mapping[str, object],
-) -> tuple[str, int] | None:
+) -> tuple[str, int, str] | None:
     expressions = _mapping_values_sequence(rule.get("expr"))
     endpoint: tuple[str, int] | None = None
+    source = _ANY_SOURCE
     accepts = False
     for expression in expressions:
         if "accept" in expression:
@@ -537,18 +562,57 @@ def _accepted_inbound_endpoint(
             continue
         left = _optional_mapping(match.get("left"))
         payload = None if left is None else _optional_mapping(left.get("payload"))
+        if payload is None:
+            continue
         port = match.get("right")
         if (
-            payload is not None
-            and payload.get("field") == "dport"
+            payload.get("field") == "dport"
             and payload.get("protocol") in ("tcp", "udp")
             and isinstance(port, int)
             and not isinstance(port, bool)
         ):
             endpoint = (cast("str", payload.get("protocol")), port)
-    if not accepts:
+        elif payload.get("field") == "saddr" and payload.get("protocol") in (
+            "ip",
+            "ip6",
+        ):
+            source = _observed_source(match)
+    if not accepts or endpoint is None:
         return None
-    return endpoint
+    return (*endpoint, source)
+
+
+def _observed_source(match: Mapping[str, object]) -> str:
+    """Return a saddr match as a canonical network, as the declaration holds it.
+
+    nftables prints a single address (a /32 or /128) bare and a wider network
+    as ``{"prefix": {"addr": ..., "len": ...}}``. Any other shape (a set, a
+    negation, a range) is kept as its raw JSON so it can never match a
+    declared source and shows up as drift.
+    """
+    right = match.get("right")
+    prefix = _optional_mapping(right)
+    inner = None if prefix is None else _optional_mapping(prefix.get("prefix"))
+    candidate: str | None = None
+    if isinstance(right, str):
+        candidate = right
+    elif inner is not None:
+        address = inner.get("addr")
+        length = inner.get("len")
+        if (
+            isinstance(address, str)
+            and isinstance(length, int)
+            and not isinstance(length, bool)
+        ):
+            candidate = f"{address}/{length}"
+    raw = json.dumps(dict(match), sort_keys=True)
+    if match.get("op") != "==" or candidate is None:
+        return raw
+    try:
+        network = ip_network(candidate, strict=True)
+    except ValueError:
+        return raw
+    return str(network)
 
 
 @dataclass(frozen=True, slots=True)
@@ -580,11 +644,37 @@ def _audit_service_binds(
         declared_present = any(
             listener.address == address for listener in on_port
         )
-        exposed = tuple(
-            listener
-            for listener in on_port
-            if listener.address not in _LOOPBACK_ADDRESSES
+        remote_access = (
+            None if service.postgresql is None else service.postgresql.remote_access
         )
+        # The remoteAccess listener is narrowed to its declared sources by the
+        # firewall, which firewall.allowedInbound verifies; any other
+        # non-loopback listener is exposed.
+        accepted = (
+            _LOOPBACK_ADDRESSES
+            if remote_access is None
+            else _LOOPBACK_ADDRESSES | {remote_access.listen_address.value}
+        )
+        exposed = tuple(
+            listener for listener in on_port if listener.address not in accepted
+        )
+        # A remoteAccess service must also listen on its listenAddress: one
+        # that failed to bind it has remote access down while it is declared.
+        if remote_access is not None:
+            declared_present = declared_present and any(
+                listener.address == remote_access.listen_address.value
+                for listener in on_port
+            )
+        desired: dict[str, object] = {
+            "protocol": "tcp",
+            "address": address,
+            "port": port,
+            "loopbackOnly": remote_access is None,
+        }
+        if remote_access is not None:
+            desired["remoteAccess"] = {
+                "listenAddress": remote_access.listen_address.value
+            }
         observed = (
             {
                 "listeners": [
@@ -598,12 +688,7 @@ def _audit_service_binds(
         checks.append(
             _comparison(
                 f"services.bind[{service.resource_id.value}]",
-                {
-                    "protocol": "tcp",
-                    "address": address,
-                    "port": port,
-                    "loopbackOnly": True,
-                },
+                desired,
                 observed,
                 matches=declared_present and not exposed,
             )
