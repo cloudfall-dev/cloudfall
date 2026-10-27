@@ -211,6 +211,10 @@ task domains:deploy
 task domains:deploy ISSUE_CERTIFICATES=true
 ```
 
+`proxy.upstream` is optional in the schema, for a Domain the fleet routes with
+its own proxy, but the site role needs it. Before it changes any server, the
+playbook fails and names every Domain of the run that has no `upstream`.
+
 The site role installs Nginx and Certbot, serves the ACME challenge webroot,
 and converges in two phases: until a certificate exists the route serves
 plain HTTP so the site stays reachable during cutover; once TLS material is
