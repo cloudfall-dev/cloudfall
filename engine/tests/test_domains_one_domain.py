@@ -29,12 +29,14 @@ RECEIPT_TASKS = (
     "Write the deployment receipt on the controller",
 )
 RENDERED = "server { listen 80; }\n"
+RENDER_PLAY = "Deploy declared Cloudfall public domain routes"
 
 
 def _loop(variables: dict[str, object]) -> object:
-    play = DataLoader().load_from_file(str(ANSIBLE / "playbooks" / "domains.yml"))
-    assert isinstance(play, list)
-    (task,) = play[0]["tasks"]
+    plays = DataLoader().load_from_file(str(ANSIBLE / "playbooks" / "domains.yml"))
+    assert isinstance(plays, list)
+    (render,) = (play for play in plays if play["name"] == RENDER_PLAY)
+    (task,) = render["tasks"]
     templar = Templar(loader=DataLoader(), variables=variables)
     return templar.template(trust_as_template(task["loop"]))
 

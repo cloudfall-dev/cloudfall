@@ -13,17 +13,31 @@
         that:
           - cloudfall_domains_without_upstream | length == 0
         fail_msg: >-
-          Domains {{ cloudfall_domains_without_upstream | join(', ') }} have
-          no proxy.upstream, which cloudfall_nginx_site needs to render them;
-          no server was changed
+          {{ 'Domain' if cloudfall_domains_without_upstream | length == 1
+          else 'Domains' }} {{ cloudfall_domains_without_upstream | join(', ') }}
+          {{ 'has' if cloudfall_domains_without_upstream | length == 1
+          else 'have' }} no proxy.upstream, which cloudfall_nginx_site needs to
+          render {{ 'it' if cloudfall_domains_without_upstream | length == 1
+          else 'them' }}; no server was changed
         quiet: true
       vars:
-        cloudfall_domains_without_upstream: >-
+        cloudfall_domains_in_run: >-
           {{
             ansible_play_hosts_all
             | map('extract', hostvars)
             | map(attribute='cloudfall_domains', default=[])
             | flatten(levels=1)
+          }}
+        # The same one-Domain filter as the render loop below.
+        cloudfall_domains_without_upstream: >-
+          {{
+            (
+              cloudfall_domains_in_run
+              | selectattr('id', 'equalto', cloudfall_domains_domain_id)
+              | list
+              if cloudfall_domains_domain_id is defined
+              else cloudfall_domains_in_run
+            )
             | rejectattr('proxy.upstream', 'defined')
             | map(attribute='id')
             | unique

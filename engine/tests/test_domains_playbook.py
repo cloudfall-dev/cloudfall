@@ -15,7 +15,7 @@ from pathlib import Path
 from cloudfall_engine.playbook import PlaybookRun, playbook_command, resolve_playbook
 
 ENGINE = Path(__file__).parents[2] / "engine"
-REFUSAL = "have no proxy.upstream"
+REFUSAL = "no proxy.upstream"
 
 
 def _domain(domain_id: str, server: str, *, upstream: bool) -> dict[str, object]:
@@ -45,14 +45,23 @@ def _host(server: str, address: str, domains: list[dict[str, object]]) -> object
     }
 
 
-def _run(tmp_path: Path, hosts: dict[str, object]) -> str:
+def _run(
+    tmp_path: Path, hosts: dict[str, object], *, domain_id: str | None = None
+) -> str:
     inventory = tmp_path / "inventory.json"
     inventory.write_text(
         json.dumps({"all": {"children": {"cloudfall_servers": {"hosts": hosts}}}}),
         encoding="utf-8",
     )
+    one_domain = (
+        ()
+        if domain_id is None
+        else (json.dumps({"cloudfall_domains_domain_id": domain_id}),)
+    )
     run = PlaybookRun(
-        playbook=resolve_playbook("domains", ENGINE), inventory_file=inventory
+        playbook=resolve_playbook("domains", ENGINE),
+        inventory_file=inventory,
+        extra_vars=one_domain,
     )
     command = playbook_command(run, ENGINE)
     completed = subprocess.run(  # noqa: S603 - argv built by the engine
@@ -96,6 +105,7 @@ def test_a_domain_without_upstream_stops_the_run_before_any_server(
 
     refusal = next(line for line in output.splitlines() if REFUSAL in line)
     assert "Domains bare-one, bare-two have no proxy.upstream" in refusal
+    assert "render them;" in refusal
     assert "site-" not in refusal
     assert "UNREACHABLE" not in output
     assert "Gathering Facts" not in output
@@ -116,3 +126,36 @@ def test_domains_that_render_pass_the_check_and_reach_their_servers(
 
     assert REFUSAL not in output
     assert "UNREACHABLE" in output
+
+
+def _shared_server() -> dict[str, object]:
+    """One server proxying a Domain that renders and one that cannot."""
+    return {
+        "edge-b": _host(
+            "edge-b",
+            "192.0.2.11",
+            [
+                _domain("site-b", "edge-b", upstream=True),
+                _domain("bare-one", "edge-b", upstream=False),
+            ],
+        ),
+    }
+
+
+def test_a_one_domain_run_checks_only_that_domain(tmp_path: Path) -> None:
+    """``bare-one`` shares the server but is not rendered by this run."""
+    output = _run(tmp_path, _shared_server(), domain_id="site-b")
+
+    assert REFUSAL not in output
+    assert "UNREACHABLE" in output
+
+
+def test_a_one_domain_run_for_a_domain_without_upstream_is_refused(
+    tmp_path: Path,
+) -> None:
+    output = _run(tmp_path, _shared_server(), domain_id="bare-one")
+
+    refusal = next(line for line in output.splitlines() if REFUSAL in line)
+    assert "Domain bare-one has no proxy.upstream" in refusal
+    assert "render it;" in refusal
+    assert "UNREACHABLE" not in output
