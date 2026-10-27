@@ -2281,6 +2281,57 @@ def firewall_rules_for_server(
     return (ssh_rule, *firewall.allowed_inbound)
 
 
+@dataclass(frozen=True, slots=True)
+class SourceRestrictedFirewallRule:
+    """One inbound endpoint opened to declared source networks only."""
+
+    port: TcpPort
+    protocol: NetworkProtocol
+    sources: tuple[IpNetworkCidr, ...]
+    description: str
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the rule for engine and audit consumers."""
+        return {
+            "port": self.port.value,
+            "protocol": self.protocol.value,
+            "sources": [source.value for source in self.sources],
+            "description": self.description,
+        }
+
+
+def remote_access_rules_for_server(
+    server: ServerInventory, services: tuple[ServiceInventory, ...]
+) -> tuple[SourceRestrictedFirewallRule, ...]:
+    """Return one source-restricted inbound rule per remotely reachable service.
+
+    The rule carries the declared sources, so the firewall opens the service
+    port to those networks only; a service without ``remoteAccess`` adds none.
+    """
+    rules: list[SourceRestrictedFirewallRule] = []
+    for service in services:
+        if service.server_id != server.resource_id or service.postgresql is None:
+            continue
+        remote_access = service.postgresql.remote_access
+        if remote_access is None:
+            continue
+        if any(source.is_unrestricted for source in remote_access.allowed_sources):
+            message = (
+                "PostgreSQL remoteAccess refuses a source of every address: "
+                f"{service.resource_id.value}"
+            )
+            raise ValueError(message)
+        rules.append(
+            SourceRestrictedFirewallRule(
+                port=service.bind.port,
+                protocol=NetworkProtocol.TCP,
+                sources=remote_access.allowed_sources,
+                description=f"{service.resource_id.value} remoteAccess",
+            )
+        )
+    return tuple(rules)
+
+
 def _configuration_requirement(
     content: Mapping[str, object],
 ) -> ConfigurationFileRequirement:
