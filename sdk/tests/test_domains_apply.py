@@ -199,8 +199,11 @@ def test_s004_3_the_plan_starts_no_engine_step(tmp_path: Path) -> None:
     _untouched(project)
 
 
+# S-004-4: an unknown Domain (domains observe: test_domains_observe.py)
+
+
 @pytest.mark.parametrize("yes", [[], ["--yes"]], ids=["plan", "yes"])
-def test_an_unknown_domain_is_refused_before_any_engine_step(
+def test_s004_4_apply_refuses_an_unknown_domain_before_any_engine_step(
     yes: list[str], tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     project = _project(tmp_path)

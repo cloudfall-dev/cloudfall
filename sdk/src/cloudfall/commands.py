@@ -79,7 +79,7 @@ KEY_TYPES: dict[str, str] = {
             "action", "application", "component", "database", "detail",
             "directory", "dnsCheck", "domain", "environmentFile", "health",
             "instruction", "output", "pass", "path", "project", "receipt",
-            "release", "report", "service", "sha256", "status", "step",
+            "release", "report", "server", "service", "sha256", "status", "step",
             "verification", "wouldRun",
         ),
         "string",
@@ -102,9 +102,9 @@ KEY_TYPES: dict[str, str] = {
     ),
     **dict.fromkeys(
         (
-            "ansible", "byKind", "byRisk", "dashboard", "decision", "error",
-            "inventory", "operation", "proposal", "query", "releaseCommand",
-            "summary",
+            "ansible", "byKind", "byRisk", "certbotTimer", "certificate",
+            "dashboard", "decision", "error", "inventory", "operation",
+            "proposal", "query", "releaseCommand", "summary", "vhost",
         ),
         "object",
     ),
@@ -118,11 +118,18 @@ KEY_PROPERTIES: dict[str, dict[str, str]] = {
         "timeoutSeconds": "integer",
         "server": "string",
     },
+    "receipt": {
+        "configurationSha256": "string",
+        "deployedAt": "string",
+        "matches": "boolean",
+    },
 }
 """The named properties of an object key that has a fixed shape, by key name.
 
 Such an object is written as ``null`` when the command has none, where an
-open object would be written as ``{}``.
+open object would be written as ``{}``. The shape applies only where the key
+is an object: ``receipt`` is a path string in most commands, and this object
+in ``domains observe``.
 """
 
 
@@ -546,6 +553,26 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
     ),
     CommandContract(
         "cloudfall",
+        "domains observe",
+        CommandEffect.READ,
+        "read one Domain's vhost, certificate and certbot.timer on its proxy "
+        "server, and whether the vhost still matches its last receipt",
+        output=(
+            _shape(
+                "status",
+                "action",
+                "domain",
+                "server",
+                "vhost",
+                "receipt:object?",
+                "certificate",
+                "certbotTimer",
+                when="`receipt` is null when the Domain has no receipt yet",
+            ),
+        ),
+    ),
+    CommandContract(
+        "cloudfall",
         "migrate",
         CommandEffect.SERVERS,
         "run the resumable end-to-end migration plan",
@@ -623,7 +650,8 @@ ENGINE_COMMANDS: tuple[CommandContract, ...] = (
         "playbook run",
         CommandEffect.SERVERS,
         "run one bundled or project playbook against the inventory "
-        "(`inspect` only reads; every other playbook converges servers)",
+        "(`inspect` and `domains-observe` only read; every other playbook "
+        "converges servers)",
         gate="a human runs it or names the playbook to run",
     ),
 )

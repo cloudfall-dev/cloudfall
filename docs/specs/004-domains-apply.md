@@ -1,6 +1,6 @@
 # S-004: Domains apply
 
-status: approved
+status: built
 
 ## Problem
 
@@ -127,3 +127,23 @@ the `converge_domains` MCP tool.
 - cloudfall-dev/cloudfall#118: S-004-4, S-004-14, S-004-15, S-004-16
 
 ## Verification
+
+No criterion has run against a live Debian host yet. The SDK side ran through recording runners and through `ansible-playbook` against local connections (every server a `local` host, `cloudfall_nginx_site` swapped for a recording role); the role's certificate and receipt tasks ran on localhost or had their `when` conditions evaluated with Ansible's templating; `domains-observe.yml` ran for real on localhost with stand-ins for `openssl` and `systemctl`. Real Nginx (`nginx -t`, the reload), real certbot issuance by webroot, a real `certbot.timer`, `openssl` reading a real certificate, and SSH to a lent server are unexercised.
+
+- S-004-1: `test_s004_1_only_the_proxy_server_runs_domains_yml` ran `domains.yml` with a recording role on two local hosts and found only `h2` in the play recap and only the domains tasks; `test_s004_1_domains_yml_runs_no_baseline_firewall_or_service_role` found `cloudfall_nginx_site` the only role the playbook can reach
+- S-004-2: `test_s004_2_one_domain_id_renders_only_that_domain` and `test_s004_2_a_host_without_the_domain_renders_nothing` evaluated the render loop with Ansible's templating; `test_s004_2_one_domain_runs_on_its_proxy_and_names_only_it` read the `--limit` and extra vars of the recorded run. A second Domain's files on a real server were not checked
+- S-004-3: `test_s004_3_without_yes_the_plan_runs_nothing` (CLI) and `test_s004_3_the_plan_starts_no_engine_step`: no step started and no receipt
+- S-004-4: `test_s004_4_apply_refuses_an_unknown_domain_before_any_engine_step`, `test_s004_4_observe_refuses_an_unknown_domain_before_any_engine_step` (CLI, no `tmp/` created) and `test_s004_4_observe_starts_no_step_for_an_unknown_domain`
+- S-004-5: `test_s004_5_an_invalid_config_exits_before_any_engine_step`, with and without `--yes`
+- S-004-6: `test_s004_6_an_alias_elsewhere_is_refused_naming_it` and `test_s004_6_a_name_that_resolves_to_nothing_is_refused`, with a stand-in resolver
+- S-004-7: `test_s004_7_a_proxied_domain_skips_the_dns_check` (CLI) and `test_s004_7_a_proxied_domain_asks_no_resolver`
+- S-004-8: `test_s004_8_tls_disabled_refuses_issue_certificate` and `test_s004_8_tls_disabled_is_refused_before_dns`
+- S-004-9: `test_s004_9_issue_certificate_passes_the_flag_to_domains_yml` (the extra var and the receipt path) and `test_s004_1_only_the_proxy_server_runs_domains_yml` (the flag reached the recording role); `test_s004_9_a_fresh_domain_issues_and_enables_the_renewal_timer` evaluated the issuance and timer tasks' conditions only. No certificate was issued
+- S-004-10: `test_s004_10_a_second_run_skips_issuance` (task conditions) and `test_s004_10_a_second_run_records_the_vhost_it_rendered_before` (the receipt tasks ran twice on localhost)
+- S-004-11: `test_s004_11_the_receipt_keeps_the_hash_of_a_hand_written_vhost`, `test_s004_11_a_run_with_no_vhost_there_records_null`, `test_s004_11_a_vhost_linked_into_place_is_hashed_through_the_link` and `test_s004_11_the_replaced_vhost_is_hashed_before_the_first_render`, the receipt tasks on localhost with a stand-in render
+- S-004-12: `test_s004_12_a_receipt_with_or_without_the_previous_hash_loads`
+- S-004-13: `test_s004_13_a_rejected_vhost_fails_the_run_as_an_engine_step`, with a failing recorded playbook step; a real `nginx -t` rejection was not run
+- S-004-14: `test_s004_14_observe_reads_the_proxy_server_and_changes_nothing` and `test_s004_14_a_missing_vhost_is_a_reading_not_an_error` ran the real `domains-observe.yml` on local hosts (only `h2` in the recap; project and server files unchanged by content and modification time); `test_s004_14_the_playbook_holds_only_read_tasks` holds every server task to `stat`, `set_fact`, `assert` or a command with `changed_when: false`; `test_s004_14_the_cli_answers_snake_case_and_leaves_the_project_as_it_was` ran the CLI with a stand-in playbook and found the project unchanged, the inventory rendered outside it
+- S-004-15: `test_s004_15_receipt_matches_until_the_vhost_is_edited`, `test_s004_15_no_receipt_reads_as_null` and `test_s004_15_a_removed_vhost_does_not_match_its_receipt` on local hosts, and `test_s004_15_the_cli_answers_the_receipt_comparison`
+- S-004-16: `test_s004_16_a_project_serves_domains_apply_and_observe` over the real stdio transport: both tools listed, `domains_apply` without `yes` answered the plan
+- S-004-17: `test_s004_17_the_tool_takes_a_domain_and_refuses_an_unknown_one` over the real stdio transport, `test_s004_17_without_a_domain_the_run_is_as_before`, `test_s004_17_an_unknown_domain_is_refused_before_any_step`, `test_s004_17_a_domain_that_is_no_resource_id_is_refused` and `test_s004_17_without_a_domain_id_every_domain_on_the_host_renders`

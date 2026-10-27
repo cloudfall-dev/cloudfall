@@ -18,6 +18,7 @@ import dataclasses
 import errno
 import os
 import shutil
+import tempfile
 import threading
 
 # treaty reads a handler's annotations at registration, so a streaming
@@ -166,6 +167,7 @@ from cloudfall.lifecycle import (
     ERROR_EXECUTION_FAILED,
     DeployOptions,
     DomainApply,
+    DomainObserve,
     DomainsRun,
     EngineContext,
     ExecutionStep,
@@ -182,6 +184,7 @@ from cloudfall.lifecycle import (
     deploy,
     health,
     migrate_data,
+    observe_domain,
     preview_data_migration,
     preview_deploy,
     preview_domain_apply,
@@ -411,7 +414,7 @@ _FIXED_SHAPES = {
 def _key_schema(name: str, kind: str, *, optional: bool) -> dict[str, object]:
     """Return the schema of one data key, by its snake_case name."""
     schema: dict[str, object] = {"type": [kind, "null"] if optional else kind}
-    properties = _FIXED_SHAPES.get(name)
+    properties = _FIXED_SHAPES.get(name) if kind == "object" else None
     if properties is None and kind in {"array", "object"}:
         # The domain writes each array in the order it means: a ranking,
         # a timeline, the order checks ran in, and a stored record keeps
@@ -4143,6 +4146,77 @@ def domains_apply(
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error
     return DomainApplyPayload({**applied.as_dict(), "effect": "updated"})
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DomainObserveArgs(ProjectArgs):
+    """Arguments of ``domains observe``.
+
+    No ``--inventory-file``: the inventory is rendered outside the project,
+    so a read leaves the project as it found it.
+    """
+
+    domain: ResourceId = Arg(description="Domain to read, by its metadata.id")
+    engine: Path = Flag(
+        default=default_engine_directory(),
+        description="Engine directory containing ansible contracts (default: bundled)",
+    )
+    deployments: Path = Flag(
+        default=Path("tmp/deployments"),
+        description="Deployment receipt directory (default: tmp/deployments)",
+    )
+
+    def __post_init__(self) -> None:
+        """Keep a relative receipt path inside the project."""
+        _inside_project(self.deployments, "deployments")
+
+
+class DomainObservePayload(Payload):
+    """``domains observe``: the Domain as read on its proxy server."""
+
+    command = "domains observe"
+
+
+@domains.command(
+    "observe",
+    description=(
+        "Read one Domain's virtual host, certificate and certbot.timer on its "
+        "proxy server, and compare the vhost with the last receipt; changes nothing"
+    ),
+    danger_level="safe",
+    exit_codes=_LIFECYCLE_EXIT_CODES,
+    timeout=None,
+    has_network_io=True,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0"},
+    examples=[
+        ("Read one Domain on its proxy server", "cloudfall domains observe crm-site")
+    ],
+)
+def domains_observe(
+    args: DomainObserveArgs, ctx: Ctx, fleet: Fleet
+) -> DomainObservePayload:
+    """Read the Domain on its proxy server; a missing file is a reading."""
+    with tempfile.TemporaryDirectory(prefix="cloudfall-domains-observe-") as scratch:
+        context = EngineContext(
+            project_directory=fleet.directory,
+            schema_directory=args.schemas,
+            engine_directory=args.engine,
+            inventory_file=Path(scratch) / "ansible-inventory.json",
+            run=_step_runner(ctx, fleet.directory),
+        )
+        request = DomainObserve(
+            domain_id=args.domain,
+            receipt_directory=fleet.path(args.deployments),
+            reading_file=Path(scratch) / "reading.json",
+        )
+        try:
+            observed = observe_domain(context, request)
+        except LifecycleError as error:
+            raise _lifecycle_failed(error) from error
+        except ConfigValidationError as error:
+            raise _config_invalid(error) from error
+    return DomainObservePayload(observed.as_dict())
 
 
 # mcp serve: the fleet check before serving, and the tools beside the commands

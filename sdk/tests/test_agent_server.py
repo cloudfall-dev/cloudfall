@@ -254,6 +254,29 @@ def test_a_project_serves_its_commands_with_the_project_bound(tmp_path: Path) ->
     assert converge["error"]["code"] == "CONFIRMATION_REQUIRED"
 
 
+def test_s004_16_a_project_serves_domains_apply_and_observe(tmp_path: Path) -> None:
+    # apply keeps the CLI's --yes gate: without yes the call is the plan, and
+    # no playbook runs.
+    tools, (planned,) = _talk(
+        _serve("--project", str(EXAMPLES), cwd=tmp_path),
+        ("domains_apply", {"domain": "crm-site"}),
+    )
+
+    assert {"domains_apply", "domains_observe"} <= set(tools)
+    assert "yes" in tools["domains_apply"].input_schema["properties"]
+    assert tools["domains_observe"].annotations.read_only_hint is True
+    assert tools["domains_apply"].annotations.read_only_hint is not True
+    for name in ("domains_apply", "domains_observe"):
+        properties = tools[name].input_schema["properties"]
+        assert "domain" in properties
+        assert not {"deployments", "engine", "project"} & set(properties)
+    assert planned["ok"] is True, planned
+    assert planned["data"]["status"] == "plan"
+    assert planned["data"]["effect"] == "would_update"
+    assert planned["data"]["servers"] == ["h2"]
+    assert planned["meta"]["dry_run"] is True
+
+
 def test_a_project_call_cannot_approve_its_own_proposal(tmp_path: Path) -> None:
     # A person approves a proposal from a shell; an agent that could call
     # operator approve would run and verify the change it proposed itself.
