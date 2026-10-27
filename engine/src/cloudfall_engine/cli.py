@@ -463,59 +463,67 @@ def _sops_decrypt(ctx: Ctx) -> Callable[[Path], str]:
 def _rendered_owned_databases(
     inventory_file: Path,
 ) -> tuple[tuple[ResourceId, OwnedPostgresDatabase], ...]:
-    """Read every owned database, with its service, from a rendered inventory."""
-    document = cast("object", json.loads(inventory_file.read_text(encoding="utf-8")))
-    inventory = _rendered_mapping(document, "inventory")
-    group = _rendered_mapping(inventory.get("all"), "all")
-    children = _rendered_mapping(group.get("children"), "all.children")
-    servers = _rendered_mapping(children.get("cloudfall_servers"), "cloudfall_servers")
-    hosts = _rendered_mapping(servers.get("hosts"), "cloudfall_servers.hosts")
+    """Read every owned database, with its service, from a rendered inventory.
+
+    An inventory that isn't a rendered Cloudfall one (YAML, INI, a directory,
+    or JSON of another shape) declares none, so the run stays as it was.
+    Only an entry that names a ``passwordRef`` must be well formed.
+    """
+    if not inventory_file.is_file():
+        return ()
+    try:
+        document = cast(
+            "object", json.loads(inventory_file.read_text(encoding="utf-8"))
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return ()
+    hosts = _nested(document, "all", "children", "cloudfall_servers", "hosts")
     owned: list[tuple[ResourceId, OwnedPostgresDatabase]] = []
     for host in hosts.values():
-        services = _rendered_mapping(host, "host").get("cloudfall_services", [])
-        if not isinstance(services, list):
-            message = f"cloudfall_services is not a list in {inventory_file}"
-            raise TypeError(message)
-        for raw_service in services:
-            service = _rendered_mapping(raw_service, "service")
+        for service in _mappings(_nested(host).get("cloudfall_services")):
             if service.get("serviceKind") != "postgresql":
                 continue
-            postgresql = _rendered_mapping(service.get("postgresql"), "postgresql")
-            databases = postgresql.get("databases")
-            if not isinstance(databases, list):
-                message = f"postgresql.databases is not a list in {inventory_file}"
-                raise TypeError(message)
-            for raw_database in databases:
-                database = _rendered_mapping(raw_database, "database")
-                if "passwordRef" not in database:
-                    continue
-                reference = _rendered_mapping(database["passwordRef"], "passwordRef")
-                owned.append(
-                    (
-                        ResourceId.from_boundary(service.get("id")),
-                        OwnedPostgresDatabase(
-                            name=PostgresDatabaseName.from_boundary(
-                                database.get("name")
-                            ),
-                            owner=PostgresRoleName.from_boundary(database.get("owner")),
-                            password_ref=SecretValueReference(
-                                environment=ResourceId.from_boundary(
-                                    reference.get("environment")
-                                ),
-                                path=AbsolutePath.from_boundary(reference.get("path")),
-                                key=SecretKeyName.from_boundary(reference.get("key")),
-                            ),
-                        ),
-                    )
-                )
+            databases = _nested(service, "postgresql").get("databases")
+            owned.extend(
+                (ResourceId.from_boundary(service.get("id")), _owned_database(database))
+                for database in _mappings(databases)
+                if "passwordRef" in database
+            )
     return tuple(owned)
 
 
-def _rendered_mapping(value: object, name: str) -> Mapping[str, object]:
-    if not isinstance(value, dict):
-        message = f"rendered inventory {name} is not a mapping"
+def _nested(value: object, *keys: str) -> Mapping[str, object]:
+    """Follow ``keys`` through mappings; anything else reads as empty."""
+    current = value
+    for key in keys:
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(key)
+    return cast("Mapping[str, object]", current) if isinstance(current, dict) else {}
+
+
+def _mappings(value: object) -> list[Mapping[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [
+        cast("Mapping[str, object]", item) for item in value if isinstance(item, dict)
+    ]
+
+
+def _owned_database(database: Mapping[str, object]) -> OwnedPostgresDatabase:
+    reference = database["passwordRef"]
+    if not isinstance(reference, dict):
+        message = "an owned database's passwordRef is not a mapping"
         raise TypeError(message)
-    return cast("Mapping[str, object]", value)
+    return OwnedPostgresDatabase(
+        name=PostgresDatabaseName.from_boundary(database.get("name")),
+        owner=PostgresRoleName.from_boundary(database.get("owner")),
+        password_ref=SecretValueReference(
+            environment=ResourceId.from_boundary(reference.get("environment")),
+            path=AbsolutePath.from_boundary(reference.get("path")),
+            key=SecretKeyName.from_boundary(reference.get("key")),
+        ),
+    )
 
 
 def _services_passwords(
@@ -528,9 +536,11 @@ def _services_passwords(
         return ()
     try:
         databases = _rendered_owned_databases(args.inventory)
-    except (TypeError, ValueError, json.JSONDecodeError) as error:
-        message = f"the inventory is not a rendered Cloudfall inventory: {error}"
+    except (TypeError, ValueError) as error:
+        message = f"the inventory declares a malformed owned database: {error}"
         raise ParseError(message, context={"flag": "inventory"}) from error
+    if not databases:
+        return ()
     provider = SopsSecretProvider(
         secrets_directory=args.secrets_dir, decrypt=_sops_decrypt(ctx)
     )

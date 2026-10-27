@@ -11,16 +11,14 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+import pytest
 import yaml
 from cloudfall.inventory import PlatformInventory
 from cloudfall.validation import validate_config
 from cloudfall_engine.ansible_inventory import render_ansible_inventory
 from cloudfall_engine.cli import main
-
-if TYPE_CHECKING:
-    import pytest
 
 ROOT = Path(__file__).parents[2]
 EXAMPLES = ROOT / "config" / "examples"
@@ -160,6 +158,41 @@ def test_other_playbooks_and_syntax_checks_read_no_secrets(
     )
 
     assert exit_code == 0, payload
+    assert payload["data"]["owned_roles"] == []
+
+
+@pytest.mark.parametrize(
+    ("name", "content"),
+    [
+        ("hosts.ini", "[web]\nlocalhost ansible_connection=local\n"),
+        ("hosts.json", '{"all": {"hosts": {"localhost": {}}}}\n'),
+    ],
+    ids=["ini", "json-of-another-shape"],
+)
+def test_a_plain_inventory_runs_services_as_before_without_secrets(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str, content: str
+) -> None:
+    inventory = tmp_path / name
+    inventory.write_text(content, encoding="utf-8")
+
+    exit_code, payload = _run(
+        [
+            "playbook",
+            "run",
+            "services.yml",
+            "--engine",
+            str(ENGINE),
+            "--inventory",
+            str(inventory),
+            "--secrets-dir",
+            str(tmp_path / "absent"),
+        ],
+        capsys,
+    )
+
+    # No cloudfall_servers host: Ansible matches none and exits 0, as on main.
+    assert exit_code == 0, payload
+    assert payload["data"]["effect"] == "updated"
     assert payload["data"]["owned_roles"] == []
 
 
