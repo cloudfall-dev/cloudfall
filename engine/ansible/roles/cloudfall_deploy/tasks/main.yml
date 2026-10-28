@@ -28,12 +28,6 @@
       /tmp/cloudfall-{{ cloudfall_deploy_component.id }}-{{
         cloudfall_deploy_release
       }}.tar.gz
-    cloudfall_deploy_unit_path: >-
-      /etc/systemd/system/{{ cloudfall_deploy_component.service.name }}.service
-    cloudfall_deploy_unit_kept_path: >-
-      /etc/systemd/system/{{
-        cloudfall_deploy_component.service.name
-      }}.service.pre-cloudfall
 
 - name: Check the installed uv version
   ansible.builtin.command:
@@ -192,6 +186,15 @@
         and cloudfall_deploy_current.stat.islnk
         else ""
       }}
+
+- name: Compute service unit paths
+  ansible.builtin.set_fact:
+    cloudfall_deploy_unit_path: >-
+      /etc/systemd/system/{{ cloudfall_deploy_component.service.name }}.service
+    cloudfall_deploy_unit_kept_path: >-
+      /etc/systemd/system/{{
+        cloudfall_deploy_component.service.name
+      }}.service.pre-cloudfall
 
 - name: Inspect the existing service unit
   ansible.builtin.stat:

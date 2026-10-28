@@ -344,7 +344,7 @@ def test_check_mode_reports_the_hand_made_unit_without_copying_it() -> None:
 def test_the_kept_copy_is_root_owned_beside_the_unit_and_never_overwritten() -> None:
     copy = _task(KEEP, _main())["ansible.builtin.copy"]
     assert isinstance(copy, dict)
-    paths = _task("Compute release paths", _main())["ansible.builtin.set_fact"]
+    paths = _task("Compute service unit paths", _main())["ansible.builtin.set_fact"]
     assert isinstance(paths, dict)
     variables: dict[str, object] = {
         "cloudfall_deploy_component": {"service": {"name": "asrest"}}
