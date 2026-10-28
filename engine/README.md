@@ -234,7 +234,16 @@ systemd unit from the declared service command, and then activates behind a
 health gate: symlink switch, restart, and the declared HTTP health check. If
 the health check fails, the previous release is restored and restarted
 automatically and the run fails; a first release with no predecessor is
-stopped instead. Successful runs write a schema-valid release receipt on the
+stopped instead. A unit of the same name that Cloudfall did not render (no
+`# Managed by Cloudfall` header, such as a hand-made unit adopted on a
+brownfield move) is kept at `/etc/systemd/system/<name>.service.pre-cloudfall`
+before the managed unit replaces it, together with whether it was enabled and
+active; when that first release fails its health check, the kept unit is
+copied back, its enabled state restored, and it is started again if it was
+running. The kept copy stays after a successful deploy and is never
+overwritten; a later hand-made unit that differs from it refuses the deploy.
+Check mode only reports the unit it would keep. Successful runs write a
+schema-valid release receipt on the
 controller. The first slice supports Python components managed by uv on
 x86_64 Debian hosts.
 
