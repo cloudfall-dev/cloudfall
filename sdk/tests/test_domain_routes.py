@@ -264,9 +264,11 @@ def test_s003_11_a_static_component_off_the_proxy_server_is_refused(
         _static_route("/", directory="."),
         _static_route("/", directory="./"),
         _static_route("/", directory="'web dist'"),
+        _static_route("/", directory='"web\\n"'),
         _static_route("/", extra="        spaFallback: ../index.html\n"),
         _static_route("/", extra="        spaFallback: /index.html\n"),
         _static_route("/", extra="        spaFallback: a/../../index.html\n"),
+        _static_route("/", extra='        spaFallback: "index.html\\n"\n'),
     ],
     ids=[
         "directory-parent",
@@ -275,9 +277,11 @@ def test_s003_11_a_static_component_off_the_proxy_server_is_refused(
         "directory-root",
         "directory-root-slash",
         "directory-space",
+        "directory-trailing-newline",
         "fallback-parent",
         "fallback-absolute",
         "fallback-inner-parent",
+        "fallback-trailing-newline",
     ],
 )
 def test_s003_12_a_static_directory_or_fallback_outside_the_release_is_refused(
