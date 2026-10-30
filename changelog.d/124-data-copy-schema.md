@@ -1,0 +1,3 @@
+### Added
+
+- `cloudfall data copy` takes a repeatable `--source-schema NAME` (and the `data_copy` MCP tool a `source_schema` list): the dump and restore copy only the named schemas, the empty-target check and the per-table row-count check read exactly those schemas, and the plan without `--yes` names them; a name that is empty, longer than 63 bytes, or holds a control character or a brace is refused as a usage error. Without it the dump is the whole database as in 0.7.0, and the checks now cover every non-system schema of the source instead of `public` only, so a row-count mismatch outside `public` now fails the copy. The `DataMigrationReceipt` gains `spec.schemas` (sorted) and a `schema` on each `spec.tables[]` entry beside `table` and `rows` (#124)

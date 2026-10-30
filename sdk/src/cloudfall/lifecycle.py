@@ -49,6 +49,7 @@ if TYPE_CHECKING:
 
     from cloudfall.domain import (
         CommandArgv,
+        PostgresSchemaName,
         ReleaseCommandTimeout,
         ReleaseId,
         ResourceId,
@@ -255,6 +256,39 @@ class ReleaseCommandPlan:
             "timeoutSeconds": self.timeout_seconds.value,
             "server": self.server.value,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class DataCopySchemas:
+    """The source schemas a data copy takes, in sorted order.
+
+    Empty means every non-system schema of the source, the whole database a
+    ``pg_dump`` without ``--schema`` dumps.
+    """
+
+    names: tuple[PostgresSchemaName, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Keep the names sorted so plans and receipts compare verbatim."""
+        unique = sorted(set(self.names), key=lambda name: name.value)
+        object.__setattr__(self, "names", tuple(unique))
+
+    @property
+    def every_schema(self) -> bool:
+        """Whether no schema was named, so the whole database is copied."""
+        return not self.names
+
+    @property
+    def values(self) -> list[str]:
+        """The names as the engine takes them, sorted."""
+        return [name.value for name in self.names]
+
+    def describe(self) -> str:
+        """Name the selection for a plan."""
+        if self.every_schema:
+            return "every non-system schema"
+        noun = "schema" if len(self.names) == 1 else "schemas"
+        return f"{noun} {', '.join(self.values)}"
 
 
 class PreviewSubject(StrEnum):
@@ -1234,24 +1268,28 @@ def health(
     )
 
 
-def plan_data_migration(
+def plan_data_migration(  # noqa: PLR0913 - the copy's inputs plus its schemas.
     context: EngineContext,
     service_id: ResourceId,
     database: str,
     source_url_file: Path,
     receipt_directory: Path | None,
+    schemas: DataCopySchemas | None = None,
 ) -> ExecutionPlan:
     """Compose the subprocess steps for one guided data migration.
 
     The plan reuses ``ExecutionPlan`` with the service identifier in the
     ``component_id`` slot; the source URL never crosses a process argument,
-    only the controller-side file path does.
+    only the controller-side file path does. Without named schemas the
+    extra vars are the whole-database copy's, unchanged.
     """
     extra_vars: dict[str, object] = {
         "cloudfall_data_service_id": service_id.value,
         "cloudfall_data_database": database,
         "cloudfall_data_source_url_file": str(source_url_file.resolve()),
     }
+    if schemas is not None and not schemas.every_schema:
+        extra_vars["cloudfall_data_schemas"] = schemas.values
     if receipt_directory is not None:
         extra_vars["cloudfall_data_receipt_directory"] = str(
             receipt_directory.resolve()
@@ -1267,17 +1305,18 @@ def plan_data_migration(
     )
 
 
-def migrate_data(
+def migrate_data(  # noqa: PLR0913 - as plan_data_migration.
     context: EngineContext,
     service_id: ResourceId,
     database: str,
     source_url_file: Path,
     receipt_directory: Path | None = None,
+    schemas: DataCopySchemas | None = None,
 ) -> dict[str, object]:
     """Dump one external database and restore it into a declared service."""
     service = _checked_data_migration(context, service_id, database, source_url_file)
     plan = plan_data_migration(
-        context, service_id, database, source_url_file, receipt_directory
+        context, service_id, database, source_url_file, receipt_directory, schemas
     )
     execute_plan(plan, context.run)
     result: dict[str, object] = {
@@ -1300,9 +1339,11 @@ def preview_data_migration(
     service_id: ResourceId,
     database: str,
     source_url_file: Path,
+    schemas: DataCopySchemas | None = None,
 ) -> LifecyclePreview:
     """Validate a data migration without touching any server."""
     service = _checked_data_migration(context, service_id, database, source_url_file)
+    selection = schemas if schemas is not None else DataCopySchemas()
     return LifecyclePreview(
         action="data-migration",
         subject=PreviewSubject.SERVICE,
@@ -1310,10 +1351,11 @@ def preview_data_migration(
         release=None,
         servers=(service.server_id,),
         effect=(
-            f"dump the database whose URL is in {source_url_file} on "
-            f"{service.server_id} and restore it into declared database "
-            f"{database} of service {service_id}, refusing a non-empty target "
-            "and verifying per-table row counts"
+            f"dump {selection.describe()} of the database whose URL is in "
+            f"{source_url_file} on {service.server_id} and restore it into "
+            f"declared database {database} of service {service_id}, refusing "
+            "a target with tables in those schemas and verifying per-table "
+            "row counts"
         ),
     )
 

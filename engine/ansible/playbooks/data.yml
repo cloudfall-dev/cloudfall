@@ -14,6 +14,8 @@
         cloudfall_data_migration_database: "{{ cloudfall_data_database }}"
         cloudfall_data_migration_source_url_file: >-
           {{ cloudfall_data_source_url_file }}
+        cloudfall_data_migration_schemas: >-
+          {{ cloudfall_data_schemas | default([]) }}
         cloudfall_data_migration_receipt_directory: >-
           {{ cloudfall_data_receipt_directory | default("") }}
       loop: >-

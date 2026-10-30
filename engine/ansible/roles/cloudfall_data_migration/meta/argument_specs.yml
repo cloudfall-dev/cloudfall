@@ -17,6 +17,14 @@ argument_specs:
         description: >-
           Controller-side file whose only content is the source database
           connection URL; the URL itself never crosses a command line
+      cloudfall_data_migration_schemas:
+        type: list
+        elements: str
+        required: false
+        default: []
+        description: >-
+          Source schemas to copy; empty copies every non-system schema of the
+          source, as a pg_dump without --schema does
       cloudfall_data_migration_receipt_directory:
         type: str
         required: false
@@ -33,4 +41,19 @@ argument_specs:
       cloudfall_data_migration_count_query:
         type: str
         required: false
-        description: Deterministic per-table row-count query used on both sides
+        description: >-
+          Deterministic per-table row-count query used on both sides; it reads
+          the selected schemas from the psql variable cloudfall_data_schemas
+          and returns one schema,table,rows line per base table
+      cloudfall_data_migration_source_schemas_query:
+        type: str
+        required: false
+        description: >-
+          Query returning every non-system schema of the source as one JSON
+          array, used when no schema is named
+      cloudfall_data_migration_target_tables_query:
+        type: str
+        required: false
+        description: >-
+          Query counting the target's tables in the selected schemas, read
+          from the psql variable cloudfall_data_schemas

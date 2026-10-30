@@ -174,8 +174,14 @@ The guided migration dumps from Neon on the target host, restores over
 the peer-authenticated socket as the declared owner, verifies per-table
 row counts match the source exactly, removes the staged URL file and the
 dump, and writes a `DataMigrationReceipt` with per-table counts. It
-refuses non-empty target databases, so a re-run requires deliberately
-dropping what was restored.
+refuses a target database that already has tables in the copied schemas,
+so a re-run requires deliberately dropping what was restored.
+
+By default the copy takes every non-system schema of the source, and the
+row-count check and the receipt cover all of them. To take only some,
+name each with a repeatable `--source-schema`, such as
+`--source-schema public`; the plan names the schemas it will copy, and the
+receipt lists them under `spec.schemas`, each table with its `schema`.
 
 The row-count check is the verify step and the receipt is the record's
 entry for the migration. The restore is not done because `pg_restore`

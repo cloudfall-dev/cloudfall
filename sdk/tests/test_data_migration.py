@@ -8,9 +8,11 @@ from typing import cast
 
 import pytest
 from cloudfall.agent_tools import AgentConfig
-from cloudfall.domain import ResourceId
+from cloudfall.domain import PostgresSchemaName, ResourceId
 from cloudfall.lifecycle import (
+    DataCopySchemas,
     EngineContext,
+    ExecutionPlan,
     LifecycleError,
     migrate_data,
     plan_data_migration,
@@ -59,6 +61,61 @@ def test_data_migration_plan_composes_engine_contract_steps(
     assert extra_vars["cloudfall_data_database"] == "crm"
     assert Path(extra_vars["cloudfall_data_source_url_file"]).is_absolute()
     assert Path(extra_vars["cloudfall_data_receipt_directory"]).is_absolute()
+
+
+def _schemas(*names: str) -> DataCopySchemas:
+    return DataCopySchemas(tuple(PostgresSchemaName(name) for name in names))
+
+
+def _extra_vars(plan: ExecutionPlan) -> dict[str, object]:
+    playbook = plan.steps[-1]
+    extra_vars = json.loads(playbook.argv[playbook.argv.index("--extra-vars") + 1])
+    assert isinstance(extra_vars, dict)
+    return extra_vars
+
+
+def test_s007_1_data_migration_plan_passes_the_named_schemas_sorted(
+    tmp_path: Path,
+) -> None:
+    plan = plan_data_migration(
+        _context(tmp_path),
+        ResourceId("postgresql-main"),
+        "crm",
+        _url_file(tmp_path),
+        tmp_path / "receipts",
+        _schemas("public", "app"),
+    )
+
+    assert _extra_vars(plan)["cloudfall_data_schemas"] == ["app", "public"]
+
+
+def test_s007_2_data_migration_plan_without_schemas_is_unchanged(
+    tmp_path: Path,
+) -> None:
+    """No --schema keeps the extra vars a 0.7.0 whole-database copy sent."""
+    arguments = (
+        _context(tmp_path),
+        ResourceId("postgresql-main"),
+        "crm",
+        _url_file(tmp_path),
+        tmp_path / "receipts",
+    )
+
+    assert _extra_vars(plan_data_migration(*arguments)) == _extra_vars(
+        plan_data_migration(*arguments, DataCopySchemas())
+    )
+    assert set(_extra_vars(plan_data_migration(*arguments))) == {
+        "cloudfall_data_service_id",
+        "cloudfall_data_database",
+        "cloudfall_data_source_url_file",
+        "cloudfall_data_receipt_directory",
+    }
+
+
+def test_data_copy_schemas_describe_the_selection() -> None:
+    assert DataCopySchemas().describe() == "every non-system schema"
+    assert _schemas("public").describe() == "schema public"
+    assert _schemas("public", "app", "public").describe() == "schemas app, public"
 
 
 def test_data_migration_rejects_an_undeclared_service(tmp_path: Path) -> None:
