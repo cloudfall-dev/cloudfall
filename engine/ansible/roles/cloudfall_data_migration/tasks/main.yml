@@ -28,6 +28,16 @@
     cloudfall_data_migration_owner: >-
       {{ cloudfall_data_migration_entries[0].owner }}
 
+# The preflight findings land here before the dump, the receipt after it.
+- name: Ensure the controller receipt directory exists
+  ansible.builtin.file:
+    path: "{{ cloudfall_data_migration_receipt_directory }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  become: false
+  when: cloudfall_data_migration_receipt_directory | length > 0
+
 - name: Migrate and verify the declared database
   block:
     - name: Stage the source connection URL on the target host
@@ -97,6 +107,101 @@
           {{ cloudfall_data_migration_target_tables.stdout | trim }}
           tables; data migration refuses to overwrite existing data
 
+    - name: Read what the selected schemas need from the source
+      ansible.builtin.shell:
+        cmd: >-
+          psql
+          --dbname "$(cat {{ cloudfall_data_migration_url_path | quote }})"
+          --no-psqlrc --tuples-only --no-align
+          --set ON_ERROR_STOP=1
+          --set {{ cloudfall_data_migration_schemas_variable | quote }}
+          --set {{
+            ('cloudfall_data_every_schema='
+              ~ (cloudfall_data_migration_schemas | length == 0) | string
+              | lower) | quote
+          }}
+        stdin: "{{ cloudfall_data_migration_source_preflight_query }};"
+      register: cloudfall_data_migration_source_preflight
+      changed_when: false
+
+    - name: Keep what the source needs
+      ansible.builtin.set_fact:
+        cloudfall_data_migration_needs: >-
+          {{ cloudfall_data_migration_source_preflight.stdout | from_json }}
+
+    - name: Read which needed extensions and policy roles the target lacks
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/psql
+          - --dbname
+          - "{{ cloudfall_data_migration_database }}"
+          - --no-psqlrc
+          - --tuples-only
+          - --no-align
+          - --set
+          - ON_ERROR_STOP=1
+          - --set
+          - >-
+            cloudfall_data_extensions={{
+              cloudfall_data_migration_needs.extensions | to_json
+            }}
+          - --set
+          - >-
+            cloudfall_data_policy_roles={{
+              cloudfall_data_migration_needs.policyRoles | to_json
+            }}
+        stdin: "{{ cloudfall_data_migration_target_preflight_query }};"
+      become: true
+      become_user: postgres
+      register: cloudfall_data_migration_target_preflight
+      changed_when: false
+
+    - name: Collect every preflight finding
+      ansible.builtin.set_fact:
+        cloudfall_data_migration_findings:
+          missingSchemas: "{{ cloudfall_data_migration_needs.missingSchemas }}"
+          extensions: >-
+            {{
+              (cloudfall_data_migration_target_preflight.stdout
+               | from_json).extensions
+            }}
+          roles: >-
+            {{
+              (cloudfall_data_migration_target_preflight.stdout
+               | from_json).roles
+            }}
+          authReferences: "{{ cloudfall_data_migration_needs.authReferences }}"
+
+    # The SDK reads the whole lists from this file, not from the playbook's
+    # output, which it keeps only the tail of.
+    - name: Write the preflight findings on the controller
+      ansible.builtin.copy:
+        content: "{{ cloudfall_data_migration_findings | to_nice_json }}"
+        dest: >-
+          {{ cloudfall_data_migration_receipt_directory }}/{{
+            cloudfall_data_migration_service.id
+          }}-{{ cloudfall_data_migration_database }}.preflight.json
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+      when: cloudfall_data_migration_receipt_directory | length > 0
+
+    - name: Refuse a copy the target can't hold
+      ansible.builtin.assert:
+        that:
+          - cloudfall_data_migration_findings.missingSchemas | length == 0
+          - cloudfall_data_migration_findings.extensions | length == 0
+          - cloudfall_data_migration_findings.roles | length == 0
+          - cloudfall_data_migration_findings.authReferences | length == 0
+        fail_msg: >-
+          The data copy preflight refused the copy; nothing was dumped and
+          the target is untouched. Missing schemas
+          {{ cloudfall_data_migration_findings.missingSchemas }}, extensions
+          the target lacks {{ cloudfall_data_migration_findings.extensions }},
+          policy roles the target lacks
+          {{ cloudfall_data_migration_findings.roles }}, auth. references
+          {{ cloudfall_data_migration_findings.authReferences }}
+
     - name: Dump the source database on the target host
       ansible.builtin.shell:
         cmd: >-
@@ -107,7 +212,13 @@
             for schema in cloudfall_data_migration_schemas | unique | sort
           %} --schema {{
             ('"' ~ (schema | replace('"', '""')) ~ '"') | quote
-          }}{% endfor %}
+          }}{% endfor %}{%
+            if cloudfall_data_migration_schemas | length > 0
+          %}{%
+            for extension in cloudfall_data_migration_needs.extensions
+          %} --extension {{
+            ('"' ~ (extension | replace('"', '""')) ~ '"') | quote
+          }}{% endfor %}{% endif %}
       register: cloudfall_data_migration_dump
       retries: 3
       delay: 10
@@ -142,10 +253,13 @@
           {{ cloudfall_data_migration_selected_schemas | join(', ') }}; there
           is nothing to migrate
 
+    # One transaction, which also stops at the first error: a failed restore
+    # rolls back whole, so a re-run passes the empty-target check.
     - name: Restore the dump into the declared database
       ansible.builtin.command:
         argv:
           - /usr/bin/pg_restore
+          - --single-transaction
           - --no-owner
           - --no-privileges
           - --role
@@ -222,15 +336,6 @@
       ansible.builtin.file:
         path: "{{ cloudfall_data_migration_dump_path }}"
         state: absent
-
-- name: Ensure the controller receipt directory exists
-  ansible.builtin.file:
-    path: "{{ cloudfall_data_migration_receipt_directory }}"
-    state: directory
-    mode: "0755"
-  delegate_to: localhost
-  become: false
-  when: cloudfall_data_migration_receipt_directory | length > 0
 
 - name: Write the data-migration receipt on the controller
   ansible.builtin.copy:

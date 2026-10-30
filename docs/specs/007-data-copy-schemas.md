@@ -1,6 +1,6 @@
 # S-007: Data copy schemas
 
-status: approved
+status: built
 serves: G-3
 
 ## Problem
@@ -134,3 +134,20 @@ copy.
 - cloudfall-dev/cloudfall#126: S-007-12, S-007-13
 
 ## Verification
+
+No criterion has run against a live PostgreSQL yet: the role's tasks and queries were rendered with Ansible's own templating and psql's variable quoting replayed, the queries were parsed with PostgreSQL's parser (libpg_query, through pglast) but not executed, and the SDK side ran with a stand-in for the playbook that writes what the role writes. What a real `pg_dump --schema --extension`, the catalog joins of the preflight, and a rolled-back `pg_restore --single-transaction` do on a server is unexercised.
+
+- S-007-1: `test_s007_1_named_schemas_reach_pg_dump_and_the_receipt`, `test_s007_1_a_schema_name_stays_one_quoted_pg_dump_argument` and `test_s007_1_data_migration_plan_passes_the_named_schemas_sorted`, the dump got one quoted `--schema` per name and the rendered receipt `spec.schemas` was `["app", "public"]`
+- S-007-2: `test_s007_2_without_schema_the_dump_is_the_whole_database_as_in_0_7_0`, `test_s007_2_source_schemas_query_skips_only_the_system_schemas` and `test_s007_2_data_migration_plan_without_schemas_is_unchanged`, the dump command and extra vars were 0.7.0's and `spec.schemas` was `["app", "audit", "public"]`
+- S-007-3: `test_s007_3_receipt_tables_carry_schema_table_and_rows`, every rendered entry had `schema`, `table` and `rows`, a quoted name with a comma included
+- S-007-4: `test_s007_4_row_count_query_reads_only_the_selected_schemas` and `test_s007_4_both_sides_pass_the_schemas_to_the_row_count_query`, the schemas reached the query only as the psql variable, ordered by schema and table
+- S-007-5: `test_s007_5_empty_target_check_counts_only_the_selected_schemas`, the count read only the selected schemas and a count of 3 failed naming "already contains 3 tables"
+- S-007-6: `test_s007_6_a_missing_schema_is_refused_before_the_dump`, `test_s007_6_the_source_preflight_takes_names_only_as_psql_variables` and `test_s007_6_a_missing_schema_is_refused_with_its_name`, the refusal comes before `pg_dump` and answered `data_copy_preflight_refused` with `missingSchemas` `["missing"]`
+- S-007-7: `test_s007_7_an_extension_the_target_lacks_is_refused`, `test_s007_7_named_schemas_dump_their_needed_extensions` and `test_s007_7_an_extension_the_target_lacks_is_named`, the target query read `pg_available_extensions` from a psql variable, `extensions` named `citext`, no receipt was written
+- S-007-8: `test_s007_8_policy_roles_the_target_lacks_are_refused` and `test_s007_8_policy_roles_the_target_lacks_are_named`, `roles` was `["anon", "authenticated"]`
+- S-007-9: `test_s007_9_auth_references_name_the_function_and_the_policy` and `test_s007_9_auth_references_are_named`, both `function public.current_tenant()` and `policy notes_owner on public.notes` were named and the copy refused
+- S-007-10: `test_s007_10_every_finding_is_named_in_one_answer`, `test_s007_10_every_finding_comes_whole_in_one_answer` (400 role names, past the 2000-character output tail) and `test_s007_10_the_migrate_data_step_surfaces_the_same_refusal` (`migrate` answers `PRECONDITION` with the same lists)
+- S-007-11: `test_s007_11_the_restore_is_one_transaction_and_the_receipt_follows_it`, `test_s007_11_a_failed_restore_is_an_engine_failure_without_a_receipt`, `test_s007_11_a_stale_findings_file_never_answers_for_a_new_run` and `test_s007_11_a_failed_migrate_data_step_stays_an_engine_failure`, `pg_restore` runs `--single-transaction`, the receipt task follows the block, a failure answered `ENGINE_STEP_FAILED` and the next run went ahead
+- S-007-12: `test_s007_12_data_copy_refuses_a_malformed_or_repeated_schema`, `test_s007_12_cli_migrate_refuses_a_bad_data_schema_before_any_playbook`, `test_s007_12_migrate_refuses_a_data_schema_without_its_data` and `test_s007_12_the_data_tools_refuse_a_bad_schema_as_the_cli_does` (over MCP), each exited `PRECONDITION` with no inventory render and no plan file; a value holding a newline is refused earlier by the CLI framework as `ARG_ERROR`
+- S-007-13: `test_s007_13_migrate_copies_only_the_data_schema_as_data_copy_does` and `test_s007_13_migrate_groups_each_data_schema_under_its_database`, the `data:crm` step's playbook argv equalled `data copy --source-schema public`'s
+- S-007-14: `test_s007_14_data_copy_plan_names_the_selected_schemas`, the plan said "dump schemas app, public" and, without a name, "dump every non-system schema"

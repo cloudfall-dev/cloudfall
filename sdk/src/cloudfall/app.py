@@ -165,6 +165,7 @@ from cloudfall.investigation import (
     investigation_events,
 )
 from cloudfall.lifecycle import (
+    ERROR_DATA_COPY_PREFLIGHT_REFUSED,
     ERROR_EXECUTION_FAILED,
     DataCopySchemas,
     DeployOptions,
@@ -1838,7 +1839,7 @@ def _check_runner(ctx: Ctx, directory: Path) -> CheckRunner:
 
 
 def _lifecycle_failed(error: LifecycleError) -> Exception:
-    context = {"code": error.code}
+    context = {**error.context, "code": error.code}
     if error.code == ERROR_EXECUTION_FAILED:
         return Exit.ENGINE_STEP_FAILED(error.detail, context=context)
     return Exit.PRECONDITION(error.detail, context=context)
@@ -3305,18 +3306,34 @@ def migrate(args: MigrateArgs, ctx: Ctx, fleet: Fleet) -> Migration:
         next=cast("str | None", result.get("next")),
         step=cast("str | None", result.get("step")),
     )
-    # The step's own error goes in error.context, beside the plan in data.
-    cause = {
-        "step": migration.step,
-        **cast("Mapping[str, object]", result.get("error", {})),
-    }
-    if status == "paused":
-        message = f"the migration paused at {migration.step}; resume it with --yes"
-        raise Exit.PARTIAL_FAILURE(message, context=cause, data=migration)
-    if status == "error":
-        message = f"the migration failed at {migration.step}"
-        raise Exit.ENGINE_STEP_FAILED(message, context=cause, data=migration)
+    failure = _migration_failure(
+        migration, cast("Mapping[str, object]", result.get("error", {}))
+    )
+    if failure is not None:
+        raise failure
     return migration
+
+
+def _migration_failure(
+    migration: Migration, error: Mapping[str, object]
+) -> CliExit | None:
+    """Return the exit a paused or failed run answers with, or None."""
+    # The step's own error goes in error.context, beside the plan in data.
+    cause = {"step": migration.step, **error}
+    if migration.status == "paused":
+        message = f"the migration paused at {migration.step}; resume it with --yes"
+        return Exit.PARTIAL_FAILURE(message, context=cause, data=migration)
+    if (
+        migration.status == "error"
+        and cause.get("code") == ERROR_DATA_COPY_PREFLIGHT_REFUSED
+    ):
+        # The data step refuses as data copy does: nothing was dumped (S-007).
+        message = f"the migration stopped at {migration.step}: {cause['message']}"
+        return Exit.PRECONDITION(message, context=cause, data=migration)
+    if migration.status == "error":
+        message = f"the migration failed at {migration.step}"
+        return Exit.ENGINE_STEP_FAILED(message, context=cause, data=migration)
+    return None
 
 
 # why

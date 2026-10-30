@@ -29,7 +29,10 @@ argument_specs:
         type: str
         required: false
         default: ""
-        description: Controller directory receiving the migration receipt
+        description: >-
+          Controller directory receiving the migration receipt, and before
+          the dump the preflight findings file
+          <service>-<database>.preflight.json
       cloudfall_data_migration_url_path:
         type: path
         required: false
@@ -51,6 +54,22 @@ argument_specs:
         description: >-
           Query returning every non-system schema of the source as one JSON
           array, used when no schema is named
+      cloudfall_data_migration_source_preflight_query:
+        type: str
+        required: false
+        description: >-
+          Query returning, as one JSON object, the named schemas the source
+          lacks, the extensions and policy roles the selected schemas need,
+          and their auth. references; it reads the psql variables
+          cloudfall_data_schemas and cloudfall_data_every_schema
+      cloudfall_data_migration_target_preflight_query:
+        type: str
+        required: false
+        description: >-
+          Query returning, as one JSON object, which needed extensions the
+          target's pg_available_extensions and which policy roles its pg_roles
+          lack; it reads the psql variables cloudfall_data_extensions and
+          cloudfall_data_policy_roles
       cloudfall_data_migration_target_tables_query:
         type: str
         required: false

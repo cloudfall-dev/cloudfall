@@ -82,22 +82,30 @@ _ERROR_SERVICE_MISSING = "lifecycle_service_missing"
 _ERROR_DATABASE_MISSING = "lifecycle_database_missing"
 _ERROR_SOURCE_URL_MISSING = "lifecycle_source_url_missing"
 ERROR_DATA_COPY_SCHEMA_INVALID = "data_copy_schema_invalid"
+ERROR_DATA_COPY_PREFLIGHT_REFUSED = "data_copy_preflight_refused"
+_ERROR_PREFLIGHT_FINDINGS_INVALID = "data_copy_preflight_findings_invalid"
 
 
 class LifecycleError(RuntimeError):
     """Fail-fast lifecycle error with a stable machine-readable code."""
 
-    def __init__(self, code: str, message: str) -> None:
-        """Record the failure code and human-readable detail."""
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        context: Mapping[str, object] | None = None,
+    ) -> None:
+        """Record the failure code, its detail, and what the answer names."""
         self.code = code
         self.detail = message
+        self.context: Mapping[str, object] = dict(context or {})
         super().__init__(f"{code}: {message}")
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the error envelope for system boundaries."""
         return {
             "status": "error",
-            "error": {"code": self.code, "message": self.detail},
+            "error": {**self.context, "code": self.code, "message": self.detail},
         }
 
 
@@ -311,6 +319,85 @@ class DataCopySchemas:
             return "every non-system schema"
         noun = "schema" if len(self.names) == 1 else "schemas"
         return f"{noun} {', '.join(self.values)}"
+
+
+_PREFLIGHT_KEYS = ("missingSchemas", "extensions", "roles", "authReferences")
+_PREFLIGHT_LABELS = {
+    "missingSchemas": "schemas the source lacks",
+    "extensions": "extensions the target lacks",
+    "roles": "policy roles the target lacks",
+    "authReferences": "auth. references to rewrite",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class DataCopyPreflightFindings:
+    """What the data copy preflight found the target can't hold (S-007).
+
+    The role writes these to ``<service>-<database>.preflight.json`` under
+    the receipt directory before it dumps anything, so the whole lists
+    reach the answer rather than the tail of the playbook's output.
+    """
+
+    missing_schemas: tuple[str, ...]
+    extensions: tuple[str, ...]
+    roles: tuple[str, ...]
+    auth_references: tuple[str, ...]
+
+    @classmethod
+    def from_file(cls, path: Path) -> DataCopyPreflightFindings:
+        """Read the findings file strictly: four lists of names, nothing else."""
+        try:
+            raw = cast("object", json.loads(path.read_text(encoding="utf-8")))
+        except json.JSONDecodeError as error:
+            detail = f"preflight findings are not JSON: {path}"
+            raise LifecycleError(_ERROR_PREFLIGHT_FINDINGS_INVALID, detail) from error
+        if not isinstance(raw, dict) or set(raw) != set(_PREFLIGHT_KEYS):
+            keys = ", ".join(_PREFLIGHT_KEYS)
+            detail = f"preflight findings must hold exactly {keys}: {path}"
+            raise LifecycleError(_ERROR_PREFLIGHT_FINDINGS_INVALID, detail)
+        lists: dict[str, tuple[str, ...]] = {}
+        for key in _PREFLIGHT_KEYS:
+            value = cast("object", raw[key])
+            if not isinstance(value, list) or not all(
+                isinstance(item, str) for item in cast("list[object]", value)
+            ):
+                detail = f"preflight findings {key} must be a list of names: {path}"
+                raise LifecycleError(_ERROR_PREFLIGHT_FINDINGS_INVALID, detail)
+            lists[key] = tuple(cast("list[str]", value))
+        return cls(
+            missing_schemas=lists["missingSchemas"],
+            extensions=lists["extensions"],
+            roles=lists["roles"],
+            auth_references=lists["authReferences"],
+        )
+
+    @property
+    def refused(self) -> bool:
+        """Whether any finding stops the copy."""
+        return any(self.as_dict().values())
+
+    def as_dict(self) -> dict[str, list[str]]:
+        """Return the four lists, keyed as the error context names them."""
+        return {
+            "missingSchemas": list(self.missing_schemas),
+            "extensions": list(self.extensions),
+            "roles": list(self.roles),
+            "authReferences": list(self.auth_references),
+        }
+
+    def refusal(self) -> LifecycleError:
+        """Return the ``data_copy_preflight_refused`` error naming every finding."""
+        named = "; ".join(
+            f"{_PREFLIGHT_LABELS[key]}: {', '.join(values)}"
+            for key, values in self.as_dict().items()
+            if values
+        )
+        detail = (
+            "the data copy preflight refused the copy, so nothing was dumped "
+            f"and the target is untouched; {named}"
+        )
+        return LifecycleError(ERROR_DATA_COPY_PREFLIGHT_REFUSED, detail, self.as_dict())
 
 
 class PreviewSubject(StrEnum):
@@ -1350,12 +1437,40 @@ def migrate_data(  # noqa: PLR0913 - as plan_data_migration.
     receipt_directory: Path | None = None,
     schemas: DataCopySchemas | None = None,
 ) -> dict[str, object]:
-    """Dump one external database and restore it into a declared service."""
+    """Dump one external database and restore it into a declared service.
+
+    A preflight finding refuses the copy before ``pg_dump`` with
+    ``data_copy_preflight_refused`` and the four lists in its context, read
+    from the findings file the role writes under ``receipt_directory``.
+    """
     service = _checked_data_migration(context, service_id, database, source_url_file)
     plan = plan_data_migration(
         context, service_id, database, source_url_file, receipt_directory, schemas
     )
-    execute_plan(plan, context.run)
+    findings = (
+        receipt_directory / f"{service_id.value}-{database}.preflight.json"
+        if receipt_directory is not None
+        else None
+    )
+    # A file an earlier run left must not answer for this one.
+    if findings is not None:
+        findings.unlink(missing_ok=True)
+    try:
+        execute_plan(plan, context.run)
+    except LifecycleError as error:
+        if (
+            error.code != ERROR_EXECUTION_FAILED
+            or findings is None
+            or not findings.is_file()
+        ):
+            raise
+        found = DataCopyPreflightFindings.from_file(findings)
+        if found.refused:
+            raise found.refusal() from error
+        raise
+    finally:
+        if findings is not None:
+            findings.unlink(missing_ok=True)
     result: dict[str, object] = {
         "status": "ok",
         "action": "data-migration",
@@ -1391,8 +1506,10 @@ def preview_data_migration(
             f"dump {selection.describe()} of the database whose URL is in "
             f"{source_url_file} on {service.server_id} and restore it into "
             f"declared database {database} of service {service_id}, refusing "
-            "a target with tables in those schemas and verifying per-table "
-            "row counts"
+            "before the dump a target with tables in those schemas, a schema "
+            "the source lacks, an extension or policy role the target lacks, "
+            "or an auth. reference; it restores in one transaction and "
+            "verifies per-table row counts"
         ),
     )
 
