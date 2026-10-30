@@ -319,25 +319,92 @@ naming `production` still waits for its reviewers.
 
 ## Approval: who presses the button
 
-Every `Application` declares `spec.approval: manual` or `automatic`.
-Cloudfall validates the field and writes it into the rendered inventory, but
-no command acts on it today: `cloudfall deploy --yes` deploys an application
-marked `manual` exactly as it deploys one marked `automatic`. The only gate
-inside `deploy` is `--yes`, and a workflow that passes `--yes` has approved
-its own deploy.
+Every `Application` declares `spec.approval: manual` or `automatic`, and
+`cloudfall deploy` enforces it:
 
-So in CI, the approval comes from GitHub, not from Cloudfall:
+- `automatic`: `deploy --yes` deploys, as the workflow above does. Keep
+  staging's applications `automatic` and its one job stays as it is
+- `manual`: `deploy --yes` deploys a release only when a person approved
+  that release with `cloudfall release approve`. Without an approval that
+  counts it exits 4 `PRECONDITION` with `deployment_approval_missing`, before
+  any playbook runs, and names the command to run. `deploy` without `--yes`
+  shows the approval in its plan: `approval.status` is `approved` or
+  `missing`
 
-- Give every environment that holds an application marked `manual` required
-  reviewers, and turn on "Prevent self-review", so the person who pushed the
-  change cannot approve its deploy
-- The job waits before its first step until a reviewer approves, so it never
-  sees the SSH key or the age key of that environment without approval
-- Leave `staging` without reviewers if its applications are `automatic`
+An approval is a record under `decisions/releases/` in the project. It names
+the archive's SHA-256, the component's servers and when it expires (24 hours
+by default, `--valid-for` up to a week). It counts only while the archive
+being deployed has that digest, the component is declared on exactly those
+servers, and it has not expired. A failed health gate does not use it up, so
+the same release can be retried until it expires.
 
-Read `approval: manual` as your declaration that such a gate must exist; the
-environment's reviewers are what enforce it. The approval itself lands in
-GitHub's deployment history, not in Cloudfall's record.
+A person approves at a terminal by typing the release id back; no flag, and
+no CI job, answers that prompt. So a production deploy of a `manual`
+application is two jobs with a person between them, and approval needs the
+exact archive the deploy ships:
+
+1. A build job builds the release and uploads `tmp/artifacts/<component>/`
+   as a workflow artifact
+2. The person downloads that artifact into `tmp/artifacts/<component>/` of
+   their checkout and approves it:
+
+   ```sh
+   gh run download <run-id> --name cloudfall-artifact-crm-backend --dir tmp/artifacts/crm-backend
+   uv run cloudfall release approve crm-backend --release 20260101T000000Z-abcdef0
+   git add decisions/releases
+   git commit -m "Approve crm-backend 20260101T000000Z-abcdef0"
+   git push
+   ```
+
+3. They dispatch the deploy job with the build's run id and the release. It
+   checks out the commit holding the record, downloads the same artifact and
+   deploys it:
+
+```yaml
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      # checkout, uv, uv sync --locked, as in the workflow above
+      - name: Build the artifact
+        id: build
+        run: |
+          uv run cloudfall-engine artifact build "$COMPONENT" --ref "$REF" --format json > "$RUNNER_TEMP/build.json"
+          echo "release=$(jq -r '.data.release' "$RUNNER_TEMP/build.json")" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cloudfall-artifact-${{ env.COMPONENT }}
+          path: tmp/artifacts/${{ env.COMPONENT }}/
+```
+
+```yaml
+  deploy:
+    runs-on: ubuntu-24.04
+    environment: production
+    steps:
+      # checkout, uv, sops, the SSH and age keys, secrets render, as above
+      - uses: actions/download-artifact@v7
+        with:
+          name: cloudfall-artifact-${{ env.COMPONENT }}
+          path: tmp/artifacts/${{ env.COMPONENT }}/
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - name: Deploy the approved release
+        run: uv run cloudfall deploy "$COMPONENT" --release "$RELEASE" --env-file "tmp/env/$COMPONENT.env" --yes
+```
+
+The deploy job reads the record from its checkout, so dispatch it on the
+commit that holds the approval. A rebuilt release has a new archive, and
+its old approval no longer counts.
+
+GitHub's required reviewers remain a useful outer gate: give the
+`production` environment reviewers and turn on "Prevent self-review", and
+the deploy job never sees that environment's SSH key or age key until a
+reviewer lets it start. Their approval lands in GitHub's deployment
+history; the `release approve` record is the one in Cloudfall's.
+
+When the reviewers are the real gate and nobody will run `release approve`,
+switch the application to `approval: automatic`, so the project no longer
+claims a gate Cloudfall does not hold.
 
 ## Keeping the receipts
 

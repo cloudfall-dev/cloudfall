@@ -192,8 +192,11 @@ proposals it executed and which it withheld, with reasons.
 Approval is not a tool. A person approves a proposal by running
 `cloudfall operator approve` from a shell, as in
 [Reviewing and approving](#reviewing-and-approving); an agent that could
-call it would run and verify the change it proposed itself. The watch
-loop is not a tool either: it runs until stopped, as the service above.
+call it would run and verify the change it proposed itself. The same holds
+for `cloudfall release approve`: the `deploy` tool deploys a release of an
+application that declares `approval: manual` only once a person approved
+it at a terminal, and no tool writes that approval. The watch loop is not a
+tool either: it runs until stopped, as the service above.
 
 The agent is the brain here and the operator is the record. The agent can
 read the proposals, relay the diagnosis and recommend one; a person

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import shutil
 import subprocess
 import sys
+import tarfile
 import textwrap
 from pathlib import Path
 from typing import Any
@@ -339,6 +342,86 @@ def test_a_project_call_cannot_approve_a_release(tmp_path: Path) -> None:
 
     assert not any(name.startswith("release") for name in tools)
     assert approved["error"]["code"] == "UNKNOWN_TOOL"
+
+
+def _project_with_artifact(tmp_path: Path, release: str) -> Path:
+    """Copy the examples (crm declares approval: manual) and build one release."""
+    project = tmp_path / "project"
+    shutil.copytree(EXAMPLES, project)
+    directory = project / "tmp" / "artifacts" / "crm-backend"
+    directory.mkdir(parents=True)
+    archive = directory / f"{release}.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(project / "components", arcname=".")
+    metadata = {
+        "apiVersion": "cloudfall/v1",
+        "kind": "Artifact",
+        "metadata": {"id": "crm-backend"},
+        "spec": {
+            "component": "crm-backend",
+            "release": release,
+            "gitRef": "main",
+            "gitCommit": "a" * 40,
+            "builtAt": "2026-01-01T00:00:00Z",
+            "archive": archive.name,
+            "archiveSha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+            "sizeBytes": archive.stat().st_size,
+        },
+    }
+    (directory / f"{release}.json").write_text(json.dumps(metadata), encoding="utf-8")
+    return project
+
+
+def test_s008_5_the_deploy_tool_refuses_an_unapproved_manual_release(
+    tmp_path: Path,
+) -> None:
+    release = "20260101T000000Z-abcdef0"
+    project = _project_with_artifact(tmp_path, release)
+    call = {"component": "crm-backend", "release": release}
+
+    tools, (planned, redirected, refused) = _talk(
+        _serve("--project", str(project), cwd=tmp_path),
+        ("deploy", call),
+        # The server binds the project's approvals folder: a call can't name one.
+        ("deploy", {**call, "yes": True, "approvals": str(tmp_path / "mine")}),
+        ("deploy", {**call, "yes": True}),
+    )
+
+    assert not any(name.startswith("release") for name in tools)
+    assert "approvals" not in tools["deploy"].input_schema["properties"]
+    assert planned["ok"] is True, planned
+    assert planned["data"]["approval"]["policy"] == "manual"
+    assert planned["data"]["approval"]["status"] == "missing"
+    assert redirected["error"]["code"] == "ARG_ERROR"
+    assert redirected["error"]["context"]["field"] == "approvals"
+    assert refused["ok"] is False
+    assert refused["error"]["code"] == "PRECONDITION", refused
+    assert refused["error"]["context"]["code"] == "deployment_approval_missing"
+    assert refused["error"]["context"]["command"] == (
+        f"cloudfall release approve crm-backend --release {release}"
+    )
+    assert not (project / "tmp" / "ansible-inventory.json").exists()
+    assert not (project / "tmp" / "releases").exists()
+
+
+def test_s008_5_the_project_instructions_name_release_approve(
+    tmp_path: Path,
+) -> None:
+    async def instructions() -> str | None:
+        async with (
+            stdio_client(_serve("--project", str(EXAMPLES), cwd=tmp_path)) as (
+                read,
+                write,
+            ),
+            ClientSession(read, write) as session,
+        ):
+            return (await session.initialize()).instructions
+
+    told = asyncio.run(instructions())
+
+    assert told is not None
+    assert "cloudfall release approve" in told
+    assert "a person runs" in told
 
 
 def test_a_project_call_cannot_send_a_file_elsewhere_or_write_secrets_out(

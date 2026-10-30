@@ -178,6 +178,8 @@ class DeployOptions:
 
     environment_file: Path | None = None
     receipt_directory: Path | None = None
+    approved_sha256: Sha256Digest | None = None
+    """The archive digest an approval names; the deploy refuses any other."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1201,6 +1203,13 @@ def deploy(
     artifact = verify_artifact(
         artifact_directory, component_id, release, context.schema_directory
     )
+    approved = resolved_options.approved_sha256
+    if approved is not None and artifact.sha256 != approved.value:
+        detail = (
+            f"artifact digest {artifact.sha256} is not the approved digest "
+            f"{approved.value}: the archive changed after the approval was checked"
+        )
+        raise LifecycleError(_ERROR_ARTIFACT_DIGEST, detail)
     plan = plan_deploy(
         context,
         component_id,

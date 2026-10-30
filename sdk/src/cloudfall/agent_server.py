@@ -40,6 +40,7 @@ from cloudfall.project import (
     is_project,
     resolve_project_directory,
 )
+from cloudfall.release_approval import APPROVALS_DIRECTORY
 from cloudfall.render_api import RENDER_API_URL
 from cloudfall.resources import default_engine_directory, default_schema_directory
 
@@ -145,6 +146,14 @@ class McpServeArgs:
             f"Decision records in the repository (default: {DECISION_DIRECTORY})"
         ),
     )
+    approvals: Path = Flag(
+        default=Path(APPROVALS_DIRECTORY),
+        description=(
+            "Release approval records deploy reads in the project (default: "
+            f"{APPROVALS_DIRECTORY})"
+        ),
+    )
+
     def __post_init__(self) -> None:
         """Refuse two fleets: a server serves a project or a repository."""
         if self.project is not None and self.repository is not None:
@@ -381,6 +390,9 @@ def bound_arguments(args: McpServeArgs) -> dict[str, object]:
         "env_dir": _IMPORT_ENV,
         "plan_file": _MIGRATE_PLAN,
         "proposals": str(args.proposals),
+        # deploy reads the approvals a person recorded; a call can't point it
+        # at a folder of its own choosing.
+        "approvals": str(args.approvals),
         "secrets_dir": str(args.secrets_dir),
         # A chosen URL would send any file the call names as the key to it.
         "api_url": RENDER_API_URL,
@@ -429,6 +441,10 @@ never overwrite an existing resource. The project itself is laid out with
 operator_list and operator_show read the proposals that loop records.
 Approving one is `cloudfall operator approve`, a command a person runs
 from a shell; no tool here can do it, whatever reason is given for asking.
+Deploying a release of an application that declares approval: manual
+needs `cloudfall release approve` first, also a command a person runs at a
+terminal; deploy's plan says whether an approval counts, and without one
+deploy with yes refuses with deployment_approval_missing.
 Every result is an envelope: read ok, then data, else error.
 """
 
