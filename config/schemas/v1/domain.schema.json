@@ -3,6 +3,90 @@
   "$id": "https://cloudfall.internal/schemas/v1/domain.schema.json",
   "title": "Cloudfall public domain route",
   "x-cloudfall-kind": "Domain",
+  "$defs": {
+    "upstream": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string",
+          "anyOf": [
+            {
+              "format": "ipv4"
+            },
+            {
+              "format": "ipv6"
+            }
+          ]
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      },
+      "required": [
+        "address",
+        "port"
+      ],
+      "additionalProperties": false
+    },
+    "releasePath": {
+      "type": "string",
+      "pattern": "^(?!/)(?!(?:.*/)?\\.\\.(?:/|$))[A-Za-z0-9._/-]+$",
+      "not": {
+        "pattern": "[\\u0000-\\u001f\\u007f]"
+      }
+    },
+    "route": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "upstream": {
+          "$ref": "#/$defs/upstream"
+        },
+        "static": {
+          "type": "object",
+          "properties": {
+            "component": {
+              "$ref": "common.schema.json#/$defs/resourceId"
+            },
+            "directory": {
+              "$ref": "#/$defs/releasePath",
+              "not": {
+                "pattern": "^\\.(?:/+\\.)*/*$"
+              }
+            },
+            "spaFallback": {
+              "$ref": "#/$defs/releasePath"
+            }
+          },
+          "required": [
+            "component",
+            "directory"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "upstream"
+          ]
+        },
+        {
+          "required": [
+            "static"
+          ]
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
   "type": "object",
   "properties": {
     "apiVersion": {
@@ -42,30 +126,7 @@
               "$ref": "common.schema.json#/$defs/serviceName"
             },
             "upstream": {
-              "type": "object",
-              "properties": {
-                "address": {
-                  "type": "string",
-                  "anyOf": [
-                    {
-                      "format": "ipv4"
-                    },
-                    {
-                      "format": "ipv6"
-                    }
-                  ]
-                },
-                "port": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 65535
-                }
-              },
-              "required": [
-                "address",
-                "port"
-              ],
-              "additionalProperties": false
+              "$ref": "#/$defs/upstream"
             }
           },
           "required": [
@@ -74,6 +135,13 @@
             "service"
           ],
           "additionalProperties": false
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/route"
+          },
+          "minItems": 1
         },
         "origin": {
           "type": "object",

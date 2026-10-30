@@ -850,6 +850,76 @@ class RelativeDirectory:
         return cls(_required_string(value, "relative directory"))
 
 
+_ROUTE_PATH_PATTERN = re.compile(r"/[A-Za-z0-9._~/-]*")
+_ACME_CHALLENGE_PATH = "/.well-known/acme-challenge"
+
+
+@dataclass(frozen=True, slots=True)
+class DomainRoutePath:
+    """URL path prefix of a Domain route, safe to render as an nginx location."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Accept only ``/`` then letters, digits and ``._~/-``."""
+        if not _ROUTE_PATH_PATTERN.fullmatch(self.value):
+            message = (
+                f"invalid route path: {self.value!r} must start with '/' and use "
+                "only letters, digits and '._~/-'"
+            )
+            raise ValueError(message)
+
+    @property
+    def is_directory(self) -> bool:
+        """Return whether the path ends with ``/``, as a static route needs."""
+        return self.value.endswith("/")
+
+    @property
+    def is_reserved(self) -> bool:
+        """Return whether certificate issuance owns the path."""
+        return self.value == _ACME_CHALLENGE_PATH or self.value.startswith(
+            f"{_ACME_CHALLENGE_PATH}/"
+        )
+
+    @classmethod
+    def from_boundary(cls, value: object) -> DomainRoutePath:
+        """Coerce a boundary value into a route path."""
+        return cls(_required_string(value, "route path"))
+
+
+_RELEASE_PATH_PATTERN = re.compile(r"[A-Za-z0-9._/-]+")
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseRelativePath:
+    """Path inside a component release that nginx may serve files from."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Reject absolute paths, ``..`` segments and characters outside ``._-/``."""
+        if (
+            not _RELEASE_PATH_PATTERN.fullmatch(self.value)
+            or self.value.startswith("/")
+            or ".." in self.value.split("/")
+        ):
+            message = (
+                f"invalid release path: {self.value!r} must be relative, use only "
+                "letters, digits and '._-/', and have no '..' segment"
+            )
+            raise ValueError(message)
+
+    @property
+    def is_release_root(self) -> bool:
+        """Return whether the path names the release root itself, such as ``.``."""
+        return PurePosixPath(self.value) == PurePosixPath(".")
+
+    @classmethod
+    def from_boundary(cls, value: object) -> ReleaseRelativePath:
+        """Coerce a boundary value into a release path."""
+        return cls(_required_string(value, "release path"))
+
+
 _RELEASE_TIMEOUT_MINIMUM = 1
 _RELEASE_TIMEOUT_MAXIMUM = 1800
 _RELEASE_TIMEOUT_DEFAULT = 300
