@@ -374,9 +374,7 @@ def test_cli_migrate_names_missing_observations_at_the_verify_step(
     assert "cloudfall observe" in context["message"]
     assert payload["data"]["next"] == step_id
     plan = json.loads(options.plan_file.read_text(encoding="utf-8"))
-    pending = [
-        step["id"] for step in plan["steps"] if step["status"] == "pending"
-    ]
+    pending = [step["id"] for step in plan["steps"] if step["status"] == "pending"]
     assert pending[0] == step_id
 
 

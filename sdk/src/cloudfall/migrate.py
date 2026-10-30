@@ -765,7 +765,7 @@ def _verify_audit(config: AgentConfig) -> dict[str, object]:
 def _verify_routes(config: AgentConfig) -> dict[str, object]:
     # Before any domain is probed: the view needs the server snapshots too.
     _require_observations(config)
-    state =validate_config(config.project_directory, config.schema_directory)
+    state = validate_config(config.project_directory, config.schema_directory)
     inventory = PlatformInventory.from_state(state)
     inspect_domains(
         inventory,
