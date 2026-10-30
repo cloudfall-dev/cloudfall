@@ -1,0 +1,116 @@
+---
+# Runs the component's command health check against the release current
+# points at, in a transient systemd unit with the service's user, working
+# directory and EnvironmentFile=, up to `attempts` times 3 seconds apart.
+# Paths come from install_root, so every entry point can include this file.
+#
+# The command's stdout and stderr stay in the server's journal under the
+# transient unit's name (no --pipe), and the run task is no_log: only its
+# exit code and systemd-run's own timeout line are read. The result lands in
+# cloudfall_deploy_command_health_result, then a failed check fails the task
+# that follows, so a block's rescue can still read what happened.
+- name: Compute the command health check invocation
+  ansible.builtin.set_fact:
+    cloudfall_deploy_command_health_current: >-
+      {{ cloudfall_deploy_component.install_root }}/current
+    cloudfall_deploy_command_health_executable: >-
+      {{
+        cloudfall_deploy_component.healthCheck.command[0]
+        if cloudfall_deploy_component.healthCheck.command[0].startswith('/')
+        else cloudfall_deploy_component.install_root ~ '/current/'
+        ~ cloudfall_deploy_component.healthCheck.command[0]
+      }}
+    cloudfall_deploy_command_health_attempts: >-
+      {{ cloudfall_deploy_component.healthCheck.attempts | int }}
+
+- name: Run the command health check
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          cloudfall_deploy_systemd_run,
+          '--unit=cloudfall-health-' ~ cloudfall_deploy_component.id,
+          '--wait',
+          '--collect',
+          '--service-type=exec',
+          '--uid=' ~ cloudfall_deploy_component.application_user,
+          '--gid=' ~ cloudfall_deploy_component.application_user,
+          '--working-directory=' ~ cloudfall_deploy_command_health_current,
+          '--property=EnvironmentFile=-'
+          ~ cloudfall_deploy_component.install_root ~ '/shared/env/'
+          ~ cloudfall_deploy_component.id ~ '.env',
+          '--property=RuntimeMaxSec='
+          ~ cloudfall_deploy_component.healthCheck.timeoutSeconds,
+          '--property=TimeoutStopSec=10',
+          '--property=NoNewPrivileges=true',
+          '--property=PrivateTmp=true',
+          '--',
+          cloudfall_deploy_command_health_executable,
+        ]
+        + cloudfall_deploy_component.healthCheck.command[1:]
+      }}
+  register: cloudfall_deploy_command_health_run
+  changed_when: false
+  failed_when: false
+  # The last attempt ends the loop itself, so running out of attempts is not
+  # a task failure and the result below is still recorded.
+  retries: "{{ cloudfall_deploy_command_health_attempts | int - 1 }}"
+  delay: 3
+  until: >-
+    (
+      cloudfall_deploy_command_health_run.rc == 0
+      and 'Finished with result: timeout'
+      not in cloudfall_deploy_command_health_run.stderr
+    )
+    or cloudfall_deploy_command_health_run.attempts | default(1) | int
+    >= cloudfall_deploy_command_health_attempts | int
+  no_log: true
+
+- name: Record the command health check result
+  ansible.builtin.set_fact:
+    cloudfall_deploy_command_health_result: >-
+      {{
+        {
+          'type': 'command',
+          'command': cloudfall_deploy_component.healthCheck.command,
+          'attempts': cloudfall_deploy_command_health_run.attempts
+          | default(1) | int,
+          'exitCode': (
+            none
+            if cloudfall_deploy_command_health_timed_out
+            else cloudfall_deploy_command_health_run.rc | int
+          ),
+          'timedOut': cloudfall_deploy_command_health_timed_out,
+        }
+      }}
+  vars:
+    cloudfall_deploy_command_health_timed_out: >-
+      {{
+        'Finished with result: timeout'
+        in cloudfall_deploy_command_health_run.stderr
+      }}
+
+- name: Fail the command health check
+  ansible.builtin.fail:
+    msg: >-
+      The command health check of {{ cloudfall_deploy_component.id }} failed
+      on {{ cloudfall_server_id }}: {{
+        cloudfall_deploy_command_health_result.command | join(' ')
+      }} {{
+        'timed out after '
+        ~ cloudfall_deploy_component.healthCheck.timeoutSeconds
+        ~ ' seconds and was stopped'
+        if cloudfall_deploy_command_health_result.timedOut
+        else 'exited with code '
+        ~ cloudfall_deploy_command_health_result.exitCode
+      }} {{
+        'on its only attempt'
+        if cloudfall_deploy_command_health_result.attempts == 1
+        else 'on the last of '
+        ~ cloudfall_deploy_command_health_result.attempts ~ ' attempts'
+      }}; its output is in journalctl -u cloudfall-health-{{
+        cloudfall_deploy_component.id
+      }} on that server
+  when: >-
+    cloudfall_deploy_command_health_result.timedOut
+    or cloudfall_deploy_command_health_result.exitCode != 0

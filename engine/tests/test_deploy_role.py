@@ -491,13 +491,15 @@ COMMAND_CHECK: dict[str, object] = {
 REFUSE_COMMAND = "Refuse a command health check this engine does not run yet"
 
 
-@pytest.mark.parametrize(
-    "entry_point", ["main.yml", "restart.yml", "rollback.yml", "health.yml"]
-)
+def test_s009_2_a_deploy_no_longer_refuses_a_command_check() -> None:
+    assert REFUSE_COMMAND not in [str(task["name"]) for task in _main()]
+
+
+@pytest.mark.parametrize("entry_point", ["restart.yml", "rollback.yml", "health.yml"])
 def test_the_engine_refuses_a_command_check_it_does_not_run_yet(
     entry_point: str,
 ) -> None:
-    """Until #164 runs it, a command check fails first, never passes unrun."""
+    """Until #166 runs it there, a command check fails first, never passes unrun."""
     tasks = _load(ROLE / "tasks" / entry_point)
     assert isinstance(tasks, list)
     refusal = tasks[0]
@@ -522,7 +524,7 @@ def test_the_engine_refuses_a_command_check_it_does_not_run_yet(
     assert message.startswith(
         "Component crm-backend declares a command health check"
     )
-    assert "cloudfall-dev/cloudfall#164" in message
+    assert "cloudfall-dev/cloudfall#166" in message
 
 
 @pytest.mark.parametrize("health_check", [HTTP_CHECK, NO_CHECK, COMMAND_CHECK])

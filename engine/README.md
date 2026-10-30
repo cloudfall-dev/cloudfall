@@ -244,7 +244,26 @@ running. The kept copy stays after a successful deploy and is never
 overwritten; a later hand-made unit that differs from it refuses the deploy.
 Check mode only reports the unit it would keep. Successful runs write a
 schema-valid release receipt on the
-controller. The first slice supports Python components managed by uv on
+controller.
+
+A `healthCheck` of `type: command` (a smoke check, say) is the gate's last
+step: after the switch and the restart, the command runs in a transient
+systemd unit, `cloudfall-health-<component>`, as the application's user, in
+`<installRoot>/current` (a relative first element of `command` resolves
+there), with the service unit's `EnvironmentFile=-` line, and is stopped
+after `timeoutSeconds`. It runs up to `attempts` times, 3 seconds apart, and
+passes at the first exit 0. Its stdout and stderr stay in the server's
+journal (`journalctl -u cloudfall-health-<component>`) and never reach the
+receipt or the Ansible output. When every attempt fails, the rescue above
+restores the previous release (or stops a first one), writes the receipt with
+`healthCheckPassed: false`, the last exit code or the timeout, and
+`previousRelease` naming the release that serves again, and fails the run.
+The receipt of a passing command check records it under `healthCheck` too;
+`http` and `none` checks keep their receipts and their gate as before.
+`restart`, `rollback` and `health` still refuse a command check until
+cloudfall-dev/cloudfall#166 runs it there.
+
+The first slice supports Python components managed by uv on
 x86_64 Debian hosts.
 
 ## Public domain routes

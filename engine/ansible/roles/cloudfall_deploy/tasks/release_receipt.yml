@@ -1,0 +1,62 @@
+---
+# Writes the release receipt on the controller: after the health gate passed,
+# and from the gate's rescue after a failed command health check, with
+# cloudfall_deploy_receipt_passed saying which. A component with a command
+# health check records its result under healthCheck; http and none do not.
+- name: Ensure the controller receipt directory exists
+  ansible.builtin.file:
+    path: "{{ cloudfall_deploy_receipt_directory }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  become: false
+  when: cloudfall_deploy_receipt_directory | length > 0
+
+- name: Write the release receipt on the controller
+  ansible.builtin.copy:
+    content: >-
+      {{
+        {
+          'apiVersion': 'cloudfall/v1',
+          'kind': 'ReleaseReceipt',
+          'metadata': {
+            'id': cloudfall_deploy_component.id,
+            'description': 'Release receipt written by cloudfall_deploy',
+          },
+          'spec': {
+            'component': cloudfall_deploy_component.id,
+            'server': cloudfall_server_id,
+            'release': cloudfall_deploy_release,
+            'artifactSha256': cloudfall_deploy_artifact_sha256,
+            'deployedAt': ansible_facts['date_time']['iso8601'],
+            'previousRelease': (
+              (cloudfall_deploy_previous_directory | basename)
+              if cloudfall_deploy_previous_directory | length > 0
+              else none
+            ),
+            'healthCheckPassed': cloudfall_deploy_receipt_passed | bool,
+          } | combine(
+            {
+              'releaseCommand': hostvars[
+                cloudfall_deploy_component.release.server
+              ].cloudfall_deploy_release_command_result,
+            }
+            if cloudfall_deploy_component.release is defined
+            else {}
+          ) | combine(
+            {'healthCheck': cloudfall_deploy_command_health_result}
+            if cloudfall_deploy_component.healthCheck.type == 'command'
+            else {}
+          ),
+        } | to_nice_json
+      }}
+    dest: >-
+      {{ cloudfall_deploy_receipt_directory }}/{{
+        cloudfall_deploy_component.id
+      }}.json
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+  when:
+    - not ansible_check_mode
+    - cloudfall_deploy_receipt_directory | length > 0

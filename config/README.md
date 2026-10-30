@@ -44,7 +44,9 @@ and public HTTP evidence. `deployment-receipt.schema.json` validates receipts
 written only after an Ansible proxy run has applied and validated its final
 configuration. `artifact.schema.json` validates build metadata for hashed
 release tarballs, and `release-receipt.schema.json` validates receipts written
-only after a component release has passed its health gate. Together with server observations, these inputs derive planned,
+after a component release has passed its health gate, or failed a command
+health check (`healthCheckPassed: false`, with the check's attempts, exit code
+and timeout under `healthCheck`, never its output). Together with server observations, these inputs derive planned,
 ready-to-deploy, deployed, configured, and healthy service states.
 
 `examples/` contains a complete valid desired-state set. `tests/invalid/`

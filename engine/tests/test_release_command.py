@@ -449,10 +449,13 @@ def test_s005_6_a_server_whose_release_server_has_not_passed_does_not_switch() -
 def _receipt(
     component: dict[str, object], server: str, hostvars: dict[str, object]
 ) -> dict[str, object]:
-    task = next(t for t in _main_tasks() if t["name"] == RECEIPT)
+    tasks = DataLoader().load_from_file(str(ROLE / "tasks" / "release_receipt.yml"))
+    assert isinstance(tasks, list)
+    task = next(t for t in tasks if t["name"] == RECEIPT)
     copy = task["ansible.builtin.copy"]
     assert isinstance(copy, dict)
     variables: dict[str, object] = {
+        "cloudfall_deploy_receipt_passed": True,
         "hostvars": hostvars,
         "cloudfall_server_id": server,
         "cloudfall_deploy_component": component,

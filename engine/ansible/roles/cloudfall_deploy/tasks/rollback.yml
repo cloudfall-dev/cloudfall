@@ -1,12 +1,12 @@
 ---
-# Until cloudfall-dev/cloudfall#164 runs it, a command health check fails here,
+# Until cloudfall-dev/cloudfall#166 runs it, a command health check fails here,
 # before anything changes, rather than letting the rollback pass an unrun gate.
 - name: Refuse a command health check this engine does not run yet
   ansible.builtin.fail:
     msg: >-
       Component {{ cloudfall_deploy_component.id }} declares a command health
       check, which this engine does not run yet
-      (cloudfall-dev/cloudfall#164); nothing was changed
+      (cloudfall-dev/cloudfall#166); nothing was changed
   when: cloudfall_deploy_component.healthCheck.type == "command"
 
 - name: Validate rollback target and declaration
