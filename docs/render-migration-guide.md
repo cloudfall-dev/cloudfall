@@ -152,8 +152,10 @@ database that already has tables in the copied schemas, verifies per-table
 row counts, and writes a `DataMigrationReceipt`. The row-count check is the
 verify step: the migration is not done because the restore exited zero, it
 is done because the counts match. The copy takes every non-system schema of
-the source; `data copy --source-schema NAME` (repeatable) takes only the
-named ones.
+the source; `data copy --source-schema NAME` and `migrate --data-schema
+DATABASE=NAME` (both repeatable) take only the named ones. A name must
+match `^[a-z_][a-z0-9_]*$` and be named once; anything else stops the
+command with `PRECONDITION` before any playbook runs.
 
 ## Step 7: cut over DNS
 

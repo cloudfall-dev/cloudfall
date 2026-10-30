@@ -369,13 +369,61 @@ def test_s007_14_data_copy_plan_names_the_selected_schemas(
 
 
 @pytest.mark.parametrize(
-    "schema",
-    ["", "{{ lookup('pipe', 'id') }}", "{% raw %}", "a\nb", "x" * 64],
+    "schemas",
+    [
+        ["Bad;Name"],
+        ["app", "app"],
+        [""],
+        ["{{ lookup('pipe', 'id') }}"],
+        ["{% raw %}"],
+        ["app\t"],
+        ["Public"],
+        ["1app"],
+        ['app"'],
+        ["x" * 64],
+    ],
 )
-def test_data_copy_refuses_a_schema_name_ansible_or_postgres_would_misread(
-    schema: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_s007_12_data_copy_refuses_a_malformed_or_repeated_schema(
+    schemas: list[str],
+    confirmed: bool,  # noqa: FBT001 - a pytest parameter.
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A name reaches the engine as an extra var, which Ansible templates."""
+    source_url_file = tmp_path / "source.url"
+    source_url_file.write_text("postgresql://u:p@db.example.test/crm\n")
+    flags = [argument for name in schemas for argument in ("--source-schema", name)]
+
+    exit_code, payload = _cli_lifecycle(
+        [
+            "data",
+            "copy",
+            "postgresql-main",
+            "--database",
+            "crm",
+            "--source-url-file",
+            str(source_url_file),
+            *flags,
+            *(["--yes"] if confirmed else []),
+        ],
+        tmp_path,
+        capsys,
+    )
+
+    assert exit_code == 4
+    assert payload["error"]["code"] == "PRECONDITION"
+    assert payload["error"]["context"]["code"] == "data_copy_schema_invalid"
+    assert "u:p@" not in json.dumps(payload)
+    # The inventory render is every playbook run's first step.
+    assert not (tmp_path / "inventory.json").exists()
+
+
+@pytest.mark.parametrize("schema", ["a\nb", "app\n"])
+def test_data_copy_argv_refuses_a_schema_with_a_newline_before_the_command(
+    schema: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The CLI framework refuses a newline in any argv value as a usage error."""
     source_url_file = tmp_path / "source.url"
     source_url_file.write_text("postgresql://u:p@db.example.test/crm\n")
 
@@ -390,13 +438,44 @@ def test_data_copy_refuses_a_schema_name_ansible_or_postgres_would_misread(
             str(source_url_file),
             "--source-schema",
             schema,
+            "--yes",
         ],
         tmp_path,
         capsys,
     )
 
     assert exit_code == 2
-    assert payload["ok"] is False
+    assert payload["error"]["code"] == "ARG_ERROR"
+    assert not (tmp_path / "inventory.json").exists()
+
+
+def test_s007_12_data_copy_takes_the_longest_schema_name(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source_url_file = tmp_path / "source.url"
+    source_url_file.write_text("postgresql://u:p@db.example.test/crm\n")
+    longest = "_" + "a1" * 31
+
+    exit_code, payload = _cli_lifecycle(
+        [
+            "data",
+            "copy",
+            "postgresql-main",
+            "--database",
+            "crm",
+            "--source-url-file",
+            str(source_url_file),
+            "--source-schema",
+            longest,
+        ],
+        tmp_path,
+        capsys,
+    )
+
+    assert exit_code == 0, payload
+    assert f"dump schema {longest} of the database" in str(
+        payload["data"]["would_run"]
+    )
 
 
 def _git(*arguments: str) -> None:

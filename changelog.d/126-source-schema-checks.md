@@ -1,0 +1,3 @@
+### Added
+
+- `cloudfall migrate` takes a repeatable `--data-schema DATABASE=NAME` beside `--data DATABASE=PATH` (and the `migrate` MCP tool a `data_schema` list): the `data:<database>` step copies only the named schemas, as `data copy --source-schema` does, and the plan names them. A `--source-schema` or `--data-schema` name must now match `^[a-z_][a-z0-9_]*$` and be at most 63 characters, and may be given once per copy; a name that doesn't, a repeated name, or a `--data-schema` for a database with no `--data` exits `PRECONDITION` (code `data_copy_schema_invalid` or `migrate_data_schema_without_data`) before any playbook runs, where a malformed name was a usage error and a repeat was silently dropped (#126)

@@ -181,7 +181,10 @@ By default the copy takes every non-system schema of the source, and the
 row-count check and the receipt cover all of them. To take only some,
 name each with a repeatable `--source-schema`, such as
 `--source-schema public`; the plan names the schemas it will copy, and the
-receipt lists them under `spec.schemas`, each table with its `schema`.
+receipt lists them under `spec.schemas`, each table with its `schema`. A
+name must match `^[a-z_][a-z0-9_]*$`, be at most 63 characters, and be
+named once; anything else stops the command with `PRECONDITION` before
+any playbook runs.
 
 The row-count check is the verify step and the receipt is the record's
 entry for the migration. The restore is not done because `pg_restore`
@@ -193,7 +196,8 @@ refusal guards, and cannot skip either.
 One database at a time; repeat per declared database. If the application
 is also moving in the same operation, `cloudfall migrate --data
 app=tmp/neon-app-url` inserts this step into the orchestrated plan
-between services and deploys.
+between services and deploys; `--data-schema app=public` (repeatable)
+narrows it to the named schemas, as `--source-schema` does.
 
 Note the one-time egress: Neon meters the dump like any other transfer,
 so a 14 GB dump costs about a dollar — the last transfer bill this

@@ -96,6 +96,22 @@ def test_migrate_resolves_env_and_data_files_against_the_project(
     assert options.data_migrations == {"crm": tmp_path / "source.url"}
 
 
+def test_s007_13_migrate_groups_each_data_schema_under_its_database(
+    tmp_path: Path,
+) -> None:
+    fleet = Fleet(EXAMPLES, validate_config(EXAMPLES, SCHEMAS))
+    args = MigrateArgs(
+        data=(f"crm={tmp_path / 'source.url'}",),
+        data_schema=("crm=public", "crm=app"),
+    )
+
+    schemas = args.options(fleet).data_schemas
+
+    assert {database: entry.values for database, entry in schemas.items()} == {
+        "crm": ["app", "public"]
+    }
+
+
 def test_dashboard_serve_streams_where_it_listens_until_stopped(
     tmp_path: Path,
 ) -> None:

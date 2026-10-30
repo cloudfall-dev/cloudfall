@@ -27,6 +27,9 @@ _SYSTEMD_UNIT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9@_.:-]+\.(?:service|timer)$
 _BUILD_TOOL_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,63}")
 _BUILD_TOOL_VERSION_PATTERN = re.compile(r"[0-9]{1,9}(?:\.[0-9]{1,9}){0,7}")
 _CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
+# ^[a-z_][a-z0-9_]*$ and at most 63 characters (S-007), read by fullmatch so
+# a trailing newline can't pass as it would with $.
+_POSTGRES_SCHEMA_NAME_PATTERN = re.compile(r"[a-z_][a-z0-9_]{0,62}")
 BUILD_STEP_DEFAULT_TIMEOUT_SECONDS = 900
 BUILD_STEP_MAXIMUM_TIMEOUT_SECONDS = 3600
 ARTIFACT_CLONE_TIMEOUT_SECONDS = 1800
@@ -34,7 +37,6 @@ ARTIFACT_CLONE_TIMEOUT_SECONDS = 1800
 _FILE_MODE_PATTERN = re.compile(r"^0[0-7]{3}$")
 _SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 _MAX_HOSTNAME_LENGTH = 253
-_POSTGRES_NAME_MAX_BYTES = 63
 _MAX_TCP_PORT = 65535
 _MIN_HTTP_STATUS = 100
 _MAX_HTTP_STATUS = 599
@@ -342,26 +344,22 @@ class LinuxUser:
 class PostgresSchemaName:
     """A PostgreSQL schema name a data copy may select.
 
-    The name travels to the engine as an Ansible extra var, which Ansible
-    templates, so braces are refused; PostgreSQL truncates a name past 63
-    bytes, and a control character breaks the row-count lines.
+    Lower-case letters, digits and underscores, not starting with a digit,
+    at most 63 characters (S-007-12). The name travels to the engine as an
+    Ansible extra var, which Ansible templates, so no brace may pass;
+    PostgreSQL truncates a name past 63 bytes, and a quote, a semicolon, or a
+    control character has no place in a name the dump, the checks, and the
+    row-count lines all carry.
     """
 
     value: str
 
     def __post_init__(self) -> None:
-        """Refuse a name PostgreSQL or Ansible would read differently."""
-        if not self.value:
-            message = "schema name must not be empty"
-            raise ValueError(message)
-        if len(self.value.encode()) > _POSTGRES_NAME_MAX_BYTES:
-            message = f"schema name exceeds 63 bytes: {self.value!r}"
-            raise ValueError(message)
-        if _CONTROL_CHARACTER_PATTERN.search(self.value) or any(
-            brace in self.value for brace in "{}"
-        ):
+        """Refuse a name outside ``^[a-z_][a-z0-9_]*$`` or past 63 characters."""
+        if not _POSTGRES_SCHEMA_NAME_PATTERN.fullmatch(self.value):
             message = (
-                f"schema name holds a control character or a brace: {self.value!r}"
+                f"schema name {self.value!r} must match ^[a-z_][a-z0-9_]*$ "
+                "and be at most 63 characters"
             )
             raise ValueError(message)
 

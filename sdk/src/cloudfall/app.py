@@ -129,7 +129,6 @@ from cloudfall.domain import (
     ConnectionAddress,
     Hostname,
     LinuxUser,
-    PostgresSchemaName,
     ReleaseId,
     ResourceId,
     ResourceKind,
@@ -3113,6 +3112,15 @@ class MigrateArgs(EngineArgs):
             "Source URL file for a database, as DATABASE=PATH (repeatable)"
         ),
     )
+    data_schema: tuple[str, ...] = Flag(
+        default=(),
+        description=(
+            "Source schema to copy into a database given --data, as "
+            "DATABASE=NAME (repeatable); NAME matches ^[a-z_][a-z0-9_]*$, at "
+            "most 63 characters, each named once per database; without it "
+            "every non-system schema of the source is copied"
+        ),
+    )
     yes: bool = Flag(
         default=False,
         confirm=True,
@@ -3154,9 +3162,15 @@ class MigrateArgs(EngineArgs):
             ("data", self.data),
         ):
             _pairs(entries, option)
+        _grouped_pairs(self.data_schema, "data-schema")
 
     def options(self, fleet: Fleet) -> MigrateOptions:
-        """Return what this run builds, deploys and migrates."""
+        """Return what this run builds, deploys and migrates.
+
+        A malformed or repeated ``--data-schema`` name raises
+        ``LifecycleError``, which the command answers with ``PRECONDITION``
+        (S-007-12).
+        """
         return MigrateOptions(
             plan_file=fleet.path(self.plan_file),
             builds=_pairs(self.build, "build"),
@@ -3171,6 +3185,12 @@ class MigrateArgs(EngineArgs):
             data_migrations={
                 database: fleet.path(Path(value))
                 for database, value in _pairs(self.data, "data").items()
+            },
+            data_schemas={
+                database: DataCopySchemas.from_boundary(names)
+                for database, names in _grouped_pairs(
+                    self.data_schema, "data-schema"
+                ).items()
             },
             execute=self.yes,
             restart=self.restart,
@@ -3203,6 +3223,18 @@ def _pairs(entries: tuple[str, ...], option: str) -> dict[str, str]:
             raise ParseError(message, context={"flag": option})
         pairs[key] = value
     return pairs
+
+
+def _grouped_pairs(entries: tuple[str, ...], option: str) -> dict[str, list[str]]:
+    """Group repeatable NAME=VALUE pairs by name, keeping every value given."""
+    grouped: dict[str, list[str]] = {}
+    for entry in entries:
+        key, separator, value = entry.partition("=")
+        if not separator or not key or not value:
+            message = f"--{option} expects NAME=VALUE, got {entry!r}"
+            raise ParseError(message, context={"flag": option})
+        grouped.setdefault(key, []).append(value)
+    return grouped
 
 
 @dataclass(frozen=True, slots=True)
@@ -3244,6 +3276,8 @@ def migrate(args: MigrateArgs, ctx: Ctx, fleet: Fleet) -> Migration:
     """Run each pending step, saving progress after every one."""
     try:
         result = execute_migration(args.config(fleet, ctx), args.options(fleet))
+    except LifecycleError as error:
+        raise _lifecycle_failed(error) from error
     except MigrateError as error:
         raise Exit.PRECONDITION(
             error.detail, context={"code": error.code}
@@ -3843,8 +3877,9 @@ class DataMigrateArgs(EngineArgs):
     source_schema: tuple[str, ...] = Flag(
         default=(),
         description=(
-            "Source schema to copy (repeatable); without it every non-system "
-            "schema of the source is copied"
+            "Source schema to copy (repeatable), matching ^[a-z_][a-z0-9_]*$ "
+            "and at most 63 characters, each named once; without it every "
+            "non-system schema of the source is copied"
         ),
     )
     data_migrations: Path = Flag(
@@ -3861,18 +3896,18 @@ class DataMigrateArgs(EngineArgs):
     )
 
     def __post_init__(self) -> None:
-        """Keep relative paths inside the project; check the schema names."""
+        """Keep relative paths inside the project."""
         EngineArgs.__post_init__(self)
         _inside_project(self.data_migrations, "data-migrations")
-        self.source_schemas()
 
     def source_schemas(self) -> DataCopySchemas:
-        """Return the named source schemas, refusing a malformed name."""
-        try:
-            names = tuple(PostgresSchemaName(name) for name in self.source_schema)
-        except ValueError as error:
-            raise ParseError(str(error), context={"flag": "source-schema"}) from error
-        return DataCopySchemas(names)
+        """Return the named source schemas.
+
+        A malformed or repeated name raises ``LifecycleError``, which the
+        command answers with ``PRECONDITION`` before any playbook (S-007-12),
+        not a usage error.
+        """
+        return DataCopySchemas.from_boundary(self.source_schema)
 
 
 class DeployPayload(Payload):
@@ -4066,8 +4101,8 @@ def data_copy(
     """Restore the source database into the service, or show the plan."""
     context = args.context(fleet, ctx)
     source = fleet.path(args.source_url_file)
-    schemas = args.source_schemas()
     try:
+        schemas = args.source_schemas()
         if not args.yes:
             return DataMigratePayload(
                 _plan(

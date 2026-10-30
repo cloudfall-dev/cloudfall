@@ -277,6 +277,47 @@ def test_s004_16_a_project_serves_domains_apply_and_observe(tmp_path: Path) -> N
     assert planned["meta"]["dry_run"] is True
 
 
+def test_s007_12_the_data_tools_refuse_a_bad_schema_as_the_cli_does(
+    tmp_path: Path,
+) -> None:
+    # Without yes each call is the plan, so no playbook could run either way.
+    tools, (repeated, malformed, unpaired) = _talk(
+        _serve("--project", str(EXAMPLES), cwd=tmp_path),
+        (
+            "data_copy",
+            {
+                "service": "postgresql-main",
+                "database": "crm",
+                "source_url_file": "tmp/source.url",
+                "source_schema": ["app", "app"],
+            },
+        ),
+        (
+            "data_copy",
+            {
+                "service": "postgresql-main",
+                "database": "crm",
+                "source_url_file": "tmp/source.url",
+                "source_schema": ["{{ lookup('pipe', 'id') }}"],
+            },
+        ),
+        ("migrate", {"build": ["crm-backend=main"], "data_schema": ["crm=public"]}),
+    )
+
+    copy_schema = tools["data_copy"].input_schema["properties"]["source_schema"]
+    assert copy_schema["type"] == "array"
+    assert copy_schema["items"]["type"] == "string"
+    assert "data_schema" in tools["migrate"].input_schema["properties"]
+    for refused, code in (
+        (repeated, "data_copy_schema_invalid"),
+        (malformed, "data_copy_schema_invalid"),
+        (unpaired, "migrate_data_schema_without_data"),
+    ):
+        assert refused["ok"] is False, refused
+        assert refused["error"]["code"] == "PRECONDITION"
+        assert refused["error"]["context"]["code"] == code
+
+
 def test_a_project_call_cannot_approve_its_own_proposal(tmp_path: Path) -> None:
     # A person approves a proposal from a shell; an agent that could call
     # operator approve would run and verify the change it proposed itself.
