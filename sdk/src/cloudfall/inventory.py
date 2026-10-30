@@ -23,6 +23,7 @@ from cloudfall.domain import (
     DayTime,
     DeploymentApproval,
     DnsMode,
+    DomainRoutePath,
     EmailAddress,
     FileMode,
     FilesystemName,
@@ -54,6 +55,7 @@ from cloudfall.domain import (
     RelativeDirectory,
     RelativeRepositoryPath,
     ReleaseCommandTimeout,
+    ReleaseRelativePath,
     RepositoryUrl,
     RequiredServiceState,
     RequiredServiceStatus,
@@ -671,6 +673,57 @@ class DomainHealthCheck:
 
 
 @dataclass(frozen=True, slots=True)
+class DomainProxyRoute:
+    """A path a Domain proxies to an upstream, keeping the full request path."""
+
+    path: DomainRoutePath
+    upstream_address: IpAddress
+    upstream_port: TcpPort
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the route in its config shape."""
+        return {
+            "path": self.path.value,
+            "upstream": {
+                "address": self.upstream_address.value,
+                "port": self.upstream_port.value,
+            },
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DomainStaticRoute:
+    """A path a Domain serves as files from a component's current release."""
+
+    path: DomainRoutePath
+    component_id: ResourceId
+    directory: ReleaseRelativePath
+    spa_fallback: ReleaseRelativePath | None = None
+
+    def __post_init__(self) -> None:
+        """Keep the alias-safe trailing slash and the release root out."""
+        if not self.path.is_directory:
+            message = f"static route path must end with '/': {self.path.value!r}"
+            raise ValueError(message)
+        if self.directory.is_release_root:
+            message = "static route directory must not be the release root"
+            raise ValueError(message)
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the route in its config shape."""
+        static: dict[str, object] = {
+            "component": self.component_id.value,
+            "directory": self.directory.value,
+        }
+        if self.spa_fallback is not None:
+            static["spaFallback"] = self.spa_fallback.value
+        return {"path": self.path.value, "static": static}
+
+
+type DomainRoute = DomainProxyRoute | DomainStaticRoute
+
+
+@dataclass(frozen=True, slots=True)
 class DomainInventory:
     """Typed desired state for one public domain route."""
 
@@ -682,6 +735,13 @@ class DomainInventory:
     edge: DomainEdge
     tls_mode: TlsMode
     health_check: DomainHealthCheck
+    routes: tuple[DomainRoute, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Hold at most one route source: ``proxy.upstream`` or ``routes``."""
+        if self.routes and self.proxy.upstream_address is not None:
+            message = "a Domain declares proxy.upstream or routes, not both"
+            raise ValueError(message)
 
     def as_dict(self) -> dict[str, object]:
         """Serialize public routing intent without secret material."""
@@ -698,7 +758,7 @@ class DomainInventory:
                 "address": self.proxy.upstream_address.value,
                 "port": self.proxy.upstream_port.value,
             }
-        return {
+        result: dict[str, object] = {
             "id": self.resource_id.value,
             "primaryName": self.primary_name.value,
             "aliases": [alias.value for alias in self.aliases],
@@ -725,6 +785,9 @@ class DomainInventory:
                 "timeoutSeconds": self.health_check.timeout_seconds.value,
             },
         }
+        if self.routes:
+            result["routes"] = [route.as_dict() for route in self.routes]
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -1814,6 +1877,40 @@ def _domain_inventory(document: ResourceDocument) -> DomainInventory:
                 )
             ),
             timeout_seconds=PositiveCount.from_boundary(health.get("timeoutSeconds")),
+        ),
+        routes=(
+            ()
+            if spec.get("routes") is None
+            else tuple(
+                _domain_route(item)
+                for item in _mapping_list(spec.get("routes"), "domain routes")
+            )
+        ),
+    )
+
+
+def _domain_route(route: Mapping[str, object]) -> DomainRoute:
+    path = DomainRoutePath.from_boundary(route.get("path"))
+    if route.get("static") is None:
+        upstream = _mapping(route, "upstream")
+        return DomainProxyRoute(
+            path=path,
+            upstream_address=IpAddress.from_boundary(upstream.get("address")),
+            upstream_port=TcpPort.from_boundary(upstream.get("port")),
+        )
+    if route.get("upstream") is not None:
+        message = f"route {path.value!r} declares both upstream and static"
+        raise ValueError(message)
+    static = _mapping(route, "static")
+    raw_spa_fallback = static.get("spaFallback")
+    return DomainStaticRoute(
+        path=path,
+        component_id=ResourceId.from_boundary(static.get("component")),
+        directory=ReleaseRelativePath.from_boundary(static.get("directory")),
+        spa_fallback=(
+            None
+            if raw_spa_fallback is None
+            else ReleaseRelativePath.from_boundary(raw_spa_fallback)
         ),
     )
 

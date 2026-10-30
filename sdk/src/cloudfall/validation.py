@@ -19,6 +19,7 @@ from jsonschema.exceptions import SchemaError, ValidationError
 from referencing import Registry, Resource
 
 from cloudfall.domain import (
+    DomainRoutePath,
     IpAddress,
     IpNetworkCidr,
     OpenSshPublicKey,
@@ -571,6 +572,7 @@ def _validate_domain_references(
             document.source,
             ("spec", field_name, "server"),
         )
+    _validate_domain_routes(document, spec, proxy, index)
     primary_name = spec.get("primaryName")
     aliases = spec.get("aliases")
     if isinstance(aliases, list) and primary_name in aliases:
@@ -589,6 +591,144 @@ def _validate_domain_references(
             message="TLS-required domains must use an HTTPS health check",
             source=document.source,
             field_path=("spec", "healthCheck", "scheme"),
+        )
+        raise ConfigValidationError(issue)
+
+
+def _validate_domain_routes(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    proxy: Mapping[str, object],
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> None:
+    """Check ``spec.routes``: one route source, safe unique paths, served components.
+
+    The schema holds each route's shape, ``directory`` and ``spaFallback``; the
+    path rules live here so each refusal names its own code.
+    """
+    if "routes" not in spec:
+        return
+    if "upstream" in proxy:
+        issue = ValidationIssue(
+            code="domain_route_source_invalid",
+            message="a Domain declares proxy.upstream or routes, not both",
+            source=document.source,
+            field_path=("spec", "routes"),
+        )
+        raise ConfigValidationError(issue)
+    proxy_server_id = _resource_id_value(proxy, "server", document.source)
+    raw_routes = spec.get("routes")
+    if not isinstance(raw_routes, list):
+        issue = ValidationIssue(
+            code="internal_state_shape_invalid",
+            message="validated field 'routes' is not a list",
+            source=document.source,
+            field_path=("spec", "routes"),
+        )
+        raise ConfigValidationError(issue)
+    seen: set[DomainRoutePath] = set()
+    for position, raw_route in enumerate(raw_routes):
+        route_field: tuple[str | int, ...] = ("spec", "routes", position)
+        if not isinstance(raw_route, dict):
+            issue = ValidationIssue(
+                code="internal_state_shape_invalid",
+                message="validated route is not an object",
+                source=document.source,
+                field_path=route_field,
+            )
+            raise ConfigValidationError(issue)
+        route = cast("Mapping[str, object]", raw_route)
+        path = _domain_route_path(route, document.source, (*route_field, "path"))
+        if path in seen:
+            issue = ValidationIssue(
+                code="domain_route_path_duplicate",
+                message=f"two routes declare the path {path.value!r}",
+                source=document.source,
+                field_path=(*route_field, "path"),
+            )
+            raise ConfigValidationError(issue)
+        seen.add(path)
+        if "static" in route:
+            _validate_static_route(
+                document,
+                path,
+                _required_mapping(route, "static", document.source),
+                proxy_server_id,
+                index,
+                route_field,
+            )
+
+
+def _domain_route_path(
+    route: Mapping[str, object],
+    source: SourceLocation,
+    field_path: tuple[str | int, ...],
+) -> DomainRoutePath:
+    try:
+        path = DomainRoutePath.from_boundary(route.get("path"))
+    except (TypeError, ValueError) as error:
+        issue = ValidationIssue(
+            code="domain_route_path_invalid",
+            message=str(error),
+            source=source,
+            field_path=field_path,
+        )
+        raise ConfigValidationError(issue) from error
+    if path.is_reserved:
+        issue = ValidationIssue(
+            code="domain_route_path_reserved",
+            message=(
+                f"route path {path.value!r} is under /.well-known/acme-challenge, "
+                "which certificate issuance owns"
+            ),
+            source=source,
+            field_path=field_path,
+        )
+        raise ConfigValidationError(issue)
+    return path
+
+
+def _validate_static_route(  # noqa: PLR0913
+    document: ResourceDocument,
+    path: DomainRoutePath,
+    static: Mapping[str, object],
+    proxy_server_id: ResourceId,
+    index: Mapping[ResourceKey, ResourceDocument],
+    route_field: tuple[str | int, ...],
+) -> None:
+    if not path.is_directory:
+        issue = ValidationIssue(
+            code="domain_route_path_invalid",
+            message=(
+                f"static route path {path.value!r} must end with '/', so nginx "
+                "can't serve files from outside its directory"
+            ),
+            source=document.source,
+            field_path=(*route_field, "path"),
+        )
+        raise ConfigValidationError(issue)
+    component_field = (*route_field, "static", "component")
+    component_id = _resource_id_value(static, "component", document.source)
+    component = _require_resource(
+        index,
+        ResourceKind.COMPONENT,
+        component_id,
+        document.source,
+        component_field,
+    )
+    component_spec = _required_mapping(component.content, "spec", component.source)
+    deployment = _required_mapping(component_spec, "deployment", component.source)
+    if proxy_server_id not in _resource_id_list(
+        deployment, "servers", component.source
+    ):
+        issue = ValidationIssue(
+            code="domain_route_component_not_on_proxy",
+            message=(
+                f"Component/{component_id} is not deployed on the proxy server "
+                f"{proxy_server_id}, where nginx reads its files"
+            ),
+            source=document.source,
+            field_path=component_field,
         )
         raise ConfigValidationError(issue)
 
