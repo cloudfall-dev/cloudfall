@@ -42,8 +42,9 @@ decrypted on the controller by the path that runs `services.yml` (the `converge_
 MCP tool, the `services` step of `cloudfall migrate`, the operator's `converge-services`
 operation, and `cloudfall-engine playbook run services.yml`), each reading the secrets
 directory from a `--secrets-dir` flag (default `secrets`, as `secrets render` and
-`mcp serve` use). It reaches the host in a `0600` file removed after the run, the role
-sends it to `psql` on stdin with `no_log`, and PostgreSQL stores it as SCRAM. The value
+`mcp serve` use). The controller computes its SCRAM-SHA-256 verifier, and only the
+verifier reaches the host (D-9), in a `0600` file removed after the run; `psql` reads it
+there with `no_log` and sends it, and PostgreSQL stores it as it is. The value
 never appears in the rendered inventory, a command line, Ansible output, a command's
 answer, or a receipt; the answer names the reference, the key, and the value's SHA-256,
 as `EnvironmentReceipt` does for environment files. A missing file or key stops the run

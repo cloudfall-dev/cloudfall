@@ -1,0 +1,3 @@
+### Security
+
+- An owner role's password no longer reaches the PostgreSQL host or server: `services.yml` and every path that runs it compute the password's SCRAM-SHA-256 verifier on the controller (a fresh 16-byte salt, 4096 iterations, the password prepared with SASLprep as PostgreSQL does) and stage that verifier in the `0600` file instead of the password, so `ALTER ROLE ... PASSWORD` sends a verifier PostgreSQL stores as it is and the plaintext can't show in the server log under `log_statement = 'ddl'` or `'all'`, in a failing statement, or in `pg_stat_activity`; answers and receipts still name the reference, the key, and the password's SHA-256 (#140)
