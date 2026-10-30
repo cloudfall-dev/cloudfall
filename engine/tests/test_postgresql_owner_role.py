@@ -309,11 +309,12 @@ def _data_copy_receipt(tmp_path: Path) -> dict[str, object]:
         (DATA_MIGRATION / "tasks" / "main.yml").read_text(encoding="utf-8")
     )
     named = {task["name"]: task for task in tasks}
-    restore = next(
-        task
+    block = {
+        task["name"]: task
         for task in named["Migrate and verify the declared database"]["block"]
-        if task["name"] == "Restore the dump into the declared database"
-    )
+    }
+    restore = block["Restore the dump into the declared database"]
+    tables = block["Record the verified tables for the receipt"]
     validate, select, require, record, directory, write = (
         named[name] for name in DATA_TASKS
     )
@@ -327,11 +328,12 @@ def _data_copy_receipt(tmp_path: Path) -> dict[str, object]:
         },
     }
     counts = {
-        "name": "Stand in for the source row counts",
+        "name": "Stand in for the selected schemas and the source row counts",
         "ansible.builtin.set_fact": {
+            "cloudfall_data_migration_selected_schemas": ["public"],
             "cloudfall_data_migration_source_counts": {
-                "stdout_lines": ["public.invoices,3"]
-            }
+                "stdout_lines": ["public,invoices,3"]
+            },
         },
     }
     play = [
@@ -354,6 +356,7 @@ def _data_copy_receipt(tmp_path: Path) -> dict[str, object]:
                 record,
                 restored_as,
                 counts,
+                tables,
                 directory,
                 write,
             ],
@@ -396,6 +399,7 @@ def test_s006_13_data_copy_restores_as_the_owner_and_receipts_it(
     assert spec["owner"] == "billing"
     assert spec["database"] == "billing"
     assert "application" not in spec
+    assert spec["tables"] == [{"schema": "public", "table": "invoices", "rows": 3}]
     assert PASSWORD not in json.dumps(receipt)
 
 
