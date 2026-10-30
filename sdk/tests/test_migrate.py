@@ -325,6 +325,59 @@ def test_s007_12_cli_migrate_refuses_a_bad_data_schema_before_any_playbook(
     assert not (tmp_path / "inventory.json").exists()
 
 
+@pytest.mark.parametrize("step_id", ["audit", "verify-routes"])
+def test_cli_migrate_names_missing_observations_at_the_verify_step(
+    step_id: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A verify step without server snapshots fails typed, not crashed (#183)."""
+    options = _options(tmp_path, execute=True)
+    # Every step before this one completes; the CLI run resumes here.
+    stop = MigrateError("migrate_step_failed", "stopped for the test")
+    execute_migration(
+        _config(tmp_path),
+        options,
+        runners=_runners([], {step_id: stop}),
+    )
+    observed = tmp_path / "observed"
+
+    exit_code = main(
+        [
+            "migrate",
+            "--project",
+            str(EXAMPLES),
+            "--schemas",
+            str(SCHEMAS),
+            "--engine",
+            str(ENGINE),
+            "--plan-file",
+            str(options.plan_file),
+            "--observed",
+            str(observed),
+            "--service-observed",
+            str(tmp_path / "observed-services"),
+            "--build",
+            "crm-backend=main",
+            "--yes",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error"]["code"] != "HANDLER_CRASHED"
+    assert payload["error"]["code"] == "ENGINE_STEP_FAILED"
+    assert exit_code == 87
+    context = payload["error"]["context"]
+    assert context["step"] == step_id
+    assert context["code"] == "migrate_observations_missing"
+    assert str(observed) in context["message"]
+    assert "cloudfall observe" in context["message"]
+    assert payload["data"]["next"] == step_id
+    plan = json.loads(options.plan_file.read_text(encoding="utf-8"))
+    pending = [step["id"] for step in plan["steps"] if step["status"] == "pending"]
+    assert pending[0] == step_id
+
+
 # dns-verify's proxy addresses, pinned as they were before domains apply.
 
 

@@ -48,7 +48,6 @@ from cloudfall.secrets import (
     SopsSecretProvider,
 )
 from cloudfall.validation import (
-    ConfigValidationError,
     SchemaCatalog,
     validate_config,
 )
@@ -436,12 +435,16 @@ def test_s006_6_migrate_records_the_hash_in_its_services_step(tmp_path: Path) ->
     secrets = _secrets(project, f"BILLING_PASSWORD={PASSWORD}\n")
     recorder = Recorder()
 
-    # Every playbook "passes"; the run stops at the audit, which reads
-    # snapshots no stand-in wrote, after the services step was saved.
-    with pytest.raises(ConfigValidationError, match="observation directory"):
-        execute_migration(
-            _agent_config(project, recorder, secrets), _migrate_options(project)
-        )
+    # Every playbook "passes"; the run stops at the audit, which finds no
+    # snapshots (no stand-in wrote any), after the services step was saved.
+    result = execute_migration(
+        _agent_config(project, recorder, secrets), _migrate_options(project)
+    )
+
+    assert result["status"] == "error"
+    assert result["step"] == "audit"
+    error = cast("dict[str, object]", result["error"])
+    assert error["code"] == "migrate_observations_missing"
 
     plan = (project / "tmp" / "plan.json").read_text(encoding="utf-8")
     services = next(
