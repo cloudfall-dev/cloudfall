@@ -1,14 +1,4 @@
 ---
-# Until cloudfall-dev/cloudfall#164 runs it, a command health check fails here,
-# before anything changes, rather than letting the deploy pass an unrun gate.
-- name: Refuse a command health check this engine does not run yet
-  ansible.builtin.fail:
-    msg: >-
-      Component {{ cloudfall_deploy_component.id }} declares a command health
-      check, which this engine does not run yet
-      (cloudfall-dev/cloudfall#164); nothing was changed
-  when: cloudfall_deploy_component.healthCheck.type == "command"
-
 - name: Validate deployment target and declaration
   ansible.builtin.assert:
     that:
@@ -345,6 +335,12 @@
         - not ansible_check_mode
         - cloudfall_deploy_component.healthCheck.type == "http"
 
+    - name: Gate the release on its declared command health check
+      ansible.builtin.include_tasks: command_health_check.yml
+      when:
+        - not ansible_check_mode
+        - cloudfall_deploy_component.healthCheck.type == "command"
+
     - name: Gate the release on an active service unit
       ansible.builtin.command:
         argv:
@@ -493,11 +489,40 @@
         - cloudfall_deploy_unit_hand_made | bool
         - cloudfall_deploy_unit_was_active.rc == 0
 
+    - name: Receipt the release that failed its command health check
+      ansible.builtin.include_tasks: release_receipt.yml
+      vars:
+        cloudfall_deploy_receipt_passed: false
+      when:
+        - not ansible_check_mode
+        - cloudfall_deploy_command_health_result is defined
+        - cloudfall_deploy_command_health_result.timedOut
+          or cloudfall_deploy_command_health_result.exitCode != 0
+
     - name: Fail the deployment after rolling back
       ansible.builtin.fail:
         msg: >-
-          Release {{ cloudfall_deploy_release }} failed its health check and
-          was {{
+          Release {{ cloudfall_deploy_release }} failed {{
+            'the command health check of ' ~ cloudfall_deploy_component.id
+            ~ ' on ' ~ cloudfall_server_id ~ ' ('
+            ~ (
+              'timed out after '
+              ~ cloudfall_deploy_component.healthCheck.timeoutSeconds
+              ~ ' seconds'
+              if cloudfall_deploy_command_health_result.timedOut
+              else 'exit code '
+              ~ cloudfall_deploy_command_health_result.exitCode
+            )
+            ~ (
+              ' on its only attempt'
+              if cloudfall_deploy_command_health_result.attempts == 1
+              else ' on the last of '
+              ~ cloudfall_deploy_command_health_result.attempts ~ ' attempts'
+            )
+            ~ ')'
+            if cloudfall_deploy_command_health_result is defined
+            else 'its health check'
+          }} and was {{
             'rolled back to '
             ~ (cloudfall_deploy_previous_directory | basename)
             if cloudfall_deploy_previous_directory | length > 0
@@ -516,56 +541,7 @@
             else ''
           }}
 
-- name: Ensure the controller receipt directory exists
-  ansible.builtin.file:
-    path: "{{ cloudfall_deploy_receipt_directory }}"
-    state: directory
-    mode: "0755"
-  delegate_to: localhost
-  become: false
-  when: cloudfall_deploy_receipt_directory | length > 0
-
-- name: Write the release receipt on the controller
-  ansible.builtin.copy:
-    content: >-
-      {{
-        {
-          'apiVersion': 'cloudfall/v1',
-          'kind': 'ReleaseReceipt',
-          'metadata': {
-            'id': cloudfall_deploy_component.id,
-            'description': 'Release receipt written by cloudfall_deploy',
-          },
-          'spec': {
-            'component': cloudfall_deploy_component.id,
-            'server': cloudfall_server_id,
-            'release': cloudfall_deploy_release,
-            'artifactSha256': cloudfall_deploy_artifact_sha256,
-            'deployedAt': ansible_facts['date_time']['iso8601'],
-            'previousRelease': (
-              (cloudfall_deploy_previous_directory | basename)
-              if cloudfall_deploy_previous_directory | length > 0
-              else none
-            ),
-            'healthCheckPassed': true,
-          } | combine(
-            {
-              'releaseCommand': hostvars[
-                cloudfall_deploy_component.release.server
-              ].cloudfall_deploy_release_command_result,
-            }
-            if cloudfall_deploy_component.release is defined
-            else {}
-          ),
-        } | to_nice_json
-      }}
-    dest: >-
-      {{ cloudfall_deploy_receipt_directory }}/{{
-        cloudfall_deploy_component.id
-      }}.json
-    mode: "0644"
-  delegate_to: localhost
-  become: false
-  when:
-    - not ansible_check_mode
-    - cloudfall_deploy_receipt_directory | length > 0
+- name: Receipt the release that passed its health gate
+  ansible.builtin.include_tasks: release_receipt.yml
+  vars:
+    cloudfall_deploy_receipt_passed: true

@@ -264,7 +264,11 @@ What each step does:
 - **Show the plan.** `deploy` without `--yes` validates the release and
   prints which servers it would change, and changes nothing
 - **Deploy.** Ships the release behind the component's health check, and
-  writes the release receipt `tmp/releases/<component>.json`
+  writes the release receipt `tmp/releases/<component>.json`. A smoke check
+  declared as a `type: command` health check runs on each server after its
+  restart, so it gates the deploy and needs no CI step of its own: when it
+  fails, the server goes back to the previous release, the deploy fails, and
+  the receipt records the failure with `healthCheckPassed: false`
 - **Remove the decrypted files.** GitHub-hosted runners are thrown away
   after the job; on a self-hosted runner this step is what keeps the values
   off its disk
@@ -346,7 +350,9 @@ step keeps, for 90 days:
 
 - `tmp/artifacts/<component>/<release>.json`: the artifact metadata, with the
   commit and the archive's SHA-256
-- `tmp/releases/<component>.json`: the release receipt from `deploy`
+- `tmp/releases/<component>.json`: the release receipt from `deploy`; after
+  a failed command health check its `previousRelease` names the release that
+  serves again (`null` when a first release was stopped)
 - `tmp/env-receipts/<component>.json`: the key names and hash of the
   rendered environment file, never the values
 
