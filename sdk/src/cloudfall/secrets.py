@@ -9,17 +9,22 @@ surface.
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import json
 import os
 import re
 import shutil
+import stringprep
 import subprocess
 import tempfile
+import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from secrets import token_bytes
 from typing import TYPE_CHECKING, cast
 
 from cloudfall.domain import (
@@ -267,6 +272,85 @@ def owned_role_passwords(
     return tuple(passwords.values())
 
 
+_SCRAM_ITERATIONS = 4096
+_SCRAM_SALT_BYTES = 16
+
+
+def scram_sha256_verifier(password: str, *, salt: bytes | None = None) -> str:
+    """Return the SCRAM-SHA-256 verifier PostgreSQL would store for a password.
+
+    The format is PostgreSQL's own,
+    ``SCRAM-SHA-256$<iterations>:<salt>$<StoredKey>:<ServerKey>`` in base64,
+    with 4096 iterations and a fresh 16-byte salt, as PostgreSQL's defaults
+    are. PostgreSQL stores a value of this shape as it is, so the password
+    itself never reaches the server (D-9). The password is prepared with
+    SASLprep as PostgreSQL prepares it, so a client logs in with it.
+    """
+    salt = token_bytes(_SCRAM_SALT_BYTES) if salt is None else salt
+    if not salt:
+        message = "a SCRAM-SHA-256 salt must not be empty"
+        raise ValueError(message)
+    salted = hashlib.pbkdf2_hmac(
+        "sha256", _saslprep(password).encode("utf-8"), salt, _SCRAM_ITERATIONS
+    )
+    stored_key = hashlib.sha256(hmac.digest(salted, b"Client Key", "sha256")).digest()
+    server_key = hmac.digest(salted, b"Server Key", "sha256")
+    return (
+        f"SCRAM-SHA-256${_SCRAM_ITERATIONS}:{_b64(salt)}"
+        f"${_b64(stored_key)}:{_b64(server_key)}"
+    )
+
+
+def _b64(raw: bytes) -> str:
+    return base64.b64encode(raw).decode("ascii")
+
+
+_PROHIBITED = (
+    stringprep.in_table_c12,
+    stringprep.in_table_c21,
+    stringprep.in_table_c22,
+    stringprep.in_table_c3,
+    stringprep.in_table_c4,
+    stringprep.in_table_c5,
+    stringprep.in_table_c6,
+    stringprep.in_table_c7,
+    stringprep.in_table_c8,
+    stringprep.in_table_c9,
+    stringprep.in_table_a1,
+)
+
+
+def _saslprep(password: str) -> str:
+    """Prepare a password as PostgreSQL's ``pg_saslprep`` does (RFC 4013).
+
+    An ASCII password stays as it is. Otherwise non-ASCII spaces map to a
+    space, characters mapped to nothing drop, and the result is NFKC
+    normalized; a result that is empty, holds a prohibited or unassigned
+    character, or breaks the bidirectional rules is not used, and PostgreSQL
+    falls back to the password as given, so this does too.
+    """
+    if password.isascii():
+        return password
+    # A space first, as PostgreSQL maps it: U+200B is in both tables.
+    mapped = "".join(
+        " " if stringprep.in_table_c12(char) else char
+        for char in password
+        if stringprep.in_table_c12(char) or not stringprep.in_table_b1(char)
+    )
+    prepared = unicodedata.normalize("NFKC", mapped)
+    if not prepared or any(
+        prohibited(char) for char in prepared for prohibited in _PROHIBITED
+    ):
+        return password
+    if any(stringprep.in_table_d1(char) for char in prepared) and (
+        any(stringprep.in_table_d2(char) for char in prepared)
+        or not stringprep.in_table_d1(prepared[0])
+        or not stringprep.in_table_d1(prepared[-1])
+    ):
+        return password
+    return prepared
+
+
 PASSWORD_FILES_VARIABLE = "cloudfall_services_password_files"  # noqa: S105 - a name
 """The ``services.yml`` variable mapping service, then owner, to a staged file."""
 
@@ -275,11 +359,12 @@ PASSWORD_FILES_VARIABLE = "cloudfall_services_password_files"  # noqa: S105 - a 
 def staged_password_files(
     passwords: tuple[OwnedRolePassword, ...],
 ) -> Iterator[dict[str, object]]:
-    """Write each password to a 0600 file in a private temp dir, then remove it.
+    """Write each password's SCRAM verifier to a 0600 file, then remove it.
 
-    Yields the extra vars ``services.yml`` reads: the controller paths only,
-    so the values never cross a command line, the inventory, or the project.
-    No passwords yields no variable, leaving the run as it was.
+    The files sit in a private temp dir and hold the verifier only, never the
+    password (D-9). Yields the extra vars ``services.yml`` reads: the
+    controller paths only, so neither crosses a command line, the inventory,
+    or the project. No passwords yields no variable, leaving the run as it was.
     """
     if not passwords:
         yield {}
@@ -294,7 +379,7 @@ def staged_password_files(
                 path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _FILE_MODE
             )
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(password.value)
+                handle.write(scram_sha256_verifier(password.value))
             files.setdefault(password.service.value, {})[password.owner.value] = str(
                 path
             )

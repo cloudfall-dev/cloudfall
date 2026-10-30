@@ -17,6 +17,7 @@ from typing import cast
 import yaml
 from ansible.parsing.dataloader import DataLoader
 from ansible.template import Templar, trust_as_template
+from cloudfall.secrets import scram_sha256_verifier
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 ROOT = Path(__file__).parents[2]
@@ -24,6 +25,8 @@ ROLES = ROOT / "engine" / "ansible" / "roles"
 POSTGRESQL = ROLES / "cloudfall_postgresql"
 DATA_MIGRATION = ROLES / "cloudfall_data_migration"
 PASSWORD = "s3cr3t-billing-value"  # noqa: S105 - the value every output is grepped for
+# What the controller stages in place of the password (D-9).
+VERIFIER = scram_sha256_verifier(PASSWORD, salt=bytes(range(16)))
 BILLING: dict[str, object] = {
     "name": "billing",
     "owner": "billing",
@@ -209,7 +212,7 @@ def _password_play(tmp_path: Path) -> tuple[Path, Path, Path]:
     psql.chmod(0o700)
     staged = tmp_path / "controller" / "postgresql-billing-billing"
     staged.parent.mkdir()
-    staged.write_text(PASSWORD, encoding="utf-8")
+    staged.write_text(VERIFIER, encoding="utf-8")
     host_path = tmp_path / "host" / ".cloudfall-owner-password"
     host_path.parent.mkdir()
     # Plain YAML, not Ansible's loader: the tasks are written out again.
@@ -241,7 +244,7 @@ def _password_play(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 
 # proves: S-006-6
-def test_s006_6_the_password_reaches_psql_through_a_removed_0600_file(
+def test_s006_6_the_verifier_reaches_psql_through_a_removed_0600_file(
     tmp_path: Path,
 ) -> None:
     playbook, log, host_path = _password_play(tmp_path)
@@ -257,11 +260,12 @@ def test_s006_6_the_password_reaches_psql_through_a_removed_0600_file(
     )
 
     assert done.returncode == 0, done.stdout + done.stderr
-    assert PASSWORD not in done.stdout + done.stderr
-    assert (log / "value").read_text(encoding="utf-8") == PASSWORD
+    for secret in (PASSWORD, VERIFIER):
+        assert secret not in done.stdout + done.stderr
+        assert secret not in (log / "stdin").read_text(encoding="utf-8")
+        assert secret not in (log / "argv").read_text(encoding="utf-8")
+    assert (log / "value").read_text(encoding="utf-8") == VERIFIER
     assert (log / "mode").read_text(encoding="utf-8") == "0o600"
-    assert PASSWORD not in (log / "stdin").read_text(encoding="utf-8")
-    assert PASSWORD not in (log / "argv").read_text(encoding="utf-8")
     assert not host_path.exists()
 
 
