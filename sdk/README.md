@@ -82,7 +82,9 @@ MCP tools too: `domains_apply` keeps the `yes` gate.
 `deploy` refuses to run when the built artifact is missing, misidentified, or
 fails digest verification, and refuses to report success if the engine wrote
 no release receipt. `health` exits `0` when every declared server passes the
-component's declared health check and `1` otherwise.
+component's declared health check and `1` otherwise. A `type: command` check
+runs as on `deploy`, `restart` and `rollback`, and its output stays in the
+server's journal; no command writes a release receipt but `deploy`.
 
 `cloudfall import render` maps a Render blueprint onto schema-validated state
 fragments plus environment files outside state, and returns a structured gap

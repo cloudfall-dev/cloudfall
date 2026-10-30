@@ -1,4 +1,4 @@
-"""A component's command health check gating a deploy (S-009-2..9, 11, 12).
+"""A component's command health check gating a deploy (S-009-2..12).
 
 The role needs a Debian host with systemd, so these tests take the routes
 ``test_release_command.py`` takes. ``command_health_check.yml`` and
@@ -26,6 +26,8 @@ import pytest
 import yaml
 from ansible.parsing.dataloader import DataLoader
 from ansible.template import Templar, trust_as_template
+from cloudfall.domain import ResourceId
+from cloudfall.lifecycle import EngineContext, ExecutionStep, StepRun, health
 from cloudfall.validation import SchemaCatalog
 from cloudfall_engine.cli import main
 from cloudfall_engine.playbook import PlaybookRun, playbook_command
@@ -908,3 +910,251 @@ def test_s009_12_the_pass_receipt_is_written_where_it_was() -> None:
     assert receipt["ansible.builtin.include_tasks"] == "release_receipt.yml"
     assert receipt["vars"] == {"cloudfall_deploy_receipt_passed": True}
     assert "when" not in receipt
+
+
+# restart, rollback and health run the same check and write no receipt.
+
+SHARED_GATE = "health_gate.yml"
+SHARED_COMMAND_GATE = "Gate the component on its declared command health check"
+
+
+def _tasks(name: str) -> list[dict[str, object]]:
+    tasks = DataLoader().load_from_file(str(ROLE / "tasks" / name))
+    assert isinstance(tasks, list)
+    return tasks
+
+
+def _entry_point(  # noqa: PLR0913 - one knob per case.
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    tasks_from: str,
+    health_check: dict[str, object] | None = None,
+    *,
+    exit_code: int = 0,
+    attempts: int = 1,
+    timed_out: bool = False,
+) -> _Run:
+    """Run one of the role's task files for real against a release in current.
+
+    ``ansible_become: false`` stands in for the root the restart, rollback
+    and health plays reach on a server; the controller here has no sudo.
+    """
+    install_root = tmp_path / "app"
+    release_directory = install_root / "releases" / RELEASE
+    release_directory.mkdir(parents=True)
+    (install_root / "current").symlink_to(release_directory)
+    _executable(release_directory / "bin" / "smoke", SMOKE)
+    if timed_out:
+        (release_directory / TIMEOUT_MARKER).write_text("", encoding="utf-8")
+    systemd_run = tmp_path / "systemd-run"
+    _executable(systemd_run, FAKE_SYSTEMD_RUN)
+    if health_check is None:
+        health_check = _command_check(
+            ["bin/smoke", str(exit_code), "0"], attempts=attempts
+        )
+    playbook = tmp_path / "entry.yml"
+    playbook.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "name": f"Run the role's {tasks_from} tasks",
+                    "hosts": "localhost",
+                    "gather_facts": False,
+                    "vars": {
+                        "ansible_become": False,
+                        "cloudfall_server_id": "h1",
+                        "cloudfall_deploy_receipt_directory": str(
+                            tmp_path / "receipts"
+                        ),
+                        "cloudfall_deploy_systemd_run": str(systemd_run),
+                        "cloudfall_deploy_component": _component(
+                            health_check, install_root
+                        ),
+                    },
+                    "tasks": [
+                        {
+                            "name": "Include the role's tasks",
+                            "ansible.builtin.include_role": {
+                                "name": "cloudfall_deploy",
+                                "tasks_from": tasks_from,
+                            },
+                        }
+                    ],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    code = main(
+        [
+            "playbook",
+            "run",
+            str(playbook),
+            "--engine",
+            str(ENGINE),
+            "--inventory",
+            str(_local_inventory(tmp_path)),
+        ]
+    )
+    captured = capsys.readouterr()
+    return _Run(tmp_path, code, f"{captured.out}\n{captured.err}")
+
+
+@pytest.mark.parametrize("entry_point", ["restart.yml", "rollback.yml", "health.yml"])
+def test_s009_10_restart_rollback_and_health_end_on_the_shared_gate(
+    entry_point: str,
+) -> None:
+    last = _tasks(entry_point)[-1]
+
+    assert last["ansible.builtin.include_tasks"] == SHARED_GATE
+
+
+def test_s009_10_the_shared_gate_runs_deploys_command_check_as_root() -> None:
+    gate = _task(SHARED_COMMAND_GATE, _tasks(SHARED_GATE))
+    include = gate["ansible.builtin.include_tasks"]
+    variables: dict[str, object] = {
+        "ansible_check_mode": False,
+        "cloudfall_deploy_component": {"healthCheck": _command_check(["bin/smoke"])},
+    }
+
+    assert include == {"file": "command_health_check.yml", "apply": {"become": True}}
+    assert _runs(gate, variables)
+    assert not _runs(gate, {**variables, "ansible_check_mode": True})
+    for other in (HTTP_CHECK, NO_CHECK):
+        assert not _runs(
+            gate, {**variables, "cloudfall_deploy_component": {"healthCheck": other}}
+        )
+
+
+def test_s009_12_restart_rollback_and_health_keep_their_http_and_none_gates() -> None:
+    def gated(health_check: dict[str, object]) -> list[str]:
+        variables: dict[str, object] = {
+            "ansible_check_mode": False,
+            "cloudfall_deploy_component": {"healthCheck": health_check},
+        }
+        return [
+            str(task["name"])
+            for task in _tasks(SHARED_GATE)
+            if _runs(task, variables)
+        ]
+
+    assert gated(HTTP_CHECK) == ["Gate the component on its declared HTTP health check"]
+    assert gated(NO_CHECK) == ["Gate the component on an active service unit"]
+    assert gated(_command_check(["bin/smoke"])) == [SHARED_COMMAND_GATE]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "restart.yml",
+        "rollback.yml",
+        "health.yml",
+        SHARED_GATE,
+        "command_health_check.yml",
+    ],
+)
+def test_s009_10_no_entry_point_includes_the_receipt(name: str) -> None:
+    assert "release_receipt" not in (ROLE / "tasks" / name).read_text(
+        encoding="utf-8"
+    )
+
+
+@pytest.mark.parametrize("tasks_from", ["health", "health_gate"])
+def test_s009_10_a_passing_check_passes_with_deploys_invocation(
+    tasks_from: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = _entry_point(tmp_path, capsys, tasks_from)
+
+    assert run.exit_code == 0, run.output
+    argv = run.argv
+    options = argv[: argv.index("--")]
+    assert "--unit=cloudfall-health-crm-backend" in options
+    assert "--uid=crm" in options
+    assert f"--working-directory={run.install_root}/current" in options
+    assert (
+        "--property=EnvironmentFile=-"
+        f"{run.install_root}/shared/env/{COMPONENT_ID}.env"
+    ) in options
+    assert "--property=RuntimeMaxSec=60" in options
+    assert argv[argv.index("--") + 1 :] == [
+        f"{run.install_root}/current/bin/smoke",
+        "0",
+        "0",
+    ]
+    assert not (tmp_path / "receipts").exists()
+
+
+@pytest.mark.parametrize("tasks_from", ["health", "health_gate"])
+def test_s009_10_a_failing_check_fails_without_its_output_or_a_receipt(
+    tasks_from: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = _entry_point(tmp_path, capsys, tasks_from, exit_code=3, attempts=2)
+
+    assert run.exit_code == 82
+    assert (
+        "The command health check of crm-backend failed on h1: bin/smoke 3 0"
+        " exited with code 3 on the last of 2 attempts"
+    ) in run.output
+    assert run.attempts == 2
+    assert MARKER not in run.output
+    assert not (tmp_path / "receipts").exists()
+
+
+def test_s009_10_a_timed_out_check_fails_naming_the_timeout(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = _entry_point(tmp_path, capsys, "health", timed_out=True)
+
+    assert run.exit_code == 82
+    assert "timed out after 60 seconds and was stopped" in run.output
+    assert not (tmp_path / "receipts").exists()
+
+
+def _health(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], exit_code: int
+) -> dict[str, object]:
+    """``cloudfall health`` with its playbook step running the role's tasks.
+
+    The inventory step is skipped: the play targets this controller, not the
+    example project's servers.
+    """
+
+    def run(step: ExecutionStep) -> StepRun:
+        if step.description == "render Ansible inventory":
+            return subprocess.CompletedProcess(step.argv, 0, "", "")
+        assert step.argv[-1].endswith("health.yml")
+        done = _entry_point(tmp_path, capsys, "health", exit_code=exit_code)
+        return subprocess.CompletedProcess(step.argv, done.exit_code, done.output, "")
+
+    context = EngineContext(
+        project_directory=ROOT / "config" / "examples",
+        schema_directory=SCHEMAS,
+        engine_directory=ENGINE,
+        inventory_file=tmp_path / "inventory.json",
+        run=run,
+    )
+    return health(context, ResourceId(COMPONENT_ID)).as_dict()
+
+
+def test_s009_10_health_reports_unhealthy_when_the_check_exits_non_zero(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    result = _health(tmp_path, capsys, exit_code=3)
+
+    assert result["status"] == "unhealthy"
+    assert result["healthy"] is False
+    detail = str(result["detail"])
+    assert "The command health check of crm-backend failed" in detail
+    assert MARKER not in detail
+    assert "receipt" not in result
+
+
+def test_s009_10_health_reports_ok_when_the_check_exits_0(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    result = _health(tmp_path, capsys, exit_code=0)
+
+    assert result["status"] == "ok"
+    assert result["healthy"] is True
+    assert "detail" not in result
+    assert "receipt" not in result

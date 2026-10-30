@@ -260,8 +260,14 @@ restores the previous release (or stops a first one), writes the receipt with
 `previousRelease` naming the release that serves again, and fails the run.
 The receipt of a passing command check records it under `healthCheck` too;
 `http` and `none` checks keep their receipts and their gate as before.
-`restart`, `rollback` and `health` still refuse a command check until
-cloudfall-dev/cloudfall#166 runs it there.
+`restart`, `rollback` and `health` run the same command check through
+`health_gate.yml`, with the same unit, limits and redaction, and write no
+receipt: `health` reports `unhealthy` when it exits non-zero, and a failed
+check fails `restart` or `rollback` without restoring anything, as an `http`
+check does. The check runs as root to start its unit, so `health` of a
+component with a command check needs the inventory SSH account to become
+root, as `restart` and `rollback` already do. The check must be safe to run
+at any time against the live service.
 
 The first slice supports Python components managed by uv on
 x86_64 Debian hosts.

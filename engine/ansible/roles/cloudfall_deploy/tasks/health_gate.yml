@@ -20,6 +20,19 @@
     - not ansible_check_mode
     - cloudfall_deploy_component.healthCheck.type == "http"
 
+# The deploy's own command check tasks, so restart, rollback and health run
+# it with the same user, directory, environment, limits and redaction. Its
+# systemd-run --uid needs root, which the health play does not take for http
+# and none checks.
+- name: Gate the component on its declared command health check
+  ansible.builtin.include_tasks:
+    file: command_health_check.yml
+    apply:
+      become: true
+  when:
+    - not ansible_check_mode
+    - cloudfall_deploy_component.healthCheck.type == "command"
+
 - name: Gate the component on an active service unit
   ansible.builtin.command:
     argv:

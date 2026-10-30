@@ -496,35 +496,10 @@ def test_s009_2_a_deploy_no_longer_refuses_a_command_check() -> None:
 
 
 @pytest.mark.parametrize("entry_point", ["restart.yml", "rollback.yml", "health.yml"])
-def test_the_engine_refuses_a_command_check_it_does_not_run_yet(
-    entry_point: str,
-) -> None:
-    """Until #166 runs it there, a command check fails first, never passes unrun."""
+def test_s009_10_no_entry_point_refuses_a_command_check(entry_point: str) -> None:
     tasks = _load(ROLE / "tasks" / entry_point)
     assert isinstance(tasks, list)
-    refusal = tasks[0]
-    assert refusal["name"] == REFUSE_COMMAND
-    fail = refusal["ansible.builtin.fail"]
-    assert isinstance(fail, dict)
-
-    def variables(health_check: dict[str, object]) -> dict[str, object]:
-        return {
-            "cloudfall_deploy_component": {
-                "id": "crm-backend",
-                "healthCheck": health_check,
-            }
-        }
-
-    assert all(_holds(c, variables(COMMAND_CHECK)) for c in _conditions(refusal))
-    for other in (HTTP_CHECK, NO_CHECK):
-        assert not all(_holds(c, variables(other)) for c in _conditions(refusal))
-    message = str(
-        _templar(variables(COMMAND_CHECK)).template(trust_as_template(fail["msg"]))
-    )
-    assert message.startswith(
-        "Component crm-backend declares a command health check"
-    )
-    assert "cloudfall-dev/cloudfall#166" in message
+    assert REFUSE_COMMAND not in [str(task["name"]) for task in tasks]
 
 
 @pytest.mark.parametrize("health_check", [HTTP_CHECK, NO_CHECK, COMMAND_CHECK])

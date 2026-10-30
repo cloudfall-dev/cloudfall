@@ -1,0 +1,3 @@
+### Added
+
+- `restart`, `rollback` and `health` run a component's `type: command` health check instead of refusing it: the same transient unit as `deploy`'s gate, with its user, working directory, env file, timeout, attempts and redacted output. `health` reports `unhealthy` when the check exits non-zero or times out, a failed check fails `restart` or `rollback` without restoring anything, as an `http` check does, and none of them writes a release receipt. The check starts its unit as root, so `health` of such a component needs the inventory SSH account to become root, as `restart` and `rollback` already do; `http` and `none` checks are unchanged (#166)
