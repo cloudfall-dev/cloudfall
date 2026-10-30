@@ -513,6 +513,15 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
     ),
     CommandContract(
         "cloudfall",
+        "release approve",
+        CommandEffect.PROJECT,
+        "record a person's approval of one built release under "
+        "`decisions/releases/`; a person types the release id at a terminal, "
+        "which no flag answers (`--yes` included), and nothing is deployed",
+        output=(_shape("status", "path", "approval:object"),),
+    ),
+    CommandContract(
+        "cloudfall",
         "data copy",
         CommandEffect.SERVERS,
         "dump an external database and restore it into a declared service",

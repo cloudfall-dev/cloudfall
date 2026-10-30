@@ -25,6 +25,7 @@ import threading
 # handler's Iterator and a provided MCP tool's Mapping must exist at runtime.
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from functools import partial
 from http import HTTPStatus
 from importlib.metadata import version
@@ -245,6 +246,18 @@ from cloudfall.project import (
     resolve_project_directory,
 )
 from cloudfall.recording import Recording, RecordingError
+from cloudfall.release_approval import (
+    APPROVALS_DIRECTORY,
+    VALID_FOR_DEFAULT,
+    VALID_FOR_MAXIMUM,
+    VALID_FOR_MINIMUM,
+    Approver,
+    ReleaseApprovalError,
+    ValidityHours,
+    approve_release,
+    release_candidate,
+    write_approval,
+)
 from cloudfall.render_api import (
     ERROR_API_UNREACHABLE,
     RENDER_API_URL,
@@ -4029,6 +4042,149 @@ def restart_command(args: ComponentArgs, ctx: Ctx, fleet: Fleet) -> RestartPaylo
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error
     return RestartPayload({**result.as_dict(), "effect": "updated"})
+
+
+# release approve: a person's record that one release may be deployed (S-008)
+
+
+release_group = app.group(
+    "release", description="Record a person's approval of one built release"
+)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReleaseApproveArgs(ProjectArgs):
+    """Arguments of ``release approve``."""
+
+    component: ResourceId = Arg(description="Component whose release is approved")
+    release: ReleaseId = Flag(
+        description="Release id produced by cloudfall-engine artifact build"
+    )
+    artifacts: Path = Flag(
+        default=Path("tmp/artifacts"),
+        description="Artifact directory (default: tmp/artifacts)",
+    )
+    approvals: Path = Flag(
+        default=Path(APPROVALS_DIRECTORY),
+        description=(
+            f"Directory the approval record is written to (default: "
+            f"{APPROVALS_DIRECTORY})"
+        ),
+    )
+    valid_for: int = Flag(
+        default=VALID_FOR_DEFAULT,
+        description=(
+            f"Hours the approval counts for, {VALID_FOR_MINIMUM} to "
+            f"{VALID_FOR_MAXIMUM} (default: {VALID_FOR_DEFAULT})"
+        ),
+    )
+    approver: str | None = Flag(
+        default=None,
+        description="Who is approving (default: the USER environment variable)",
+    )
+
+    def __post_init__(self) -> None:
+        """Keep relative paths inside the project; check the validity."""
+        _inside_project(self.artifacts, "artifacts")
+        _inside_project(self.approvals, "approvals")
+        self.validity()
+
+    def validity(self) -> ValidityHours:
+        """Return how long the approval counts, refusing an out-of-range count."""
+        try:
+            return ValidityHours(self.valid_for)
+        except ReleaseApprovalError as error:
+            message = f"--valid-for: {error.detail}"
+            raise ParseError(message, context={"flag": "valid-for"}) from error
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseApproved:
+    """The approval record a person wrote, and where it is kept."""
+
+    effect: str
+    status: str
+    path: str
+    approval: dict[str, object] = Out(ordered=True)
+
+
+@release_group.command(
+    "approve",
+    # A person approves; no agent tool stands in for it. As with decisions
+    # approve, they type the release id at a terminal, which no flag answers,
+    # --yes included. requires_person keeps it off MCP too; mcp=False says so
+    # here as well.
+    mcp=False,
+    requires_person=True,
+    description=(
+        "Approve one built release of one component for deploy; a person types "
+        "the release id at a terminal, and nothing is deployed"
+    ),
+    danger_level="mutating",
+    exit_codes=[
+        "PROJECT_INVALID",
+        "CONFIG_INVALID",
+        "PRECONDITION",
+        "PERMISSION_DENIED",
+    ],
+    supports_raw_payload=True,
+    examples=[
+        (
+            "Approve a release, typing its id at a terminal",
+            "cloudfall release approve crm-backend --release 20260101T000000Z-abcdef0",
+        ),
+    ],
+)
+def release_approve(
+    args: ReleaseApproveArgs, ctx: Ctx, fleet: Fleet
+) -> ReleaseApproved:
+    """Write the approval record once a person typed the release id."""
+    valid_for = args.validity()
+    try:
+        approver = Approver(
+            args.approver if args.approver is not None else ctx.env.get("USER", "")
+        )
+        candidate = release_candidate(
+            fleet.inventory,
+            args.component,
+            args.release,
+            fleet.path(args.artifacts),
+            args.schemas,
+        )
+    except ReleaseApprovalError as error:
+        raise Exit.PRECONDITION(error.detail, context={"code": error.code}) from error
+    except LifecycleError as error:
+        raise _lifecycle_failed(error) from error
+    until = (datetime.now(UTC) + valid_for.duration).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Off a terminal this ends with PERSON_REQUIRED, and a mistyped id with
+    # ATTESTATION_MISMATCH, before anything is written: --yes never approves.
+    attestation = ctx.attest(
+        f"{candidate.describe()}. The approval counts for {valid_for.value} "
+        f"hours, until about {until}. Type the release id to approve "
+        f"{candidate.release.value}",
+        expected=candidate.release.value,
+    )
+    approval = approve_release(
+        candidate,
+        approver,
+        ApprovalChannel(attestation.channel),
+        valid_for,
+        attestation.at,
+    )
+    try:
+        path = write_approval(
+            approval, fleet.path(args.approvals), SchemaCatalog(args.schemas)
+        )
+    except OSError as error:
+        if error.errno not in _NOT_WRITABLE:
+            raise
+        raise _not_writable(error) from error
+    return ReleaseApproved(
+        effect="created",
+        status="ok",
+        path=str(path),
+        approval=approval.as_document(),
+    )
 
 
 data = app.group("data", description="Migrate data into declared services")

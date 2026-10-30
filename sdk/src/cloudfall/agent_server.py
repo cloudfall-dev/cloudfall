@@ -303,7 +303,8 @@ PROJECT_COMMANDS = frozenset(
 )
 """The commands an agent runs on a project.
 
-``init``, the loops and ``operator approve`` are not tools: a person approves.
+``init``, the loops, ``operator approve`` and ``release approve`` are not
+tools: a person approves.
 """
 
 FLEET_COMMANDS = frozenset(
