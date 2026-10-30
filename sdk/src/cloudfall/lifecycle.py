@@ -179,6 +179,8 @@ class VerifiedArtifact:
     archive_path: Path
     metadata_path: Path
     sha256: str
+    git_commit: str
+    """The commit the metadata says the archive was built from."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -441,6 +443,8 @@ def verify_artifact(
         archive_path=archive_path,
         metadata_path=metadata_path,
         sha256=actual_digest,
+        # The schema above requires it as 40 lowercase hex characters.
+        git_commit=cast("str", spec["gitCommit"]),
     )
 
 
@@ -1514,7 +1518,13 @@ def _component(
     context: EngineContext, component_id: ResourceId
 ) -> ComponentInventory:
     state = validate_config(context.project_directory, context.schema_directory)
-    inventory = PlatformInventory.from_state(state)
+    return find_component(PlatformInventory.from_state(state), component_id)
+
+
+def find_component(
+    inventory: PlatformInventory, component_id: ResourceId
+) -> ComponentInventory:
+    """Return the declared component, or fail as every lifecycle command does."""
     component = next(
         (
             candidate

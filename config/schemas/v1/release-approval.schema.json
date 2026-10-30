@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cloudfall.internal/schemas/v1/release-approval.schema.json",
+  "title": "Cloudfall release approval record",
+  "description": "A person's approval of one release of one component, written by cloudfall release approve. It names the archive digest and servers it approves and holds no secret.",
+  "type": "object",
+  "properties": {
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "kind": {
+      "const": "ReleaseApproval"
+    },
+    "metadata": {
+      "$ref": "common.schema.json#/$defs/metadata"
+    },
+    "spec": {
+      "type": "object",
+      "properties": {
+        "application": {
+          "$ref": "common.schema.json#/$defs/resourceId"
+        },
+        "component": {
+          "$ref": "common.schema.json#/$defs/resourceId"
+        },
+        "release": {
+          "type": "string",
+          "pattern": "^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,40}$"
+        },
+        "artifactSha256": {
+          "description": "The archive's SHA-256 as verified against its artifact metadata when approved",
+          "$ref": "common.schema.json#/$defs/sha256"
+        },
+        "gitCommit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "servers": {
+          "description": "The component's declared servers when approved",
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/resourceId"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "approver": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+        },
+        "approvedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "via": {
+          "description": "How the approval arrived: terminal when a person typed the release id at a terminal",
+          "enum": [
+            "terminal"
+          ]
+        }
+      },
+      "required": [
+        "application",
+        "component",
+        "release",
+        "artifactSha256",
+        "gitCommit",
+        "servers",
+        "approver",
+        "approvedAt",
+        "expiresAt",
+        "via"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "additionalProperties": false
+}

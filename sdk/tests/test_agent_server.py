@@ -329,6 +329,18 @@ def test_a_project_call_cannot_approve_its_own_proposal(tmp_path: Path) -> None:
     assert approved["error"]["code"] == "UNKNOWN_TOOL"
 
 
+def test_a_project_call_cannot_approve_a_release(tmp_path: Path) -> None:
+    # A person approves a release at a terminal; an agent that could call
+    # release approve would license the deploy it then runs itself.
+    tools, (approved,) = _talk(
+        _serve("--project", str(EXAMPLES), cwd=tmp_path),
+        ("release_approve", {"component": "crm-backend"}),
+    )
+
+    assert not any(name.startswith("release") for name in tools)
+    assert approved["error"]["code"] == "UNKNOWN_TOOL"
+
+
 def test_a_project_call_cannot_send_a_file_elsewhere_or_write_secrets_out(
     tmp_path: Path,
 ) -> None:
