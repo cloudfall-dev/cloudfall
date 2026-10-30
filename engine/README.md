@@ -267,7 +267,8 @@ A Domain with `routes` renders one `location` per route, longest path first.
 A proxy route passes the full request path to its `upstream`; a static route
 serves `<installRoot>/current/<directory>` of its component, so a deploy or a
 rollback switches what it serves with no Nginx reload, and answers its
-`spaFallback` for an unknown path. The role installs `acl` and grants the
+`spaFallback` for an unknown path. Without a `/` route, a path no route
+matches answers 404. The role installs `acl` and grants the
 Nginx worker (`www-data`) traverse-only access (`user:www-data:--x`) from the
 application root to the install root and its `releases/`; the worker joins no
 group, so `shared/env/<component>.env` stays unreadable to it.

@@ -56,6 +56,16 @@
 {{ proxy_location(route.path, route.upstream) -}}
 {% endif %}
 {% endfor %}
+{#
+  Without a `/` route, a path no route matches would fall to Nginx's default
+  root (Debian's welcome page, answering 200); it answers 404 instead.
+#}
+{% if routes | selectattr('path', 'equalto', '/') | list | length == 0 %}
+
+    location / {
+        return 404;
+    }
+{% endif %}
 {% else %}
 {{ proxy_location('/', cloudfall_nginx_site_domain.proxy.upstream) -}}
 {% endif %}

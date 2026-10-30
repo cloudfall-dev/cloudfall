@@ -62,6 +62,16 @@ _NESTED_ROUTES = """\
         component: crm-backend
         directory: web/docs
 """
+# Routes with no `/` route: nothing the Domain declares answers `/`.
+_NO_ROOT_ROUTES = """\
+  routes:
+    - path: /api/
+      upstream: { address: 127.0.0.1, port: 8310 }
+    - path: /docs/
+      static:
+        component: crm-backend
+        directory: web/docs
+"""
 _NESTED_ROUTES_REVERSED = """\
   routes:
     - path: /docs/
@@ -110,9 +120,7 @@ def _routed_domain(tmp_path: Path, routes: str) -> dict[str, object]:
     )
     children = cast("dict[str, dict[str, object]]", inventory["all"])["children"]
     servers = cast("dict[str, dict[str, dict[str, object]]]", children)
-    hosts = cast(
-        "dict[str, dict[str, object]]", servers["cloudfall_servers"]["hosts"]
-    )
+    hosts = cast("dict[str, dict[str, object]]", servers["cloudfall_servers"]["hosts"])
     domains = hosts["h2"]["cloudfall_domains"]
     (domain,) = cast("list[dict[str, object]]", domains)
     return domain
@@ -190,6 +198,7 @@ def rendered(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
             "spa": _routed_domain(tmp_path, _SPA_ROUTES),
             "nested": _routed_domain(tmp_path, _NESTED_ROUTES),
             "reversed": _routed_domain(tmp_path, _NESTED_ROUTES_REVERSED),
+            "no-root": _routed_domain(tmp_path, _NO_ROOT_ROUTES),
         },
     )
 
@@ -258,7 +267,8 @@ def _serve(server: str, uri: str, filesystem: Path) -> tuple[int, bytes | str]:
             assert target.count("/") == 2, target
             return 200, f"{target}{uri}"
         if directives[0].startswith("return "):
-            return int(directives[0].split()[1]), directives[0].split()[2]
+            _, code, *location = directives[0].removesuffix(";").split()
+            return int(code), " ".join(location)
         directive, directory = directives[0].removesuffix(";").split()
         assert path.endswith("/")
         if directive == "root":
@@ -383,6 +393,30 @@ def test_s003_5_a_static_route_without_a_fallback_answers_404(
     assert _locations(server)["/docs/"] == [f"alias {INSTALL_ROOT}/current/web/docs/;"]
     assert _serve(server, "/docs/guide.html", tmp_path) == (200, b"guide\n")
     assert _serve(server, "/docs/missing.html", tmp_path) == (404, b"")
+
+
+@pytest.mark.parametrize("tls_active", [True, False])
+def test_a_path_no_route_matches_answers_404(
+    rendered: dict[str, str], tmp_path: Path, *, tls_active: bool
+) -> None:
+    """Without a `/` route, Nginx would serve its default root for `/`.
+
+    On Debian that is `/usr/share/nginx/html`, whose welcome page answers 200,
+    so a Domain health check on `/` would pass against nothing the Domain
+    declares.
+    """
+    vhost = rendered[f"no-root/{'tls' if tls_active else 'http'}-1.22.1.conf"]
+    server = _serving_server(vhost, tls_active=tls_active)
+    locations = _locations(server)
+
+    assert locations["/"] == ["return 404;"]
+    assert list(locations)[-1] == "/"
+    assert _serve(server, "/", tmp_path) == (404, "")
+    assert _serve(server, "/elsewhere", tmp_path) == (404, "")
+    assert _serve(server, "/api/health", tmp_path) == (
+        200,
+        "http://127.0.0.1:8310/api/health",
+    )
 
 
 def _switch_current(tmp_path: Path, install_root: Path, release: str) -> None:
