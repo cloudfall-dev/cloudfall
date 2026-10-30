@@ -406,6 +406,11 @@ def _load_plan(
             "with --restart to discard it"
         )
         raise MigrateError(_ERROR_PLAN_STALE, detail)
+    # A pending step runs with this run's options (a data step's schemas
+    # among them), so it is described by them, not by the saved plan's text.
+    for saved, fresh in zip(persisted, computed, strict=True):
+        if saved.status is StepStatus.PENDING:
+            saved.description = fresh.description
     return persisted
 
 

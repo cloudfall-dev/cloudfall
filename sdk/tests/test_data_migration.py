@@ -250,6 +250,47 @@ def test_s007_13_migrate_copies_only_the_data_schema_as_data_copy_does(
     assert _extra_vars(copied)["cloudfall_data_schemas"] == ["public"]
 
 
+def test_s007_13_a_resumed_data_step_names_the_schemas_it_copies(
+    tmp_path: Path,
+) -> None:
+    source = _url_file(tmp_path)
+    calls: list[ExecutionStep] = []
+    config = _agent_config(tmp_path, _succeeding(calls))
+    options = MigrateOptions(
+        plan_file=tmp_path / "plan.json",
+        builds={"crm-backend": "main"},
+        releases={},
+        environment_files={},
+        data_migrations={"crm": source},
+        data_schemas={"crm": _schemas("public")},
+        execute=True,
+    )
+    steps = cast(
+        "list[dict[str, object]]",
+        execute_migration(config, replace(options, execute=False))["steps"],
+    )
+    for step in steps:
+        if step["id"] != "data:crm":
+            step["status"] = "completed"
+    options.plan_file.write_text(
+        json.dumps({"version": 1, "steps": steps}), encoding="utf-8"
+    )
+
+    # Resumed without --data-schema, the step copies every schema, and the
+    # plan it reports must say so, not the "schema public" it was saved with.
+    result = execute_migration(config, replace(options, data_schemas={}))
+
+    (playbook,) = [step for step in calls if "--extra-vars" in step.argv]
+    extra_vars = json.loads(playbook.argv[playbook.argv.index("--extra-vars") + 1])
+    assert "cloudfall_data_schemas" not in extra_vars
+    (described,) = [
+        step
+        for step in cast("list[dict[str, object]]", result["steps"])
+        if step["id"] == "data:crm"
+    ]
+    assert "every non-system schema" in str(described["description"])
+
+
 def test_s007_12_migrate_refuses_a_data_schema_without_its_data(
     tmp_path: Path,
 ) -> None:
