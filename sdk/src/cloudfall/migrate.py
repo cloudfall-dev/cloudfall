@@ -80,6 +80,7 @@ _ROLLBACK_WINDOW_HOURS = 24
 _PAUSE_CODES = frozenset({_ERROR_DNS_UNVERIFIED, _ERROR_TTL_HIGH})
 _ERROR_AUDIT_DRIFT = "migrate_audit_drift"
 _ERROR_ROUTES_UNHEALTHY = "migrate_routes_unhealthy"
+_ERROR_OBSERVATIONS_MISSING = "migrate_observations_missing"
 _ERROR_DATABASE_UNKNOWN = "migrate_database_unknown"
 _ERROR_DATA_SCHEMA_WITHOUT_DATA = "migrate_data_schema_without_data"
 
@@ -729,7 +730,23 @@ def _resolve_names(hostname: str) -> set[str]:
     return {str(record[4][0]) for record in records}
 
 
+def _require_observations(config: AgentConfig) -> None:
+    """Refuse a verify step whose server snapshots were never recorded.
+
+    Only the missing directory: a malformed snapshot still fails validation,
+    and a server without a snapshot is drift the audit reports.
+    """
+    if not config.observed_directory.is_dir():
+        detail = (
+            "no server observations at "
+            f"{config.observed_directory}; record them with "
+            "`cloudfall observe`, then rerun the migration"
+        )
+        raise MigrateError(_ERROR_OBSERVATIONS_MISSING, detail)
+
+
 def _verify_audit(config: AgentConfig) -> dict[str, object]:
+    _require_observations(config)
     state = validate_config(config.project_directory, config.schema_directory)
     observations = load_observations(
         config.observed_directory, config.schema_directory
@@ -746,7 +763,9 @@ def _verify_audit(config: AgentConfig) -> dict[str, object]:
 
 
 def _verify_routes(config: AgentConfig) -> dict[str, object]:
-    state = validate_config(config.project_directory, config.schema_directory)
+    # Before any domain is probed: the view needs the server snapshots too.
+    _require_observations(config)
+    state =validate_config(config.project_directory, config.schema_directory)
     inventory = PlatformInventory.from_state(state)
     inspect_domains(
         inventory,
