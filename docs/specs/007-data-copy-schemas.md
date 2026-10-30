@@ -1,6 +1,7 @@
 # S-007: Data copy schemas
 
 status: approved
+serves: G-3
 
 ## Problem
 

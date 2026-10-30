@@ -1,6 +1,7 @@
 # S-006: Standalone PostgreSQL
 
 status: approved
+serves: G-3
 
 ## Problem
 

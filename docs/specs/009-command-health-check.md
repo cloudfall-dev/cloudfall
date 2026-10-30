@@ -1,6 +1,7 @@
 # S-009: Command health check
 
 status: approved
+serves: G-3
 
 ## Problem
 
