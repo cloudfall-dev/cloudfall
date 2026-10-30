@@ -19,12 +19,15 @@ from cloudfall.domain import ReleaseId, ResourceId, Sha256Digest
 from cloudfall.release_approval import (
     Approver,
     GitCommit,
+    ReleaseApproval,
     ReleaseApprovalError,
     ReleaseCandidate,
     ValidityHours,
     approve_release,
+    write_approval,
 )
 from cloudfall.validation import SchemaCatalog
+from jsonschema import ValidationError
 from treaty import CommandPath
 
 ROOT = Path(__file__).parents[2]
@@ -322,6 +325,73 @@ def test_an_approval_needs_an_approver() -> None:
         Approver(" ")
 
     assert error.value.code == "release_approver_missing"
+
+
+@pytest.mark.parametrize(
+    "name", ["roman\nadmin", "roman\x1b[31m", "roman\tx", "roman" + chr(0x202E)]
+)
+def test_an_approver_with_control_characters_is_refused(name: str) -> None:
+    # A later plan shows the approver; a newline or escape must not forge a line.
+    with pytest.raises(ReleaseApprovalError) as error:
+        Approver(name)
+
+    assert error.value.code == "release_approver_invalid"
+
+
+def test_the_schema_refuses_an_approver_with_control_characters() -> None:
+    approval = approve_release(
+        ReleaseCandidate(
+            application_id=ResourceId("crm"),
+            component_id=ResourceId("crm-backend"),
+            release=ReleaseId(RELEASE),
+            artifact_sha256=Sha256Digest("b" * 64),
+            git_commit=GitCommit(COMMIT),
+            server_ids=(ResourceId("h1"),),
+        ),
+        Approver("roman"),
+        ApprovalChannel.TERMINAL,
+        ValidityHours(24),
+        MOMENT,
+    )
+    document = approval.as_document()
+    spec = document["spec"]
+    assert isinstance(spec, dict)
+    spec["approver"] = "roman\nadmin"
+
+    with pytest.raises(ValidationError):
+        SchemaCatalog(SCHEMAS).validate_named("release-approval.schema.json", document)
+
+
+def test_a_second_identical_approval_is_refused_not_overwritten(
+    tmp_path: Path,
+) -> None:
+    candidate = ReleaseCandidate(
+        application_id=ResourceId("crm"),
+        component_id=ResourceId("crm-backend"),
+        release=ReleaseId(RELEASE),
+        artifact_sha256=Sha256Digest("b" * 64),
+        git_commit=GitCommit(COMMIT),
+        server_ids=(ResourceId("h1"),),
+    )
+    catalog = SchemaCatalog(SCHEMAS)
+
+    def at(moment: datetime) -> ReleaseApproval:
+        return approve_release(
+            candidate,
+            Approver("roman"),
+            ApprovalChannel.TERMINAL,
+            ValidityHours(24),
+            moment,
+        )
+
+    # Two approvals in the same second have the same id.
+    path = write_approval(at(MOMENT), tmp_path, catalog)
+    with pytest.raises(ReleaseApprovalError) as error:
+        write_approval(at(MOMENT.replace(microsecond=500)), tmp_path, catalog)
+
+    assert error.value.code == "release_approval_exists"
+    assert str(path) in error.value.detail
+    assert list(tmp_path.iterdir()) == [path]
 
 
 def test_a_blank_approver_is_refused_before_asking(tmp_path: Path) -> None:

@@ -36,6 +36,8 @@ ERROR_APPROVAL_NOT_REQUIRED = "release_approval_not_required"
 """The component's application deploys ``automatic``: a record would gate nothing."""
 ERROR_APPROVER_MISSING = "release_approver_missing"
 ERROR_APPROVER_INVALID = "release_approver_invalid"
+ERROR_APPROVAL_EXISTS = "release_approval_exists"
+"""Two approvals of one release in the same second share an id."""
 ERROR_CHANNEL_UNKNOWN = "release_approval_channel_unknown"
 ERROR_VALIDITY_INVALID = "release_approval_validity_invalid"
 
@@ -108,12 +110,17 @@ class Approver:
     value: str
 
     def __post_init__(self) -> None:
-        """Refuse a blank or overlong approver."""
+        """Refuse a blank, overlong or unprintable approver."""
         if not self.value.strip():
             message = "no approver: pass --approver or set USER"
             raise ReleaseApprovalError(ERROR_APPROVER_MISSING, message)
         if len(self.value) > _APPROVER_MAX_LENGTH:
             message = f"the approver is longer than {_APPROVER_MAX_LENGTH} characters"
+            raise ReleaseApprovalError(ERROR_APPROVER_INVALID, message)
+        # A plan shows the approver later: a newline, an escape sequence or a
+        # bidi override could forge or hide a line there.
+        if not self.value.isprintable():
+            message = f"the approver has a control character: {self.value!r}"
             raise ReleaseApprovalError(ERROR_APPROVER_INVALID, message)
 
 
@@ -248,7 +255,12 @@ def write_approval(
     catalog.validate_named(RELEASE_APPROVAL_SCHEMA, document)
     directory.mkdir(parents=True, exist_ok=True)
     path = approval.path(directory)
-    with path.open("x", encoding="utf-8") as handle:
+    try:
+        handle = path.open("x", encoding="utf-8")
+    except FileExistsError as error:
+        message = f"an identical approval is already recorded at {path}"
+        raise ReleaseApprovalError(ERROR_APPROVAL_EXISTS, message) from error
+    with handle:
         handle.write(json.dumps(document, indent=2) + "\n")
     return path
 

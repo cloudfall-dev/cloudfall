@@ -4175,6 +4175,8 @@ def release_approve(
         path = write_approval(
             approval, fleet.path(args.approvals), SchemaCatalog(args.schemas)
         )
+    except ReleaseApprovalError as error:
+        raise Exit.PRECONDITION(error.detail, context={"code": error.code}) from error
     except OSError as error:
         if error.errno not in _NOT_WRITABLE:
             raise
