@@ -359,10 +359,10 @@ def test_engine_cli_emits_ansible_json(
     assert document["ok"] is True
     assert document["data"]["output"] is None
     inventory = document["data"]["inventory"]
-    assert (
-        inventory["all"]["children"]["cloudfall_servers"]["hosts"]["h1"]["ansible_user"]
-        == "cloudfall"
-    )
+    h1 = inventory["all"]["children"]["cloudfall_servers"]["hosts"]["h1"]
+    # Declared strings are marked unsafe so Ansible never templates them (#174).
+    assert h1["ansible_user"] == {"__ansible_unsafe": "cloudfall"}
+    assert h1["ansible_port"] == 22
     assert (
         "component_crm_backend"
         in inventory["all"]["children"]["cloudfall_components"]["children"]

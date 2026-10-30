@@ -17,6 +17,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING, Self, cast
 
+from cloudfall.ansible_data import as_ansible_data
 from cloudfall.commands import snake_case_keys
 from cloudfall.domain import (
     ARTIFACT_CLONE_TIMEOUT_SECONDS,
@@ -223,8 +224,14 @@ class RenderedInventory:
     ],
 )
 def render(args: RenderArgs, _ctx: Ctx, project: Project) -> RenderedInventory:
-    """Render the inventory, and write it when ``--output`` names a file."""
-    rendered = render_ansible_inventory(project.inventory)
+    """Render the inventory, and write it when ``--output`` names a file.
+
+    Every declared string is marked unsafe, so Ansible never templates it.
+    """
+    rendered = cast(
+        "dict[str, object]",
+        as_ansible_data(render_ansible_inventory(project.inventory)),
+    )
     if args.output is None:
         return RenderedInventory(rendered)
     output = project.path(args.output)

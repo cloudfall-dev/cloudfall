@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from cloudfall.ansible_api import InventorySource, read_inventory
+from cloudfall.ansible_data import as_ansible_data
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -173,7 +174,10 @@ def write_overlay(inventory: PlatformInventory, directory: Path) -> Path:
     """Write the overlay source and return its path."""
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / OVERLAY_FILE
-    document = json.dumps(overlay_document(inventory), indent=2, sort_keys=True)
+    # Declared strings are marked unsafe, so Ansible never templates them.
+    document = json.dumps(
+        as_ansible_data(overlay_document(inventory)), indent=2, sort_keys=True
+    )
     path.write_text(f"{document}\n", encoding="utf-8")
     return path
 

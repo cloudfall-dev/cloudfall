@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from cloudfall.ansible_data import UNSAFE_KEY
 from cloudfall_engine.cli import main
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
@@ -40,6 +41,12 @@ def _environment(role: str) -> Environment:
     )
 
 
+def _unsafe_as_text(value: dict[str, object]) -> object:
+    if list(value) == [UNSAFE_KEY]:
+        return value[UNSAFE_KEY]
+    return value
+
+
 def render_examples(output: Path) -> dict[str, str]:
     """Render the example inventory and the files S-006-12 names, by name."""
     inventory_path = output / "ansible-inventory.json"
@@ -58,7 +65,11 @@ def render_examples(output: Path) -> dict[str, str]:
     assert exit_code == 0
     inventory_text = inventory_path.read_text(encoding="utf-8")
     rendered = {"ansible-inventory.json": inventory_text}
-    document = cast("dict[str, dict[str, object]]", json.loads(inventory_text))
+    # Read the values back as Ansible's loader does: an unsafe string is text.
+    document = cast(
+        "dict[str, dict[str, object]]",
+        json.loads(inventory_text, object_hook=_unsafe_as_text),
+    )
     servers = cast(
         "dict[str, dict[str, dict[str, dict[str, object]]]]",
         document["all"]["children"],
