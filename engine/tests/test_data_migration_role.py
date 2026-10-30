@@ -472,6 +472,23 @@ def test_s007_7_an_extension_the_target_lacks_is_refused() -> None:
     assert "e.extname <> 'plpgsql'" in sql
 
 
+def test_s007_7_an_array_or_domain_of_an_extension_type_names_it() -> None:
+    sql = _source_preflight_sql(["public"], every_schema=False)
+    needed = sql[sql.index("needed AS (") : sql.index("missing AS (")]
+
+    # A citext[] column depends on _citext, which depends on citext with
+    # deptype 'i', not on the extension: the walk follows an array to its
+    # element type and a domain to its base type, chained, before it
+    # matches extension members, in the one query that feeds both the
+    # extensions finding and pg_dump --extension.
+    assert sql.startswith("WITH RECURSIVE selected AS (")
+    assert "referenced(classid, objid) AS (" in sql
+    assert "FROM referenced r JOIN pg_catalog.pg_type t" in sql
+    assert "WHEN t.typcategory = 'A' THEN t.typelem" in sql
+    assert "WHEN t.typtype = 'd' THEN t.typbasetype" in sql
+    assert "FROM referenced r JOIN members m" in needed
+
+
 def test_s007_7_named_schemas_dump_their_needed_extensions() -> None:
     shell = _module(
         "Dump the source database on the target host", "ansible.builtin.shell"
