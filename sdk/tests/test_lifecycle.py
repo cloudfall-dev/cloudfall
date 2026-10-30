@@ -368,6 +368,37 @@ def test_s007_14_data_copy_plan_names_the_selected_schemas(
     )
 
 
+@pytest.mark.parametrize(
+    "schema",
+    ["", "{{ lookup('pipe', 'id') }}", "{% raw %}", "a\nb", "x" * 64],
+)
+def test_data_copy_refuses_a_schema_name_ansible_or_postgres_would_misread(
+    schema: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A name reaches the engine as an extra var, which Ansible templates."""
+    source_url_file = tmp_path / "source.url"
+    source_url_file.write_text("postgresql://u:p@db.example.test/crm\n")
+
+    exit_code, payload = _cli_lifecycle(
+        [
+            "data",
+            "copy",
+            "postgresql-main",
+            "--database",
+            "crm",
+            "--source-url-file",
+            str(source_url_file),
+            "--source-schema",
+            schema,
+        ],
+        tmp_path,
+        capsys,
+    )
+
+    assert exit_code == 2
+    assert payload["ok"] is False
+
+
 def _git(*arguments: str) -> None:
     subprocess.run(  # noqa: S603 - fixture repository setup.
         [

@@ -129,6 +129,7 @@ from cloudfall.domain import (
     ConnectionAddress,
     Hostname,
     LinuxUser,
+    PostgresSchemaName,
     ReleaseId,
     ResourceId,
     ResourceKind,
@@ -3860,9 +3861,18 @@ class DataMigrateArgs(EngineArgs):
     )
 
     def __post_init__(self) -> None:
-        """Keep relative paths inside the project."""
+        """Keep relative paths inside the project; check the schema names."""
         EngineArgs.__post_init__(self)
         _inside_project(self.data_migrations, "data-migrations")
+        self.source_schemas()
+
+    def source_schemas(self) -> DataCopySchemas:
+        """Return the named source schemas, refusing a malformed name."""
+        try:
+            names = tuple(PostgresSchemaName(name) for name in self.source_schema)
+        except ValueError as error:
+            raise ParseError(str(error), context={"flag": "source-schema"}) from error
+        return DataCopySchemas(names)
 
 
 class DeployPayload(Payload):
@@ -4056,7 +4066,7 @@ def data_copy(
     """Restore the source database into the service, or show the plan."""
     context = args.context(fleet, ctx)
     source = fleet.path(args.source_url_file)
-    schemas = DataCopySchemas(args.source_schema)
+    schemas = args.source_schemas()
     try:
         if not args.yes:
             return DataMigratePayload(

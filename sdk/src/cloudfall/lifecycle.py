@@ -49,6 +49,7 @@ if TYPE_CHECKING:
 
     from cloudfall.domain import (
         CommandArgv,
+        PostgresSchemaName,
         ReleaseCommandTimeout,
         ReleaseId,
         ResourceId,
@@ -265,23 +266,29 @@ class DataCopySchemas:
     ``pg_dump`` without ``--schema`` dumps.
     """
 
-    names: tuple[str, ...] = ()
+    names: tuple[PostgresSchemaName, ...] = ()
 
     def __post_init__(self) -> None:
         """Keep the names sorted so plans and receipts compare verbatim."""
-        object.__setattr__(self, "names", tuple(sorted(set(self.names))))
+        unique = sorted(set(self.names), key=lambda name: name.value)
+        object.__setattr__(self, "names", tuple(unique))
 
     @property
     def every_schema(self) -> bool:
         """Whether no schema was named, so the whole database is copied."""
         return not self.names
 
+    @property
+    def values(self) -> list[str]:
+        """The names as the engine takes them, sorted."""
+        return [name.value for name in self.names]
+
     def describe(self) -> str:
         """Name the selection for a plan."""
         if self.every_schema:
             return "every non-system schema"
         noun = "schema" if len(self.names) == 1 else "schemas"
-        return f"{noun} {', '.join(self.names)}"
+        return f"{noun} {', '.join(self.values)}"
 
 
 class PreviewSubject(StrEnum):
@@ -1282,7 +1289,7 @@ def plan_data_migration(  # noqa: PLR0913 - the copy's inputs plus its schemas.
         "cloudfall_data_source_url_file": str(source_url_file.resolve()),
     }
     if schemas is not None and not schemas.every_schema:
-        extra_vars["cloudfall_data_schemas"] = list(schemas.names)
+        extra_vars["cloudfall_data_schemas"] = schemas.values
     if receipt_directory is not None:
         extra_vars["cloudfall_data_receipt_directory"] = str(
             receipt_directory.resolve()

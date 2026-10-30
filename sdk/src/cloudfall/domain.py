@@ -34,6 +34,7 @@ ARTIFACT_CLONE_TIMEOUT_SECONDS = 1800
 _FILE_MODE_PATTERN = re.compile(r"^0[0-7]{3}$")
 _SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 _MAX_HOSTNAME_LENGTH = 253
+_POSTGRES_NAME_MAX_BYTES = 63
 _MAX_TCP_PORT = 65535
 _MIN_HTTP_STATUS = 100
 _MAX_HTTP_STATUS = 599
@@ -335,6 +336,38 @@ class LinuxUser:
     def from_boundary(cls, value: object) -> LinuxUser:
         """Coerce a boundary value into a Linux account name."""
         return cls(_required_string(value, "Linux user"))
+
+
+@dataclass(frozen=True, slots=True)
+class PostgresSchemaName:
+    """A PostgreSQL schema name a data copy may select.
+
+    The name travels to the engine as an Ansible extra var, which Ansible
+    templates, so braces are refused; PostgreSQL truncates a name past 63
+    bytes, and a control character breaks the row-count lines.
+    """
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Refuse a name PostgreSQL or Ansible would read differently."""
+        if not self.value:
+            message = "schema name must not be empty"
+            raise ValueError(message)
+        if len(self.value.encode()) > _POSTGRES_NAME_MAX_BYTES:
+            message = f"schema name exceeds 63 bytes: {self.value!r}"
+            raise ValueError(message)
+        if _CONTROL_CHARACTER_PATTERN.search(self.value) or any(
+            brace in self.value for brace in "{}"
+        ):
+            message = (
+                f"schema name holds a control character or a brace: {self.value!r}"
+            )
+            raise ValueError(message)
+
+    def __str__(self) -> str:
+        """Return the name as PostgreSQL stores it."""
+        return self.value
 
 
 @dataclass(frozen=True, slots=True)
