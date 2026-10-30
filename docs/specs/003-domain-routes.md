@@ -131,4 +131,7 @@ Touches `config/schemas/v1/domain.schema.json`, `sdk/src/cloudfall/inventory.py`
 
 ## Issues
 
+- cloudfall-dev/cloudfall#159: S-003-1, S-003-8, S-003-9, S-003-10, S-003-11, S-003-12
+- cloudfall-dev/cloudfall#162: S-003-2, S-003-3, S-003-4, S-003-5, S-003-6, S-003-7, S-003-13, S-003-14, S-003-15
+
 ## Verification
