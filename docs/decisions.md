@@ -67,3 +67,11 @@ entry that supersedes it, never by editing an old one.
 - Why: All three come from the model's output, which can quote host output; structured arguments can't be cut and stay meaningful, so refusing keeps steps[] a true account of what ran
 - Applies to: sdk/src/cloudfall/investigation.py, config/schemas/v1/agent-investigation.schema.json
 - Enforced by: review
+
+## D-9: Owner passwords reach PostgreSQL only as a SCRAM verifier
+
+- Decided: 2026-10-30, in cloudfall-dev/cloudfall#140
+- Rule: Cloudfall sets a PostgreSQL role's password only with a SCRAM-SHA-256 verifier computed on the controller; the plaintext password is never staged on the host and never sent to the server, so it can't reach the PostgreSQL log or pg_stat_activity
+- Why: psql substitutes a variable into the statement text, so ALTER ROLE ... PASSWORD with the plaintext puts the password in the server's log under log_statement ddl or all, or on a failing statement; PostgreSQL stores a pre-hashed verifier as it is
+- Applies to: engine/ansible/roles/cloudfall_postgresql/tasks/owner_password.yml, sdk/src/cloudfall/secrets.py, engine/src/cloudfall_engine/cli.py
+- Enforced by: a regression test that the staged file holds a verifier and never the password
