@@ -28,6 +28,7 @@ from cloudfall.cutover import (
 from cloudfall.domain import ReleaseId, ResourceId, TcpPort
 from cloudfall.inventory import PlatformInventory
 from cloudfall.lifecycle import (
+    DataCopySchemas,
     DeployOptions,
     LifecycleError,
     build_release_artifact,
@@ -80,6 +81,7 @@ _PAUSE_CODES = frozenset({_ERROR_DNS_UNVERIFIED, _ERROR_TTL_HIGH})
 _ERROR_AUDIT_DRIFT = "migrate_audit_drift"
 _ERROR_ROUTES_UNHEALTHY = "migrate_routes_unhealthy"
 _ERROR_DATABASE_UNKNOWN = "migrate_database_unknown"
+_ERROR_DATA_SCHEMA_WITHOUT_DATA = "migrate_data_schema_without_data"
 
 
 class MigrateError(RuntimeError):
@@ -139,6 +141,8 @@ class MigrateOptions:
     releases: Mapping[str, str]
     environment_files: Mapping[str, Path]
     data_migrations: Mapping[str, Path] = field(default_factory=dict)
+    data_schemas: Mapping[str, DataCopySchemas] = field(default_factory=dict)
+    """The schemas each ``data:<database>`` step copies; absent copies all."""
     execute: bool = False
     restart: bool = False
 
@@ -235,8 +239,9 @@ def _computed_steps(
     steps.extend(
         PlanStep(
             f"data:{database}",
-            f"migrate external data into database {database} with "
-            "row-count verification",
+            f"migrate {_data_schemas(options, database).describe()} of the "
+            f"external data into database {database} with row-count "
+            "verification",
         )
         for database in sorted(options.data_migrations)
     )
@@ -344,6 +349,19 @@ def _require_known_databases(
             f"service: {', '.join(unknown)}"
         )
         raise MigrateError(_ERROR_DATABASE_UNKNOWN, detail)
+    # A schema for a database nothing is copied into would be silently
+    # ignored; refuse it before any step runs (S-007-12).
+    unpaired = sorted(set(options.data_schemas) - set(options.data_migrations))
+    if unpaired:
+        detail = (
+            "--data-schema names databases with no --data DATABASE=PATH: "
+            f"{', '.join(unpaired)}"
+        )
+        raise MigrateError(_ERROR_DATA_SCHEMA_WITHOUT_DATA, detail)
+
+
+def _data_schemas(options: MigrateOptions, database: str) -> DataCopySchemas:
+    return options.data_schemas.get(database, DataCopySchemas())
 
 
 def _load_plan(
@@ -388,6 +406,11 @@ def _load_plan(
             "with --restart to discard it"
         )
         raise MigrateError(_ERROR_PLAN_STALE, detail)
+    # A pending step runs with this run's options (a data step's schemas
+    # among them), so it is described by them, not by the saved plan's text.
+    for saved, fresh in zip(persisted, computed, strict=True):
+        if saved.status is StepStatus.PENDING:
+            saved.description = fresh.description
     return persisted
 
 
@@ -511,7 +534,11 @@ def _build_runners(  # noqa: PLR0913 - the run's whole contract.
         runners[f"deploy:{component_id}"] = _deploy_runner(component_id)
     for database, source_url_file in options.data_migrations.items():
         runners[f"data:{database}"] = _data_runner(
-            config, inventory, database, source_url_file
+            config,
+            inventory,
+            database,
+            source_url_file,
+            _data_schemas(options, database),
         )
     return runners
 
@@ -521,6 +548,7 @@ def _data_runner(
     inventory: PlatformInventory,
     database: str,
     source_url_file: Path,
+    schemas: DataCopySchemas,
 ) -> Runner:
     def _run() -> dict[str, object]:
         service = next(
@@ -538,6 +566,7 @@ def _data_runner(
             database,
             source_url_file,
             config.data_migrations_directory,
+            schemas,
         )
 
     return _run

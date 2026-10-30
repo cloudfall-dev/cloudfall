@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import subprocess
+from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from cloudfall.agent_tools import AgentConfig
@@ -13,11 +15,16 @@ from cloudfall.lifecycle import (
     DataCopySchemas,
     EngineContext,
     ExecutionPlan,
+    ExecutionStep,
     LifecycleError,
     migrate_data,
     plan_data_migration,
+    subprocess_step,
 )
 from cloudfall.migrate import MigrateError, MigrateOptions, execute_migration
+
+if TYPE_CHECKING:
+    from cloudfall.lifecycle import StepRunner
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -115,7 +122,22 @@ def test_s007_2_data_migration_plan_without_schemas_is_unchanged(
 def test_data_copy_schemas_describe_the_selection() -> None:
     assert DataCopySchemas().describe() == "every non-system schema"
     assert _schemas("public").describe() == "schema public"
-    assert _schemas("public", "app", "public").describe() == "schemas app, public"
+    assert _schemas("public", "app").describe() == "schemas app, public"
+
+
+def test_s007_12_data_copy_schemas_refuse_a_repeat_and_a_malformed_name() -> None:
+    with pytest.raises(ValueError, match="more than once: app"):
+        _schemas("app", "public", "app")
+    for malformed in ("Bad;Name", "Public", "1app", "app\n", "", "a" * 64):
+        with pytest.raises(ValueError, match=r"\^\[a-z_\]"):
+            PostgresSchemaName(malformed)
+    with pytest.raises(LifecycleError) as error:
+        DataCopySchemas.from_boundary(["app", "app"])
+    assert error.value.code == "data_copy_schema_invalid"
+    assert DataCopySchemas.from_boundary(["public", "_app"]).values == [
+        "_app",
+        "public",
+    ]
 
 
 def test_data_migration_rejects_an_undeclared_service(tmp_path: Path) -> None:
@@ -157,7 +179,9 @@ def test_data_migration_rejects_an_empty_source_url_file(
     assert error.value.code == "lifecycle_source_url_missing"
 
 
-def _agent_config(tmp_path: Path) -> AgentConfig:
+def _agent_config(
+    tmp_path: Path, run: StepRunner = subprocess_step
+) -> AgentConfig:
     return AgentConfig(
         project_directory=EXAMPLES,
         schema_directory=SCHEMAS,
@@ -169,7 +193,123 @@ def _agent_config(tmp_path: Path) -> AgentConfig:
         releases_directory=tmp_path / "releases",
         artifacts_directory=tmp_path / "artifacts",
         data_migrations_directory=tmp_path / "data-migrations",
+        run=run,
     )
+
+
+def _succeeding(calls: list[ExecutionStep]) -> StepRunner:
+    """Record each engine step and answer it as a run that passed."""
+
+    def run(step: ExecutionStep) -> subprocess.CompletedProcess[str]:
+        calls.append(step)
+        return subprocess.CompletedProcess(step.argv, 0, "", "")
+
+    return run
+
+
+def test_s007_13_migrate_copies_only_the_data_schema_as_data_copy_does(
+    tmp_path: Path,
+) -> None:
+    source = _url_file(tmp_path)
+    calls: list[ExecutionStep] = []
+    config = _agent_config(tmp_path, _succeeding(calls))
+    options = MigrateOptions(
+        plan_file=tmp_path / "plan.json",
+        builds={"crm-backend": "main"},
+        releases={},
+        environment_files={},
+        data_migrations={"crm": source},
+        data_schemas={"crm": _schemas("public")},
+        execute=True,
+    )
+    planned = execute_migration(config, replace(options, execute=False))
+    steps = cast("list[dict[str, object]]", planned["steps"])
+    (described,) = [step for step in steps if step["id"] == "data:crm"]
+    assert "schema public" in str(described["description"])
+    # Every other step already ran, so the resumed run is the data step alone.
+    for step in steps:
+        if step["id"] != "data:crm":
+            step["status"] = "completed"
+    options.plan_file.write_text(
+        json.dumps({"version": 1, "steps": steps}), encoding="utf-8"
+    )
+
+    result = execute_migration(config, options)
+
+    assert result["status"] == "ok", result
+    (playbook,) = [step for step in calls if "--extra-vars" in step.argv]
+    copied = plan_data_migration(
+        _context(tmp_path),
+        ResourceId("postgresql-main"),
+        "crm",
+        source,
+        config.data_migrations_directory,
+        _schemas("public"),
+    )
+    assert playbook.argv == copied.steps[-1].argv
+    assert _extra_vars(copied)["cloudfall_data_schemas"] == ["public"]
+
+
+def test_s007_13_a_resumed_data_step_names_the_schemas_it_copies(
+    tmp_path: Path,
+) -> None:
+    source = _url_file(tmp_path)
+    calls: list[ExecutionStep] = []
+    config = _agent_config(tmp_path, _succeeding(calls))
+    options = MigrateOptions(
+        plan_file=tmp_path / "plan.json",
+        builds={"crm-backend": "main"},
+        releases={},
+        environment_files={},
+        data_migrations={"crm": source},
+        data_schemas={"crm": _schemas("public")},
+        execute=True,
+    )
+    steps = cast(
+        "list[dict[str, object]]",
+        execute_migration(config, replace(options, execute=False))["steps"],
+    )
+    for step in steps:
+        if step["id"] != "data:crm":
+            step["status"] = "completed"
+    options.plan_file.write_text(
+        json.dumps({"version": 1, "steps": steps}), encoding="utf-8"
+    )
+
+    # Resumed without --data-schema, the step copies every schema, and the
+    # plan it reports must say so, not the "schema public" it was saved with.
+    result = execute_migration(config, replace(options, data_schemas={}))
+
+    (playbook,) = [step for step in calls if "--extra-vars" in step.argv]
+    extra_vars = json.loads(playbook.argv[playbook.argv.index("--extra-vars") + 1])
+    assert "cloudfall_data_schemas" not in extra_vars
+    (described,) = [
+        step
+        for step in cast("list[dict[str, object]]", result["steps"])
+        if step["id"] == "data:crm"
+    ]
+    assert "every non-system schema" in str(described["description"])
+
+
+def test_s007_12_migrate_refuses_a_data_schema_without_its_data(
+    tmp_path: Path,
+) -> None:
+    calls: list[ExecutionStep] = []
+    options = MigrateOptions(
+        plan_file=tmp_path / "plan.json",
+        builds={"crm-backend": "main"},
+        releases={},
+        environment_files={},
+        data_schemas={"crm": _schemas("public")},
+        execute=True,
+    )
+
+    with pytest.raises(MigrateError) as error:
+        execute_migration(_agent_config(tmp_path, _succeeding(calls)), options)
+
+    assert error.value.code == "migrate_data_schema_without_data"
+    assert calls == []
+    assert not options.plan_file.exists()
 
 
 def test_migrate_plan_orders_data_steps_after_services(

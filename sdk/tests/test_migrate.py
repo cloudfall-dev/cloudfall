@@ -266,6 +266,65 @@ def test_cli_migrate_rejects_malformed_component_pairs(
     )
 
 
+@pytest.mark.parametrize(
+    ("flags", "code"),
+    [
+        (["--data-schema", "crm=public"], "migrate_data_schema_without_data"),
+        (
+            ["--data", "crm=SOURCE", "--data-schema", "crm=Bad;Name"],
+            "data_copy_schema_invalid",
+        ),
+        (
+            [
+                "--data",
+                "crm=SOURCE",
+                "--data-schema",
+                "crm=app",
+                "--data-schema",
+                "crm=app",
+            ],
+            "data_copy_schema_invalid",
+        ),
+    ],
+)
+def test_s007_12_cli_migrate_refuses_a_bad_data_schema_before_any_playbook(
+    flags: list[str],
+    code: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "source.url"
+    source.write_text("postgresql://u:p@db.example.test/crm\n", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "migrate",
+            "--project",
+            str(EXAMPLES),
+            "--schemas",
+            str(SCHEMAS),
+            "--engine",
+            str(ENGINE),
+            "--plan-file",
+            str(tmp_path / "plan.json"),
+            "--inventory-file",
+            str(tmp_path / "inventory.json"),
+            "--build",
+            "crm-backend=main",
+            *(flag.replace("SOURCE", str(source)) for flag in flags),
+            "--yes",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 4
+    assert payload["error"]["code"] == "PRECONDITION"
+    assert payload["error"]["context"]["code"] == code
+    assert "u:p@" not in json.dumps(payload)
+    assert not (tmp_path / "plan.json").exists()
+    assert not (tmp_path / "inventory.json").exists()
+
+
 # dns-verify's proxy addresses, pinned as they were before domains apply.
 
 

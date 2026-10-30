@@ -30,6 +30,7 @@ from cloudfall.domain import (
     DnsMode,
     Hostname,
     IpAddress,
+    PostgresSchemaName,
     Sha256Digest,
     TlsMode,
 )
@@ -44,12 +45,11 @@ from cloudfall.service_evidence import EvidenceTimestamp, load_deployment_receip
 from cloudfall.validation import SchemaCatalog, validate_config
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
 
     from cloudfall.domain import (
         CommandArgv,
-        PostgresSchemaName,
         ReleaseCommandTimeout,
         ReleaseId,
         ResourceId,
@@ -81,6 +81,7 @@ _ERROR_RECEIPT_MISSING = "lifecycle_receipt_missing"
 _ERROR_SERVICE_MISSING = "lifecycle_service_missing"
 _ERROR_DATABASE_MISSING = "lifecycle_database_missing"
 _ERROR_SOURCE_URL_MISSING = "lifecycle_source_url_missing"
+ERROR_DATA_COPY_SCHEMA_INVALID = "data_copy_schema_invalid"
 
 
 class LifecycleError(RuntimeError):
@@ -269,9 +270,28 @@ class DataCopySchemas:
     names: tuple[PostgresSchemaName, ...] = ()
 
     def __post_init__(self) -> None:
-        """Keep the names sorted so plans and receipts compare verbatim."""
-        unique = sorted(set(self.names), key=lambda name: name.value)
-        object.__setattr__(self, "names", tuple(unique))
+        """Refuse a name given twice; keep the names sorted for plans and receipts."""
+        repeated = sorted(
+            {name.value for name in self.names if self.names.count(name) > 1}
+        )
+        if repeated:
+            message = f"schema named more than once: {', '.join(repeated)}"
+            raise ValueError(message)
+        ordered = sorted(self.names, key=lambda name: name.value)
+        object.__setattr__(self, "names", tuple(ordered))
+
+    @classmethod
+    def from_boundary(cls, values: Sequence[str]) -> DataCopySchemas:
+        """Check the names a flag or a tool call gave, refusing a bad one.
+
+        Raises ``LifecycleError`` with code ``data_copy_schema_invalid`` for
+        a name outside ``^[a-z_][a-z0-9_]*$``, past 63 characters, or given
+        twice (S-007-12), before any playbook runs.
+        """
+        try:
+            return cls(tuple(PostgresSchemaName(value) for value in values))
+        except ValueError as error:
+            raise LifecycleError(ERROR_DATA_COPY_SCHEMA_INVALID, str(error)) from error
 
     @property
     def every_schema(self) -> bool:
