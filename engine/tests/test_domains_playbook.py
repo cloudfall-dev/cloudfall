@@ -15,7 +15,7 @@ from pathlib import Path
 from cloudfall_engine.playbook import PlaybookRun, playbook_command, resolve_playbook
 
 ENGINE = Path(__file__).parents[2] / "engine"
-REFUSAL = "no proxy.upstream"
+REFUSAL = "no proxy.upstream or routes"
 
 
 def _domain(domain_id: str, server: str, *, upstream: bool) -> dict[str, object]:
@@ -104,7 +104,7 @@ def test_a_domain_without_upstream_stops_the_run_before_any_server(
     )
 
     refusal = next(line for line in output.splitlines() if REFUSAL in line)
-    assert "Domains bare-one, bare-two have no proxy.upstream" in refusal
+    assert "Domains bare-one, bare-two have no proxy.upstream or routes" in refusal
     assert "render them;" in refusal
     assert "site-" not in refusal
     assert "UNREACHABLE" not in output
@@ -123,6 +123,21 @@ def test_domains_that_render_pass_the_check_and_reach_their_servers(
             "edge-b": _host("edge-b", "192.0.2.11", []),
         },
     )
+
+    assert REFUSAL not in output
+    assert "UNREACHABLE" in output
+
+
+def test_a_domain_with_routes_passes_the_check_and_reaches_its_server(
+    tmp_path: Path,
+) -> None:
+    """S-003: the early check reads "proxy.upstream or routes"."""
+    routed = _domain("site-r", "edge-a", upstream=False)
+    routed["routes"] = [
+        {"path": "/api/", "upstream": {"address": "127.0.0.1", "port": 8310}}
+    ]
+
+    output = _run(tmp_path, {"edge-a": _host("edge-a", "192.0.2.10", [routed])})
 
     assert REFUSAL not in output
     assert "UNREACHABLE" in output
@@ -156,6 +171,6 @@ def test_a_one_domain_run_for_a_domain_without_upstream_is_refused(
     output = _run(tmp_path, _shared_server(), domain_id="bare-one")
 
     refusal = next(line for line in output.splitlines() if REFUSAL in line)
-    assert "Domain bare-one has no proxy.upstream" in refusal
+    assert "Domain bare-one has no proxy.upstream or routes" in refusal
     assert "render it;" in refusal
     assert "UNREACHABLE" not in output

@@ -2,27 +2,33 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import PurePosixPath
+from typing import TYPE_CHECKING, cast
 
 from cloudfall.inventory import (
+    DomainStaticRoute,
     firewall_rules_for_server,
     remote_access_rules_for_server,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
     from cloudfall.domain import ResourceId
     from cloudfall.inventory import (
         AlertRuleInventory,
         ApplicationInventory,
         ComponentInventory,
+        DomainInventory,
         LoggingStackInventory,
         PlatformInventory,
         ServerInventory,
         ServerTypeInventory,
         ServiceInventory,
     )
+
+# cloudfall_bootstrap's default, below which validation holds every installRoot.
+_APPLICATIONS_ROOT = PurePosixPath("/srv/apps")
 
 
 def render_ansible_inventory(inventory: PlatformInventory) -> dict[str, object]:
@@ -103,6 +109,9 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
     server_types_by_id = {
         server_type.resource_id: server_type for server_type in inventory.server_types
     }
+    components_by_id = {
+        component.resource_id: component for component in inventory.components
+    }
     return {
         server.resource_id.value: {
             "ansible_host": server.address.value,
@@ -146,7 +155,7 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
                 if service.server_id == server.resource_id
             ],
             "cloudfall_domains": [
-                domain.as_dict()
+                _host_domain(domain, components_by_id)
                 for domain in inventory.domains
                 if domain.proxy.server_id == server.resource_id
             ],
@@ -259,6 +268,51 @@ def _host_component(
             "server": component.release_server_id.value,
         }
     return variables
+
+
+def _host_domain(
+    domain: DomainInventory,
+    components_by_id: Mapping[ResourceId, ComponentInventory],
+) -> dict[str, object]:
+    """Serialize a Domain with each static route resolved on its proxy server.
+
+    A static route serves ``<installRoot>/current/<directory>``, so a deploy or
+    a rollback that moves ``current`` changes what it serves without a reload.
+    ``traverseDirectories`` lists the directories, from the application root
+    to the install root and its ``releases/``, that bootstrap creates ``0750``
+    and the nginx worker must pass through to reach the release.
+    """
+    variables = domain.as_dict()
+    if not domain.routes:
+        return variables
+    routes: list[dict[str, object]] = []
+    for route in domain.routes:
+        rendered = route.as_dict()
+        if isinstance(route, DomainStaticRoute):
+            component = components_by_id[route.component_id]
+            install_root = PurePosixPath(component.install_root.value)
+            static = cast("dict[str, object]", rendered["static"])
+            static["servedDirectory"] = str(
+                install_root / "current" / route.directory.value
+            )
+            static["traverseDirectories"] = _traverse_directories(
+                install_root, component.application_id
+            )
+        routes.append(rendered)
+    variables["routes"] = routes
+    return variables
+
+
+def _traverse_directories(
+    install_root: PurePosixPath, application_id: ResourceId
+) -> list[str]:
+    application_root = _APPLICATIONS_ROOT / application_id.value
+    below_root = [
+        directory
+        for directory in (*reversed(install_root.parents), install_root)
+        if directory.is_relative_to(application_root)
+    ]
+    return [str(directory) for directory in (*below_root, install_root / "releases")]
 
 
 def _application_is_on_server(

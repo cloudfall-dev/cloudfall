@@ -5,11 +5,13 @@
       - ansible_facts["distribution"] == "Debian"
       - ansible_facts["service_mgr"] == "systemd"
       - cloudfall_nginx_site_domain.proxy.server == cloudfall_server_id
-      - cloudfall_nginx_site_domain.proxy.upstream is defined
+      - >-
+        cloudfall_nginx_site_domain.proxy.upstream is defined
+        or cloudfall_nginx_site_domain.routes is defined
       - cloudfall_nginx_site_domain.tls.mode in ["disabled", "required"]
     fail_msg: >-
       Domain deployment requires its declared Debian proxy server and a
-      declared upstream endpoint
+      declared upstream endpoint or routes
 
 - name: Install Nginx and Certbot
   ansible.builtin.apt:
@@ -19,6 +21,22 @@
     state: present
     update_cache: true
     cache_valid_time: 3600
+
+- name: Collect the directories on the static routes' paths
+  ansible.builtin.set_fact:
+    cloudfall_nginx_site_traverse_directories: >-
+      {{
+        cloudfall_nginx_site_domain.routes | default([])
+        | selectattr('static', 'defined')
+        | map(attribute='static.traverseDirectories')
+        | flatten(levels=1)
+        | unique
+        | list
+      }}
+
+- name: Let the Nginx worker reach the static routes' releases
+  ansible.builtin.include_tasks: static_access.yml
+  when: cloudfall_nginx_site_traverse_directories | length > 0
 
 # The TLS server block spells HTTP/2 the way the installed Nginx parses it:
 # `http2 on;` exists only from 1.25.1, and Debian 12 ships 1.22.1. Nginx

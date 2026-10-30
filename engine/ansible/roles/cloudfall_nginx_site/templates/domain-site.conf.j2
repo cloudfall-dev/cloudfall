@@ -3,13 +3,12 @@
     [cloudfall_nginx_site_domain.primaryName]
     + cloudfall_nginx_site_domain.aliases
   ) | join(' ') %}
-{% set upstream_address = cloudfall_nginx_site_domain.proxy.upstream.address %}
-{% set upstream_host = '[' ~ upstream_address ~ ']'
-    if ':' in upstream_address else upstream_address %}
-{% macro proxy_location() %}
-    location / {
+{% macro proxy_location(path, upstream) %}
+{% set upstream_host = '[' ~ upstream.address ~ ']'
+    if ':' in upstream.address else upstream.address %}
+    location {{ path }} {
         proxy_http_version 1.1;
-        proxy_pass http://{{ upstream_host }}:{{ cloudfall_nginx_site_domain.proxy.upstream.port }};
+        proxy_pass http://{{ upstream_host }}:{{ upstream.port }};
         proxy_pass_request_headers on;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -18,6 +17,58 @@
         proxy_set_header X-Forwarded-Host $host;
         proxy_set_header X-Forwarded-Port $server_port;
     }
+{% endmacro %}
+{#
+  A static route serves the component's current release, so a deploy or a
+  rollback that moves `current` changes what it serves without a reload. Its
+  path and the alias both end in `/`, which keeps the alias from reaching
+  outside the directory.
+#}
+{% macro static_location(path, static) %}
+    location {{ path }} {
+        alias {{ static.servedDirectory }}/;
+{% if static.spaFallback is defined %}
+        try_files $uri {{ path }}{{ static.spaFallback }};
+{% endif %}
+    }
+{% endmacro %}
+{#
+  Routes render longest path first, then by path, so the vhost does not
+  depend on the declared order; Nginx matches the longest prefix either way.
+  A Domain with only proxy.upstream renders its one `location /` as before.
+#}
+{% macro locations() %}
+{% if cloudfall_nginx_site_domain.routes is defined %}
+{% set routes = cloudfall_nginx_site_domain.routes | sort(attribute='path') %}
+{% set ordered = namespace(routes=[]) %}
+{% for length in routes | map(attribute='path') | map('length') | unique | sort(reverse=true) %}
+{% for route in routes if route.path | length == length %}
+{% set ordered.routes = ordered.routes + [route] %}
+{% endfor %}
+{% endfor %}
+{% for route in ordered.routes %}
+{% if not loop.first %}
+
+{% endif %}
+{% if route.static is defined %}
+{{ static_location(route.path, route.static) -}}
+{% else %}
+{{ proxy_location(route.path, route.upstream) -}}
+{% endif %}
+{% endfor %}
+{#
+  Without a `/` route, a path no route matches would fall to Nginx's default
+  root (Debian's welcome page, answering 200); it answers 404 instead.
+#}
+{% if routes | selectattr('path', 'equalto', '/') | list | length == 0 %}
+
+    location / {
+        return 404;
+    }
+{% endif %}
+{% else %}
+{{ proxy_location('/', cloudfall_nginx_site_domain.proxy.upstream) -}}
+{% endif %}
 {% endmacro %}
 server {
     listen 80;
@@ -33,7 +84,7 @@ server {
         return 301 https://$host$request_uri;
     }
 {% else %}
-{{ proxy_location() -}}
+{{ locations() -}}
 {% endif %}
 }
 {% if cloudfall_nginx_site_tls_active %}
@@ -54,6 +105,6 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_session_tickets off;
 
-{{ proxy_location() -}}
+{{ locations() -}}
 }
 {% endif %}

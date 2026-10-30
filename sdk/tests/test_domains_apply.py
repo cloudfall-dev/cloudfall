@@ -550,7 +550,7 @@ def _recap_hosts(output: str) -> list[str]:
 
 DOMAINS_TASKS = {
     "Gathering Facts",
-    "Require an upstream on every Domain this run renders",
+    "Require an upstream or routes on every Domain this run renders",
     "Render declared domains as managed virtual hosts",
     "cloudfall_nginx_site : Record what this host rendered",
     "cloudfall_nginx_site : Create the receipt directory",

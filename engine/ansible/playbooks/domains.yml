@@ -1,14 +1,14 @@
 ---
-# `upstream` is optional in the schema, since a fleet may route a Domain with
-# its own proxy, but cloudfall_nginx_site cannot render one without it. The
-# check runs across every host of the run before the serial play below, so a
-# refused run changes no server.
+# `upstream` and `routes` are optional in the schema, since a fleet may route a
+# Domain with its own proxy, but cloudfall_nginx_site cannot render one with
+# neither. The check runs across every host of the run before the serial play
+# below, so a refused run changes no server.
 - name: Refuse Domains the site role cannot render
   hosts: cloudfall_servers
   gather_facts: false
   any_errors_fatal: true
   tasks:
-    - name: Require an upstream on every Domain this run renders
+    - name: Require an upstream or routes on every Domain this run renders
       ansible.builtin.assert:
         that:
           - cloudfall_domains_without_upstream | length == 0
@@ -16,8 +16,8 @@
           {{ 'Domain' if cloudfall_domains_without_upstream | length == 1
           else 'Domains' }} {{ cloudfall_domains_without_upstream | join(', ') }}
           {{ 'has' if cloudfall_domains_without_upstream | length == 1
-          else 'have' }} no proxy.upstream, which cloudfall_nginx_site needs to
-          render {{ 'it' if cloudfall_domains_without_upstream | length == 1
+          else 'have' }} no proxy.upstream or routes, which cloudfall_nginx_site
+          needs to render {{ 'it' if cloudfall_domains_without_upstream | length == 1
           else 'them' }}; no server was changed
         quiet: true
       vars:
@@ -39,6 +39,7 @@
               else cloudfall_domains_in_run
             )
             | rejectattr('proxy.upstream', 'defined')
+            | rejectattr('routes', 'defined')
             | map(attribute='id')
             | unique
             | sort
