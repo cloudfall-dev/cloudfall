@@ -27,6 +27,8 @@ from cloudfall.domain import (
     FileMode,
     FilesystemName,
     FirewallPolicy,
+    HealthCheckAttempts,
+    HealthCheckTimeout,
     HealthCheckType,
     Hostname,
     HttpScheme,
@@ -478,21 +480,47 @@ class ComponentHttpHealthCheck:
 
 
 @dataclass(frozen=True, slots=True)
+class ComponentCommandHealthCheck:
+    """Command contract for a component health gate: an argv run on the server."""
+
+    command: CommandArgv
+    timeout_seconds: HealthCheckTimeout
+    attempts: HealthCheckAttempts
+
+    @property
+    def described(self) -> str:
+        """The command as one line, for a plan's ``wouldRun``."""
+        return " ".join(self.command.value)
+
+
+@dataclass(frozen=True, slots=True)
 class ComponentHealthCheck:
     """Health gate for a deployed component."""
 
     check_type: HealthCheckType
     http: ComponentHttpHealthCheck | None
+    command: ComponentCommandHealthCheck | None = None
 
     def __post_init__(self) -> None:
-        """Require the HTTP contract exactly for HTTP health checks."""
+        """Require each type's contract exactly for checks of that type."""
         if (self.check_type is HealthCheckType.HTTP) != (self.http is not None):
             message = "HTTP health checks require an HTTP contract"
+            raise ValueError(message)
+        if (self.check_type is HealthCheckType.COMMAND) != (self.command is not None):
+            message = "command health checks require a command contract"
             raise ValueError(message)
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the health contract."""
         result: dict[str, object] = {"type": self.check_type.value}
+        if self.command is not None:
+            result.update(
+                {
+                    "command": list(self.command.command.value),
+                    "timeoutSeconds": self.command.timeout_seconds.value,
+                    "attempts": self.command.attempts.value,
+                }
+            )
         if self.http is not None:
             result.update(
                 {
@@ -1734,6 +1762,18 @@ def _component_health_check(
     check_type = HealthCheckType.from_boundary(health.get("type"))
     if check_type is HealthCheckType.NONE:
         return ComponentHealthCheck(check_type=check_type, http=None)
+    if check_type is HealthCheckType.COMMAND:
+        return ComponentHealthCheck(
+            check_type=check_type,
+            http=None,
+            command=ComponentCommandHealthCheck(
+                command=CommandArgv.from_boundary(health.get("command")),
+                timeout_seconds=HealthCheckTimeout.from_boundary(
+                    health.get("timeoutSeconds")
+                ),
+                attempts=HealthCheckAttempts.from_boundary(health.get("attempts")),
+            ),
+        )
     return ComponentHealthCheck(
         check_type=check_type,
         http=ComponentHttpHealthCheck(

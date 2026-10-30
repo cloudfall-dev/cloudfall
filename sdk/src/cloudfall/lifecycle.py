@@ -1143,6 +1143,7 @@ def preview_deploy(
             f"once on {release_command.server}, before any server switches "
             "to the release"
         )
+    effect += _command_health_check_effect(component)
     return LifecyclePreview(
         action="deploy",
         subject=PreviewSubject.COMPONENT,
@@ -1174,6 +1175,7 @@ def preview_rollback(
             "; its release command "
             f"{' '.join(component.release.command.value)} is not run"
         )
+    effect += _command_health_check_effect(component)
     return LifecyclePreview(
         action="rollback",
         subject=PreviewSubject.COMPONENT,
@@ -1199,8 +1201,19 @@ def preview_restart(
         effect=(
             f"restart component {component_id} on "
             f"{_server_list(component.server_ids)} and require its declared "
-            "health check"
+            "health check" + _command_health_check_effect(component)
         ),
+    )
+
+
+def _command_health_check_effect(component: ComponentInventory) -> str:
+    """Name a component's command health check for a plan's ``wouldRun``."""
+    command = component.health_check.command
+    if command is None:
+        return ""
+    return (
+        f"; its command health check {command.described} runs on each server "
+        "after its restart"
     )
 
 

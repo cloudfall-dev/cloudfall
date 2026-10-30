@@ -311,6 +311,35 @@ def test_s005_6_a_release_renders_with_its_release_server(tmp_path: Path) -> Non
         }
 
 
+def test_s009_1_a_command_health_check_renders_as_declared(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    shutil.copytree(EXAMPLES, project)
+    path = project / "components" / "crm-backend.yaml"
+    text = path.read_text(encoding="utf-8")
+    declared = text[text.index("  healthCheck:\n") : text.index("  secretRefs:\n")]
+    check = {
+        "type": "command",
+        "command": [".venv/bin/python", "-m", "app.smoke"],
+        "timeoutSeconds": 60,
+        "attempts": 3,
+    }
+    path.write_text(
+        text.replace(declared, f"  healthCheck: {json.dumps(check)}\n"),
+        encoding="utf-8",
+    )
+    rendered = render_ansible_inventory(
+        PlatformInventory.from_state(validate_config(project, SCHEMAS))
+    )
+    hosts = _mapping_entry(
+        _mapping_entry(_inventory_children(rendered), "cloudfall_servers"), "hosts"
+    )
+
+    for host in ("h1", "h2"):
+        components = _mapping_entry(hosts, host)["cloudfall_components"]
+        assert isinstance(components, list)
+        assert components[0]["healthCheck"] == check
+
+
 def test_engine_cli_emits_ansible_json(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

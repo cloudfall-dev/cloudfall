@@ -621,11 +621,70 @@ class HealthCheckType(StrEnum):
 
     HTTP = "http"
     NONE = "none"
+    COMMAND = "command"
 
     @classmethod
     def from_boundary(cls, value: object) -> HealthCheckType:
         """Coerce a boundary value into a health-check kind."""
         return cls(_required_string(value, "health check type"))
+
+
+_HEALTH_CHECK_TIMEOUT_MAXIMUM = 300
+_HEALTH_CHECK_ATTEMPTS_MAXIMUM = 20
+
+
+def _required_bounded_integer(value: object, label: str, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        message = f"{label} must be an integer, got {type(value).__name__}"
+        raise TypeError(message)
+    if not 1 <= value <= maximum:
+        message = f"{label} must be 1 to {maximum}, got {value}"
+        raise ValueError(message)
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class HealthCheckTimeout:
+    """How long one run of a command health check may take: 1 to 300 seconds."""
+
+    value: int
+
+    def __post_init__(self) -> None:
+        """Reject booleans and values outside 1..300."""
+        _required_bounded_integer(
+            self.value, "health check timeout", _HEALTH_CHECK_TIMEOUT_MAXIMUM
+        )
+
+    @classmethod
+    def from_boundary(cls, value: object) -> HealthCheckTimeout:
+        """Coerce a required boundary value into a health-check timeout."""
+        return cls(
+            _required_bounded_integer(
+                value, "health check timeout", _HEALTH_CHECK_TIMEOUT_MAXIMUM
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class HealthCheckAttempts:
+    """How many times a command health check runs before it fails: 1 to 20."""
+
+    value: int
+
+    def __post_init__(self) -> None:
+        """Reject booleans and values outside 1..20."""
+        _required_bounded_integer(
+            self.value, "health check attempts", _HEALTH_CHECK_ATTEMPTS_MAXIMUM
+        )
+
+    @classmethod
+    def from_boundary(cls, value: object) -> HealthCheckAttempts:
+        """Coerce a required boundary value into a health-check attempt count."""
+        return cls(
+            _required_bounded_integer(
+                value, "health check attempts", _HEALTH_CHECK_ATTEMPTS_MAXIMUM
+            )
+        )
 
 
 class RuntimeType(StrEnum):
