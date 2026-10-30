@@ -1,6 +1,6 @@
 # S-003: Domain routes
 
-status: approved
+status: built
 serves: G-3
 
 ## Problem
@@ -135,3 +135,21 @@ Touches `config/schemas/v1/domain.schema.json`, `sdk/src/cloudfall/inventory.py`
 - cloudfall-dev/cloudfall#162: S-003-2, S-003-3, S-003-4, S-003-5, S-003-6, S-003-7, S-003-13, S-003-14, S-003-15
 
 ## Verification
+
+No criterion has run against a real Nginx or a live Debian host yet. Validation ran through `cloudfall config validate`; the vhost was rendered by Ansible's own `template` module on localhost from the engine inventory of the example project with routes; what a request answers was worked out by a small model of Nginx's longest-prefix match, `alias`, `root` and `try_files` over a release tree under the test's temporary directory; the ACL tasks ran on localhost with stand-ins for `getfacl` and `setfacl`. `nginx -t`, real requests, a real POSIX ACL and the `www-data` user are unexercised.
+
+- S-003-1: `test_s003_1_proxy_and_spa_static_routes_pass_config_validate` ran `cloudfall config validate` on the example Domain with a `/api/` proxy route and a `/` static route with `spaFallback: index.html`, exit 0; `test_s003_1_a_domain_with_only_an_upstream_serializes_as_before`, no `routes` key, passed
+- S-003-2: `test_s003_2_routes_render_where_the_single_proxy_rendered`, TLS on and off on 1.22.1 and 1.26.3: balanced braces, every directive ending in `;`, the routes in the 80 server without TLS and in the 443 server with it, each version's HTTP/2 spelling, passed; `nginx -t` was not run
+- S-003-3: `test_s003_3_unknown_paths_fall_back_and_assets_are_served`: `/` renders `alias <installRoot>/current/web/dist/;` and `try_files $uri /index.html;`, and the model answered `/some/unknown/path` with `index.html`'s bytes and `/assets/app.js` with that file's, passed; no real GET
+- S-003-4: `test_s003_4_api_requests_reach_the_upstream_with_their_full_path`: `/api/` renders `proxy_pass http://127.0.0.1:8310;` with no URI part, so the model passes `/api/health` unchanged, passed; no real upstream saw the request
+- S-003-5: `test_s003_5_a_static_route_without_a_fallback_answers_404`: a `/docs/` route without `spaFallback` renders no `try_files`, and the model answered an existing file 200 and a missing one 404, passed; no real GET
+- S-003-6: `test_s003_6_a_rollback_serves_the_previous_release_without_nginx` ran `rollback.yml`'s own symlink switch on localhost and the model served the previous release's `index.html` for `/`; the vhost names `current`, never a release id, and the rollback tasks never touch Nginx, passed; no real `cloudfall rollback` or Nginx
+- S-003-7: `test_s003_7_an_upstream_only_domain_renders_byte_identical` compared Ansible's render against `engine/tests/golden/nginx-site/`, captured from the template on origin/main before the change, for TLS on and off on 1.22.1 and 1.26.3, byte-identical
+- S-003-8: `test_s003_8_two_routes_for_one_path_are_refused`, exit `CONFIG_INVALID` with `domain_route_path_duplicate`, passed
+- S-003-9: `test_s003_9_a_domain_with_upstream_and_routes_is_refused` (`domain_route_source_invalid`) and `test_s003_9_a_domain_with_neither_upstream_nor_routes_still_passes`, passed
+- S-003-10: `test_s003_10_a_route_on_the_acme_challenge_is_refused` (`domain_route_path_reserved`) and `test_s003_10_an_invalid_route_path_is_refused` (a static path without `/`, a space, `;`, `{`: `domain_route_path_invalid`), passed
+- S-003-11: `test_s003_11_a_static_route_naming_a_missing_component_is_refused` (`resource_reference_missing`) and `test_s003_11_a_static_component_off_the_proxy_server_is_refused` (`domain_route_component_not_on_proxy`), passed
+- S-003-12: `test_s003_12_a_static_directory_or_fallback_outside_the_release_is_refused` (`..`, absolute, `.`) and `test_s003_12_route_value_objects_match_the_schema`, passed
+- S-003-13: `test_s003_13_locations_render_longest_path_first_whatever_the_order`, TLS on and off on both versions: `/api/v2/`, `/docs/`, `/api/`, `/` in that order, and the same routes declared in reverse rendered identical bytes, passed
+- S-003-14: `test_s003_14_the_worker_may_only_traverse_to_the_release` ran the role's collect and grant tasks on localhost with stand-in ACL tools: `user:www-data:--x` on `/srv/apps/crm`, `/srv/apps/crm/backend` and its `releases/` only, nothing on a second run, the env file left `root` `0640` and no user or group task in the role; `test_s003_14_an_upstream_only_domain_grants_nothing`, passed. A real `www-data` reading or failing to read a file was not checked
+- S-003-15: `test_s003_15_the_acme_challenge_still_renders_on_a_domain_with_routes`, TLS on and off: the 80 server keeps `location /.well-known/acme-challenge/ { root /var/lib/letsencrypt; }`, and the model served a token from the webroot and 404 for a missing one, passed; no real certbot challenge

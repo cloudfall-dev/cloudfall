@@ -1,0 +1,50 @@
+---
+# Bootstrap creates the application root, the install root and `releases/`
+# 0750 for the application user, so the Nginx worker cannot reach a static
+# route's release. It gets traverse-only access (`x`, never `r`) along that
+# path by a POSIX ACL entry for its own user; it never joins the
+# application's group, which can read `shared/env/<component>.env`. The
+# release directories below `releases/` keep their archived modes, and
+# `current` is followed on every request, so a deploy or a rollback needs no
+# second grant.
+- name: Install the POSIX ACL tools
+  ansible.builtin.apt:
+    name: acl
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Read the ACL of each directory on a static route's path
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/getfacl
+      - --absolute-names
+      - --omit-header
+      - "{{ item }}"
+  loop: "{{ cloudfall_nginx_site_traverse_directories }}"
+  register: cloudfall_nginx_site_traverse_acls
+  changed_when: false
+  # In check mode the ACL tools may not be installed yet.
+  failed_when:
+    - cloudfall_nginx_site_traverse_acls.rc != 0
+    - not ansible_check_mode
+  check_mode: false
+
+- name: Let the Nginx worker traverse each directory on a static route's path
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/setfacl
+      - --modify
+      - "user:{{ cloudfall_nginx_site_worker_user }}:--x"
+      - "{{ item }}"
+  loop: >-
+    {{
+      cloudfall_nginx_site_traverse_acls.results
+      | rejectattr(
+          'stdout', 'search',
+          '(?m)^user:' ~ cloudfall_nginx_site_worker_user ~ ':..x'
+        )
+      | map(attribute='item')
+      | list
+    }}
+  changed_when: true

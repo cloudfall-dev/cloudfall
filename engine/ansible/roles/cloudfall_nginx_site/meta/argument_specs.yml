@@ -39,6 +39,44 @@ argument_specs:
                   port:
                     type: int
                     required: true
+          routes:
+            type: list
+            elements: dict
+            options:
+              path:
+                type: str
+                required: true
+              upstream:
+                type: dict
+                options:
+                  address:
+                    type: str
+                    required: true
+                  port:
+                    type: int
+                    required: true
+              static:
+                type: dict
+                options:
+                  component:
+                    type: str
+                    required: true
+                  directory:
+                    type: str
+                    required: true
+                  spaFallback:
+                    type: str
+                  servedDirectory:
+                    type: path
+                    required: true
+                  traverseDirectories:
+                    type: list
+                    elements: path
+                    required: true
+            mutually_exclusive:
+              - [upstream, static]
+            required_one_of:
+              - [upstream, static]
           origin:
             type: dict
             required: true
@@ -67,3 +105,6 @@ argument_specs:
       cloudfall_nginx_site_receipt_directory:
         type: str
         default: ""
+      cloudfall_nginx_site_worker_user:
+        type: str
+        default: www-data

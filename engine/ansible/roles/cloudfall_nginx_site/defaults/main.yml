@@ -2,3 +2,5 @@
 cloudfall_nginx_site_issue_certificate: false
 cloudfall_nginx_site_acme_webroot: /var/lib/letsencrypt
 cloudfall_nginx_site_receipt_directory: ""
+# Debian's Nginx runs its workers as www-data.
+cloudfall_nginx_site_worker_user: www-data
