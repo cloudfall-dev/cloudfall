@@ -181,4 +181,8 @@ Touches `sdk/src/cloudfall/app.py` (`deploy`, `rollback`, `migrate`, new `releas
 
 ## Issues
 
+- cloudfall-dev/cloudfall#160: S-008-2, S-008-4, S-008-11, S-008-12
+- cloudfall-dev/cloudfall#163: S-008-1, S-008-3, S-008-5, S-008-6, S-008-7, S-008-8, S-008-9, S-008-10, S-008-15, S-008-16
+- cloudfall-dev/cloudfall#165: S-008-13, S-008-14
+
 ## Verification

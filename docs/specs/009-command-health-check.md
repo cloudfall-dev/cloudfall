@@ -160,4 +160,8 @@ Touches `config/schemas/v1/component.schema.json`,
 
 ## Issues
 
+- cloudfall-dev/cloudfall#161: S-009-1, S-009-13
+- cloudfall-dev/cloudfall#164: S-009-2, S-009-3, S-009-4, S-009-5, S-009-6, S-009-7, S-009-8, S-009-9, S-009-11, S-009-12
+- cloudfall-dev/cloudfall#166: S-009-10
+
 ## Verification
