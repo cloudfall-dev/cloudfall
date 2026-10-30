@@ -12,6 +12,7 @@ import base64
 from pathlib import Path
 
 import pytest
+from ansible.module_utils.common.arg_spec import ArgumentSpecValidator
 from ansible.parsing.dataloader import DataLoader
 from ansible.template import Templar, trust_as_template
 
@@ -479,3 +480,62 @@ def test_the_failure_of_a_first_release_without_a_kept_unit_is_unchanged() -> No
         "Release r2 failed its health check and was stopped because no previous"
         " release exists"
     )
+
+
+COMMAND_CHECK: dict[str, object] = {
+    "type": "command",
+    "command": [".venv/bin/python", "-m", "app.smoke"],
+    "timeoutSeconds": 60,
+    "attempts": 3,
+}
+REFUSE_COMMAND = "Refuse a command health check this engine does not run yet"
+
+
+@pytest.mark.parametrize(
+    "entry_point", ["main.yml", "restart.yml", "rollback.yml", "health.yml"]
+)
+def test_the_engine_refuses_a_command_check_it_does_not_run_yet(
+    entry_point: str,
+) -> None:
+    """Until #164 runs it, a command check fails first, never passes unrun."""
+    tasks = _load(ROLE / "tasks" / entry_point)
+    assert isinstance(tasks, list)
+    refusal = tasks[0]
+    assert refusal["name"] == REFUSE_COMMAND
+    fail = refusal["ansible.builtin.fail"]
+    assert isinstance(fail, dict)
+
+    def variables(health_check: dict[str, object]) -> dict[str, object]:
+        return {
+            "cloudfall_deploy_component": {
+                "id": "crm-backend",
+                "healthCheck": health_check,
+            }
+        }
+
+    assert all(_holds(c, variables(COMMAND_CHECK)) for c in _conditions(refusal))
+    for other in (HTTP_CHECK, NO_CHECK):
+        assert not all(_holds(c, variables(other)) for c in _conditions(refusal))
+    message = str(
+        _templar(variables(COMMAND_CHECK)).template(trust_as_template(fail["msg"]))
+    )
+    assert message.startswith(
+        "Component crm-backend declares a command health check"
+    )
+    assert "cloudfall-dev/cloudfall#164" in message
+
+
+@pytest.mark.parametrize("health_check", [HTTP_CHECK, NO_CHECK, COMMAND_CHECK])
+def test_s009_1_the_role_argument_spec_accepts_every_declared_check(
+    health_check: dict[str, object],
+) -> None:
+    specs = _load(ROLE / "meta" / "argument_specs.yml")
+    assert isinstance(specs, dict)
+    component_spec = specs["argument_specs"]["main"]["options"][
+        "cloudfall_deploy_component"
+    ]["options"]["healthCheck"]
+    validator = ArgumentSpecValidator(component_spec["options"])
+
+    result = validator.validate(dict(health_check))
+
+    assert result.error_messages == []

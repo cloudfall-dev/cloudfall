@@ -60,7 +60,11 @@ argument_specs:
                 choices:
                   - http
                   - none
+                  - command
                 required: true
+              command:
+                type: list
+                elements: str
               scheme:
                 type: str
                 choices:
