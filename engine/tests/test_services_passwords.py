@@ -11,10 +11,11 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import yaml
+from cloudfall.ansible_data import as_ansible_data
 from cloudfall.inventory import PlatformInventory
 from cloudfall.validation import validate_config
 from cloudfall_engine.ansible_inventory import render_ansible_inventory
@@ -67,8 +68,14 @@ def _inventory(tmp_path: Path) -> Path:
     (project / "services" / "postgresql-billing.yaml").write_text(
         yaml.safe_dump(service), encoding="utf-8"
     )
-    rendered: dict[str, Any] = render_ansible_inventory(
-        PlatformInventory.from_state(validate_config(project, SCHEMAS))
+    # Marked as `cloudfall-engine inventory render` writes it (#174).
+    rendered = cast(
+        "dict[str, Any]",
+        as_ansible_data(
+            render_ansible_inventory(
+                PlatformInventory.from_state(validate_config(project, SCHEMAS))
+            )
+        ),
     )
     host = rendered["all"]["children"]["cloudfall_servers"]["hosts"]["h1"]
     host.update(

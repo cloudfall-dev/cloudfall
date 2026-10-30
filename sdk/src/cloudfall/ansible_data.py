@@ -32,3 +32,14 @@ def as_ansible_data(value: object) -> object:
         return value
     message = f"cannot hand {type(value).__name__} to Ansible as data"
     raise TypeError(message)
+
+
+def unmarked(value: dict[str, object]) -> object:
+    """Read a marked string back as text; a ``json.loads`` ``object_hook``.
+
+    Cloudfall code that reads a document written for Ansible sees the
+    values as Ansible's loader does.
+    """
+    if list(value) == [UNSAFE_KEY]:
+        return value[UNSAFE_KEY]
+    return value

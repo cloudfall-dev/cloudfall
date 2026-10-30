@@ -17,7 +17,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING, Self, cast
 
-from cloudfall.ansible_data import as_ansible_data
+from cloudfall.ansible_data import as_ansible_data, unmarked
 from cloudfall.commands import snake_case_keys
 from cloudfall.domain import (
     ARTIFACT_CLONE_TIMEOUT_SECONDS,
@@ -602,8 +602,12 @@ def _rendered_owned_databases(
     if not inventory_file.is_file():
         return ()
     try:
+        # The rendered strings are marked unsafe for Ansible (#174).
         document = cast(
-            "object", json.loads(inventory_file.read_text(encoding="utf-8"))
+            "object",
+            json.loads(
+                inventory_file.read_text(encoding="utf-8"), object_hook=unmarked
+            ),
         )
     except (UnicodeDecodeError, json.JSONDecodeError):
         return ()
