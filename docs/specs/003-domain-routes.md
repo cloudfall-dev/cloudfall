@@ -1,6 +1,7 @@
 # S-003: Domain routes
 
 status: approved
+serves: G-3
 
 ## Problem
 

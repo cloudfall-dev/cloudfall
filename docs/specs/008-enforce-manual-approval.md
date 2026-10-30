@@ -1,6 +1,7 @@
 # S-008: Enforce manual approval
 
 status: approved
+serves: G-2
 
 ## Problem
 
