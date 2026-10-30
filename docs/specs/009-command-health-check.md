@@ -1,6 +1,6 @@
 # S-009: Command health check
 
-status: approved
+status: built
 serves: G-3
 
 ## Problem
@@ -165,3 +165,19 @@ Touches `config/schemas/v1/component.schema.json`,
 - cloudfall-dev/cloudfall#166: S-009-10
 
 ## Verification
+
+No criterion has run against a live Debian host yet: the role's command check, receipt, `health` and shared gate tasks ran under `ansible-playbook` on the controller with a stand-in for `systemd-run`, and the gate block's order and rescue were replayed with Ansible's own templating. The real `systemd-run` (its exit code, the `Finished with result: timeout` line, `EnvironmentFile=` parsing, the journal), `become` on the `health` play, and `current`, unit and restart state on real servers are unexercised.
+
+- S-009-1: `test_s009_1_config_validate_accepts_a_command_health_check`, `test_s009_1_config_validate_accepts_the_bounds`, `test_s009_1_config_validate_refuses_a_malformed_command_check`, `test_s009_1_the_timeout_refuses_values_outside_1_to_300`, `test_s009_1_attempts_refuse_values_outside_1_to_20`, `test_s009_1_a_check_carries_exactly_the_contract_of_its_type`, `test_s009_1_a_command_health_check_renders_as_declared` and `test_s009_1_the_role_argument_spec_accepts_every_declared_check`
+- S-009-2: `test_s009_2_the_check_runs_after_the_restart_inside_the_rescued_block` (task order and the rescue) and `test_s009_2_the_check_runs_as_the_user_in_current_with_the_unit_environment` (`--uid`/`--gid`, working directory, the unit's `EnvironmentFile=-` line, `RuntimeMaxSec=60`)
+- S-009-3: `test_s009_3_a_relative_first_element_runs_from_current` and `test_s009_3_an_absolute_first_element_runs_unchanged`
+- S-009-4: `test_s009_4_a_passing_check_receipts_its_run`, the receipt validated with `healthCheckPassed: true`, `attempts: 1`, `exitCode: 0` and `timedOut: false`
+- S-009-5: `test_s009_5_a_check_exiting_3_fails_and_receipts_the_failed_release`, `test_s009_5_a_failed_check_rolls_back_receipts_then_fails` and `test_s009_5_the_deploy_error_names_the_check_its_exit_and_the_rollback`
+- S-009-6: `test_s009_6_a_failed_first_release_receipts_no_previous_release` and `test_s009_6_a_failed_first_release_is_stopped_and_receipted`
+- S-009-7: `test_s009_7_a_timed_out_check_fails_naming_the_timeout`, `test_s009_7_a_timed_out_run_counts_as_a_failed_attempt` and `test_s009_7_the_deploy_error_names_the_timeout`
+- S-009-8: `test_s009_8_a_check_failing_twice_then_passing_records_three_attempts`, `test_s009_8_a_check_always_failing_runs_exactly_attempts_times_3s_apart` and `test_s009_8_a_passing_first_attempt_stops_there`
+- S-009-9: `test_s009_9_the_output_reaches_neither_the_receipt_nor_the_ansible_output` (at `-vvvv`), `test_s009_9_the_run_is_no_log_and_pipes_nothing` and `test_s009_9_the_receipt_schema_refuses_any_other_health_check_key`
+- S-009-10: `test_s009_10_restart_rollback_and_health_end_on_the_shared_gate`, `test_s009_10_the_shared_gate_runs_deploys_command_check_as_root`, `test_s009_10_a_passing_check_passes_with_deploys_invocation` and `test_s009_10_a_failing_check_fails_without_its_output_or_a_receipt` (the role's `health` and `health_gate` tasks), `test_s009_10_a_timed_out_check_fails_naming_the_timeout`, `test_s009_10_health_reports_unhealthy_when_the_check_exits_non_zero` and `test_s009_10_health_reports_ok_when_the_check_exits_0` (`cloudfall health` over the role's tasks), `test_s009_10_no_entry_point_includes_the_receipt` and `test_s009_10_no_entry_point_refuses_a_command_check`
+- S-009-11: `test_s009_11_a_failed_receipt_needs_a_failed_command_check`, `test_s009_11_a_command_check_record_must_be_coherent`, `test_s009_11_a_passed_receipt_refuses_a_failed_command_check`, `test_s009_11_every_receipt_written_today_still_validates` and `test_s009_11_a_timed_out_failure_validates`
+- S-009-12: `test_s009_12_http_and_none_run_the_same_gate_tasks`, `test_s009_12_a_failed_http_or_none_gate_writes_no_receipt`, `test_s009_12_http_and_none_receipts_have_no_health_check`, `test_s009_12_the_pass_receipt_is_written_where_it_was` and `test_s009_12_restart_rollback_and_health_keep_their_http_and_none_gates`
+- S-009-13: `test_s009_13_the_plan_names_the_command_health_check` and `test_s009_13_the_plan_gains_no_field`

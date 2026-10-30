@@ -268,7 +268,9 @@ What each step does:
   declared as a `type: command` health check runs on each server after its
   restart, so it gates the deploy and needs no CI step of its own: when it
   fails, the server goes back to the previous release, the deploy fails, and
-  the receipt records the failure with `healthCheckPassed: false`
+  the receipt records the failure with `healthCheckPassed: false`.
+  `cloudfall restart`, `cloudfall rollback` and `cloudfall health` run the
+  same check, so it must be safe to run against the live service at any time
 - **Remove the decrypted files.** GitHub-hosted runners are thrown away
   after the job; on a self-hosted runner this step is what keeps the values
   off its disk
