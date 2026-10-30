@@ -224,14 +224,19 @@ and drift audit to the live dashboard, is in
 ```console
 uv run cloudfall import render render.yaml --application acme --server h1
 uv run cloudfall migrate --build web=main          # show the plan
-uv run cloudfall migrate --build web=main --yes    # run it
+uv run cloudfall migrate --build web=main --yes    # run it; pauses at deploy:web
+uv run cloudfall release approve web --release <release-id>   # a person, at a terminal
+uv run cloudfall migrate --yes                     # resume: deploy, routes, TLS
 ```
 
 The importer never guesses silently: `IMPORT-REPORT.md` records what was not
 imported, every assumption and every step required before cutover. The
 migration runs baseline, services, builds, health-gated deploys, routes, a
 DNS-verification pause, TLS and a final evidence pass, and resumes exactly
-where it stopped. Databases move with `cloudfall data copy`, which verifies
+where it stopped. An imported application declares `approval: manual`, so
+the run pauses before its deploy until a person approves the built release
+with `cloudfall release approve`; the resumed run deploys that release
+without building again. Databases move with `cloudfall data copy`, which verifies
 per-table row counts and writes a receipt. See the
 [Render migration guide](docs/render-migration-guide.md) and the
 [Neon migration guide](docs/neon-migration-guide.md).

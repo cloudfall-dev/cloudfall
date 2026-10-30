@@ -249,6 +249,7 @@ from cloudfall.recording import Recording, RecordingError
 from cloudfall.release_approval import (
     APPROVALS_DIRECTORY,
     AUTOMATIC_PLAN,
+    ERROR_DEPLOYMENT_APPROVAL_MISSING,
     VALID_FOR_DEFAULT,
     VALID_FOR_MAXIMUM,
     VALID_FOR_MINIMUM,
@@ -257,9 +258,9 @@ from cloudfall.release_approval import (
     ReleaseApprovalError,
     ValidityHours,
     approve_release,
-    check_approval,
-    deployment_candidate,
+    deployment_approval,
     release_candidate,
+    rollback_approval,
     write_approval,
 )
 from cloudfall.release_approval import (
@@ -3118,6 +3119,14 @@ class MigrateArgs(EngineArgs):
         default=Path("tmp/migrate/plan.json"),
         description="Persisted migration plan (default: tmp/migrate/plan.json)",
     )
+    approvals: Path = Flag(
+        default=Path(APPROVALS_DIRECTORY),
+        description=(
+            "Directory of release approval records a deploy step reads for an "
+            f"application that declares approval: manual (default: "
+            f"{APPROVALS_DIRECTORY})"
+        ),
+    )
     build: tuple[str, ...] = Flag(
         default=(),
         description="Build a component from a git ref, as COMPONENT=REF (repeatable)",
@@ -3176,6 +3185,7 @@ class MigrateArgs(EngineArgs):
             "releases",
             "artifacts",
             "plan_file",
+            "approvals",
             "secrets_dir",
         ):
             _inside_project(getattr(self, flag), flag.replace("_", "-"))
@@ -3233,6 +3243,7 @@ class MigrateArgs(EngineArgs):
             releases_directory=fleet.path(self.releases),
             artifacts_directory=fleet.path(self.artifacts),
             secrets_directory=fleet.path(self.secrets_dir),
+            approvals_directory=fleet.path(self.approvals),
             run=_step_runner(ctx, fleet.directory),
             decrypt=_sops_decrypt(ctx),
         )
@@ -3286,6 +3297,7 @@ class Migration:
         "PRECONDITION",
         "PARTIAL_FAILURE",
         "ENGINE_STEP_FAILED",
+        "RECORD_INVALID",
     ],
     timeout=None,
     supports_raw_payload=True,
@@ -3332,7 +3344,21 @@ def _migration_failure(
     cause = {"step": migration.step, **error}
     if migration.status == "paused":
         message = f"the migration paused at {migration.step}; resume it with --yes"
+        if cause.get("code") == ERROR_DEPLOYMENT_APPROVAL_MISSING:
+            # A person approves the built release first (S-008-14).
+            message = (
+                f"the migration paused at {migration.step}: release "
+                f"{cause['release']} needs a person's approval; run "
+                f"`{cause['command']}` at a terminal, then resume it with --yes"
+            )
         return Exit.PARTIAL_FAILURE(message, context=cause, data=migration)
+    if (
+        migration.status == "error"
+        and cause.get("code") == ERROR_APPROVAL_RECORD_INVALID
+    ):
+        # A broken approval record stops the deploy step as it stops deploy.
+        message = f"the migration stopped at {migration.step}: {cause['message']}"
+        return Exit.RECORD_INVALID(message, context=cause, data=migration)
     if (
         migration.status == "error"
         and cause.get("code") == ERROR_DATA_COPY_PREFLIGHT_REFUSED
@@ -4010,17 +4036,14 @@ def _deploy_approval(
 
     An ``automatic`` application's approvals folder is never read.
     """
-    candidate = deployment_candidate(
-        fleet.inventory, args.component, args.release, artifacts, args.schemas
-    )
-    if candidate is None:
-        return None
     try:
-        return check_approval(
-            candidate,
+        return deployment_approval(
+            fleet.inventory,
+            args.component,
+            args.release,
+            artifacts,
             fleet.path(args.approvals),
-            SchemaCatalog(args.schemas),
-            datetime.now(UTC),
+            args.schemas,
         )
     except ReleaseApprovalError as error:
         if error.code == ERROR_APPROVAL_RECORD_INVALID:
@@ -4125,8 +4148,13 @@ def rollback_command(args: RollbackArgs, ctx: Ctx, fleet: Fleet) -> RollbackPayl
     context = args.context(fleet, ctx)
     try:
         if not args.yes:
+            # A rollback never waits for an approval, even for a manual
+            # application; the plan says so and why (S-008-13).
             return RollbackPayload(
-                _plan(preview_rollback(context, args.component, args.release))
+                {
+                    **_plan(preview_rollback(context, args.component, args.release)),
+                    "approval": rollback_approval(fleet.inventory, args.component),
+                }
             )
         result = rollback(context, args.component, args.release)
     except LifecycleError as error:

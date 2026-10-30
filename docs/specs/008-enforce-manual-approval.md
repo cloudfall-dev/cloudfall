@@ -1,6 +1,6 @@
 # S-008: Enforce manual approval
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -186,3 +186,22 @@ Touches `sdk/src/cloudfall/app.py` (`deploy`, `rollback`, `migrate`, new `releas
 - cloudfall-dev/cloudfall#165: S-008-13, S-008-14
 
 ## Verification
+
+Every criterion ran through the CLI (or `cloudfall mcp serve`'s tool call) against a copy of the example project, with an engine whose playbooks stand in for the real ones: they run `ansible-playbook` on localhost and leave a marker and a release receipt, so no host was contacted. The S-008-14 artifact was built for real by `cloudfall-engine artifact build` from a local git repository. The terminal attestation ran with a stream that reports itself a terminal; no person typed at a real one, and no deploy reached a real server.
+
+- S-008-1: `test_s008_1_a_manual_application_without_approval_is_refused`, exit 4 `PRECONDITION` with `deployment_approval_missing`, the message named `crm`, `crm-backend`, the release and the command, `context.command` was the exact `release approve` command, and no marker, inventory or receipt was written
+- S-008-2: `test_s008_2_a_person_approves_a_release_by_typing_its_id` and `test_s008_2_the_record_id_is_an_approval_time_and_16_hex`, exit 0 and one file under `decisions/releases/` that validated against `release-approval.schema.json` with every named field, `expiresAt` 24 hours after `approvedAt` and `via: terminal`
+- S-008-3: `test_s008_3_an_approved_release_deploys_and_names_its_approval`, the deploy playbook ran and the result's `approval` carried the record's `path`, `approver` and `approved_at`
+- S-008-4: `test_s008_4_off_a_terminal_nothing_is_approved` and `test_s008_4_a_mistyped_release_id_approves_nothing`, exit 4 `PERSON_REQUIRED` and `ATTESTATION_MISMATCH` with and without `--yes`, and the approvals folder stayed empty
+- S-008-5: `test_s008_5_the_deploy_tool_refuses_an_unapproved_manual_release` and `test_s008_5_the_project_instructions_name_release_approve`, no `release_approve` tool was listed and the `deploy` tool with `yes: true` returned `PRECONDITION` with `deployment_approval_missing`
+- S-008-6: `test_s008_6_a_record_for_another_archive_does_not_count`, `test_s008_6_a_record_for_other_servers_does_not_count`, `test_s008_6_an_expired_record_does_not_count` and `test_s008_6_the_servers_are_compared_as_a_set`, each refusal listed the record with `digest_mismatch`, `servers_changed` or `expired`, and servers in another order still counted
+- S-008-7: `test_s008_7_a_record_for_another_release_or_component_does_not_count`, refused with `deployment_approval_missing` and neither record listed
+- S-008-8: `test_s008_8_the_plan_shows_the_approval_before_and_after_it_is_given` and `test_s008_8_the_latest_counting_approval_is_shown`, exit 0 with no playbook run, `status: missing` with `command` before the approval and `status: approved` with `path`, `approver` and `expires_at` after it, the latest of two counting records shown
+- S-008-9: `test_s008_9_an_automatic_application_needs_no_record`, plan and `--yes` both exit 0 with `approval: {"policy": "automatic"}` beside an approvals file that isn't JSON, and the deploy ran
+- S-008-10: `test_s008_10_a_broken_record_stops_a_manual_deploy` and `test_s008_10_deploy_declares_record_invalid`, exit 86 `RECORD_INVALID` naming the file for invalid JSON, a schema mismatch and a non-object, plan and `--yes` alike, and `deploy --schema` declares the exit
+- S-008-11: `test_s008_11_an_automatic_application_needs_no_approval`, `test_s008_11_a_missing_artifact_is_refused_before_asking` and `test_s008_11_a_tampered_artifact_is_refused_before_asking`, `PRECONDITION` with `release_approval_not_required`, `lifecycle_artifact_missing` and `lifecycle_artifact_digest_mismatch`, no prompt and no file
+- S-008-12: `test_s008_12_a_validity_out_of_range_is_a_usage_error` and `test_s008_12_a_validity_of_two_hours_expires_two_hours_later`, `--valid-for 0` and `169` were usage errors naming `--valid-for`, and `2` wrote `expiresAt` two hours after `approvedAt`
+- S-008-13: `test_s008_13_rollback_needs_no_approval`, for a `manual` application the plan showed `approval` with `policy: manual`, `required: false` and a reason, and `rollback --yes` ran the rollback playbook with no approvals folder at all; an `automatic` application's plan showed `{"policy": "automatic"}`
+- S-008-14: `test_s008_14_migrate_pauses_for_an_approval_and_resumes_without_a_rebuild`, `migrate --build crm-backend=main --yes` exited 3 `PARTIAL_FAILURE` at `deploy:crm-backend` with `deployment_approval_missing`, the release the completed build step recorded and the `release approve` command, no deploy playbook ran; after `release approve`, with the source repository deleted so a second build could not succeed, `migrate --yes` completed `deploy:crm-backend` with that release and the record as its `approval`, and the artifacts folder held the same files. `test_s008_14_a_broken_approval_record_stops_the_deploy_step` (exit 86 `RECORD_INVALID`) and `test_s008_14_an_automatic_application_migrates_without_a_record` cover the step's other answers
+- S-008-15: `test_s008_15_a_failed_health_gate_keeps_the_approval_for_a_retry`, the failed deploy exited `ENGINE_STEP_FAILED`, the record's bytes were unchanged and the retry deployed on the same record
+- S-008-16: `test_s008_16_the_changelog_and_ci_guide_say_deploy_enforces_manual`, the fragment's `### Breaking` entry names `deploy --yes`, `migrate --yes`, `approval: manual`, `cloudfall release approve` and `approval: automatic`, and the CI guide names `cloudfall release approve` and no longer says no command acts on `approval`

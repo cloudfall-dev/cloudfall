@@ -44,6 +44,11 @@ from cloudfall.operations import (
     UtcTimestamp,
     build_operations_view,
 )
+from cloudfall.release_approval import (
+    ERROR_DEPLOYMENT_APPROVAL_MISSING,
+    ReleaseApprovalError,
+    deployment_approval,
+)
 from cloudfall.service_evidence import (
     DeploymentReceiptSet,
     DomainObservationSet,
@@ -61,6 +66,7 @@ if TYPE_CHECKING:
 
     from cloudfall.agent_tools import AgentConfig
     from cloudfall.inventory import DomainInventory, ServerInventory
+    from cloudfall.release_approval import ApprovalCheck
     from cloudfall.secrets import OwnedRolePassword
 
     Runner = Callable[[], dict[str, object]]
@@ -77,7 +83,10 @@ _ERROR_TTL_HIGH = "migrate_ttl_high"
 _ERROR_PARALLEL_RUN = "migrate_parallel_run_failed"
 _MAX_CUTOVER_TTL_SECONDS = 300
 _ROLLBACK_WINDOW_HOURS = 24
-_PAUSE_CODES = frozenset({_ERROR_DNS_UNVERIFIED, _ERROR_TTL_HIGH})
+_PAUSE_CODES = frozenset(
+    {_ERROR_DNS_UNVERIFIED, _ERROR_TTL_HIGH, ERROR_DEPLOYMENT_APPROVAL_MISSING}
+)
+"""Step codes that wait for a person: the run pauses there, it did not fail."""
 _ERROR_AUDIT_DRIFT = "migrate_audit_drift"
 _ERROR_ROUTES_UNHEALTHY = "migrate_routes_unhealthy"
 _ERROR_DATABASE_UNKNOWN = "migrate_database_unknown"
@@ -157,6 +166,7 @@ def execute_migration(
     inventory = PlatformInventory.from_state(state)
     _require_known_components(inventory, options)
     steps = _load_plan(options, _computed_steps(inventory, options))
+    _require_built_components(inventory, options, steps)
     if not options.execute:
         return _envelope("plan", steps)
 
@@ -186,11 +196,7 @@ def execute_migration(
         except (MigrateError, LifecycleError) as error:
             _save_plan(options.plan_file, steps)
             envelope = _envelope(
-                "paused"
-                if isinstance(error, MigrateError)
-                and error.code in _PAUSE_CODES
-                else "error",
-                steps,
+                "paused" if error.code in _PAUSE_CODES else "error", steps
             )
             envelope["step"] = step.step_id
             envelope["error"] = error.as_dict()["error"]
@@ -321,16 +327,27 @@ def _require_known_components(
                 f"{', '.join(unknown)}"
             )
             raise MigrateError(_ERROR_COMPONENT_UNKNOWN, detail)
-    unbuilt = sorted(
-        declared - set(options.builds) - set(options.releases)
-    )
+    _require_known_databases(inventory, options)
+
+
+def _require_built_components(
+    inventory: PlatformInventory, options: MigrateOptions, steps: list[PlanStep]
+) -> None:
+    """Refuse a component with no ref, no release, and no completed build.
+
+    A resumed run needs no ``--build`` for a component whose build step the
+    saved plan already completed: it deploys the release that step recorded
+    (S-008-14).
+    """
+    declared = {component.resource_id.value for component in inventory.components}
+    built = set(_recover_releases(steps, options)) | set(options.builds)
+    unbuilt = sorted(declared - built)
     if unbuilt:
         detail = (
             "declare a git ref (--build component=ref) or a pinned release "
             f"(--release component=id) for: {', '.join(unbuilt)}"
         )
         raise MigrateError(_ERROR_COMPONENT_UNBUILT, detail)
-    _require_known_databases(inventory, options)
 
 
 def _require_known_databases(
@@ -508,19 +525,13 @@ def _build_runners(  # noqa: PLR0913 - the run's whole contract.
                     f"no built or pinned release recorded for {component_id}"
                 )
                 raise MigrateError(_ERROR_RELEASE_MISSING, detail)
-            result = deploy(
-                context,
+            return _deploy_step(
+                config,
+                inventory,
                 ResourceId(component_id),
                 ReleaseId(release),
-                config.artifacts_directory,
-                DeployOptions(
-                    environment_file=options.environment_files.get(
-                        component_id
-                    ),
-                    receipt_directory=config.releases_directory,
-                ),
+                options.environment_files.get(component_id),
             )
-            return result.as_dict()
 
         return _run
 
@@ -541,6 +552,63 @@ def _build_runners(  # noqa: PLR0913 - the run's whole contract.
             _data_schemas(options, database),
         )
     return runners
+
+
+def _deploy_step(
+    config: AgentConfig,
+    inventory: PlatformInventory,
+    component_id: ResourceId,
+    release: ReleaseId,
+    environment_file: Path | None,
+) -> dict[str, object]:
+    """Deploy one release, once a ``manual`` application's release is approved."""
+    approval = _deploy_approval(config, inventory, component_id, release)
+    # A manual application's release deploys only once a person approved
+    # it; the run pauses here and resumes once they have.
+    if approval is not None and approval.counting is None:
+        raise approval.refusal()
+    result = deploy(
+        config.context(),
+        component_id,
+        release,
+        config.artifacts_directory,
+        DeployOptions(
+            environment_file=environment_file,
+            receipt_directory=config.releases_directory,
+            # The deploy refuses an archive swapped after the check.
+            approved_sha256=(
+                None if approval is None else approval.candidate.artifact_sha256
+            ),
+        ),
+    )
+    if approval is None:
+        return result.as_dict()
+    return {**result.as_dict(), "approval": approval.used()}
+
+
+def _deploy_approval(
+    config: AgentConfig,
+    inventory: PlatformInventory,
+    component_id: ResourceId,
+    release: ReleaseId,
+) -> ApprovalCheck | None:
+    """Check a deploy step's approval as ``deploy`` does (S-008-14).
+
+    A broken approval record fails the step with its own code, so the
+    command answers it as ``deploy`` does, with ``RECORD_INVALID``.
+    """
+    try:
+        return deployment_approval(
+            inventory,
+            component_id,
+            release,
+            config.artifacts_directory,
+            # The default is relative: it is the project's folder.
+            config.project_directory / config.approvals_directory,
+            config.schema_directory,
+        )
+    except ReleaseApprovalError as error:
+        raise LifecycleError(error.code, error.detail) from error
 
 
 def _data_runner(
