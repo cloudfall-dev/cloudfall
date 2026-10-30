@@ -175,7 +175,18 @@ the peer-authenticated socket as the declared owner, verifies per-table
 row counts match the source exactly, removes the staged URL file and the
 dump, and writes a `DataMigrationReceipt` with per-table counts. It
 refuses a target database that already has tables in the copied schemas,
-so a re-run requires deliberately dropping what was restored.
+so a re-run after a finished copy requires deliberately dropping what was
+restored. A restore that fails runs in one transaction and rolls back
+whole, so the next run needs no cleanup.
+
+Before it dumps anything, a preflight reads both catalogs and refuses a
+copy the target can't hold, with `PRECONDITION` and the code
+`data_copy_preflight_refused`, naming every finding at once:
+`missingSchemas` (a named schema the source lacks), `extensions` (one the
+copied schemas need that the target's `pg_available_extensions` lacks),
+`roles` (a role a row-level security policy names that the target lacks),
+and `authReferences` (a function or policy that calls `auth.` when `auth`
+isn't copied). Provide what it names, or rewrite it, and run again.
 
 By default the copy takes every non-system schema of the source, and the
 row-count check and the receipt cover all of them. To take only some,

@@ -19,6 +19,173 @@ cloudfall_data_migration_target_tables_query: >-
   SELECT count(*) FROM information_schema.tables
   WHERE table_schema IN
     (SELECT jsonb_array_elements_text(:'cloudfall_data_schemas'::jsonb))
+# What the source must give the target before anything is dumped, as one
+# JSON object line. The selected schemas arrive as the psql variable
+# cloudfall_data_schemas and whether none was named as
+# cloudfall_data_every_schema, so no name is ever spliced into the SQL text.
+#   missingSchemas: a selected schema the source doesn't have
+#   extensions: an extension the selected schemas need: one installed in a
+#     selected schema, one whose member object an object of a selected schema
+#     depends on in pg_depend (a column type, a default, an index operator
+#     class, a view, a trigger, a policy), or, with no schema named, every
+#     extension but plpgsql, since the whole dump creates them all
+#   policyRoles: a role a row-level security policy on a table of a selected
+#     schema names (pg_policy.polroles; 0 is PUBLIC)
+#   authReferences: when auth isn't selected, a function of a selected schema
+#     whose source mentions auth. or that depends on an object in auth, and a
+#     policy on a table of a selected schema whose USING or WITH CHECK does
+cloudfall_data_migration_source_preflight_query: >-
+  WITH selected AS (
+    SELECT jsonb_array_elements_text(:'cloudfall_data_schemas'::jsonb)
+      AS nspname
+  ),
+  selected_ns AS (
+    SELECT n.oid, n.nspname
+    FROM pg_catalog.pg_namespace n JOIN selected s USING (nspname)
+  ),
+  auth_selected AS (
+    SELECT EXISTS (SELECT 1 FROM selected WHERE nspname = 'auth') AS chosen
+  ),
+  selected_objects AS (
+    SELECT 'pg_catalog.pg_class'::regclass AS classid, c.oid AS objid
+    FROM pg_catalog.pg_class c
+    WHERE c.relnamespace IN (SELECT oid FROM selected_ns)
+    UNION ALL
+    SELECT 'pg_catalog.pg_type'::regclass, t.oid FROM pg_catalog.pg_type t
+    WHERE t.typnamespace IN (SELECT oid FROM selected_ns)
+    UNION ALL
+    SELECT 'pg_catalog.pg_proc'::regclass, p.oid FROM pg_catalog.pg_proc p
+    WHERE p.pronamespace IN (SELECT oid FROM selected_ns)
+    UNION ALL
+    SELECT 'pg_catalog.pg_constraint'::regclass, k.oid
+    FROM pg_catalog.pg_constraint k
+    WHERE k.connamespace IN (SELECT oid FROM selected_ns)
+    UNION ALL
+    SELECT 'pg_catalog.pg_attrdef'::regclass, a.oid
+    FROM pg_catalog.pg_attrdef a JOIN pg_catalog.pg_class c ON c.oid = a.adrelid
+    WHERE c.relnamespace IN (SELECT oid FROM selected_ns)
+    UNION ALL
+    SELECT 'pg_catalog.pg_trigger'::regclass, g.oid
+    FROM pg_catalog.pg_trigger g JOIN pg_catalog.pg_class c ON c.oid = g.tgrelid
+    WHERE c.relnamespace IN (SELECT oid FROM selected_ns)
+    UNION ALL
+    SELECT 'pg_catalog.pg_rewrite'::regclass, r.oid
+    FROM pg_catalog.pg_rewrite r JOIN pg_catalog.pg_class c ON c.oid = r.ev_class
+    WHERE c.relnamespace IN (SELECT oid FROM selected_ns)
+    UNION ALL
+    SELECT 'pg_catalog.pg_policy'::regclass, y.oid
+    FROM pg_catalog.pg_policy y JOIN pg_catalog.pg_class c ON c.oid = y.polrelid
+    WHERE c.relnamespace IN (SELECT oid FROM selected_ns)
+  ),
+  members AS (
+    SELECT d.classid, d.objid, d.refobjid AS extoid
+    FROM pg_catalog.pg_depend d
+    WHERE d.refclassid = 'pg_catalog.pg_extension'::regclass
+      AND d.deptype = 'e'
+  ),
+  needed AS (
+    SELECT e.extname FROM pg_catalog.pg_extension e
+    WHERE (:'cloudfall_data_every_schema'::boolean AND e.extname <> 'plpgsql')
+      OR e.extnamespace IN (SELECT oid FROM selected_ns)
+      OR e.oid IN (
+        SELECT m.extoid
+        FROM pg_catalog.pg_depend d
+        JOIN selected_objects o ON o.classid = d.classid AND o.objid = d.objid
+        JOIN members m ON m.classid = d.refclassid AND m.objid = d.refobjid
+        UNION
+        SELECT d.refobjid
+        FROM pg_catalog.pg_depend d
+        JOIN selected_objects o ON o.classid = d.classid AND o.objid = d.objid
+        WHERE d.refclassid = 'pg_catalog.pg_extension'::regclass
+      )
+  ),
+  missing AS (
+    SELECT s.nspname FROM selected s
+    WHERE NOT EXISTS (
+      SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspname = s.nspname
+    )
+  ),
+  policy_roles AS (
+    SELECT DISTINCT r.rolname
+    FROM pg_catalog.pg_policy y
+    JOIN pg_catalog.pg_class c ON c.oid = y.polrelid
+    CROSS JOIN LATERAL unnest(y.polroles) AS named(role_oid)
+    JOIN pg_catalog.pg_roles r ON r.oid = named.role_oid
+    WHERE c.relnamespace IN (SELECT oid FROM selected_ns)
+  ),
+  auth_ns AS (
+    SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = 'auth'
+  ),
+  auth_references AS (
+    SELECT format('function %I.%I(%s)', n.nspname, p.proname,
+                  pg_catalog.pg_get_function_identity_arguments(p.oid))
+      AS reference
+    FROM pg_catalog.pg_proc p JOIN selected_ns n ON n.oid = p.pronamespace
+    WHERE p.prosrc ~ '\mauth\.'
+      OR EXISTS (
+        SELECT 1 FROM pg_catalog.pg_depend d
+        LEFT JOIN pg_catalog.pg_proc dp
+          ON d.refclassid = 'pg_catalog.pg_proc'::regclass
+          AND dp.oid = d.refobjid
+        LEFT JOIN pg_catalog.pg_class dc
+          ON d.refclassid = 'pg_catalog.pg_class'::regclass
+          AND dc.oid = d.refobjid
+        LEFT JOIN pg_catalog.pg_type dt
+          ON d.refclassid = 'pg_catalog.pg_type'::regclass
+          AND dt.oid = d.refobjid
+        WHERE d.classid = 'pg_catalog.pg_proc'::regclass AND d.objid = p.oid
+          AND coalesce(dp.pronamespace, dc.relnamespace, dt.typnamespace)
+            IN (SELECT oid FROM auth_ns)
+      )
+    UNION
+    SELECT format('policy %I on %I.%I', y.polname, n.nspname, c.relname)
+    FROM pg_catalog.pg_policy y
+    JOIN pg_catalog.pg_class c ON c.oid = y.polrelid
+    JOIN selected_ns n ON n.oid = c.relnamespace
+    WHERE coalesce(pg_catalog.pg_get_expr(y.polqual, y.polrelid), '')
+        ~ '\mauth\.'
+      OR coalesce(pg_catalog.pg_get_expr(y.polwithcheck, y.polrelid), '')
+        ~ '\mauth\.'
+  )
+  SELECT json_build_object(
+    'missingSchemas',
+    coalesce((SELECT json_agg(nspname ORDER BY nspname) FROM missing), '[]'),
+    'extensions',
+    coalesce((SELECT json_agg(extname::text ORDER BY extname) FROM needed),
+             '[]'),
+    'policyRoles',
+    coalesce((SELECT json_agg(rolname::text ORDER BY rolname)
+              FROM policy_roles), '[]'),
+    'authReferences',
+    CASE WHEN (SELECT chosen FROM auth_selected) THEN '[]'::json
+    ELSE coalesce((SELECT json_agg(reference ORDER BY reference)
+                   FROM auth_references), '[]')
+    END
+  )
+# Which of the needed extensions and policy roles the target lacks, as one
+# JSON object line. Both lists arrive as the psql variables
+# cloudfall_data_extensions and cloudfall_data_policy_roles.
+cloudfall_data_migration_target_preflight_query: >-
+  SELECT json_build_object(
+    'extensions',
+    coalesce((
+      SELECT json_agg(wanted.value ORDER BY wanted.value)
+      FROM jsonb_array_elements_text(:'cloudfall_data_extensions'::jsonb)
+        AS wanted(value)
+      WHERE wanted.value NOT IN (
+        SELECT a.name::text FROM pg_catalog.pg_available_extensions a
+      )
+    ), '[]'),
+    'roles',
+    coalesce((
+      SELECT json_agg(wanted.value ORDER BY wanted.value)
+      FROM jsonb_array_elements_text(:'cloudfall_data_policy_roles'::jsonb)
+        AS wanted(value)
+      WHERE wanted.value NOT IN (
+        SELECT r.rolname::text FROM pg_catalog.pg_roles r
+      )
+    ), '[]')
+  )
 # Exact per-table row counts of the selected schemas in one deterministic
 # query, one schema,table,rows line per base table, so source and target
 # evidence can be compared verbatim. The schema names arrive as the psql
