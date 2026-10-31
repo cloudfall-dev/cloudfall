@@ -511,9 +511,12 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "rollback",
         CommandEffect.SERVERS,
         "switch one component back to an existing release",
-        gate=_YES,
+        gate=(
+            f"{_YES}; it needs no approval, and for an application that declares "
+            "`approval: manual` the plan's `approval` says so and why"
+        ),
         output=(
-            _plan("component", "release", "releaseCommandSkipped?"),
+            _plan("component", "release", "releaseCommandSkipped?", "approval"),
             _shape(*_EXECUTED, "release", when="with `--yes`"),
         ),
     ),
@@ -599,7 +602,11 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "migrate",
         CommandEffect.SERVERS,
         "run the resumable end-to-end migration plan",
-        gate=_YES,
+        gate=(
+            f"{_YES}; a `deploy:<component>` step of an application that declares "
+            "`approval: manual` pauses until a person runs `cloudfall release "
+            "approve` for the built release"
+        ),
         output=(
             _shape(
                 "status",

@@ -127,6 +127,8 @@ and validation rejects them if they do.
 ```console
 uv run cloudfall migrate --build acme-api=main
 uv run cloudfall migrate --build acme-api=main --yes
+uv run cloudfall release approve acme-api --release <release-id>
+uv run cloudfall migrate --yes
 ```
 
 Without `--yes` the command shows the plan. With it, the plan executes step
@@ -134,7 +136,19 @@ by step: server baseline and firewall, infrastructure services, artifact
 builds, health-gated deployments, HTTP routes, a DNS-verification pause at
 the cutover moment, TLS issuance, and a final evidence pass requiring a
 compliant audit and healthy routes. Progress persists after every step, so
-a failure or the DNS pause resumes exactly where it stopped.
+a failure or a pause resumes exactly where it stopped.
+
+The importer writes `approval: manual` for every application, so the run
+pauses at `deploy:acme-api` (exit 3, `PARTIAL_FAILURE`, with
+`context.code: deployment_approval_missing`) once the release is built. The
+answer names the built release and the exact `cloudfall release approve`
+command. A person runs it at a terminal: it shows the git commit, the archive
+SHA-256 and the servers, and records the approval under
+`decisions/releases/` once the release id is typed back. `migrate --yes` then
+resumes at the deploy step with the release the build step recorded,
+without building again. When another gate, such as GitHub's required
+reviewers, is the real one, switch the application to `approval: automatic`
+and the run deploys without stopping.
 
 ## Step 6: migrate the data
 

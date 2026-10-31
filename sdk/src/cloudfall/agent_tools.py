@@ -15,6 +15,7 @@ from cloudfall.lifecycle import (
     StepRunner,
     subprocess_step,
 )
+from cloudfall.release_approval import APPROVALS_DIRECTORY
 from cloudfall.secrets import SopsSecretProvider
 
 if TYPE_CHECKING:
@@ -40,6 +41,8 @@ class AgentConfig:
     environment_directory: Path = Path("tmp/env")
     environment_receipts_directory: Path = Path("tmp/env-receipts")
     proposals_directory: Path = Path("tmp/operator/proposals")
+    approvals_directory: Path = Path(APPROVALS_DIRECTORY)
+    """Release approvals a ``manual`` application's deploy step reads."""
     gateway_ca_path: Path | None = None
     gateway_certificate_path: Path | None = None
     gateway_key_path: Path | None = None

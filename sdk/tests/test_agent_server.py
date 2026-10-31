@@ -389,6 +389,8 @@ def test_s008_5_the_deploy_tool_refuses_an_unapproved_manual_release(
 
     assert not any(name.startswith("release") for name in tools)
     assert "approvals" not in tools["deploy"].input_schema["properties"]
+    # migrate's deploy steps read the same bound folder (S-008-14).
+    assert "approvals" not in tools["migrate"].input_schema["properties"]
     assert planned["ok"] is True, planned
     assert planned["data"]["approval"]["policy"] == "manual"
     assert planned["data"]["approval"]["status"] == "missing"

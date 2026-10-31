@@ -24,13 +24,13 @@ from jsonschema.exceptions import ValidationError
 from cloudfall.decision import ApprovalChannel
 from cloudfall.domain import DeploymentApproval, ReleaseId, ResourceId, Sha256Digest
 from cloudfall.lifecycle import LifecycleError, find_component, verify_artifact
+from cloudfall.validation import SchemaCatalog
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
     from cloudfall.inventory import PlatformInventory
-    from cloudfall.validation import SchemaCatalog
 
 RELEASE_APPROVAL_SCHEMA = "release-approval.schema.json"
 APPROVALS_DIRECTORY = "decisions/releases"
@@ -195,21 +195,31 @@ def deployment_candidate(
     that does not verify.
     """
     component = find_component(inventory, component_id)
-    applications = {
-        application.resource_id: application
-        for application in inventory.applications
-    }
-    application = applications[component.application_id]
-    if application.approval is DeploymentApproval.AUTOMATIC:
+    if application_approval(inventory, component_id) is DeploymentApproval.AUTOMATIC:
         return None
     artifact = verify_artifact(artifacts, component_id, release, schemas)
     return ReleaseCandidate(
-        application_id=application.resource_id,
+        application_id=component.application_id,
         component_id=component_id,
         release=release,
         artifact_sha256=Sha256Digest(artifact.sha256),
         git_commit=GitCommit(artifact.git_commit),
         server_ids=component.server_ids,
+    )
+
+
+def application_approval(
+    inventory: PlatformInventory, component_id: ResourceId
+) -> DeploymentApproval:
+    """Return the ``approval`` the component's application declares.
+
+    Raises ``LifecycleError`` for an undeclared component.
+    """
+    component = find_component(inventory, component_id)
+    return next(
+        application.approval
+        for application in inventory.applications
+        if application.resource_id == component.application_id
     )
 
 
@@ -485,6 +495,56 @@ def check_approval(
             not_counting.append(NotCounting(stored, reason))
     latest = max(counting, key=lambda stored: stored.approved_at, default=None)
     return ApprovalCheck(candidate, latest, tuple(not_counting))
+
+
+def deployment_approval(  # noqa: PLR0913 - one deploy's whole approval question.
+    inventory: PlatformInventory,
+    component_id: ResourceId,
+    release: ReleaseId,
+    artifacts: Path,
+    approvals: Path,
+    schemas: Path,
+) -> ApprovalCheck | None:
+    """Check the release's approval now; ``None`` for an ``automatic`` application.
+
+    An ``automatic`` application's approvals folder is never read. Raises
+    ``LifecycleError`` for an undeclared component or an artifact that does
+    not verify, and ``ReleaseApprovalError`` for a broken approval record.
+    """
+    candidate = deployment_candidate(
+        inventory, component_id, release, artifacts, schemas
+    )
+    if candidate is None:
+        return None
+    return check_approval(
+        candidate, approvals, SchemaCatalog(schemas), datetime.now(UTC)
+    )
+
+
+# rollback needs no approval (S-008-13).
+
+ROLLBACK_NOT_REQUIRED_REASON = (
+    "a rollback only activates a release still retained on the servers, which "
+    "went live through a deploy; it is the recovery path the health gate takes "
+    "on its own, so it does not wait for a person's approval"
+)
+
+
+def rollback_approval(
+    inventory: PlatformInventory, component_id: ResourceId
+) -> dict[str, object]:
+    """Serialize a rollback plan's ``approval``: never required.
+
+    Raises ``LifecycleError`` for an undeclared component.
+    """
+    policy = application_approval(inventory, component_id)
+    if policy is DeploymentApproval.AUTOMATIC:
+        return dict(AUTOMATIC_PLAN)
+    return {
+        "policy": policy.value,
+        "required": False,
+        "reason": ROLLBACK_NOT_REQUIRED_REASON,
+    }
 
 
 def load_approvals(

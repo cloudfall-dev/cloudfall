@@ -51,6 +51,7 @@ engine's playbook contract for execution — never Ansible internals. Each
 operation is split into a pure, testable execution plan and a thin executor:
 
 ```console
+uv run cloudfall release approve --project config/examples crm-backend --release <release-id>
 uv run cloudfall deploy --project config/examples crm-backend --release <release-id> --yes
 uv run cloudfall rollback --project config/examples crm-backend --release <release-id> --yes
 uv run cloudfall restart --project config/examples crm-backend --yes
@@ -62,6 +63,16 @@ servers only with `--yes`. Without it they run every controller-side check
 (declared component, verified artifact, declared database, source URL file,
 DNS for a certificate) and print a `plan` naming the target servers, exit `0`,
 so a request can be reviewed before it runs.
+
+The example application `crm` declares `approval: manual`, so `deploy --yes`
+first needs a person's approval of that release: `release approve` asks them
+to type the release id at a terminal and records it under
+`decisions/releases/`, naming the archive SHA-256 and the servers. Without a
+record that counts, `deploy --yes` exits `PRECONDITION` with
+`deployment_approval_missing` and `migrate --yes` pauses at the deploy step;
+`deploy`'s plan shows `approval` with the command to run. `rollback` and
+`restart` ship no new code and need no approval. An application that
+declares `approval: automatic` deploys without a record.
 
 `domains apply <domain>` runs `domains.yml` on the Domain's proxy server
 alone and renders only that Domain, so no baseline, firewall or service task
