@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from cloudfall.ansible_data import unmarked
 from cloudfall_engine.cli import main
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
@@ -58,7 +59,11 @@ def render_examples(output: Path) -> dict[str, str]:
     assert exit_code == 0
     inventory_text = inventory_path.read_text(encoding="utf-8")
     rendered = {"ansible-inventory.json": inventory_text}
-    document = cast("dict[str, dict[str, object]]", json.loads(inventory_text))
+    # Read the values back as Ansible's loader does: an unsafe string is text.
+    document = cast(
+        "dict[str, dict[str, object]]",
+        json.loads(inventory_text, object_hook=unmarked),
+    )
     servers = cast(
         "dict[str, dict[str, dict[str, dict[str, object]]]]",
         document["all"]["children"],

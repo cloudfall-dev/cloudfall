@@ -91,8 +91,9 @@ def test_ansible_merges_the_overlay_over_the_team_inventory(tmp_path: Path) -> N
     host_vars = parsed["_meta"]["hostvars"]["web-1"]
     assert host_vars["ansible_host"] == "10.0.0.1"
     assert host_vars["ansible_user"] == "ansible"
-    assert host_vars["cloudfall_server_id"] == "web-1"
-    assert host_vars["cloudfall_server_type"]["id"] == "web"
+    # The overlay's strings stay unsafe in Ansible, never templated (#174).
+    assert host_vars["cloudfall_server_id"] == {"__ansible_unsafe": "web-1"}
+    assert host_vars["cloudfall_server_type"]["id"] == {"__ansible_unsafe": "web"}
     assert "cloudfall" in host_vars
 
 
