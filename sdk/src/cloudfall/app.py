@@ -248,15 +248,22 @@ from cloudfall.project import (
 from cloudfall.recording import Recording, RecordingError
 from cloudfall.release_approval import (
     APPROVALS_DIRECTORY,
+    AUTOMATIC_PLAN,
     VALID_FOR_DEFAULT,
     VALID_FOR_MAXIMUM,
     VALID_FOR_MINIMUM,
+    ApprovalCheck,
     Approver,
     ReleaseApprovalError,
     ValidityHours,
     approve_release,
+    check_approval,
+    deployment_candidate,
     release_candidate,
     write_approval,
+)
+from cloudfall.release_approval import (
+    ERROR_RECORD_INVALID as ERROR_APPROVAL_RECORD_INVALID,
 )
 from cloudfall.render_api import (
     ERROR_API_UNREACHABLE,
@@ -397,7 +404,10 @@ app.exit_code(
 app.exit_code(
     "RECORD_INVALID",
     86,
-    description="A decision record or proposal receipt could not be read",
+    description=(
+        "A decision record, proposal receipt or release approval record could "
+        "not be read"
+    ),
     retryable=False,
     side_effects="none",
 )
@@ -3872,12 +3882,20 @@ class DeployArgs(ComponentArgs):
         default=Path("tmp/releases"),
         description="Release receipt directory (default: tmp/releases)",
     )
+    approvals: Path = Flag(
+        default=Path(APPROVALS_DIRECTORY),
+        description=(
+            "Directory of release approval records, read for an application "
+            f"that declares approval: manual (default: {APPROVALS_DIRECTORY})"
+        ),
+    )
 
     def __post_init__(self) -> None:
         """Keep relative paths inside the project."""
         ComponentArgs.__post_init__(self)
         _inside_project(self.artifacts, "artifacts")
         _inside_project(self.releases, "releases")
+        _inside_project(self.approvals, "approvals")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -3985,14 +4003,43 @@ _LIFECYCLE_EXIT_CODES = [
 ]
 
 
+def _deploy_approval(
+    args: DeployArgs, fleet: Fleet, artifacts: Path
+) -> ApprovalCheck | None:
+    """Check the release's approval; ``None`` for an ``automatic`` application.
+
+    An ``automatic`` application's approvals folder is never read.
+    """
+    candidate = deployment_candidate(
+        fleet.inventory, args.component, args.release, artifacts, args.schemas
+    )
+    if candidate is None:
+        return None
+    try:
+        return check_approval(
+            candidate,
+            fleet.path(args.approvals),
+            SchemaCatalog(args.schemas),
+            datetime.now(UTC),
+        )
+    except ReleaseApprovalError as error:
+        if error.code == ERROR_APPROVAL_RECORD_INVALID:
+            raise Exit.RECORD_INVALID(
+                error.detail, context={"code": error.code}
+            ) from error
+        raise Exit.PRECONDITION(error.detail, context={"code": error.code}) from error
+
+
 @app.command(
     "deploy",
     description=(
         "Deploy one built component release behind its health gate; without "
-        "--yes it shows the plan"
+        "--yes it shows the plan. A release of an application that declares "
+        "approval: manual deploys only once a person approved it with "
+        "cloudfall release approve"
     ),
     danger_level="mutating",
-    exit_codes=_LIFECYCLE_EXIT_CODES,
+    exit_codes=[*_LIFECYCLE_EXIT_CODES, "RECORD_INVALID"],
     timeout=None,
     subprocess=Subprocess("ansible-playbook"),
     required_tools={"ansible-playbook": "2.21.0"},
@@ -4013,10 +4060,21 @@ def deploy_command(args: DeployArgs, ctx: Ctx, fleet: Fleet) -> DeployPayload:
     context = args.context(fleet, ctx)
     artifacts = fleet.path(args.artifacts)
     try:
+        approval = _deploy_approval(args, fleet, artifacts)
         if not args.yes:
+            preview = preview_deploy(context, args.component, args.release, artifacts)
             return DeployPayload(
-                _plan(preview_deploy(context, args.component, args.release, artifacts))
+                {
+                    **_plan(preview),
+                    "approval": (
+                        dict(AUTOMATIC_PLAN) if approval is None else approval.plan()
+                    ),
+                }
             )
+        # Refused before the inventory render or any playbook: nothing on a
+        # server changes and no receipt is written.
+        if approval is not None and approval.counting is None:
+            raise approval.refusal()
         result = deploy(
             context,
             args.component,
@@ -4027,11 +4085,20 @@ def deploy_command(args: DeployArgs, ctx: Ctx, fleet: Fleet) -> DeployPayload:
                     fleet.path(args.env_file) if args.env_file is not None else None
                 ),
                 receipt_directory=fleet.path(args.releases),
+                approved_sha256=(
+                    None if approval is None else approval.candidate.artifact_sha256
+                ),
             ),
         )
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error
-    return DeployPayload({**result.as_dict(), "effect": "updated"})
+    return DeployPayload(
+        {
+            **result.as_dict(),
+            "effect": "updated",
+            "approval": dict(AUTOMATIC_PLAN) if approval is None else approval.used(),
+        }
+    )
 
 
 @app.command(

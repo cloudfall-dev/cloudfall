@@ -3,8 +3,10 @@
 ``cloudfall release approve`` writes one ``ReleaseApproval`` record once a
 person typed the release id at a terminal. The record names the archive
 digest, the git commit and the servers it approves, and when it expires; it
-holds no secret. This module builds and writes the record; nothing here
-deploys, and nothing here reads the records back.
+holds no secret. This module builds and writes the record, and reads the
+records back for ``deploy``, which counts one only when it still names the
+archive and the servers being deployed and has not expired. Nothing here
+deploys.
 """
 
 from __future__ import annotations
@@ -13,18 +15,20 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from datetime import UTC, timedelta
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime, timedelta
+from enum import StrEnum
+from typing import TYPE_CHECKING, cast
+
+from jsonschema.exceptions import ValidationError
 
 from cloudfall.decision import ApprovalChannel
-from cloudfall.domain import DeploymentApproval, ResourceId, Sha256Digest
-from cloudfall.lifecycle import find_component, verify_artifact
+from cloudfall.domain import DeploymentApproval, ReleaseId, ResourceId, Sha256Digest
+from cloudfall.lifecycle import LifecycleError, find_component, verify_artifact
 
 if TYPE_CHECKING:
-    from datetime import datetime
+    from collections.abc import Mapping
     from pathlib import Path
 
-    from cloudfall.domain import ReleaseId
     from cloudfall.inventory import PlatformInventory
     from cloudfall.validation import SchemaCatalog
 
@@ -40,6 +44,10 @@ ERROR_APPROVAL_EXISTS = "release_approval_exists"
 """Two approvals of one release in the same second share an id."""
 ERROR_CHANNEL_UNKNOWN = "release_approval_channel_unknown"
 ERROR_VALIDITY_INVALID = "release_approval_validity_invalid"
+ERROR_RECORD_INVALID = "release_approval_record_invalid"
+"""A file in the approvals folder is not a valid ``ReleaseApproval``."""
+ERROR_DEPLOYMENT_APPROVAL_MISSING = "deployment_approval_missing"
+"""A ``manual`` application's release has no approval that counts."""
 
 VALID_FOR_MINIMUM = 1
 VALID_FOR_MAXIMUM = 168
@@ -159,6 +167,33 @@ def release_candidate(
     that does not verify, and ``ReleaseApprovalError`` for a component of
     an ``automatic`` application.
     """
+    candidate = deployment_candidate(
+        inventory, component_id, release, artifacts, schemas
+    )
+    if candidate is None:
+        component = find_component(inventory, component_id)
+        message = (
+            f"application {component.application_id} deploys automatic; an "
+            f"approval of {component_id} would gate nothing"
+        )
+        raise ReleaseApprovalError(ERROR_APPROVAL_NOT_REQUIRED, message)
+    return candidate
+
+
+def deployment_candidate(
+    inventory: PlatformInventory,
+    component_id: ResourceId,
+    release: ReleaseId,
+    artifacts: Path,
+    schemas: Path,
+) -> ReleaseCandidate | None:
+    """Return what a deploy of ``release`` would need approved now.
+
+    ``None`` when the component's application deploys ``automatic``: then
+    nothing needs approving and the artifact is left to the deploy itself.
+    Raises ``LifecycleError`` for an undeclared component or an artifact
+    that does not verify.
+    """
     component = find_component(inventory, component_id)
     applications = {
         application.resource_id: application
@@ -166,11 +201,7 @@ def release_candidate(
     }
     application = applications[component.application_id]
     if application.approval is DeploymentApproval.AUTOMATIC:
-        message = (
-            f"application {application.resource_id} deploys automatic; an "
-            f"approval of {component_id} would gate nothing"
-        )
-        raise ReleaseApprovalError(ERROR_APPROVAL_NOT_REQUIRED, message)
+        return None
     artifact = verify_artifact(artifacts, component_id, release, schemas)
     return ReleaseCandidate(
         application_id=application.resource_id,
@@ -284,3 +315,235 @@ def _spec(
         "expiresAt": expires_at.astimezone(UTC).strftime(_TIME_FORMAT),
         "via": via.value,
     }
+
+
+def _time(value: datetime) -> str:
+    return value.astimezone(UTC).strftime(_TIME_FORMAT)
+
+
+# Which approval counts: deploy reads the records back (S-008).
+
+AUTOMATIC_PLAN: Mapping[str, object] = {
+    "policy": DeploymentApproval.AUTOMATIC.value
+}
+"""The plan's ``approval`` for an ``automatic`` application: nothing to approve."""
+
+
+class NotCountingReason(StrEnum):
+    """Why a record for the release being deployed does not count."""
+
+    DIGEST_MISMATCH = "digest_mismatch"
+    """The archive being deployed is not the one approved."""
+    SERVERS_CHANGED = "servers_changed"
+    """The component is declared on other servers than the ones approved."""
+    EXPIRED = "expired"
+
+
+@dataclass(frozen=True, slots=True)
+class StoredApproval:
+    """One approval record as read back from the approvals folder."""
+
+    path: Path
+    application_id: ResourceId
+    component_id: ResourceId
+    release: ReleaseId
+    artifact_sha256: Sha256Digest
+    server_ids: frozenset[ResourceId]
+    approver: Approver
+    approved_at: datetime
+    expires_at: datetime
+
+    def names(self, candidate: ReleaseCandidate) -> bool:
+        """Whether the record names the candidate's application, component, release."""
+        return (
+            self.application_id == candidate.application_id
+            and self.component_id == candidate.component_id
+            and self.release == candidate.release
+        )
+
+    def reason_against(
+        self, candidate: ReleaseCandidate, now: datetime
+    ) -> NotCountingReason | None:
+        """Return why the record does not count for the candidate, if it doesn't."""
+        if self.artifact_sha256 != candidate.artifact_sha256:
+            return NotCountingReason.DIGEST_MISMATCH
+        if self.server_ids != frozenset(candidate.server_ids):
+            return NotCountingReason.SERVERS_CHANGED
+        if self.expires_at <= now:
+            return NotCountingReason.EXPIRED
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class NotCounting:
+    """A record for the release that does not count, and why."""
+
+    approval: StoredApproval
+    reason: NotCountingReason
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the record's path and the reason."""
+        return {"path": str(self.approval.path), "reason": self.reason.value}
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalCheck:
+    """What the approvals folder says about one release of a ``manual`` application."""
+
+    candidate: ReleaseCandidate
+    counting: StoredApproval | None
+    """The latest approval that counts, if any."""
+    not_counting: tuple[NotCounting, ...]
+
+    @property
+    def command(self) -> str:
+        """The command a person runs to approve the release."""
+        return (
+            f"cloudfall release approve {self.candidate.component_id} "
+            f"--release {self.candidate.release.value}"
+        )
+
+    def plan(self) -> dict[str, object]:
+        """Serialize the plan's ``approval``."""
+        result: dict[str, object] = {
+            "policy": DeploymentApproval.MANUAL.value,
+            "status": "missing" if self.counting is None else "approved",
+        }
+        if self.counting is not None:
+            result["path"] = str(self.counting.path)
+            result["approver"] = self.counting.approver.value
+            result["expiresAt"] = _time(self.counting.expires_at)
+        result["notCounting"] = [entry.as_dict() for entry in self.not_counting]
+        if self.counting is None:
+            result["command"] = self.command
+        return result
+
+    def used(self) -> dict[str, object]:
+        """Serialize the deploy result's ``approval``: the record it went on."""
+        if self.counting is None:
+            message = "no approval counts, so the deploy used none"
+            raise TypeError(message)
+        return {
+            "policy": DeploymentApproval.MANUAL.value,
+            "path": str(self.counting.path),
+            "approver": self.counting.approver.value,
+            "approvedAt": _time(self.counting.approved_at),
+        }
+
+    def refusal(self) -> LifecycleError:
+        """Return the ``deployment_approval_missing`` error naming the way out."""
+        candidate = self.candidate
+        detail = (
+            f"application {candidate.application_id} deploys only approved "
+            f"releases (approval: manual), and no approval counts for release "
+            f"{candidate.release.value} of component {candidate.component_id}; "
+            f"a person approves it at a terminal with `{self.command}`"
+        )
+        if self.not_counting:
+            detail += "; not counting: " + ", ".join(
+                f"{entry.approval.path} ({entry.reason.value})"
+                for entry in self.not_counting
+            )
+        return LifecycleError(
+            ERROR_DEPLOYMENT_APPROVAL_MISSING,
+            detail,
+            {
+                "application": candidate.application_id.value,
+                "component": candidate.component_id.value,
+                "release": candidate.release.value,
+                "command": self.command,
+                "notCounting": [entry.as_dict() for entry in self.not_counting],
+            },
+        )
+
+
+def check_approval(
+    candidate: ReleaseCandidate,
+    directory: Path,
+    catalog: SchemaCatalog,
+    now: datetime,
+) -> ApprovalCheck:
+    """Find the approval that counts for ``candidate`` at ``now``, an aware time.
+
+    Every record in ``directory`` is read and validated first, so a broken
+    one raises ``ReleaseApprovalError`` (``release_approval_record_invalid``)
+    naming the file. Records about another application, component or release
+    are left out; the others either count or are listed with their reason.
+    """
+    if now.utcoffset() is None:
+        message = f"the check time has no time zone: {now!r}"
+        raise ValueError(message)
+    counting: list[StoredApproval] = []
+    not_counting: list[NotCounting] = []
+    for stored in load_approvals(directory, catalog):
+        if not stored.names(candidate):
+            continue
+        reason = stored.reason_against(candidate, now)
+        if reason is None:
+            counting.append(stored)
+        else:
+            not_counting.append(NotCounting(stored, reason))
+    latest = max(counting, key=lambda stored: stored.approved_at, default=None)
+    return ApprovalCheck(candidate, latest, tuple(not_counting))
+
+
+def load_approvals(
+    directory: Path, catalog: SchemaCatalog
+) -> tuple[StoredApproval, ...]:
+    """Read every ``*.json`` record at the top of ``directory``, by file name."""
+    if not directory.is_dir():
+        return ()
+    return tuple(
+        _load_approval(path, catalog) for path in sorted(directory.glob("*.json"))
+    )
+
+
+def _load_approval(path: Path, catalog: SchemaCatalog) -> StoredApproval:
+    try:
+        document = cast("object", json.loads(path.read_text(encoding="utf-8")))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        message = f"release approval record is not valid JSON: {path}: {error}"
+        raise ReleaseApprovalError(ERROR_RECORD_INVALID, message) from error
+    except IsADirectoryError as error:
+        message = f"release approval record is a directory: {path}"
+        raise ReleaseApprovalError(ERROR_RECORD_INVALID, message) from error
+    if not isinstance(document, dict):
+        message = f"release approval record is not a JSON object: {path}"
+        raise ReleaseApprovalError(ERROR_RECORD_INVALID, message)
+    record = cast("Mapping[str, object]", document)
+    try:
+        catalog.validate_named(RELEASE_APPROVAL_SCHEMA, record)
+    except ValidationError as error:
+        field = ".".join(str(part) for part in error.absolute_path) or "(root)"
+        message = (
+            f"release approval record does not match its schema: {path}: "
+            f"{field}: {error.message}"
+        )
+        raise ReleaseApprovalError(ERROR_RECORD_INVALID, message) from error
+    spec = cast("Mapping[str, object]", record["spec"])
+    try:
+        return StoredApproval(
+            path=path,
+            application_id=ResourceId.from_boundary(spec["application"]),
+            component_id=ResourceId.from_boundary(spec["component"]),
+            release=ReleaseId(cast("str", spec["release"])),
+            artifact_sha256=Sha256Digest(cast("str", spec["artifactSha256"])),
+            server_ids=frozenset(
+                ResourceId.from_boundary(server)
+                for server in cast("list[object]", spec["servers"])
+            ),
+            approver=Approver(cast("str", spec["approver"])),
+            approved_at=_record_time(cast("str", spec["approvedAt"])),
+            expires_at=_record_time(cast("str", spec["expiresAt"])),
+        )
+    except (ValueError, ReleaseApprovalError) as error:
+        message = f"release approval record is invalid: {path}: {error}"
+        raise ReleaseApprovalError(ERROR_RECORD_INVALID, message) from error
+
+
+def _record_time(value: str) -> datetime:
+    moment = datetime.fromisoformat(value)
+    if moment.utcoffset() is None:
+        message = f"time without a time zone: {value!r}"
+        raise ValueError(message)
+    return moment.astimezone(UTC)

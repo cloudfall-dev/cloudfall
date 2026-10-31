@@ -102,7 +102,7 @@ KEY_TYPES: dict[str, str] = {
     ),
     **dict.fromkeys(
         (
-            "ansible", "byKind", "byRisk", "certbotTimer", "certificate",
+            "ansible", "approval", "byKind", "byRisk", "certbotTimer", "certificate",
             "dashboard", "decision", "error", "inventory", "operation",
             "proposal", "query", "releaseCommand", "summary", "vhost",
         ),
@@ -486,10 +486,24 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "deploy",
         CommandEffect.SERVERS,
         "activate one built release behind its health check",
-        gate=_YES,
+        gate=(
+            f"{_YES}; a release of an application that declares "
+            "`approval: manual` deploys only once a person approved it with "
+            "`cloudfall release approve`, and the plan's `approval` says whether "
+            "one counts"
+        ),
         output=(
-            _plan("component", "release", "releaseCommand"),
-            _shape(*_EXECUTED, "release", "receipt", when="with `--yes`"),
+            _plan("component", "release", "releaseCommand", "approval"),
+            _shape(
+                *_EXECUTED,
+                "release",
+                "receipt",
+                "approval",
+                when=(
+                    "with `--yes`; `approval` names the record the deploy went on "
+                    "when the application declares `approval: manual`"
+                ),
+            ),
         ),
     ),
     CommandContract(
