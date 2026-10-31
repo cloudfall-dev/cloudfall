@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from cloudfall.ansible_data import unmarked
 from cloudfall.decision import HOST_STATS_VARIABLE
 
 if TYPE_CHECKING:
@@ -138,7 +139,13 @@ def _invocation(
     arguments = list(argv)
     pattern = _value(arguments, "--limit")
     extra = _value(arguments, "--extra-vars")
-    inputs = cast("Mapping[str, object]", json.loads(extra)) if extra else {}
+    # The inputs are marked as Ansible data on the argv; a recording keeps
+    # them as the decision record does, unmarked, so they are read back so.
+    inputs = (
+        cast("Mapping[str, object]", json.loads(extra, object_hook=unmarked))
+        if extra
+        else {}
+    )
     playbook = arguments[-1]
     root = f"{repository}/"
     return playbook.removeprefix(root), pattern, inputs

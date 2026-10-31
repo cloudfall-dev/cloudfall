@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from cloudfall.ansible_data import unmarked
 from cloudfall.app import app
 from cloudfall.catalog import RiskLevel, TargetScope, load_catalog
 from cloudfall.cli import main
@@ -55,6 +56,33 @@ risk: destructive
 targets: fleet
 verify:
   playbook: playbooks/health.yml
+"""
+
+ECHO = """\
+id: echo
+playbook: playbooks/echo.yml
+risk: read
+targets: fleet
+inputs:
+  message: string
+  count: integer
+  force: boolean
+"""
+
+# Writes the inputs as the play sees them, even in check mode, and their
+# types with them: a number or a boolean marked as text would arrive quoted.
+ECHO_PLAYBOOK = """\
+---
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Keep the inputs
+      check_mode: false
+      ansible.builtin.copy:
+        content: "{{{{ dict(message=message, count=count, force=force) | to_json }}}}"
+        dest: {seen}
+        mode: "0644"
 """
 
 LATER = datetime(2026, 9, 21, 14, 45, 0, tzinfo=UTC)
@@ -225,8 +253,46 @@ def test_the_check_run_is_check_mode_with_a_diff(tmp_path: Path) -> None:
     assert "--check" in argv
     assert "--diff" in argv
     assert argv[argv.index("--limit") + 1] == "web-1"
-    assert json.loads(argv[argv.index("--extra-vars") + 1]) == {"version": "1.4.0"}
+    extra_vars = argv[argv.index("--extra-vars") + 1]
+    assert json.loads(extra_vars, object_hook=unmarked) == {"version": "1.4.0"}
     assert argv[-1].endswith("playbooks/deploy.yml")
+
+
+def test_inputs_reach_the_playbook_as_data_never_as_templates(
+    tmp_path: Path,
+) -> None:
+    """A string input holding Jinja is text to the team's playbook (#181).
+
+    Ansible templates extra vars, so an unmarked ``{{ lookup('pipe', ...) }}``
+    would run on the management host when the playbook starts.
+    """
+    marker = tmp_path / "pwned"
+    payload = "{{ lookup('pipe', 'touch " + str(marker) + "') }}"
+    seen = tmp_path / "inputs.json"
+    repository = _repository(tmp_path, echo=ECHO)
+    (repository / "playbooks" / "echo.yml").write_text(
+        ECHO_PLAYBOOK.format(seen=seen), encoding="utf-8"
+    )
+
+    decision = propose(
+        _proposal(
+            repository,
+            "echo",
+            target=None,
+            inputs={"message": payload, "count": 3, "force": True},
+        ),
+        _store(repository),
+        lambda: MOMENT,
+    )
+
+    assert decision.check.exit_code == 0
+    assert not marker.exists()
+    assert json.loads(seen.read_text(encoding="utf-8")) == {
+        "message": payload,
+        "count": 3,
+        "force": True,
+    }
+    assert decision.inputs == {"message": payload, "count": 3, "force": True}
 
 
 def test_the_team_configuration_runs_their_playbook(tmp_path: Path) -> None:

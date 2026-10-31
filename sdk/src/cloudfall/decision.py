@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, cast
 from jsonschema.exceptions import ValidationError
 
 from cloudfall.ansible_api import callback_plugin_path
+from cloudfall.ansible_data import as_ansible_data
 from cloudfall.catalog import RiskLevel, TargetScope
 from cloudfall.domain import ResourceId
 
@@ -870,9 +871,10 @@ def run_command(
     if invocation.pattern is not None:
         argv.extend(("--limit", invocation.pattern))
     if invocation.inputs:
-        argv.extend(
-            ("--extra-vars", json.dumps(dict(invocation.inputs), sort_keys=True))
-        )
+        # Ansible templates extra vars: an input is marked as data so its
+        # text reaches the playbook as written, never run as Jinja (#181).
+        inputs = as_ansible_data(dict(invocation.inputs))
+        argv.extend(("--extra-vars", json.dumps(inputs, sort_keys=True)))
     argv.append(str(invocation.repository / invocation.playbook))
     configuration = invocation.repository / _ANSIBLE_CONFIG_FILE
     team = configuration if configuration.is_file() else None

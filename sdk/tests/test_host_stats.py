@@ -184,6 +184,30 @@ def test_a_replay_leaves_what_the_callback_would_have_written(
     assert recorded.check.unchanged == replayed.check.unchanged == ("web-2",)
 
 
+def test_a_replay_matches_inputs_holding_jinja_as_recorded(tmp_path: Path) -> None:
+    """The argv marks inputs as data; the recording keeps them as written (#181)."""
+    repository = _repository(tmp_path)
+    inputs: dict[str, object] = {"version": "{{ 1.4.0 }}", "force": True}
+    recorded = propose(
+        _proposal(repository, inputs=inputs),
+        _store(repository),
+        lambda: MOMENT,
+        _changed_web_1,
+    )
+    replayed_repository = _repository(tmp_path / "replay")
+
+    replayed = propose(
+        _proposal(replayed_repository, inputs=inputs),
+        _store(replayed_repository),
+        lambda: MOMENT,
+        Recording.load(repository / "decisions").runner(replayed_repository),
+    )
+
+    assert recorded.inputs == replayed.inputs == inputs
+    assert replayed.check.exit_code == 0
+    assert replayed.check.changed == ("web-1",)
+
+
 def _changed_web_1(
     _: Sequence[str], environment: Mapping[str, str], diff: Path
 ) -> int:
