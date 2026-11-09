@@ -97,3 +97,4 @@ mode = "headless" # nobody attaches: sessions ask on GitHub with needs-decision
 triage = "act"
 fix = "act"
 land = "act"
+upgrade = "act"                   # shipmill config migrations land without a question
