@@ -639,7 +639,7 @@ def _agent_contract(options: InitOptions) -> str:
     mutations = _command_rows(CommandEffect.SERVERS, with_gate=True)
     return f"""# Agent operating contract
 
-This is a [Cloudfall](https://cloudfall.dev) project: `{options.name}`.
+This is a [Cloudfall](https://cloudfall.tech) project: `{options.name}`.
 Humans and AI agents both edit the resources and both run the CLI. An
 agent drafts and validates; a human approves anything that changes a
 server. These are the terms.

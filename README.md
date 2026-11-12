@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://cloudfall.dev">Website</a> ·
+  <a href="https://cloudfall.tech">Website</a> ·
   <a href="https://demo.cloudfall.dev">Live demo</a> ·
   <a href="docs/getting-started.md">Getting started</a> ·
   <a href="docs/render-migration-guide.md">Migrate from Render</a> ·
