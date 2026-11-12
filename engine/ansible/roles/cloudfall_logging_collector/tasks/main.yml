@@ -5,12 +5,15 @@
       - ansible_facts["distribution"] == "Debian"
       - ansible_facts["service_mgr"] == "systemd"
       - cloudfall_server_id in cloudfall_logging_collector_stack.collectors.servers
-      - cloudfall_logging_collector_stack.migration.mode == "parallel"
-      - cloudfall_logging_collector_stack.migration.preserveLegacyAgents | bool
+      - >-
+        (cloudfall_logging_collector_stack.migration.mode == "parallel"
+        and cloudfall_logging_collector_stack.migration.preserveLegacyAgents | default(false) | bool)
+        or (cloudfall_logging_collector_stack.migration.mode == "none"
+        and cloudfall_logging_collector_stack.migration.preserveLegacyAgents is not defined)
       - cloudfall_logging_collector_stack.collectors.journal.enabled | bool
     fail_msg: >-
-      Logging collection requires a declared Debian collector and the guarded
-      parallel migration mode
+      Logging collection requires a declared Debian collector and the declared
+      migration guard (parallel with legacy agents preserved, or none)
 
 - name: Inspect pre-provisioned collector TLS files
   ansible.builtin.stat:

@@ -426,3 +426,50 @@ def test_s005_11_config_validate_accepts_a_declared_release(
     state = validate_config(_project_with_release(tmp_path, release), SCHEMAS)
 
     assert state.counts_by_kind()["Component"] == 1
+
+
+def _logging_migration_project(tmp_path: Path, migration: str) -> Path:
+    project_directory = tmp_path / "config"
+    shutil.copytree(ROOT / "config" / "examples", project_directory)
+    logging_path = project_directory / "logging-stacks" / "operations.yaml"
+    original = logging_path.read_text(encoding="utf-8")
+    declared = "  migration:\n    mode: parallel\n    preserveLegacyAgents: true\n"
+    assert declared in original
+    logging_path.write_text(original.replace(declared, migration), encoding="utf-8")
+    return project_directory
+
+
+def test_logging_migration_mode_none_needs_no_legacy_guard(
+    tmp_path: Path,
+) -> None:
+    project_directory = _logging_migration_project(
+        tmp_path, "  migration:\n    mode: none\n"
+    )
+
+    validate_config(project_directory, SCHEMAS)
+
+
+def test_logging_migration_mode_none_rejects_the_legacy_guard(
+    tmp_path: Path,
+) -> None:
+    project_directory = _logging_migration_project(
+        tmp_path, "  migration:\n    mode: none\n    preserveLegacyAgents: true\n"
+    )
+
+    with pytest.raises(ConfigValidationError) as error:
+        validate_config(project_directory, SCHEMAS)
+
+    assert error.value.issue.code == "schema_validation_failed"
+
+
+def test_logging_migration_parallel_still_requires_the_legacy_guard(
+    tmp_path: Path,
+) -> None:
+    project_directory = _logging_migration_project(
+        tmp_path, "  migration:\n    mode: parallel\n"
+    )
+
+    with pytest.raises(ConfigValidationError) as error:
+        validate_config(project_directory, SCHEMAS)
+
+    assert error.value.issue.code == "schema_validation_failed"

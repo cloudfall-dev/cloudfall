@@ -26,7 +26,9 @@ watch and nothing to verify against.
 
 The v1 `LoggingStack` contract intentionally permits only:
 
-- migration mode `parallel` with `preserveLegacyAgents: true`;
+- migration mode `parallel` with `preserveLegacyAgents: true` beside a legacy
+  pipeline, or `none` on a host that has no legacy agents (`preserveLegacyAgents`
+  is then rejected);
 - Loki, Prometheus, and Grafana bound to `127.0.0.1`;
 - a gateway that exposes only `/loki/api/v1/push` and `/api/v1/write` and
   requires a validated client certificate;
@@ -121,7 +123,8 @@ uv run ansible-inventory --inventory tmp/ansible-inventory.json \
 
 Validation rejects missing servers, environment mismatches, duplicate stacks,
 file sources outside component placement, secret paths outside
-`/etc/cloudfall/logging`, and any attempt to disable the parallel-migration guard.
+`/etc/cloudfall/logging`, and any attempt to disable the parallel-migration guard
+(`parallel` without `preserveLegacyAgents: true`).
 
 ## 5. Check and deploy
 

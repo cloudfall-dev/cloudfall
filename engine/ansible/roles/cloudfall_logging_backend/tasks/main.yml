@@ -5,16 +5,19 @@
       - ansible_facts["distribution"] == "Debian"
       - ansible_facts["service_mgr"] == "systemd"
       - cloudfall_logging_backend_stack.backend.server == cloudfall_server_id
-      - cloudfall_logging_backend_stack.migration.mode == "parallel"
-      - cloudfall_logging_backend_stack.migration.preserveLegacyAgents | bool
+      - >-
+        (cloudfall_logging_backend_stack.migration.mode == "parallel"
+        and cloudfall_logging_backend_stack.migration.preserveLegacyAgents | default(false) | bool)
+        or (cloudfall_logging_backend_stack.migration.mode == "none"
+        and cloudfall_logging_backend_stack.migration.preserveLegacyAgents is not defined)
       - cloudfall_logging_backend_stack.backend.listenAddress == "127.0.0.1"
       - cloudfall_logging_backend_stack.grafana.listenAddress == "127.0.0.1"
       - >-
         cloudfall_logging_backend_stack.metrics.backend.listenAddress
         == "127.0.0.1"
     fail_msg: >-
-      Logging deployment requires its declared Debian backend and the guarded
-      parallel migration mode
+      Logging deployment requires its declared Debian backend and the declared
+      migration guard (parallel with legacy agents preserved, or none)
 
 - name: Inspect pre-provisioned backend secret files
   ansible.builtin.stat:

@@ -21,20 +21,36 @@
           "$ref": "common.schema.json#/$defs/resourceId"
         },
         "migration": {
-          "type": "object",
-          "properties": {
-            "mode": {
-              "const": "parallel"
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "mode": {
+                  "const": "parallel"
+                },
+                "preserveLegacyAgents": {
+                  "const": true
+                }
+              },
+              "required": [
+                "mode",
+                "preserveLegacyAgents"
+              ],
+              "additionalProperties": false
             },
-            "preserveLegacyAgents": {
-              "const": true
+            {
+              "type": "object",
+              "properties": {
+                "mode": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "mode"
+              ],
+              "additionalProperties": false
             }
-          },
-          "required": [
-            "mode",
-            "preserveLegacyAgents"
-          ],
-          "additionalProperties": false
+          ]
         },
         "software": {
           "type": "object",

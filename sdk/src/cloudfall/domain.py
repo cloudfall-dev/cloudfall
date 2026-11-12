@@ -475,9 +475,14 @@ class TlsMode(StrEnum):
 
 
 class LoggingMigrationMode(StrEnum):
-    """Supported transition mode for the replacement logging path."""
+    """Supported transition mode for the replacement logging path.
+
+    ``parallel`` runs beside legacy agents and never touches them; ``none``
+    is for a host that has no legacy agents to preserve.
+    """
 
     PARALLEL = "parallel"
+    NONE = "none"
 
     @classmethod
     def from_boundary(cls, value: object) -> LoggingMigrationMode:

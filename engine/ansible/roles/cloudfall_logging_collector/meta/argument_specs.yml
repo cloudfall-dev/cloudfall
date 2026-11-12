@@ -21,10 +21,11 @@ argument_specs:
                 type: str
                 choices:
                   - parallel
+                  - none
                 required: true
               preserveLegacyAgents:
                 type: bool
-                required: true
+                required: false
           software:
             type: dict
             required: true
