@@ -1,6 +1,7 @@
 {
-  // Cloudflare Worker serving the cloudfall.dev landing page as static assets;
-  // the script only redirects www to the apex and delegates the rest to assets
+  // Cloudflare Worker serving the cloudfall.tech landing page as static assets;
+  // the script redirects www and the old cloudfall.dev hosts to
+  // cloudfall.tech and delegates the rest to assets
   "name": "cloudfall-landing",
   "main": "src/worker.js",
   "compatibility_date": "2025-08-01",
@@ -12,6 +13,8 @@
     "run_worker_first": true
   },
   "routes": [
+    { "pattern": "cloudfall.tech", "custom_domain": true },
+    { "pattern": "www.cloudfall.tech", "custom_domain": true },
     { "pattern": "cloudfall.dev", "custom_domain": true },
     { "pattern": "www.cloudfall.dev", "custom_domain": true }
   ]
