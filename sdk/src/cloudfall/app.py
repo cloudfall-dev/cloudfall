@@ -273,6 +273,7 @@ from cloudfall.render_api import (
     import_render_api,
     read_api_key,
 )
+from cloudfall.requirements import requirements_of
 from cloudfall.resources import default_engine_directory, default_schema_directory
 from cloudfall.secrets import (
     ERROR_DECRYPT_FAILED,
@@ -727,6 +728,48 @@ def inventory_show(
     if fleet.read is not None:
         body["ansible"] = fleet.read.as_dict()
     return InventoryPayload(body)
+
+
+# requirements show
+
+
+requirements = app.group(
+    "requirements",
+    description="Query what declared workloads need from their servers",
+)
+
+
+class RequirementsPayload(Payload):
+    """``requirements show``: the host requirements, by server."""
+
+    command = "requirements show"
+
+
+@requirements.command(
+    "show",
+    description=(
+        "Show the volumes, ports, secrets, certificates, DNS names and package "
+        "pins each declared workload needs from its servers (S-011); reads "
+        "the project only, never a server"
+    ),
+    danger_level="safe",
+    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID"],
+    examples=[
+        ("Show the project's host requirements", "cloudfall requirements show")
+    ],
+)
+def requirements_show(
+    _args: ProjectArgs, _ctx: Ctx, fleet: Fleet
+) -> RequirementsPayload:
+    """Answer the requirements the project's workloads place on its servers."""
+    return RequirementsPayload(
+        {
+            "status": "ok",
+            "servers": [
+                server.as_dict() for server in requirements_of(fleet.inventory)
+            ],
+        }
+    )
 
 
 # operations list, show, decisions
