@@ -1343,7 +1343,7 @@ class LoggingStackInventory:
     resource_id: ResourceId
     environment: ResourceId
     migration_mode: LoggingMigrationMode
-    preserve_legacy_agents: bool
+    preserve_legacy_agents: bool | None
     software: LoggingSoftware
     metrics: LoggingMetrics
     backend: LoggingBackend
@@ -1351,6 +1351,24 @@ class LoggingStackInventory:
     grafana: LoggingGrafana
     collectors: LoggingCollectors
     alerting: LoggingAlerting | None
+
+    def __post_init__(self) -> None:
+        """Keep the legacy-agent guard exactly where the mode needs it."""
+        parallel = self.migration_mode is LoggingMigrationMode.PARALLEL
+        if parallel != (self.preserve_legacy_agents is not None):
+            message = (
+                "preserveLegacyAgents belongs to the parallel migration mode "
+                f"only: {self.resource_id.value}"
+            )
+            raise ValueError(message)
+
+    def _migration_dict(self) -> dict[str, object]:
+        if self.preserve_legacy_agents is None:
+            return {"mode": self.migration_mode.value}
+        return {
+            "mode": self.migration_mode.value,
+            "preserveLegacyAgents": self.preserve_legacy_agents,
+        }
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the logging topology without certificate contents."""
@@ -1364,10 +1382,7 @@ class LoggingStackInventory:
         result: dict[str, object] = {
             "id": self.resource_id.value,
             "environment": self.environment.value,
-            "migration": {
-                "mode": self.migration_mode.value,
-                "preserveLegacyAgents": self.preserve_legacy_agents,
-            },
+            "migration": self._migration_dict(),
             "software": software,
             "metrics": {
                 "backend": {
@@ -2178,8 +2193,12 @@ def _logging_stack_inventory(
         resource_id=document.key.resource_id,
         environment=ResourceId.from_boundary(spec.get("environment")),
         migration_mode=LoggingMigrationMode.from_boundary(migration.get("mode")),
-        preserve_legacy_agents=_boolean(
-            migration.get("preserveLegacyAgents"), "preserve legacy agents"
+        preserve_legacy_agents=(
+            _boolean(
+                migration.get("preserveLegacyAgents"), "preserve legacy agents"
+            )
+            if migration.get("mode") == LoggingMigrationMode.PARALLEL.value
+            else None
         ),
         software=LoggingSoftware(
             loki=PackageVersion.from_boundary(software.get("lokiPackageVersion")),

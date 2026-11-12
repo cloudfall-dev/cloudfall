@@ -273,3 +273,26 @@ def test_inventory_cli_emits_structured_output(
     assert payload["data"]["inventory"]["components"][0]["id"] == "crm-backend"
     assert payload["data"]["ansible"] == {}
     assert captured.err == ""
+
+
+def test_logging_migration_mode_none_renders_without_the_legacy_guard(
+    tmp_path: Path,
+) -> None:
+    project_directory = tmp_path / "config"
+    shutil.copytree(EXAMPLES, project_directory)
+    logging_path = project_directory / "logging-stacks" / "operations.yaml"
+    logging_path.write_text(
+        logging_path.read_text(encoding="utf-8").replace(
+            "    mode: parallel\n    preserveLegacyAgents: true\n",
+            "    mode: none\n",
+        ),
+        encoding="utf-8",
+    )
+
+    inventory = PlatformInventory.from_state(
+        validate_config(project_directory, SCHEMAS)
+    )
+
+    stack = inventory.logging_stacks[0]
+    assert stack.preserve_legacy_agents is None
+    assert stack.as_dict()["migration"] == {"mode": "none"}
