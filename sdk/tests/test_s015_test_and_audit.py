@@ -102,6 +102,28 @@ def test_s015_4_the_message_goes_to_that_server_only(tmp_path: Path) -> None:
     assert envelope["data"]["message"] == message
 
 
+@pytest.mark.parametrize("server", ["all", "ungrouped"])
+def test_a_server_named_as_an_ansible_implicit_group_is_refused(
+    tmp_path: Path, server: str
+) -> None:
+    """#283: ``--limit all`` would reach every host, ``ungrouped`` none."""
+    project = _project(tmp_path)
+    h2 = (project / "servers" / "h2.yaml").read_text(encoding="utf-8")
+    (project / "servers" / f"{server}.yaml").write_text(
+        h2.replace("id: h2", f"id: {server}")
+        .replace("h2.example.internal", f"{server}.example.internal")
+        .replace("203.0.113.12", "203.0.113.99")
+        .replace("2001:db8:12::/64", "2001:db8:99::/64"),
+        encoding="utf-8",
+    )
+
+    code, envelope = _cloudfall(tmp_path, project, "alerts", "test", server, "--yes")
+
+    assert code == 4, envelope
+    assert envelope["error"]["context"]["code"] == "lifecycle_limit_reserved_group"
+    assert not (tmp_path / "record.json").exists()
+
+
 def test_s015_4_a_server_without_a_channel_is_refused(tmp_path: Path) -> None:
     project = copy_examples(tmp_path / "project")
 

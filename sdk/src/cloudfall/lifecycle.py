@@ -80,6 +80,9 @@ _ERROR_ARTIFACT_IDENTITY = "lifecycle_artifact_identity_mismatch"
 _ERROR_ARTIFACT_DIGEST = "lifecycle_artifact_digest_mismatch"
 _ERROR_ANSIBLE_MISSING = "lifecycle_ansible_missing"
 _ERROR_ENGINE_MISSING = "lifecycle_engine_missing"
+_ERROR_LIMIT_RESERVED_GROUP = "lifecycle_limit_reserved_group"
+_ANSIBLE_IMPLICIT_GROUPS = frozenset({"all", "ungrouped"})
+"""Group names every Ansible inventory has; ``--limit`` matches them first."""
 ERROR_EXECUTION_FAILED = "lifecycle_execution_failed"
 _ERROR_RECEIPT_MISSING = "lifecycle_receipt_missing"
 _ERROR_SERVICE_MISSING = "lifecycle_service_missing"
@@ -1719,6 +1722,15 @@ def _playbook_step(
     extra_vars: Mapping[str, object],
     limit: ResourceId | None = None,
 ) -> ExecutionStep:
+    if limit is not None and limit.value in _ANSIBLE_IMPLICIT_GROUPS:
+        # ``--limit`` reads a host pattern and matches a group before a host,
+        # so a Server named after an implicit group would not mean that host.
+        detail = (
+            f"Server {limit.value} shares its name with Ansible's implicit group "
+            f"{limit.value}, so a run limited to it would not reach that host "
+            "alone; give the Server another id"
+        )
+        raise LifecycleError(_ERROR_LIMIT_RESERVED_GROUP, detail)
     binary = shutil.which("ansible-playbook")
     if binary is None:
         detail = "ansible-playbook is not installed on this controller"
