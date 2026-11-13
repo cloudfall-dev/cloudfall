@@ -321,6 +321,15 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
     ),
     CommandContract(
         "cloudfall",
+        "decisions mark-interrupted",
+        CommandEffect.PROJECT,
+        "close a `running` decision as `interrupted` once a person confirmed "
+        "its run is dead (`--confirm-dead`), recording who and when; nothing "
+        "on the fleet changes",
+        output=(_shape("status", "decision"),),
+    ),
+    CommandContract(
+        "cloudfall",
         "decisions list",
         CommandEffect.READ,
         "list what was proposed, what check mode showed, and who approved",
@@ -515,6 +524,15 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "operator show",
         CommandEffect.READ,
         "show one proposal receipt",
+        output=_PROPOSAL,
+    ),
+    CommandContract(
+        "cloudfall",
+        "operator mark-interrupted",
+        CommandEffect.PROJECT,
+        "close a `running` proposal as `interrupted` once a person confirmed "
+        "its execution is dead (`--confirm-dead`), recording who and when, so "
+        "the operator may propose it again; nothing on the servers changes",
         output=_PROPOSAL,
     ),
     CommandContract(

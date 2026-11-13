@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
 _RECORD_MODE = 0o644
 _TEMPORARY_SUFFIX = ".tmp"
@@ -42,23 +42,39 @@ def locked(directory: Path) -> Iterator[None]:
         os.close(descriptor)
 
 
-def create(path: Path, content: str) -> None:
+def create(path: Path, content: str, fsync: Callable[[int], None] = os.fsync) -> None:
     """Write a new record; raise ``FileExistsError`` when one of its name exists.
 
     The staged file is hard-linked to the record's name, which fails when the
     name exists, so the record appears whole: never empty, even to a reader
-    that takes no lock or after a crash between two steps.
+    that takes no lock or after a crash between two steps. The directory is
+    flushed after, so the new name survives a power loss.
     """
     staged = _staged(path, content)
     try:
         os.link(staged, path)
     finally:
         staged.unlink()
+    _sync_directory(path.parent, fsync)
 
 
-def replace(path: Path, content: str) -> None:
-    """Replace a record whole: a reader sees the old content or the new one."""
+def replace(path: Path, content: str, fsync: Callable[[int], None] = os.fsync) -> None:
+    """Replace a record whole: a reader sees the old content or the new one.
+
+    The directory is flushed after the rename, so a power loss cannot bring
+    the old record back (#244).
+    """
     _staged(path, content).replace(path)
+    _sync_directory(path.parent, fsync)
+
+
+def _sync_directory(directory: Path, fsync: Callable[[int], None]) -> None:
+    """Flush the directory's entries to disk through ``fsync``."""
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _staged(path: Path, content: str) -> Path:
