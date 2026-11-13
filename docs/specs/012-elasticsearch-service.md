@@ -126,7 +126,7 @@ elasticsearch:
   the project CA and uses `verification_mode: certificate` while `existingCluster` is
   declared, since the old certificates carry names Cloudfall does not know
 - The old nodes must trust the project CA and admit the new nodes' addresses; that is the
-  team's change on hosts Cloudfall does not manage, and the guide gives the steps
+  team's change on hosts Cloudfall does not manage, and the service guide gives the steps
 - A joining node never gets `cluster.initial_master_nodes`; `discovery.seed_hosts` holds the
   declared seed hosts and the Cloudfall nodes
 - Before installing anything the role asks a seed host for the cluster's name and node
@@ -235,30 +235,6 @@ project CA.
   exporter as the `cloudfall` account, with the service id as the label the PostgreSQL and
   Redis exporters use
 
-### Moving in from another install
-
-Cloudfall ships no migration from an unsupported version or a foreign setup: the sources
-differ too much to test. It ships two things instead.
-
-**A guide an agent builds the move from**, `docs/elasticsearch-migration-guide.md`: what to
-read from the source (version, indices, sizes, mappings, writers), how to choose the path,
-and what the generated project playbook must and must not do. Its rules:
-
-- the source is read-only, unless the operator owns it and it is one major behind a
-  supported line; then the path is upgrade the source, then join (above)
-- otherwise the data moves into a new cluster (reindex from remote, or a snapshot through a
-  temporary node of the intermediate major), never by upgrading someone else's cluster
-- a generated playbook lives in the project and runs only through `cloudfall-engine playbook
-  run`, behind the same approval as any change to a server
-- the move is done when `data check` says so, not when the playbook ends
-
-**An independent check**, `cloudfall data check <service> --source-url-file <file>
-[--index <pattern>]...`. It reads both clusters and changes neither: per index it compares
-presence, document count and mappings, answers `ok` only when every selected index matches,
-and writes a `DataCheckReceipt` under `tmp/` naming each index, both counts and the verdict.
-A difference exits non-zero with `data.status` `drift`. The source URL and credentials are
-read from the file and appear in no answer or receipt.
-
 ### Documentation
 
 `docs/elasticsearch-service-guide.md` covers declaring a one-node service, growing it, the
@@ -273,9 +249,7 @@ Touches `config/schemas/v1/service.schema.json`, `config/examples/services/`,
 `engine/src/cloudfall_engine/ansible_inventory.py`, a new role
 `engine/ansible/roles/cloudfall_elasticsearch`, `engine/ansible/playbooks/services.yml`,
 `engine/ansible/playbooks/backup.yml`,
-`engine/ansible/roles/cloudfall_logging_collector/templates/config.alloy.j2`,
-`sdk/src/cloudfall/app.py` (`data check`), a new `config/schemas/v1/data-check-receipt.schema.json`,
-and the two guides.
+`engine/ansible/roles/cloudfall_logging_collector/templates/config.alloy.j2`, and the guide.
 
 ## Acceptance criteria
 
@@ -337,13 +311,6 @@ and the two guides.
 - S-012-19: After the old nodes are stopped and `existingCluster` is removed, a converge
   leaves no foreign CA and no old seed host in the configuration, `cluster_name` is
   unchanged, and the cluster is green
-- S-012-20: `cloudfall data check` against a source and a target holding the same three
-  indices exits 0 and writes a receipt with three matching entries; after one document is
-  deleted on the target it exits non-zero with `data.status` `drift` and names that index
-  and both counts; the source's credentials appear in neither the answer nor the receipt,
-  and neither cluster's indices change
-- S-012-21: `docs/elasticsearch-migration-guide.md` states the four rules above, and
-  following it for a source one major behind leads to the join path with no data copy
 
 ## Out of scope
 
@@ -353,8 +320,7 @@ and the two guides.
   the role refuses a `version` whose major differs from the installed one
 - Removing a node: draining its shards and its vote is an operation with its own verify step
 - Dedicated node roles (master-only, data tiers, coordinating); every node holds every role
-- A built-in data move from another cluster (`data copy` for Elasticsearch): the guide and
-  `data check` cover it
+- Moving data in from another cluster, and checking such a move: S-013
 - Upgrading, draining or stopping the nodes of an existing cluster that Cloudfall did not
   create
 - More than one Elasticsearch node per server
