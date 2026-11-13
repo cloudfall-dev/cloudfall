@@ -21,7 +21,7 @@ uv sync
 
 The project holds one directory per resource kind (`servers/`,
 `baselines/`, `ssh-public-keys/`, `applications/`, `components/`,
-`services/`, `domains/`, `alert-rules/`, `operator-policies/`,
+`services/`, `domains/`, `alert-rules/`, `alert-channels/`, `operator-policies/`,
 `logging-stacks/`), a `secrets/` directory with a `.sops.yaml` template for
 its encrypted fragments, a README with the next steps (pass `--description`
 to say what the project manages), an `AGENTS.md` stating the terms on which

@@ -26,10 +26,12 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from cloudfall.domain import ResourceKind
 from cloudfall.pki import CertificateState
 from cloudfall.requirements import (
     CertificateRequirement,
     CertificateUsage,
+    RequirementOwner,
     RequirementState,
     SecretRequirement,
     SecretSource,
@@ -164,15 +166,15 @@ def declared_stack(inventory: PlatformInventory) -> LoggingStackInventory:
 def stack_requirements(
     inventory: PlatformInventory, stack: LoggingStackInventory
 ) -> tuple[ServerRequirements, ...]:
-    """Return only the requirements ``stack`` places on its servers."""
+    """Return only the requirements ``stack`` places on its servers.
+
+    Matched by kind too: an AlertChannel may share the stack's id.
+    """
+    owner = RequirementOwner(ResourceKind.LOGGING_STACK, stack.resource_id)
     return tuple(
         ServerRequirements(
             server.server_id,
-            tuple(
-                item
-                for item in server.requirements
-                if item.owner.resource_id == stack.resource_id
-            ),
+            tuple(item for item in server.requirements if item.owner == owner),
         )
         for server in requirements_of(inventory)
     )

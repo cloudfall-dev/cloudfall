@@ -376,6 +376,10 @@ def requirements_of(inventory: PlatformInventory) -> tuple[ServerRequirements, .
             stack, servers, baseline
         ):
             by_server.setdefault(server_id.value, []).append(requirement)
+    for server_id, requirement in _alert_channel_requirements(inventory):
+        held = by_server.setdefault(server_id.value, [])
+        if requirement not in held:
+            held.append(requirement)
     return tuple(
         ServerRequirements(
             server.resource_id,
@@ -389,6 +393,55 @@ def requirements_of(inventory: PlatformInventory) -> tuple[ServerRequirements, .
         for server in inventory.servers
         if server.resource_id.value in by_server
     )
+
+
+TELEGRAM_TOKEN_NAME = RequirementName("telegram-bot-token")
+TELEGRAM_TOKEN_KEY = SecretKeyName("TELEGRAM_BOT_TOKEN")
+
+
+def alert_channel_token_path(channel: ResourceId) -> AbsolutePath:
+    """Return where a host keeps a channel's bot token (S-015)."""
+    return AbsolutePath(f"/etc/cloudfall/alerting/{channel.value}/bot-token")
+
+
+def _alert_channel_requirements(
+    inventory: PlatformInventory,
+) -> list[tuple[ResourceId, Requirement]]:
+    """Every server that sends to a channel needs its bot token (S-015).
+
+    A server sends when its baseline names the channel, and the logging
+    backend sends when one of its stack's receivers names it.
+    """
+    placed: list[tuple[ResourceId, Requirement]] = []
+    environments = {
+        server.resource_id.value: server.environment for server in inventory.servers
+    }
+
+    def place(server_id: ResourceId, channel: ResourceId) -> None:
+        owner = RequirementOwner(ResourceKind.ALERT_CHANNEL, channel)
+        spec = SecretRequirement(
+            TELEGRAM_TOKEN_NAME,
+            SecretSource.INPUT,
+            alert_channel_token_path(channel),
+            SecretValueReference(
+                environment=environments[server_id.value],
+                path=AbsolutePath(f"/alert-channels/{channel.value}"),
+                key=TELEGRAM_TOKEN_KEY,
+            ),
+        )
+        placed.append((server_id, Requirement(owner, spec)))
+
+    for server in inventory.servers:
+        channel = inventory.baseline(server.baseline_id).alert_channel
+        if channel is not None:
+            place(server.resource_id, channel)
+    for stack in inventory.logging_stacks:
+        if stack.alerting is None:
+            continue
+        for receiver in stack.alerting.receivers:
+            if receiver.channel is not None:
+                place(stack.backend.server_id, receiver.channel)
+    return placed
 
 
 def _logging_stack_requirements(

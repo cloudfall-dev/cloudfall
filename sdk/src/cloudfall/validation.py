@@ -31,6 +31,7 @@ from cloudfall.domain import (
     RuntimePackageManager,
     RuntimeType,
     SourceLocation,
+    TelegramChatId,
 )
 
 _SCHEMA_FILES: Mapping[ResourceKind, str] = {
@@ -43,6 +44,7 @@ _SCHEMA_FILES: Mapping[ResourceKind, str] = {
     ResourceKind.LOGGING_STACK: "logging-stack.schema.json",
     ResourceKind.SERVICE: "service.schema.json",
     ResourceKind.ALERT_RULE: "alert-rule.schema.json",
+    ResourceKind.ALERT_CHANNEL: "alert-channel.schema.json",
     ResourceKind.OPERATOR_POLICY: "operator-policy.schema.json",
 }
 _YAML_SUFFIXES = frozenset({".yaml", ".yml"})
@@ -581,9 +583,17 @@ def _validate_server_references(
 def _validate_baseline_references(
     document: ResourceDocument,
     spec: Mapping[str, object],
-    _index: Mapping[ResourceKey, ResourceDocument],
+    index: Mapping[ResourceKey, ResourceDocument],
 ) -> None:
     _validate_baseline(spec, document.source)
+    alerting = spec.get("alerting")
+    if isinstance(alerting, dict):
+        _require_alert_channel(
+            index,
+            alerting.get("channel"),
+            document.source,
+            ("spec", "alerting", "channel"),
+        )
 
 
 def _validate_application_references(
@@ -1276,6 +1286,17 @@ def _validate_logging_references(
         document, spec, backend_server, tuple(remote_collectors), index
     )
     _validate_logging_volume_pools(document, spec, backend_server, index)
+    alerting = spec.get("alerting")
+    receivers = alerting.get("receivers") if isinstance(alerting, dict) else None
+    listed = receivers if isinstance(receivers, list) else []
+    for position, receiver in enumerate(listed):
+        if isinstance(receiver, dict) and "channel" in receiver:
+            _require_alert_channel(
+                index,
+                receiver["channel"],
+                document.source,
+                ("spec", "alerting", "receivers", position, "channel"),
+            )
 
     raw_files = collectors.get("files")
     if not isinstance(raw_files, list):
@@ -2038,6 +2059,51 @@ def _validate_component_runtime(
             raise ConfigValidationError(issue)
 
 
+def _validate_alert_channel_references(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> None:
+    """Check the chat id as the inventory reads it; references are checked there.
+
+    The schema's ``$`` lets a trailing newline through, which the inventory's
+    ``TelegramChatId`` refuses.
+    """
+    del index
+    telegram = spec.get("telegram")
+    chat_id = telegram.get("chatId") if isinstance(telegram, dict) else None
+    try:
+        TelegramChatId.from_boundary(chat_id)
+    except (TypeError, ValueError) as error:
+        issue = ValidationIssue(
+            code="alert_channel_chat_id_invalid",
+            message=str(error),
+            source=document.source,
+            field_path=("spec", "telegram", "chatId"),
+        )
+        raise ConfigValidationError(issue) from error
+
+
+def _require_alert_channel(
+    index: Mapping[ResourceKey, ResourceDocument],
+    channel: object,
+    source: SourceLocation,
+    field_path: tuple[str | int, ...],
+) -> None:
+    """Refuse a reference to an AlertChannel the project does not declare (S-015)."""
+    if not isinstance(channel, str) or not any(
+        key.kind is ResourceKind.ALERT_CHANNEL and key.resource_id.value == channel
+        for key in index
+    ):
+        issue = ValidationIssue(
+            code="alert_channel_missing",
+            message=f"no AlertChannel {channel} is declared",
+            source=source,
+            field_path=field_path,
+        )
+        raise ConfigValidationError(issue)
+
+
 def _validate_alert_rule_references(
     document: ResourceDocument,
     spec: Mapping[str, object],
@@ -2143,5 +2209,6 @@ _REFERENCE_VALIDATORS: Mapping[
     ResourceKind.SSH_PUBLIC_KEY: _validate_ssh_public_key_references,
     ResourceKind.SERVICE: _validate_service_references,
     ResourceKind.ALERT_RULE: _validate_alert_rule_references,
+    ResourceKind.ALERT_CHANNEL: _validate_alert_channel_references,
     ResourceKind.OPERATOR_POLICY: _validate_operator_policy_references,
 }

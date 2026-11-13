@@ -135,3 +135,12 @@ stops naming the version when it is older.
 ## Issues
 
 ## Verification
+
+Not built yet. Landed so far, checked by unit tests on the controller:
+
+- The `AlertChannel` kind (`alert-channels/`, Telegram chat id), a `Baseline`'s
+  `alerting.channel` and a `LoggingStack` receiver's `channel`, refused by `config validate`
+  when the channel is not declared (`alert_channel_missing`): S-015-1
+- The `telegram-bot-token` input secret, owned by the channel, on every server whose baseline
+  names it and on the logging backend when a receiver does, once per server; `requirements
+  show` lists it: S-015-2
