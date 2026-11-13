@@ -1,6 +1,6 @@
 # S-015: Alert channels shared by hosts and the logging stack
 
-status: draft
+status: approved
 serves: G-1, G-2
 
 ## Problem
