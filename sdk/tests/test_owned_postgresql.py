@@ -105,6 +105,7 @@ def test_s006_1_owner_database_validates_without_application(
     assert document["data"]["by_kind"] == {
         "Server": 1,
         "Baseline": 1,
+        "ServerType": 1,
         "Service": 1,
     }
 

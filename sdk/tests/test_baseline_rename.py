@@ -11,13 +11,17 @@ import shutil
 from pathlib import Path
 
 import pytest
+from cloudfall.audit import audit_inventory
 from cloudfall.cli import main
 from cloudfall.domain import ResourceId, ResourceKind
 from cloudfall.inventory import PlatformInventory
+from cloudfall.observation import load_observations
 from cloudfall.validation import ConfigValidationError, validate_config
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
+OLD_OBSERVED = ROOT / "config" / "tests" / "observed" / "server-type"
+COMPLIANT = ROOT / "config" / "tests" / "observed" / "compliant"
 DEPRECATED = ROOT / "config" / "tests" / "deprecated" / "server-type"
 BOTH_FIELDS = ROOT / "config" / "tests" / "invalid" / "baseline-both-fields"
 OLD_BASELINE = Path("server-types") / "debian-application.yaml"
@@ -272,3 +276,74 @@ def test_add_server_takes_type_as_a_deprecated_name_of_baseline(
 
     assert exit_code == 2
     assert payload["ok"] is False
+
+
+def _old_observations(tmp_path: Path) -> Path:
+    """h1 recorded before 0.8.0, with spec.serverType, beside a current h2."""
+    observed = tmp_path / "observed"
+    observed.mkdir()
+    shutil.copy(OLD_OBSERVED / "h1.json", observed / "h1.json")
+    shutil.copy(COMPLIANT / "h2.json", observed / "h2.json")
+    return observed
+
+
+def test_a_snapshot_recorded_with_server_type_reads_as_baseline(
+    tmp_path: Path,
+) -> None:
+    observations = load_observations(_old_observations(tmp_path), SCHEMAS)
+
+    snapshot = observations.for_server(ResourceId("h1"))
+    assert snapshot is not None
+    assert snapshot.baseline_id == ResourceId("debian-application")
+    assert "serverType" not in snapshot.spec
+    inventory = PlatformInventory.from_state(
+        validate_config(ROOT / "config" / "examples", SCHEMAS)
+    )
+    report = audit_inventory(inventory, observations)
+    h1 = next(server for server in report.servers if server.server_id == "h1")
+    baseline_check = next(check for check in h1.checks if check.check == "baseline.id")
+    assert baseline_check.status.value == "compliant"
+
+
+def test_a_snapshot_naming_both_fields_is_refused(tmp_path: Path) -> None:
+    observed = _old_observations(tmp_path)
+    path = observed / "h1.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["spec"]["baseline"] = "debian-application"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ConfigValidationError) as error:
+        load_observations(observed, SCHEMAS)
+
+    assert error.value.issue.code == "observation_baseline_conflict"
+    assert error.value.issue.field_path == ("spec", "serverType")
+
+
+def test_json_answers_keep_the_old_keys_beside_the_new_until_0_9_0(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    examples = str(ROOT / "config" / "examples")
+
+    exit_code, payload = _run(capsys, "config", "validate", "--project", examples)
+    assert exit_code == 0
+    data = payload["data"]
+    assert isinstance(data, dict)
+    assert data["by_kind"]["ServerType"] == data["by_kind"]["Baseline"] == 1
+
+    exit_code, payload = _run(capsys, "inventory", "show", "--project", examples)
+    assert exit_code == 0
+    inventory = payload["data"]["inventory"]  # type: ignore[index]
+    assert inventory["server_types"] == inventory["baselines"]
+    assert inventory["baselines"][0]["id"] == "debian-application"
+    for server in inventory["servers"]:
+        assert server["server_type"] == server["baseline"] == "debian-application"
+
+
+def test_the_audit_report_keeps_server_type_beside_baseline() -> None:
+    inventory = PlatformInventory.from_state(
+        validate_config(ROOT / "config" / "examples", SCHEMAS)
+    )
+    report = audit_inventory(inventory, load_observations(COMPLIANT, SCHEMAS))
+
+    for server in report.as_dict()["servers"]:  # type: ignore[attr-defined]
+        assert server["serverType"] == server["baseline"] == "debian-application"

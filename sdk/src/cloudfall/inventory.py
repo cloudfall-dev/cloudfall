@@ -164,6 +164,8 @@ class ServerInventory:
             "address": self.address.value,
             "environment": self.environment.value,
             "baseline": self.baseline_id.value,
+            # Deprecated name of baseline, the same value, until 0.9.0 (D-11).
+            "serverType": self.baseline_id.value,
             "lifecycle": self.lifecycle.value,
             "ssh": {
                 "user": self.ssh_user.value,
@@ -1571,9 +1573,9 @@ class PlatformInventory:
         """Serialize the complete non-secret platform inventory."""
         return {
             "servers": [server.as_dict() for server in self.servers],
-            "baselines": [
-                baseline.as_dict() for baseline in self.baselines
-            ],
+            "baselines": [baseline.as_dict() for baseline in self.baselines],
+            # Deprecated name of baselines, the same value, until 0.9.0 (D-11).
+            "serverTypes": [baseline.as_dict() for baseline in self.baselines],
             "applications": [
                 application.as_dict() for application in self.applications
             ],

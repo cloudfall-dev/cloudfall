@@ -92,7 +92,7 @@ class FleetRead:
             "inProcess": self.in_process,
             "managed": list(self.managed),
             "unmanaged": list(self.unmanaged),
-            "byKind": self.config.counts_by_kind(),
+            "byKind": self.config.reported_counts_by_kind(),
             "resources": self.config.resource_count,
         }
 

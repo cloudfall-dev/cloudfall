@@ -330,6 +330,8 @@ def test_cli_emits_structured_success(
             "Component": 1,
             "Domain": 1,
             "Baseline": 1,
+            # The deprecated name repeats the Baseline count until 0.9.0.
+            "ServerType": 1,
             "LoggingStack": 1,
             "Application": 1,
             "Server": 2,

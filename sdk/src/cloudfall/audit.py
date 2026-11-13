@@ -88,6 +88,8 @@ class ServerAudit:
         return {
             "server": self.server_id,
             "baseline": self.baseline_id,
+            # Deprecated name of baseline, the same value, until 0.9.0 (D-11).
+            "serverType": self.baseline_id,
             "status": self.status.value,
             "observation": self.observation,
             "observedAt": self.observed_at,

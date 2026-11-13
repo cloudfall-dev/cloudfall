@@ -9,13 +9,20 @@ from typing import TYPE_CHECKING, cast
 from jsonschema.exceptions import ValidationError
 
 from cloudfall.domain import ResourceId, SourceLocation
-from cloudfall.validation import ConfigValidationError, SchemaCatalog, ValidationIssue
+from cloudfall.validation import (
+    BASELINE_FIELD,
+    LEGACY_BASELINE_FIELD,
+    ConfigValidationError,
+    SchemaCatalog,
+    ValidationIssue,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
 _OBSERVED_SERVER_SCHEMA = "observed-server.schema.json"
+ERROR_OBSERVATION_BASELINE_CONFLICT = "observation_baseline_conflict"
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,8 +70,8 @@ def load_observations(
     snapshots: list[ObservedServerSnapshot] = []
     index: dict[ResourceId, ObservedServerSnapshot] = {}
     for path in sorted(observation_directory.rglob("*.json")):
-        content = _load_json(path)
         source = SourceLocation(path=path, document_number=1)
+        content = _current_names(_load_json(path), source)
         try:
             catalog.validate_named(_OBSERVED_SERVER_SCHEMA, content)
         except ValidationError as error:
@@ -111,6 +118,35 @@ def load_observations(
         index[server_id] = snapshot
 
     return ObservationSet(snapshots=tuple(snapshots), _index=index)
+
+
+def _current_names(
+    content: Mapping[str, object], source: SourceLocation
+) -> Mapping[str, object]:
+    """Read a snapshot recorded before 0.8.0, whose spec says ``serverType``.
+
+    The inspect role wrote ``spec.serverType`` until the Baseline rename
+    (D-11); such a snapshot is read as ``spec.baseline`` until 0.9.0.
+    """
+    spec = content.get("spec")
+    if not isinstance(spec, dict) or LEGACY_BASELINE_FIELD not in spec:
+        return content
+    if BASELINE_FIELD in spec:
+        issue = ValidationIssue(
+            code=ERROR_OBSERVATION_BASELINE_CONFLICT,
+            message=(
+                f"spec sets both {BASELINE_FIELD} and {LEGACY_BASELINE_FIELD}, "
+                f"its deprecated name; a snapshot carries {BASELINE_FIELD} only"
+            ),
+            source=source,
+            field_path=("spec", LEGACY_BASELINE_FIELD),
+        )
+        raise ConfigValidationError(issue)
+    renamed = {
+        (BASELINE_FIELD if key == LEGACY_BASELINE_FIELD else key): value
+        for key, value in cast("Mapping[str, object]", spec).items()
+    }
+    return {**content, "spec": renamed}
 
 
 def _load_json(path: Path) -> Mapping[str, object]:

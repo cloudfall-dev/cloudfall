@@ -136,9 +136,10 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
                 inventory.services,
             ),
             **_host_logging(server, inventory.logging_stacks, inventory.alert_rules),
-            "cloudfall_baseline": baselines_by_id[
-                server.baseline_id
-            ].as_dict(),
+            "cloudfall_baseline": baselines_by_id[server.baseline_id].as_dict(),
+            # Deprecated name of cloudfall_baseline, the same value, kept so a
+            # fleet's own playbooks keep running; it goes in 0.9.0 (D-11).
+            "cloudfall_server_type": baselines_by_id[server.baseline_id].as_dict(),
             "cloudfall_applications": [
                 _host_application(application)
                 for application in inventory.applications

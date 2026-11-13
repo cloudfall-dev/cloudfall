@@ -150,6 +150,17 @@ class ValidatedConfig:
         counts = Counter(document.key.kind.value for document in self.documents)
         return dict(sorted(counts.items()))
 
+    def reported_counts_by_kind(self) -> dict[str, int]:
+        """Return the counts a command answers with, deprecated kinds included.
+
+        ``ServerType`` repeats the ``Baseline`` count until 0.9.0 (D-11), so
+        a caller reading ``by_kind.ServerType`` keeps working.
+        """
+        counts = self.counts_by_kind()
+        if ResourceKind.BASELINE.value in counts:
+            counts[LEGACY_BASELINE_KIND] = counts[ResourceKind.BASELINE.value]
+        return dict(sorted(counts.items()))
+
     def get(self, kind: ResourceKind, resource_id: ResourceId) -> ResourceDocument:
         """Return a resource from the typed index."""
         key = ResourceKey(kind=kind, resource_id=resource_id)
@@ -173,7 +184,7 @@ class ValidatedConfig:
         return {
             "status": "ok",
             "resources": self.resource_count,
-            "byKind": self.counts_by_kind(),
+            "byKind": self.reported_counts_by_kind(),
         }
 
 

@@ -171,6 +171,7 @@ def test_the_reader_builds_servers_from_ansible_and_the_declaration(
         "address": "10.0.0.1",
         "environment": "production",
         "baseline": "web",
+        "serverType": "web",
         "lifecycle": "active",
         "ssh": {"user": "ansible", "port": 22},
         "labels": {"workload": "web"},

@@ -1,0 +1,143 @@
+{
+  "apiVersion": "cloudfall/v1",
+  "kind": "ObservedServer",
+  "metadata": {
+    "id": "h1",
+    "description": "Read-only server evidence collected before 0.8.0, with spec.serverType"
+  },
+  "spec": {
+    "server": "h1",
+    "serverType": "debian-application",
+    "observedAt": "2026-07-15T10:00:00Z",
+    "collectorVersion": "0.4.0",
+    "os": {
+      "distribution": "Debian",
+      "version": "12.10",
+      "majorVersion": "12",
+      "release": "bookworm",
+      "kernel": "6.1.0-amd64",
+      "architecture": "x86_64",
+      "serviceManager": "systemd"
+    },
+    "hardware": {
+      "processorCount": 1,
+      "processorCores": 8,
+      "processorVcpus": 16,
+      "memoryBytes": 68719476736
+    },
+    "storage": {
+      "blockDevices": [
+        {
+          "name": "md0",
+          "path": "/dev/md0",
+          "type": "raid1",
+          "size": 1000000000000,
+          "fstype": "ext4",
+          "mountpoint": "/",
+          "pkname": null,
+          "model": null,
+          "serial": null,
+          "rota": false
+        }
+      ],
+      "filesystems": [
+        {
+          "target": "/",
+          "source": "/dev/md0",
+          "fstype": "ext4",
+          "options": "rw,relatime",
+          "size": 950000000000,
+          "used": 250000000000,
+          "avail": 700000000000
+        }
+      ],
+      "softwareRaid": {
+        "mdstat": "md0 : active raid1 sda1[0] sdb1[1]\n      976630336 blocks [2/2] [UU]\n",
+        "mdadmScan": "ARRAY /dev/md0 level=raid1 num-devices=2"
+      },
+      "smart": {
+        "available": true,
+        "smartctlVersion": "7.4",
+        "devices": []
+      }
+    },
+    "packages": [
+      {
+        "name": "acl",
+        "version": "2.3.1-3",
+        "source": "apt",
+        "arch": "amd64"
+      },
+      {
+        "name": "ca-certificates",
+        "version": "20230311",
+        "source": "apt",
+        "arch": "all"
+      },
+      {
+        "name": "curl",
+        "version": "7.88.1",
+        "source": "apt",
+        "arch": "amd64"
+      },
+      {
+        "name": "git",
+        "version": "2.39.5",
+        "source": "apt",
+        "arch": "amd64"
+      },
+      {
+        "name": "rsync",
+        "version": "3.2.7",
+        "source": "apt",
+        "arch": "amd64"
+      },
+      {
+        "name": "unzip",
+        "version": "6.0-28",
+        "source": "apt",
+        "arch": "amd64"
+      }
+    ],
+    "services": {
+      "ssh.service": {
+        "name": "ssh.service",
+        "state": "running",
+        "status": "enabled",
+        "source": "systemd"
+      }
+    },
+    "timers": {
+      "apt-daily.timer": {
+        "name": "apt-daily.timer",
+        "state": "running",
+        "status": "enabled",
+        "source": "systemd"
+      }
+    },
+    "firewall": {
+      "nftAvailable": true,
+      "managedTableJson": "{\"nftables\": [{\"metainfo\": {\"version\": \"1.0.6\", \"release_name\": \"Lester Gooch #5\", \"json_schema_version\": 1}}, {\"table\": {\"family\": \"inet\", \"name\": \"cloudfall\", \"handle\": 1}}, {\"chain\": {\"family\": \"inet\", \"table\": \"cloudfall\", \"name\": \"input\", \"handle\": 1, \"type\": \"filter\", \"hook\": \"input\", \"prio\": 0, \"policy\": \"drop\"}}, {\"chain\": {\"family\": \"inet\", \"table\": \"cloudfall\", \"name\": \"forward\", \"handle\": 2, \"type\": \"filter\", \"hook\": \"forward\", \"prio\": 0, \"policy\": \"drop\"}}, {\"chain\": {\"family\": \"inet\", \"table\": \"cloudfall\", \"name\": \"output\", \"handle\": 3, \"type\": \"filter\", \"hook\": \"output\", \"prio\": 0, \"policy\": \"accept\"}}, {\"rule\": {\"family\": \"inet\", \"table\": \"cloudfall\", \"chain\": \"input\", \"handle\": 4, \"expr\": [{\"match\": {\"op\": \"==\", \"left\": {\"meta\": {\"key\": \"iif\"}}, \"right\": \"lo\"}}, {\"accept\": null}]}}, {\"rule\": {\"family\": \"inet\", \"table\": \"cloudfall\", \"chain\": \"input\", \"handle\": 5, \"expr\": [{\"match\": {\"op\": \"in\", \"left\": {\"ct\": {\"key\": \"state\"}}, \"right\": [\"established\", \"related\"]}}, {\"accept\": null}]}}, {\"rule\": {\"family\": \"inet\", \"table\": \"cloudfall\", \"chain\": \"input\", \"handle\": 6, \"expr\": [{\"match\": {\"op\": \"in\", \"left\": {\"ct\": {\"key\": \"state\"}}, \"right\": \"invalid\"}}, {\"drop\": null}]}}, {\"rule\": {\"family\": \"inet\", \"table\": \"cloudfall\", \"chain\": \"input\", \"handle\": 7, \"comment\": \"ssh\", \"expr\": [{\"match\": {\"op\": \"==\", \"left\": {\"payload\": {\"protocol\": \"tcp\", \"field\": \"dport\"}}, \"right\": 22}}, {\"accept\": null}]}}, {\"rule\": {\"family\": \"inet\", \"table\": \"cloudfall\", \"chain\": \"input\", \"handle\": 8, \"comment\": \"http\", \"expr\": [{\"match\": {\"op\": \"==\", \"left\": {\"payload\": {\"protocol\": \"tcp\", \"field\": \"dport\"}}, \"right\": 80}}, {\"accept\": null}]}}, {\"rule\": {\"family\": \"inet\", \"table\": \"cloudfall\", \"chain\": \"input\", \"handle\": 9, \"comment\": \"https\", \"expr\": [{\"match\": {\"op\": \"==\", \"left\": {\"payload\": {\"protocol\": \"tcp\", \"field\": \"dport\"}}, \"right\": 443}}, {\"accept\": null}]}}]}"
+    },
+    "network": {
+      "listeningSockets": "udp   UNCONN 0 0      0.0.0.0:68      0.0.0.0:*\ntcp   LISTEN 0 128    0.0.0.0:22      0.0.0.0:*\ntcp   LISTEN 0 128    [::]:22         [::]:*\ntcp   LISTEN 0 244    127.0.0.1:5432  0.0.0.0:*\ntcp   LISTEN 0 511    127.0.0.1:6379  0.0.0.0:*"
+    },
+    "configuration": [
+      {
+        "path": "/etc/ssh/sshd_config",
+        "capture": "hash",
+        "exists": true,
+        "owner": "root",
+        "group": "root",
+        "mode": "0644",
+        "size": 3223,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    "alerting": {
+      "prometheusAvailable": true,
+      "rulesJson": "{\"status\": \"success\", \"data\": {\"groups\": [{\"name\": \"cloudfall\", \"file\": \"/etc/prometheus/cloudfall-rules.yaml\", \"rules\": [{\"name\": \"postgresql_down\", \"type\": \"alerting\", \"state\": \"inactive\", \"health\": \"ok\", \"query\": \"pg_up{service=\\\"postgresql-main\\\"} == 0\", \"duration\": 60}]}]}}",
+      "alertsJson": "{\"status\": \"success\", \"data\": {\"alerts\": []}}"
+    }
+  }
+}
