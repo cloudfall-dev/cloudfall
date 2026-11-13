@@ -1,0 +1,109 @@
+---
+# S-011 certificate provider, host side: each logging host makes the private
+# key a certificate requirement names, unless it has one, and a signing
+# request from it; the key never leaves the host. The request and the
+# certificate already at the requirement's path, if any, are written to the
+# controller for the project CA to judge and sign.
+- name: Make certificate keys and signing requests on logging hosts
+  hosts: cloudfall_logging_backends:cloudfall_logging_collectors
+  become: true
+  gather_facts: false
+  vars:
+    cloudfall_logging_key_owner: root
+    cloudfall_logging_key_group: root
+    cloudfall_logging_requests: >-
+      {{ (cloudfall_logging_certificate_requests | default({}))
+         .get(cloudfall_server_id, []) }}
+  tasks:
+    - name: Install OpenSSL for keys and requests
+      ansible.builtin.apt:
+        name: openssl
+        state: present
+      when: cloudfall_logging_requests | length > 0
+      tags: [packages]
+      register: cloudfall_logging_openssl
+      until: cloudfall_logging_openssl is succeeded
+      retries: 3
+      delay: 5
+
+    - name: Create directories for certificate keys
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ cloudfall_logging_key_owner }}"
+        group: "{{ cloudfall_logging_key_group }}"
+        mode: "0755"
+      loop: >-
+        {{ cloudfall_logging_requests | map(attribute='keyPath')
+           | map('dirname') | unique | list }}
+
+    - name: Make a private key where none exists
+      ansible.builtin.shell:
+        cmd: >-
+          umask 077 &&
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256
+          -out {{ item.keyPath | quote }}
+        creates: "{{ item.keyPath }}"
+      loop: "{{ cloudfall_logging_requests }}"
+      loop_control:
+        label: "{{ item.keyPath }}"
+
+    - name: Make a signing request from each key
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - req
+          - -new
+          - -key
+          - "{{ item.keyPath }}"
+          - -subj
+          - "/CN={{ item.commonName }}"
+      loop: "{{ cloudfall_logging_requests }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: cloudfall_logging_signing_requests
+      changed_when: false
+
+    - name: Inspect the certificates already in place
+      ansible.builtin.stat:
+        path: "{{ item.certificatePath }}"
+      loop: "{{ cloudfall_logging_requests }}"
+      loop_control:
+        label: "{{ item.certificatePath }}"
+      register: cloudfall_logging_held_certificates
+
+    - name: Read the certificates already in place
+      ansible.builtin.slurp:
+        src: "{{ item.item.certificatePath }}"
+      loop: "{{ cloudfall_logging_held_certificates.results }}"
+      loop_control:
+        label: "{{ item.item.certificatePath }}"
+      when: item.stat.exists
+      register: cloudfall_logging_held_contents
+
+    - name: Create the controller directory for this host's requests
+      ansible.builtin.file:
+        path: "{{ cloudfall_logging_request_directory }}/{{ cloudfall_server_id }}"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+      when: cloudfall_logging_requests | length > 0
+
+    - name: Hand each request and held certificate to the controller
+      ansible.builtin.copy:
+        content: >-
+          {{ {'request': item.0.stdout ~ '\n',
+              'certificate': (item.1.content | b64decode)
+                if item.1.content is defined else none} | to_json }}
+        dest: >-
+          {{ cloudfall_logging_request_directory }}/{{ cloudfall_server_id
+          }}/{{ item.0.item.name }}.json
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      loop: >-
+        {{ cloudfall_logging_signing_requests.results
+           | zip(cloudfall_logging_held_contents.results | default([])) | list }}
+      loop_control:
+        label: "{{ item.0.item.name }}"

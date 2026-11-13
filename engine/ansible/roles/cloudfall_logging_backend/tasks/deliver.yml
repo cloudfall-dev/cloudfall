@@ -1,0 +1,36 @@
+---
+# Files Cloudfall provides for the stack (S-011), by server id: secrets kept in
+# the project's store and certificates the project CA just signed, each staged
+# in a file on the controller. A file whose item says force: false (a secret)
+# is kept when the host already has it, so one provided by hand is never
+# overwritten; a certificate signed in this run replaces the old one.
+- name: Select the files this role delivers
+  ansible.builtin.set_fact:
+    cloudfall_logging_backend_delivered: >-
+      {{ (cloudfall_logging_delivered_files | default({}))
+         .get(cloudfall_server_id, [])
+         | selectattr('role', 'equalto', 'backend') | list }}
+
+- name: Create directories for delivered logging files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ cloudfall_logging_backend_file_owner }}"
+    group: "{{ cloudfall_logging_backend_file_group }}"
+    mode: "0755"
+  loop: >-
+    {{ cloudfall_logging_backend_delivered | map(attribute='path')
+       | map('dirname') | unique | list }}
+
+- name: Deliver logging files provided by Cloudfall
+  ansible.builtin.copy:
+    src: "{{ item.source }}"
+    dest: "{{ item.path }}"
+    owner: "{{ cloudfall_logging_backend_file_owner }}"
+    group: "{{ cloudfall_logging_backend_file_group }}"
+    mode: "{{ item.mode }}"
+    force: "{{ item.force }}"
+  loop: "{{ cloudfall_logging_backend_delivered }}"
+  loop_control:
+    label: "{{ item.path }}"
+  no_log: true

@@ -19,11 +19,8 @@
       Logging deployment requires its declared Debian backend and the declared
       migration guard (parallel with legacy agents preserved, or none)
 
-- name: Deliver the secrets Cloudfall keeps for the stack
-  ansible.builtin.include_tasks: secrets.yml
-  when: >-
-    (cloudfall_logging_secret_files | default({})).get(cloudfall_server_id, [])
-    | length > 0
+- name: Deliver the files Cloudfall provides for the stack
+  ansible.builtin.include_tasks: deliver.yml
 
 - name: Inspect pre-provisioned backend secret files
   ansible.builtin.stat:

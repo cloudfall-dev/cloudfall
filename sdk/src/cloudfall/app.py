@@ -203,11 +203,20 @@ from cloudfall.lifecycle import (
 )
 from cloudfall.logging_deploy import (
     PLAYBOOK,
+    REQUESTS_DIRECTORY_VARIABLE,
+    REQUESTS_PLAYBOOK,
+    REQUESTS_VARIABLE,
+    CertificateOutcome,
     InputMissingError,
     LoggingDeployError,
+    certificate_files,
+    certificate_requests,
+    declared_stack,
     prepare_secrets,
     preview_logging_deploy,
-    staged_secret_files,
+    read_requests,
+    secret_files,
+    staged_files,
 )
 from cloudfall.migrate import MigrateError, MigrateOptions, execute_migration
 from cloudfall.observation import load_observations
@@ -243,6 +252,7 @@ from cloudfall.operator import (
     watch,
 )
 from cloudfall.operator import approve as approve_proposal
+from cloudfall.pki import PkiError, load_or_create_ca
 from cloudfall.project import (
     PROJECT_DIRECTORY_VARIABLE,
     InitOptions,
@@ -4652,8 +4662,30 @@ def logging_deploy_command(
                 }
             )
         generated, servers = prepare_secrets(inventory, store)
-        with staged_secret_files(servers, store) as (extra_vars, delivered):
-            run_engine_playbook(args.context(fleet, ctx), PLAYBOOK, extra_vars)
+        context = args.context(fleet, ctx)
+        files = secret_files(servers, store)
+        outcomes: list[CertificateOutcome] = []
+        ca_created = False
+        requests = certificate_requests(servers)
+        if requests:
+            with tempfile.TemporaryDirectory(prefix="cloudfall-requests-") as reports:
+                run_engine_playbook(
+                    context,
+                    REQUESTS_PLAYBOOK,
+                    {
+                        REQUESTS_VARIABLE: requests,
+                        REQUESTS_DIRECTORY_VARIABLE: reports,
+                    },
+                )
+                held = read_requests(Path(reports), servers)
+            now = datetime.now(UTC)
+            ca, ca_created = load_or_create_ca(
+                store, declared_stack(inventory).environment, now
+            )
+            signed, outcomes = certificate_files(servers, held, ca, now)
+            files.extend(signed)
+        with staged_files(files) as (extra_vars, delivered):
+            run_engine_playbook(context, PLAYBOOK, extra_vars)
     except InputMissingError as error:
         # Exit 4 like the framework's INPUT_REQUIRED; agents branch on the code
         raise Exit.PRECONDITION(
@@ -4667,7 +4699,7 @@ def logging_deploy_command(
                 "for each missing secret"
             ),
         ) from error
-    except LoggingDeployError as error:
+    except (LoggingDeployError, PkiError) as error:
         raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
     except SecretsError as error:
         raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
@@ -4679,6 +4711,8 @@ def logging_deploy_command(
             "action": "logging-deploy",
             "playbook": PLAYBOOK,
             "generated": [item.as_dict() for item in generated],
+            "caCreated": ca_created,
+            "certificates": [item.as_dict() for item in outcomes],
             "delivered": [item.as_dict() for item in delivered],
             "effect": "updated",
         }

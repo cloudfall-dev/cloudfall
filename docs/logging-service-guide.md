@@ -64,25 +64,28 @@ apt-cache policy loki grafana alloy
 Use the complete APT version strings in state. Cloudfall deliberately fails rather
 than silently replacing an unavailable pin with the newest package.
 
-## 2. Materialize secrets and mTLS files
+## 2. Secrets and mTLS files
 
-Cloudfall state contains paths only. The Grafana password and each SMTP
-password are secrets Cloudfall keeps itself (S-011): `cloudfall logging deploy`
-generates the Grafana password into `secrets/`, takes each SMTP password from
-`cloudfall secrets input`, and copies both to their host paths. Use the existing
-PKI to materialize the certificates and keys before deploying:
+Cloudfall state contains paths only, and `cloudfall logging deploy` provides
+every file at those paths (S-011):
 
-| Backend host | Collector hosts |
-| --- | --- |
-| `/etc/cloudfall/logging/server.crt` | `/etc/cloudfall/logging/ca.crt` |
-| `/etc/cloudfall/logging/server.key` | `/etc/cloudfall/logging/client.crt` |
-| `/etc/cloudfall/logging/client-ca.crt` | `/etc/cloudfall/logging/client.key` |
-| `/etc/cloudfall/logging/grafana-admin-password` (kept by Cloudfall) | |
+| Backend host | Collector hosts | Provided by |
+| --- | --- | --- |
+| `/etc/cloudfall/logging/server.crt` | `/etc/cloudfall/logging/client.crt` | the project CA, signed for the gateway name or the collector's hostname |
+| `/etc/cloudfall/logging/server.key` | `/etc/cloudfall/logging/client.key` | made on the host; it never leaves it |
+| `/etc/cloudfall/logging/client-ca.crt` | `/etc/cloudfall/logging/ca.crt` | the project CA's certificate |
+| `/etc/cloudfall/logging/grafana-admin-password` | | generated into `secrets/` |
+| each receiver's `authPasswordFile` | | `cloudfall secrets input` |
 
-Each collector may use a different client certificate while keeping the same
-path. The client CA must validate every collector certificate. The collector
-CA must validate the gateway certificate. Do not commit certificates, keys, or
-the Grafana password to this repository.
+The project CA is one per environment, created on first use, its key
+sops-encrypted in `secrets/<environment>/pki/ca.env`. Each host makes its own
+key and a signing request; the CA signs only the request's public key, for
+the names and usage the stack implies, for 90 days, and a deploy renews a
+certificate within 30 days of its expiry.
+
+Files provided by hand keep working: a secret already on the host is kept,
+and a certificate another CA signed is left as it is with its CA file. Do not
+commit certificates, keys, or passwords to the repository yourself.
 
 Private keys and the password must not be world-readable. The roles verify all
 files before installing packages, then apply the minimum service-readable
@@ -133,7 +136,7 @@ person must supply. `uv run cloudfall secrets generate` stores the Grafana
 password; `uv run cloudfall secrets input smtp-password-<receiver> --owner
 <stack>` stores an SMTP password typed at a terminal. Both keep the value
 sops-encrypted under `secrets/`, and `cloudfall logging deploy` copies it to
-its host path. The certificates and keys are still provided as described above.
+its host path; it makes the keys, requests and certificates as section 2 says.
 
 Validation rejects missing servers, environment mismatches, duplicate stacks,
 file sources outside component placement, secret paths outside
@@ -156,7 +159,7 @@ uv run cloudfall logging deploy --yes
 ```
 
 `task logging:check` and `task logging:deploy` still run the playbook directly,
-without Cloudfall's secrets; they need every file of section 2 on the host.
+without what Cloudfall provides; they need every file of section 2 on the host.
 
 The deployment order is backend first and collectors second, one host at a
 time. Loki, Prometheus, and Alloy configuration are validated with their

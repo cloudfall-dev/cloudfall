@@ -56,7 +56,7 @@ jobs:
         env:
           ANSIBLE_CONFIG: engine/ansible/ansible.cfg
         run: |
-          for playbook in baseline bootstrap data deploy domains health inspect logging restart rollback services time; do
+          for playbook in baseline bootstrap data deploy domains health inspect logging logging-requests restart rollback services time; do
             uv run ansible-playbook --syntax-check \
               --inventory config/examples/tmp/ansible-inventory.json \
               "engine/ansible/playbooks/${playbook}.yml"

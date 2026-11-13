@@ -1,7 +1,8 @@
-"""S-011: deploy the LoggingStack with the secrets Cloudfall keeps for it."""
+"""S-011: deploy the LoggingStack with what Cloudfall provides for it."""
 
 from __future__ import annotations
 
+import datetime
 import grp
 import json
 import os
@@ -11,11 +12,18 @@ import subprocess
 import sys
 from pathlib import Path
 
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
+
 ROOT = Path(__file__).parents[2]
 EXAMPLES = ROOT / "config" / "examples"
 CLOUDFALL = Path(sys.executable).with_name("cloudfall")
 ANSIBLE_PLAYBOOK = Path(sys.executable).with_name("ansible-playbook")
-SECRET_TASKS = ROOT / "engine/ansible/roles/cloudfall_logging_backend/tasks/secrets.yml"
+DELIVER_TASKS = (
+    ROOT / "engine/ansible/roles/cloudfall_logging_backend/tasks/deliver.yml"
+)
 SMTP_VALUE = "synthetic-smtp-value"
 FAKE_SOPS = f"""#!{sys.executable}
 '''Stand in for sops: "encrypts" by appending sops metadata, values stay in clear.'''
@@ -33,7 +41,11 @@ else:
     sys.exit(f"unexpected sops call: {{args}}")
 """
 FAKE_PLAYBOOK = f"""#!{sys.executable}
-'''Stand in for ansible-playbook: record each staged secret file as the run sees it.'''
+'''Stand in for ansible-playbook.
+
+logging-requests.yml: answer each certificate request with a fresh CSR, as a
+host would. logging.yml: record each staged file as the run sees it.
+'''
 import json
 import os
 import sys
@@ -43,15 +55,37 @@ if args == ["--version"]:
     print("ansible-playbook [core 2.21.0]")
     sys.exit(0)
 extra = json.loads(args[args.index("--extra-vars") + 1])
+if args[-1].endswith("logging-requests.yml"):
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    root = extra["cloudfall_logging_request_directory"]
+    for server, requests in extra["cloudfall_logging_certificate_requests"].items():
+        os.makedirs(os.path.join(root, server), exist_ok=True)
+        for item in requests:
+            key = ec.generate_private_key(ec.SECP256R1())
+            common = x509.NameAttribute(NameOID.COMMON_NAME, item["commonName"])
+            name = x509.Name([common])
+            csr = x509.CertificateSigningRequestBuilder().subject_name(name).sign(
+                key, hashes.SHA256()
+            )
+            report = {{
+                "request": csr.public_bytes(serialization.Encoding.PEM).decode(),
+                "certificate": None,
+            }}
+            with open(os.path.join(root, server, item["name"] + ".json"), "w") as out:
+                json.dump(report, out)
+    sys.exit(0)
 seen = {{}}
-for server, files in extra.get("cloudfall_logging_secret_files", {{}}).items():
+for server, files in extra.get("cloudfall_logging_delivered_files", {{}}).items():
     for item in files:
         with open(item["source"], encoding="utf-8") as handle:
-            seen[item["path"]] = {{
-                "server": server,
-                "source": item["source"],
+            seen[server + ":" + item["path"]] = {{
+                **item,
                 "value": handle.read(),
-                "mode": oct(os.stat(item["source"]).st_mode & 0o777),
+                "staged_mode": oct(os.stat(item["source"]).st_mode & 0o777),
             }}
 with open(os.environ["CLOUDFALL_TEST_RECORD"], "w", encoding="utf-8") as handle:
     json.dump({{"playbook": args[-1], "files": seen}}, handle)
@@ -168,19 +202,52 @@ def test_the_deploy_generates_stages_and_removes_each_secret(
     record = json.loads((tmp_path / "record.json").read_text(encoding="utf-8"))
     assert record["playbook"].endswith("logging.yml")
     files = record["files"]
+    secrets_dir = "/etc/cloudfall/logging/"
     assert set(files) == {
-        "/etc/cloudfall/logging/grafana-admin-password",
-        "/etc/cloudfall/logging/smtp-password",
+        f"h1:{secrets_dir}grafana-admin-password",
+        f"h1:{secrets_dir}smtp-password",
+        f"h1:{secrets_dir}server.crt",
+        f"h1:{secrets_dir}client-ca.crt",
+        f"h1:{secrets_dir}client.crt",
+        f"h1:{secrets_dir}ca.crt",
+        f"h2:{secrets_dir}client.crt",
+        f"h2:{secrets_dir}ca.crt",
     }
-    smtp = files["/etc/cloudfall/logging/smtp-password"]
-    assert (smtp["server"], smtp["value"], smtp["mode"]) == ("h1", SMTP_VALUE, "0o600")
-    grafana = files["/etc/cloudfall/logging/grafana-admin-password"]
+    smtp = files[f"h1:{secrets_dir}smtp-password"]
+    assert (smtp["value"], smtp["mode"], smtp["force"], smtp["role"]) == (
+        SMTP_VALUE,
+        "0600",
+        False,
+        "backend",
+    )
+    grafana = files[f"h1:{secrets_dir}grafana-admin-password"]
     assert len(grafana["value"]) == 43
+    gateway = files[f"h1:{secrets_dir}server.crt"]
+    assert (gateway["role"], gateway["mode"], gateway["force"]) == (
+        "backend",
+        "0644",
+        True,
+    )
+    assert files[f"h2:{secrets_dir}client.crt"]["role"] == "collector"
+    ca = files[f"h2:{secrets_dir}ca.crt"]["value"]
+    assert files[f"h1:{secrets_dir}client-ca.crt"]["value"] == ca
+    certificate = x509.load_pem_x509_certificate(gateway["value"].encode())
+    certificate.verify_directly_issued_by(x509.load_pem_x509_certificate(ca.encode()))
+    assert all(item["staged_mode"] == "0o600" for item in files.values())
     assert all(not Path(item["source"]).exists() for item in files.values())
+    assert data["ca_created"] is True
+    states = data["certificates"]
+    assert isinstance(states, list)
+    assert {(item["server"], item["name"], item["state"]) for item in states} == {
+        ("h1", "logging-gateway", "will-create"),
+        ("h1", "logging-collector", "will-create"),
+        ("h2", "logging-collector", "will-create"),
+    }
     delivered = data["delivered"]
     assert isinstance(delivered, list)
-    assert {item["path"] for item in delivered} == set(files)
+    assert len(delivered) == len(files)
     assert grafana["value"] not in json.dumps(envelope)
+    assert "PRIVATE KEY" not in json.dumps(envelope)
 
 
 def test_the_role_delivers_a_missing_file_and_keeps_an_existing_one(
@@ -196,7 +263,13 @@ def test_the_role_delivers_a_missing_file_and_keeps_an_existing_one(
         source.chmod(0o600)
         sources[name] = source
     files = [
-        {"path": str(host / name / "secret"), "source": str(sources[name])}
+        {
+            "role": "backend",
+            "path": str(host / name / "secret"),
+            "source": str(sources[name]),
+            "mode": "0600",
+            "force": False,
+        }
         for name in ("kept", "fresh")
     ]
     playbook = tmp_path / "play.yml"
@@ -208,16 +281,16 @@ def test_the_role_delivers_a_missing_file_and_keeps_an_existing_one(
                     "gather_facts": False,
                     "vars": {
                         "cloudfall_server_id": "h1",
-                        "cloudfall_logging_secret_files": {"h1": files},
-                        "cloudfall_logging_backend_secret_owner": pwd.getpwuid(
+                        "cloudfall_logging_delivered_files": {"h1": files},
+                        "cloudfall_logging_backend_file_owner": pwd.getpwuid(
                             os.getuid()
                         ).pw_name,
-                        "cloudfall_logging_backend_secret_group": grp.getgrgid(
+                        "cloudfall_logging_backend_file_group": grp.getgrgid(
                             os.getgid()
                         ).gr_name,
                     },
                     "tasks": [
-                        {"ansible.builtin.include_tasks": str(SECRET_TASKS)},
+                        {"ansible.builtin.include_tasks": str(DELIVER_TASKS)},
                     ],
                 }
             ]
@@ -252,3 +325,179 @@ def test_the_role_delivers_a_missing_file_and_keeps_an_existing_one(
     assert "from cloudfall" not in first
     assert "changed=0" not in first
     assert "changed=0" in second
+
+
+def test_the_role_replaces_a_certificate_signed_in_this_run(tmp_path: Path) -> None:
+    held = tmp_path / "host" / "server.crt"
+    held.parent.mkdir()
+    held.write_text("old certificate", encoding="utf-8")
+    source = tmp_path / "signed"
+    source.write_text("new certificate", encoding="utf-8")
+    source.chmod(0o600)
+    playbook = tmp_path / "play.yml"
+    playbook.write_text(
+        json.dumps(
+            [
+                {
+                    "hosts": "localhost",
+                    "gather_facts": False,
+                    "vars": {
+                        "cloudfall_server_id": "h1",
+                        "cloudfall_logging_delivered_files": {
+                            "h1": [
+                                {
+                                    "role": "backend",
+                                    "path": str(held),
+                                    "source": str(source),
+                                    "mode": "0644",
+                                    "force": True,
+                                },
+                                {
+                                    "role": "collector",
+                                    "path": str(tmp_path / "host" / "other.crt"),
+                                    "source": str(source),
+                                    "mode": "0644",
+                                    "force": True,
+                                },
+                            ]
+                        },
+                        "cloudfall_logging_backend_file_owner": pwd.getpwuid(
+                            os.getuid()
+                        ).pw_name,
+                        "cloudfall_logging_backend_file_group": grp.getgrgid(
+                            os.getgid()
+                        ).gr_name,
+                    },
+                    "tasks": [{"ansible.builtin.include_tasks": str(DELIVER_TASKS)}],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    subprocess.run(  # noqa: S603 - the venv's ansible-playbook
+        [
+            str(ANSIBLE_PLAYBOOK),
+            "--inventory",
+            "localhost,",
+            "--connection",
+            "local",
+            str(playbook),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=300,
+    )
+
+    assert held.read_text(encoding="utf-8") == "new certificate"
+    assert held.stat().st_mode & 0o777 == 0o644
+    assert not (tmp_path / "host" / "other.crt").exists()
+
+
+def test_hosts_make_their_own_keys_and_hand_over_requests_only(
+    tmp_path: Path,
+) -> None:
+    host = tmp_path / "host"
+    host.mkdir()
+    reports = tmp_path / "reports"
+    held_key = host / "held.key"
+    key = ec.generate_private_key(ec.SECP256R1())
+    held_key.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    held_key.chmod(0o600)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "held")])
+    now = datetime.datetime.now(datetime.UTC)
+    held_certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(1)
+        .not_valid_before(now)
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .sign(key, hashes.SHA256())
+    )
+    (host / "held.crt").write_bytes(
+        held_certificate.public_bytes(serialization.Encoding.PEM)
+    )
+    before = held_key.read_bytes()
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(
+        json.dumps(
+            {
+                "all": {
+                    "children": {
+                        "cloudfall_logging_backends": {
+                            "hosts": {
+                                "h1": {
+                                    "ansible_connection": "local",
+                                    "ansible_become": False,
+                                    "ansible_python_interpreter": sys.executable,
+                                    "cloudfall_server_id": "h1",
+                                }
+                            }
+                        },
+                        "cloudfall_logging_collectors": {"hosts": {"h1": {}}},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    extra = {
+        "cloudfall_logging_key_owner": pwd.getpwuid(os.getuid()).pw_name,
+        "cloudfall_logging_key_group": grp.getgrgid(os.getgid()).gr_name,
+        "cloudfall_logging_request_directory": str(reports),
+        "cloudfall_logging_certificate_requests": {
+            "h1": [
+                {
+                    "name": "fresh",
+                    "keyPath": str(host / "keys" / "fresh.key"),
+                    "certificatePath": str(host / "fresh.crt"),
+                    "commonName": "logs.example.internal",
+                },
+                {
+                    "name": "held",
+                    "keyPath": str(held_key),
+                    "certificatePath": str(host / "held.crt"),
+                    "commonName": "held",
+                },
+            ]
+        },
+    }
+    done = subprocess.run(  # noqa: S603 - the venv's ansible-playbook
+        [
+            str(ANSIBLE_PLAYBOOK),
+            "--inventory",
+            str(inventory),
+            "--extra-vars",
+            json.dumps(extra),
+            "--skip-tags",
+            "packages",
+            str(ROOT / "engine/ansible/playbooks/logging-requests.yml"),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=300,
+    )
+
+    fresh_key = host / "keys" / "fresh.key"
+    assert fresh_key.stat().st_mode & 0o777 == 0o600
+    assert held_key.read_bytes() == before
+    fresh = json.loads((reports / "h1" / "fresh.json").read_text(encoding="utf-8"))
+    held = json.loads((reports / "h1" / "held.json").read_text(encoding="utf-8"))
+    request = x509.load_pem_x509_csr(fresh["request"].encode())
+    assert request.is_signature_valid
+    assert fresh["certificate"] is None
+    assert held["certificate"].startswith("-----BEGIN CERTIFICATE-----")
+    reported = "".join(
+        path.read_text(encoding="utf-8") for path in (reports / "h1").iterdir()
+    )
+    assert "PRIVATE KEY" not in reported + done.stdout
