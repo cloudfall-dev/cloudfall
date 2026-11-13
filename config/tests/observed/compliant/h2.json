@@ -133,6 +133,14 @@
         "size": 3223,
         "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       }
+    ],
+    "certificates": [
+      {
+        "name": "logging-collector",
+        "path": "/etc/cloudfall/logging/client.crt",
+        "exists": true,
+        "certificate": "-----BEGIN CERTIFICATE-----\nMIIBeDCCAR+gAwIBAgIUH+5anW6gtTuJYKbX87LVe6qisWAwCgYIKoZIzj0EAwIw\nIjEgMB4GA1UEAwwXQ2xvdWRmYWxsIHByb2R1Y3Rpb24gQ0EwHhcNMjYwNzE0MTAw\nMDAwWhcNMjYxMDEyMTAwMDAwWjAeMRwwGgYDVQQDDBNoMi5leGFtcGxlLmludGVy\nbmFsMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEPdWhKCW18wQfFlM+TETmIX7u\nibX58MpEt8JabDo5c8G0FBNRFNEyeNgTLcQvG7xTEBQZotzhbK9yu7EGt9r8IaM3\nMDUwHgYDVR0RBBcwFYITaDIuZXhhbXBsZS5pbnRlcm5hbDATBgNVHSUEDDAKBggr\nBgEFBQcDAjAKBggqhkjOPQQDAgNHADBEAiA7ty0dOHcHbBi53xK+FC9QWiNhN6h1\nQ+XTz69ANta0iwIgaurLiN9BxKLa1ma/pT4rqIkaDRNzV+HsrwpLb/+h5ug=\n-----END CERTIFICATE-----\n"
+      }
     ]
   }
 }

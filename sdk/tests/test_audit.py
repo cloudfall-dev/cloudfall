@@ -185,8 +185,9 @@ def test_audit_reports_firewall_and_timer_drift(tmp_path: Path) -> None:
         for check in h1_report.checks
         if check.check == "firewall.allowedInbound"
     )
-    assert allowed.desired == ["tcp/22", "tcp/80", "tcp/443"]
-    assert allowed.observed == ["tcp/22", "tcp/80"]
+    gateway = ["tcp/3101 from 2001:db8:12::/64", "tcp/3101 from 203.0.113.12/32"]
+    assert allowed.desired == ["tcp/22", "tcp/80", "tcp/443", *gateway]
+    assert allowed.observed == ["tcp/22", "tcp/80", *gateway]
 
 
 def test_audit_reports_missing_firewall_table_as_drift(tmp_path: Path) -> None:
@@ -514,6 +515,8 @@ def test_remote_access_rules_and_listener_audit_clean(tmp_path: Path) -> None:
         "tcp/22",
         "tcp/80",
         "tcp/443",
+        "tcp/3101 from 2001:db8:12::/64",
+        "tcp/3101 from 203.0.113.12/32",
         "tcp/5432 from 10.0.0.0/24",
         "tcp/5432 from 10.1.0.7/32",
         "tcp/5432 from 2001:db8::/64",
@@ -599,11 +602,15 @@ def test_a_server_without_remote_access_audits_as_before() -> None:
         "tcp/22",
         "tcp/80",
         "tcp/443",
+        "tcp/3101 from 2001:db8:12::/64",
+        "tcp/3101 from 203.0.113.12/32",
     ]
     assert checks["firewall.allowedInbound"].observed == [
         "tcp/22",
         "tcp/80",
         "tcp/443",
+        "tcp/3101 from 2001:db8:12::/64",
+        "tcp/3101 from 203.0.113.12/32",
     ]
     assert checks["services.bind[postgresql-main]"].desired == {
         "protocol": "tcp",

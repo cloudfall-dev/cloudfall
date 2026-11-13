@@ -208,3 +208,10 @@ none against a live Debian host:
   that name, so mTLS holds. A backend known only by a hostname leaves the name to DNS. Writing
   records at a DNS provider is not built: Cloudfall holds no DNS credentials today. Checked on
   the rendered inventory and with the task run on a scratch hosts file; no Debian host yet
+- Audit: `inspect` reads every certificate a server's requirements name (the certificate, never
+  its key) into the observation, and `audit` checks each is there, is for the requirement's names,
+  and has more than 30 days left at the observation's own time; a missing one, other names or an
+  expiring one is drift, no evidence is unknown. The backend's expected firewall now includes
+  the gateway rule, so a deployed stack audits compliant and a removed rule is drift (S-011-7
+  for certificates and ports; volumes come with their provider). Checked on observation fixtures
+  and with the inspect tasks run on the controller; no Debian host yet
