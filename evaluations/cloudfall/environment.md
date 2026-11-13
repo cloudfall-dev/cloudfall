@@ -12,9 +12,9 @@
 - Toolchain: uv 0.12.5 (hatchling build backend; `uv sync` provisions the interpreter and dependencies)
 
 ## Binary
-- Entry point: `uv run cloudfall` (from the repository root `/Users/roman/PycharmProjects/Atlas`)
+- Entry point: `uv run cloudfall` (from the repository root)
 - Version: no `--version` flag (`cloudfall --version` exits 2 with "the following arguments are required: command"); package metadata reports `0.1.0`
-- Resolved path: `/Users/roman/PycharmProjects/Atlas/.venv/bin/cloudfall` (`cloudfall.cli:run`)
+- Resolved path: `.venv/bin/cloudfall` (`cloudfall.cli:run`)
 - Sibling entry points: `cloudfall-engine` (`cloudfall_engine.cli:run`), `cloudfall-mcp` (`cloudfall.mcp_server:run`, MCP stdio server; needs the `mcp` extra)
 - Parser: argparse; `-h/--help` exits 0 at every level
 - Command tree:

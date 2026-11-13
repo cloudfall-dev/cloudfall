@@ -64,8 +64,9 @@ repository, holding everything needed to run one user's stack.
   and `Domain` resources
 - **Operations** — the declarations that run them: `AlertRule`,
   `OperatorPolicy`, and `LoggingStack` resources
-- **Pin** — a `pyproject.toml` that installs Cloudfall as a package at one
-  exact commit, so the project and the platform version move together
+- **Pin** — a `pyproject.toml` that depends on one exact released version,
+  `cloudfall==<version>` as `cloudfall init` writes it, so the project and
+  the platform version move together
 
 Every `cloudfall` command runs inside a project: the current directory when
 it is one, or the directory named by `--project` or by the
@@ -78,7 +79,9 @@ directory is a validation error. Everything else in the project is the
 user's: playbooks and roles of their own, encrypted secrets, docs, tooling.
 Runtime state (observations, receipts, rendered inventory, built artifacts,
 rendered environment files, the persisted migration plan) lands under `tmp/`
-and is never committed. `cloudfall init` lays out a new project and
+and is never committed. Decision records are the exception: what an agent
+proposed and who approved it lands in `decisions/` beside the operations, and
+the team commits it. `cloudfall init` lays out a new project and
 `cloudfall add` declares its first fleet resources.
 
 Proposed, not built: for a team that already runs Ansible, the project is
@@ -101,10 +104,16 @@ Cloudfall is a monorepo with three architectural modules:
 
 The boundaries are strict even inside one repository: the config contains no
 execution logic, the CLI reads and validates the config without Ansible
-internals, the engine never silently rewrites the config, and external entry
-points call the CLI rather than Ansible directly. Mutating operations execute
-through the engine's command-line and playbook contracts, never its
-internals. The modules may split into separate repositories later if
+internals, and the engine never silently rewrites the config. Agents and
+the deploy, rollback, and restart workflows call the CLI rather than Ansible
+directly. Mutating operations execute through the engine's command-line and
+playbook contracts, never its internals. The repository's own `Taskfile.yml`
+is the exception: `inspect`, `server:baseline`, `services:deploy`,
+`domains:deploy`, `logging:deploy`, `time:deploy`, their check-mode
+counterparts (`server:baseline:check`, `services:deploy:check`,
+`domains:deploy:check`, `logging:check`, `time:check`), and `ansible:syntax`
+run `ansible-playbook` against the engine's playbooks
+directly, and `ansible:inventory` runs `ansible-inventory`. The modules may split into separate repositories later if
 independent release cycles or access control require it.
 
 ## Config
