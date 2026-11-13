@@ -21,11 +21,13 @@
           "format": "date-time"
         },
         "status": {
+          "description": "running: approved and its execution started, with no outcome recorded yet; found so after the execution's process ended, it was interrupted, and it is not approved again.",
           "enum": [
             "proposed",
             "executed",
             "verified",
-            "failed"
+            "failed",
+            "running"
           ]
         },
         "trigger": {
@@ -321,6 +323,18 @@
         "diagnosis",
         "operation"
       ],
+      "if": {
+        "properties": {
+          "status": {
+            "const": "running"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "approval"
+        ]
+      },
       "additionalProperties": false
     }
   },

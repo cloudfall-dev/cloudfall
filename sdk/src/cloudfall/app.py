@@ -233,6 +233,7 @@ from cloudfall.operator import (
     ERROR_FEED_UNREACHABLE,
     ERROR_GATEWAY_MATERIAL_INVALID,
     ERROR_GATEWAY_UNDECLARED,
+    ERROR_PROPOSAL_INTERRUPTED,
     ERROR_PROPOSAL_MISSING,
     AlertFeed,
     ApproveOptions,
@@ -3076,7 +3077,11 @@ def _operator_failed(error: OperatorError) -> Exception:
     context = {"code": error.code}
     if error.code == ERROR_FEED_UNREACHABLE:
         return Exit.UNAVAILABLE(error.message, context=context)
-    if error.code in {ERROR_GATEWAY_UNDECLARED, ERROR_GATEWAY_MATERIAL_INVALID}:
+    if error.code in {
+        ERROR_GATEWAY_UNDECLARED,
+        ERROR_GATEWAY_MATERIAL_INVALID,
+        ERROR_PROPOSAL_INTERRUPTED,
+    }:
         return Exit.PRECONDITION(error.message, context=context)
     if error.code == ERROR_FEED_INVALID:
         return Exit.GENERAL_ERROR(error.message, context=context)
