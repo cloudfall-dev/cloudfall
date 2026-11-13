@@ -1,0 +1,47 @@
+{
+  "apiVersion": "cloudfall/v1",
+  "kind": "OperatorProposal",
+  "metadata": {
+    "id": "op-20261009110000-1122334455667788",
+    "description": "Audit reports drift on server h1: packages.required[curl]; converging through baseline.yml restores the declared state"
+  },
+  "spec": {
+    "createdAt": "2026-10-09T11:00:00+00:00",
+    "status": "failed",
+    "trigger": {
+      "kind": "drift",
+      "fingerprint": "1122334455667788",
+      "drift": {
+        "server": "h1",
+        "checks": [
+          "packages.required[curl]"
+        ]
+      }
+    },
+    "diagnosis": {
+      "summary": "Audit reports drift on server h1: packages.required[curl]; converging through baseline.yml restores the declared state",
+      "evidence": [
+        "audit check drifted: packages.required[curl]"
+      ]
+    },
+    "operation": {
+      "kind": "converge-baseline",
+      "server": "h1",
+      "command": [
+        "cloudfall-engine",
+        "playbook",
+        "baseline.yml"
+      ]
+    },
+    "approval": {
+      "mode": "autonomous",
+      "policy": "production-operator"
+    },
+    "outcome": {
+      "executedAt": "2026-10-09T11:00:05+00:00",
+      "verifiedAt": "2026-10-09T11:03:05+00:00",
+      "result": "failed",
+      "detail": "trigger evidence unresolved after 180s; remediation did not restore the declared state"
+    }
+  }
+}

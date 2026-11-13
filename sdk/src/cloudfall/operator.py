@@ -18,7 +18,10 @@ import urllib.request
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol, cast
+
+from jsonschema.exceptions import ValidationError
 
 from cloudfall import record_files
 from cloudfall.audit import AuditStatus, audit_inventory
@@ -45,7 +48,14 @@ if TYPE_CHECKING:
 type Executor = Callable[[OperatorProposal], tuple[OwnedRoleRecord, ...] | None]
 """Runs one proposal's operation; returns the owner passwords it set, if any."""
 
+_API_VERSION = "cloudfall/v1"
 _PROPOSAL_SCHEMA = "operator-proposal.schema.json"
+PROPOSAL_SCHEMAS: Mapping[str, str] = MappingProxyType(
+    {_API_VERSION: _PROPOSAL_SCHEMA}
+)
+"""The schema a receipt is read with, by its ``apiVersion``: a v2 sits beside v1."""
+ERROR_RECORD_INVALID = "operator_record_invalid"
+"""Code of the error for a receipt that names no schema this Cloudfall reads."""
 _FINGERPRINT_LENGTH = 16
 ERROR_FEED_UNREACHABLE = "operator_feed_unreachable"
 ERROR_FEED_INVALID = "operator_feed_invalid"
@@ -574,21 +584,55 @@ class ProposalStore:
         if not path.is_file():
             message = f"proposal does not exist: {path}"
             raise OperatorError(ERROR_PROPOSAL_MISSING, message)
-        document = cast(
-            "dict[str, object]", json.loads(path.read_text(encoding="utf-8"))
-        )
-        self.catalog.validate_named(_PROPOSAL_SCHEMA, document)
-        return _proposal_from_document(document)
+        return self.read(path)
 
-    def list(self) -> tuple[OperatorProposal, ...]:
-        """Load every proposal receipt ordered by creation time."""
-        self.directory.mkdir(parents=True, exist_ok=True)
-        proposals = [
-            self.load(ResourceId.from_boundary(path.stem))
-            for path in sorted(self.directory.glob("*.json"))
-        ]
+    def read(self, path: Path) -> OperatorProposal:
+        """Read and validate one receipt file, by the schema its apiVersion names."""
+        document = cast("object", json.loads(path.read_text(encoding="utf-8")))
+        if not isinstance(document, dict):
+            message = f"proposal receipt is not a JSON object: {path}"
+            raise OperatorError(ERROR_RECORD_INVALID, message)
+        record = cast("dict[str, object]", document)
+        try:
+            schema = record_files.schema_for(record, PROPOSAL_SCHEMAS)
+        except LookupError as error:
+            message = f"proposal receipt cannot be read: {path}: {error}"
+            raise OperatorError(ERROR_RECORD_INVALID, message) from error
+        self.catalog.validate_named(schema, record)
+        return _proposal_from_document(record)
+
+    def list(self) -> record_files.Listing[OperatorProposal]:
+        """Read every proposal receipt, ordered by creation time.
+
+        A receipt that cannot be read stops nothing: it is reported, with
+        its path and why, beside the receipts that could be.
+        """
+        proposals: list[OperatorProposal] = []
+        unreadable: list[record_files.UnreadableRecord] = []
+        for path in record_files.record_paths(self.directory):
+            try:
+                proposals.append(self.read(path))
+            except OperatorError as error:
+                if error.code != ERROR_RECORD_INVALID:
+                    raise
+                unreadable.append(record_files.UnreadableRecord(path, error.message))
+            except ValidationError as error:
+                field = ".".join(str(part) for part in error.absolute_path) or "(root)"
+                reason = (
+                    f"proposal receipt does not match its schema: {path}: "
+                    f"{field}: {error.message}"
+                )
+                unreadable.append(record_files.UnreadableRecord(path, reason))
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                reason = f"proposal receipt is not valid JSON: {path}: {error}"
+                unreadable.append(record_files.UnreadableRecord(path, reason))
+            except OSError as error:
+                reason = f"proposal receipt cannot be read: {path}: {error}"
+                unreadable.append(record_files.UnreadableRecord(path, reason))
         proposals.sort(key=lambda proposal: proposal.created_at)
-        return tuple(proposals)
+        return record_files.Listing(
+            records=tuple(proposals), unreadable=tuple(unreadable)
+        )
 
     def blocking_fingerprints(self) -> frozenset[str]:
         """Fingerprints already covered by an open or failed proposal.
@@ -597,7 +641,7 @@ class ProposalStore:
         the same drift has under the check's current id.
         """
         fingerprints: set[str] = set()
-        for proposal in self.list():
+        for proposal in self.list().records:
             if proposal.status not in _BLOCKING_STATUSES:
                 continue
             fingerprints.add(proposal.fingerprint)
@@ -627,7 +671,9 @@ class ProposalStore:
 
     def _content(self, proposal: OperatorProposal) -> str:
         document = proposal.as_document()
-        self.catalog.validate_named(_PROPOSAL_SCHEMA, document)
+        spec = cast("dict[str, object]", document["spec"])
+        spec[record_files.WRITER_VERSION_FIELD] = record_files.writer_version()
+        self.catalog.validate_named(PROPOSAL_SCHEMAS[_API_VERSION], document)
         return json.dumps(document, indent=2) + "\n"
 
 
@@ -722,14 +768,27 @@ class RunReport:
     proposed: tuple[str, ...]
     skipped: tuple[SkippedAlert, ...]
     open_proposals: int
+    unreadable: tuple[record_files.UnreadableRecord, ...] = ()
+    """Receipts the pass could not read, so it neither counted nor matched them."""
 
     def as_dict(self) -> dict[str, object]:
         """Serialize for structured CLI output."""
-        return {
+        result: dict[str, object] = {
             "proposed": list(self.proposed),
             "skipped": [skipped.as_dict() for skipped in self.skipped],
             "openProposals": self.open_proposals,
         }
+        return _with_unreadable(result, self.unreadable)
+
+
+def _with_unreadable(
+    result: dict[str, object],
+    unreadable: tuple[record_files.UnreadableRecord, ...],
+) -> dict[str, object]:
+    """Name the receipts a pass skipped, when there are any."""
+    if unreadable:
+        result["unreadable"] = [record.as_dict() for record in unreadable]
+    return result
 
 
 def run_once(
@@ -753,11 +812,7 @@ def run_once(
         store.save(result)
         proposed.append(result.resource_id.value)
         blocking = blocking | {alert.fingerprint}
-    return RunReport(
-        proposed=tuple(proposed),
-        skipped=tuple(skipped),
-        open_proposals=_open_count(store),
-    )
+    return _run_report(store, tuple(proposed), tuple(skipped))
 
 
 def drift_pass(
@@ -802,18 +857,25 @@ def drift_pass(
             store.save(proposal)
             proposed.append(proposal.resource_id.value)
             blocking = blocking | {proposal.fingerprint}
+    return _run_report(store, tuple(proposed), ())
+
+
+def _run_report(
+    store: ProposalStore,
+    proposed: tuple[str, ...],
+    skipped: tuple[SkippedAlert, ...],
+) -> RunReport:
+    """Count the open proposals and name the receipts that could not be read."""
+    listing = store.list()
     return RunReport(
-        proposed=tuple(proposed),
-        skipped=(),
-        open_proposals=_open_count(store),
-    )
-
-
-def _open_count(store: ProposalStore) -> int:
-    return sum(
-        1
-        for proposal in store.list()
-        if proposal.status is ProposalStatus.PROPOSED
+        proposed=proposed,
+        skipped=skipped,
+        open_proposals=sum(
+            1
+            for proposal in listing.records
+            if proposal.status is ProposalStatus.PROPOSED
+        ),
+        unreadable=listing.unreadable,
     )
 
 
@@ -1093,9 +1155,10 @@ def autonomy_decision(
             f"for {proposal.operation_kind.value}"
         )
         return AutonomyDecision(granted=False, reason=reason)
+    receipts = store.list().records
     history = [
         receipt
-        for receipt in store.list()
+        for receipt in receipts
         if receipt.operation_kind is proposal.operation_kind
         and receipt.resource_id != proposal.resource_id
         and receipt.status
@@ -1131,7 +1194,7 @@ def autonomy_decision(
     hour_ago = now.timestamp() - 3600
     recent_autonomous = sum(
         1
-        for receipt in store.list()
+        for receipt in receipts
         if receipt.approval is not None
         and receipt.approval.mode == "autonomous"
         and receipt.outcome is not None
@@ -1164,9 +1227,12 @@ class AutonomyReport:
     )
     """Owner role passwords each executed proposal set, by proposal id."""
 
+    unreadable: tuple[record_files.UnreadableRecord, ...] = ()
+    """Receipts the pass could not read; while there are any, nothing is granted."""
+
     def as_dict(self) -> dict[str, object]:
         """Serialize for structured run output."""
-        return {
+        result: dict[str, object] = {
             "executed": [
                 _executed_entry(proposal_id, status, self.owned_roles.get(proposal_id))
                 for proposal_id, status in self.executed
@@ -1176,6 +1242,7 @@ class AutonomyReport:
                 for proposal_id, reason in self.withheld
             ],
         }
+        return _with_unreadable(result, self.unreadable)
 
 
 def autonomous_pass(  # noqa: PLR0913 - boundary mirrors approve().
@@ -1199,7 +1266,8 @@ def autonomous_pass(  # noqa: PLR0913 - boundary mirrors approve().
     executed: list[tuple[str, str]] = []
     withheld: list[tuple[str, str]] = []
     owned_roles: dict[str, tuple[OwnedRoleRecord, ...]] = {}
-    for proposal in store.list():
+    listing = store.list()
+    for proposal in listing.records:
         if proposal.status is not ProposalStatus.PROPOSED:
             continue
         environment = environments_by_server.get(proposal.operation_server)
@@ -1216,7 +1284,11 @@ def autonomous_pass(  # noqa: PLR0913 - boundary mirrors approve().
                 )
             )
             continue
-        decision = autonomy_decision(proposal, policy, store, moment)
+        decision = (
+            _incomplete_history(listing.unreadable)
+            if listing.unreadable
+            else autonomy_decision(proposal, policy, store, moment)
+        )
         if not decision.granted:
             withheld.append((proposal.resource_id.value, decision.reason))
             continue
@@ -1239,8 +1311,27 @@ def autonomous_pass(  # noqa: PLR0913 - boundary mirrors approve().
         if result.outcome is not None and result.outcome.owned_roles:
             owned_roles[result.resource_id.value] = result.outcome.owned_roles
     return AutonomyReport(
-        executed=tuple(executed), withheld=tuple(withheld), owned_roles=owned_roles
+        executed=tuple(executed),
+        withheld=tuple(withheld),
+        owned_roles=owned_roles,
+        unreadable=listing.unreadable,
     )
+
+
+def _incomplete_history(
+    unreadable: tuple[record_files.UnreadableRecord, ...],
+) -> AutonomyDecision:
+    """Withhold a grant while a receipt cannot be read.
+
+    The unreadable receipt could be the failure that suspends autonomy, so
+    no grant is made on a history with a gap in it.
+    """
+    paths = ", ".join(str(record.path) for record in unreadable)
+    reason = (
+        f"{len(unreadable)} proposal receipt(s) cannot be read, so the "
+        f"verified history is incomplete: {paths}"
+    )
+    return AutonomyDecision(granted=False, reason=reason)
 
 
 def _executed_entry(

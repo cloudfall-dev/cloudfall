@@ -25,6 +25,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, cast
 
 from jsonschema.exceptions import ValidationError
@@ -47,6 +48,8 @@ type CheckRunner = Callable[[Sequence[str], Mapping[str, str], Path], int]
 API_VERSION = "cloudfall/v1"
 DECISION_KIND = "OperationDecision"
 DECISION_SCHEMA = "operation-decision.schema.json"
+DECISION_SCHEMAS: Mapping[str, str] = MappingProxyType({API_VERSION: DECISION_SCHEMA})
+"""The schema a record is read with, by its ``apiVersion``: a v2 sits beside v1."""
 DECISION_DIRECTORY = "decisions"
 """Where decision records and their artifacts land inside the repository.
 
@@ -522,15 +525,29 @@ class DecisionStore:
         if not path.is_file():
             message = f"decision does not exist: {path}"
             raise DecisionError(ERROR_DECISION_MISSING, message)
+        return self.read(path)
+
+    def read(self, path: Path) -> Decision:
+        """Read and validate one record file, by the schema its apiVersion names."""
         try:
-            document = cast(
-                "dict[str, object]", json.loads(path.read_text(encoding="utf-8"))
-            )
+            document = cast("object", json.loads(path.read_text(encoding="utf-8")))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             message = f"decision record is not valid JSON: {path}: {error}"
             raise DecisionError(ERROR_RECORD_INVALID, message) from error
+        except OSError as error:
+            message = f"decision record cannot be read: {path}: {error}"
+            raise DecisionError(ERROR_RECORD_INVALID, message) from error
+        if not isinstance(document, dict):
+            message = f"decision record is not a JSON object: {path}"
+            raise DecisionError(ERROR_RECORD_INVALID, message)
+        record = cast("dict[str, object]", document)
         try:
-            self.catalog.validate_named(DECISION_SCHEMA, document)
+            schema = record_files.schema_for(record, DECISION_SCHEMAS)
+        except LookupError as error:
+            message = f"decision record cannot be read: {path}: {error}"
+            raise DecisionError(ERROR_RECORD_INVALID, message) from error
+        try:
+            self.catalog.validate_named(schema, record)
         except ValidationError as error:
             field = ".".join(str(part) for part in error.absolute_path) or "(root)"
             message = (
@@ -538,17 +555,27 @@ class DecisionStore:
                 f"{field}: {error.message}"
             )
             raise DecisionError(ERROR_RECORD_INVALID, message) from error
-        return _decision_from_document(document)
+        return _decision_from_document(record)
 
-    def list(self) -> tuple[Decision, ...]:
-        """Load every decision record, oldest proposal first."""
-        if not self.directory.is_dir():
-            return ()
-        decisions = [
-            self.load(ResourceId.from_boundary(path.stem))
-            for path in sorted(self.directory.glob("*.json"))
-        ]
-        return tuple(sorted(decisions, key=lambda entry: entry.proposed_at))
+    def list(self) -> record_files.Listing[Decision]:
+        """Read every decision record, oldest proposal first.
+
+        A record that cannot be read stops nothing: it is reported, with
+        its path and why, beside the records that could be.
+        """
+        decisions: list[Decision] = []
+        unreadable: list[record_files.UnreadableRecord] = []
+        for path in record_files.record_paths(self.directory):
+            try:
+                decisions.append(self.read(path))
+            except DecisionError as error:
+                if error.code != ERROR_RECORD_INVALID:
+                    raise
+                unreadable.append(record_files.UnreadableRecord(path, error.detail))
+        return record_files.Listing(
+            records=tuple(sorted(decisions, key=lambda entry: entry.proposed_at)),
+            unreadable=tuple(unreadable),
+        )
 
     def _path(self, decision_id: ResourceId) -> Path:
         return self.directory / f"{decision_id.value}.json"
@@ -565,7 +592,9 @@ class DecisionStore:
 
     def _content(self, decision: Decision) -> str:
         document = decision.as_document()
-        self.catalog.validate_named(DECISION_SCHEMA, document)
+        spec = cast("dict[str, object]", document["spec"])
+        spec[record_files.WRITER_VERSION_FIELD] = record_files.writer_version()
+        self.catalog.validate_named(DECISION_SCHEMAS[API_VERSION], document)
         return f"{json.dumps(document, indent=2, sort_keys=True)}\n"
 
 
@@ -587,6 +616,8 @@ def propose(
     store: DecisionStore,
     now: Callable[[], datetime] | None = None,
     run: CheckRunner | None = None,
+    *,
+    skipped: Callable[[record_files.UnreadableRecord], None] | None = None,
 ) -> Decision:
     """Run the operation in check mode and record what it would do.
 
@@ -598,13 +629,18 @@ def propose(
     proposal of the same operation, targets and inputs is marked
     ``superseded`` by the new one: approving the older one would run what
     the newer check already replaced.
+
+    A record that cannot be read is told to ``skipped``, when given, and
+    left alone: it is neither superseded nor in the proposal's way.
     """
     operation = request.operation
     declared = _validated_inputs(operation, request.inputs)
     pattern = _validated_targets(operation, request.targets)
-    # Read before anything runs: a record that does not load stops the
-    # proposal here rather than after check mode ran.
-    recorded = store.list()
+    listing = store.list()
+    if skipped is not None:
+        for unreadable in listing.unreadable:
+            skipped(unreadable)
+    recorded = listing.records
     moment = (now or _utc_now)()
     decision_id = _decision_identifier(operation.operation_id, moment)
     diff_path = store.directory / f"{decision_id.value}{_DIFF_SUFFIX}"

@@ -8,6 +8,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
+from importlib import metadata
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from cloudfall.decision import Decision
+    from cloudfall.record_files import UnreadableRecord
 
 SCHEMAS = default_schema_directory()
 MOMENT = datetime(2026, 9, 21, 14, 30, 12, tzinfo=UTC)
@@ -330,7 +332,9 @@ def test_a_recorded_decision_round_trips_through_the_store(
     loaded = store.load(decision.decision_id)
 
     assert loaded == decision
-    assert [entry.decision_id for entry in store.list()] == [decision.decision_id]
+    assert [entry.decision_id for entry in store.list().records] == [
+        decision.decision_id
+    ]
 
 
 def test_the_same_decision_is_never_overwritten(tmp_path: Path) -> None:
@@ -1012,7 +1016,7 @@ class _DyingRunner:
         self.seen: list[DecisionStatus] = []
 
     def __call__(self, *_invocation: object) -> int:
-        self.seen.extend(entry.status for entry in self.store.list())
+        self.seen.extend(entry.status for entry in self.store.list().records)
         message = "killed while the playbook ran"
         raise _KilledError(message)
 
@@ -1659,12 +1663,26 @@ def _bad_via(path: Path) -> str:
     return "spec.approval.via"
 
 
-RECORD_COMMANDS: dict[str, tuple[str, ...]] = {
+def _old_api_version(path: Path) -> str:
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["apiVersion"] = "cloudfall/v0"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return "cloudfall/v0"
+
+
+ONE_RECORD_COMMANDS: dict[str, tuple[str, ...]] = {
     "show": ("decisions", "show", "{id}"),
-    "list": ("decisions", "list"),
     "approve": ("decisions", "approve", "{id}", "--approver", "roman"),
+}
+"""Commands that read one record: a broken one answers RECORD_INVALID."""
+
+LISTING_COMMANDS: dict[str, tuple[str, ...]] = {
+    "list": ("decisions", "list"),
     "why": ("why",),
 }
+"""Commands that read every record: a broken one is skipped and named (#218)."""
+
+RECORD_COMMANDS = {**ONE_RECORD_COMMANDS, **LISTING_COMMANDS}
 
 
 def _run_on_record(
@@ -1682,15 +1700,14 @@ def _run_on_record(
     return exit_code, json.loads(stdout.getvalue())
 
 
-@pytest.mark.parametrize("command", sorted(RECORD_COMMANDS))
-@pytest.mark.parametrize(
-    "corrupt", [_not_json, _bad_status, _bad_via], ids=["json", "status", "via"]
+CORRUPTIONS = pytest.mark.parametrize(
+    "corrupt",
+    [_not_json, _bad_status, _bad_via, _old_api_version],
+    ids=["json", "status", "via", "api-version"],
 )
-def test_an_invalid_record_answers_record_invalid_naming_the_file(
-    tmp_path: Path, command: str, corrupt: Callable[[Path], str]
-) -> None:
-    """A broken record is a typed RECORD_INVALID, never a crash (#41)."""
-    repository = _repository(tmp_path)
+
+
+def _approved_record(repository: Path) -> tuple[Decision, Path]:
     store = _store(repository)
     proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
     approve(
@@ -1702,6 +1719,17 @@ def test_an_invalid_record_answers_record_invalid_naming_the_file(
         _Runner(),
     )
     path = repository / DECISION_DIRECTORY / f"{proposed.decision_id.value}.json"
+    return proposed, path
+
+
+@pytest.mark.parametrize("command", sorted(ONE_RECORD_COMMANDS))
+@CORRUPTIONS
+def test_an_invalid_record_answers_record_invalid_naming_the_file(
+    tmp_path: Path, command: str, corrupt: Callable[[Path], str]
+) -> None:
+    """A broken record is a typed RECORD_INVALID, never a crash (#41)."""
+    repository = _repository(tmp_path)
+    proposed, path = _approved_record(repository)
     named = corrupt(path)
 
     exit_code, payload = _run_on_record(command, repository, proposed.decision_id.value)
@@ -1715,6 +1743,37 @@ def test_an_invalid_record_answers_record_invalid_naming_the_file(
     assert named in error["message"]
 
 
+@pytest.mark.parametrize("command", sorted(LISTING_COMMANDS))
+@CORRUPTIONS
+def test_a_listing_skips_an_invalid_record_and_names_it(
+    tmp_path: Path, command: str, corrupt: Callable[[Path], str]
+) -> None:
+    """One broken record no longer hides the rest of the record (#218)."""
+    repository = _repository(tmp_path)
+    proposed, path = _approved_record(repository)
+    store = _store(repository)
+    readable = propose(_proposal(repository), store, lambda: LATER, _Runner())
+    named = corrupt(path)
+
+    exit_code, payload = _run_on_record(command, repository, proposed.decision_id.value)
+
+    assert exit_code == 0, payload
+    data = payload["data"]
+    assert isinstance(data, dict)
+    listed = (
+        [entry["metadata"]["id"] for entry in data["decisions"]]
+        if command == "list"
+        else [entry["id"] for entry in data["answers"]]
+    )
+    assert listed == [readable.decision_id.value]
+    warnings = payload["warnings"]
+    assert isinstance(warnings, list)
+    [warning] = warnings
+    assert warning["code"] == "RECORD_UNREADABLE"
+    assert warning["context"]["path"] == str(path)
+    assert named in warning["context"]["reason"]
+
+
 def test_a_store_refuses_an_invalid_record_with_a_decision_error(
     tmp_path: Path,
 ) -> None:
@@ -1725,8 +1784,92 @@ def test_a_store_refuses_an_invalid_record_with_a_decision_error(
     _bad_status(path)
 
     with pytest.raises(DecisionError) as error:
-        store.list()
+        store.load(proposed.decision_id)
 
     assert error.value.code == "decision_record_invalid"
     assert str(path) in error.value.detail
     assert "spec.status" in error.value.detail
+
+
+def test_a_store_lists_what_it_can_read_and_names_what_it_cannot(
+    tmp_path: Path,
+) -> None:
+    """A truncated record next to good ones (#217, #218)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    first = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    second = propose(
+        _proposal(repository, target="web-2"), store, lambda: LATER, _Runner()
+    )
+    path = repository / DECISION_DIRECTORY / f"{first.decision_id.value}.json"
+    path.write_text(path.read_text(encoding="utf-8")[:40], encoding="utf-8")
+
+    listing = store.list()
+
+    assert [entry.decision_id for entry in listing.records] == [second.decision_id]
+    [unreadable] = listing.unreadable
+    assert unreadable.path == path
+    assert "not valid JSON" in unreadable.reason
+
+
+def test_a_proposal_goes_on_past_an_unreadable_record_and_names_it(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    first = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    path = repository / DECISION_DIRECTORY / f"{first.decision_id.value}.json"
+    _not_json(path)
+    skipped: list[UnreadableRecord] = []
+
+    second = propose(
+        _proposal(repository), store, lambda: LATER, _Runner(), skipped=skipped.append
+    )
+
+    assert store.load(second.decision_id).status is DecisionStatus.PROPOSED
+    assert [record.path for record in skipped] == [path]
+    assert path.read_text(encoding="utf-8") == "{not json"
+
+
+def test_the_cli_proposes_past_an_unreadable_record_with_a_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    first = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    path = repository / DECISION_DIRECTORY / f"{first.decision_id.value}.json"
+    _not_json(path)
+    for name in ("deploy.yml", "health.yml"):
+        (repository / "playbooks" / name).write_text(LOCAL_PLAY, encoding="utf-8")
+
+    exit_code = main(
+        [
+            *("operations", "propose", "deploy"),
+            *("--repository", str(repository), "--target", "localhost"),
+            *("--input", "version=1.4.0"),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0, payload
+    decision_id = payload["data"]["decision"]["metadata"]["id"]
+    assert store.load(ResourceId.from_boundary(decision_id)).status is (
+        DecisionStatus.PROPOSED
+    )
+    [warning] = payload["warnings"]
+    assert warning["code"] == "RECORD_UNREADABLE"
+    assert warning["context"]["path"] == str(path)
+
+
+def test_a_new_record_names_the_cloudfall_version_that_wrote_it(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    decision = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    path = repository / DECISION_DIRECTORY / f"{decision.decision_id.value}.json"
+
+    document = json.loads(path.read_text(encoding="utf-8"))
+
+    assert document["spec"]["writerVersion"] == metadata.version("cloudfall")
+    assert store.load(decision.decision_id) == decision
