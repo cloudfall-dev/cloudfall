@@ -30,3 +30,6 @@ argument_specs:
         type: list
         elements: dict
         default: []
+      cloudfall_inspect_alert_channel:
+        type: str
+        default: ""

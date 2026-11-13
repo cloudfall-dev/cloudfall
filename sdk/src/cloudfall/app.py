@@ -5133,6 +5133,107 @@ def _token_missing(error: TokenMissingError) -> Exception:
     )
 
 
+# alerts test (S-015)
+
+
+alerts_group = app.group("alerts", description="Check a host's alert channel")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class AlertsTestArgs(EngineArgs):
+    """Arguments of ``alerts test``."""
+
+    server: ResourceId = Arg(description="Server whose channel to test")
+    yes: bool = Flag(
+        default=False,
+        confirm=True,
+        description=(
+            "Send the message; without it the command validates the request "
+            "and only shows what it would do"
+        ),
+    )
+
+
+class AlertsTestPayload(Payload):
+    """``alerts test``: the plan, or the message sent."""
+
+    command = "alerts test"
+    writes = True
+
+
+@alerts_group.command(
+    "test",
+    description=(
+        "Send one test message through the alert channel a server's baseline "
+        "names, with the sender baseline converge installed; the channel's "
+        "verify step. Without --yes it shows the plan"
+    ),
+    danger_level="mutating",
+    exit_codes=[*_LIFECYCLE_EXIT_CODES, "NOT_FOUND"],
+    timeout=None,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0"},
+    supports_raw_payload=True,
+    examples=[
+        ("Show the plan", "cloudfall alerts test h1"),
+        ("Send it", "cloudfall alerts test h1 --yes"),
+    ],
+)
+def alerts_test_command(
+    args: AlertsTestArgs, ctx: Ctx, fleet: Fleet
+) -> AlertsTestPayload:
+    """Send a test message through the server's channel, or show the plan."""
+    inventory = fleet.inventory
+    server = next(
+        (item for item in inventory.servers if item.resource_id == args.server), None
+    )
+    if server is None:
+        message = f"no Server {args.server.value} is declared"
+        raise Exit.NOT_FOUND(message, context={"code": "server_undeclared"})
+    channel = inventory.baseline(server.baseline_id).alert_channel
+    if channel is None:
+        message = (
+            f"Baseline/{server.baseline_id.value} of {args.server.value} names no "
+            "alert channel"
+        )
+        raise Exit.PRECONDITION(message, context={"code": "alert_channel_undeclared"})
+    text = (
+        f"Test alert from cloudfall for {args.server.value} on channel "
+        f"{channel.value}, {datetime.now(UTC).isoformat(timespec='seconds')}"
+    )
+    if not args.yes:
+        return AlertsTestPayload(
+            {
+                "status": "plan",
+                "action": "alerts-test",
+                "server": args.server.value,
+                "channel": channel.value,
+                "wouldRun": f"run cloudfall-alert on {args.server.value}: {text}",
+                "instruction": _PLAN_INSTRUCTION,
+                "effect": "would_update",
+            }
+        )
+    try:
+        run_engine_playbook(
+            args.context(fleet, ctx),
+            "alerts-test.yml",
+            {"cloudfall_alert_test_message": text},
+            limit=args.server,
+        )
+    except LifecycleError as error:
+        raise _lifecycle_failed(error) from error
+    return AlertsTestPayload(
+        {
+            "status": "ok",
+            "action": "alerts-test",
+            "server": args.server.value,
+            "channel": channel.value,
+            "message": text,
+            "effect": "updated",
+        }
+    )
+
+
 # release approve: a person's record that one release may be deployed (S-008)
 
 

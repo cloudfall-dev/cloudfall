@@ -1,0 +1,16 @@
+---
+# S-015: send one test message through a host's alert channel, the channel's
+# verify step. Run limited to one server; the sender is the one baseline.yml
+# installs for the channel the server's baseline names.
+- name: Send a test alert through a host's channel
+  hosts: cloudfall_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Send the test message
+      ansible.builtin.command:
+        argv:
+          - /usr/local/sbin/cloudfall-alert
+          - "{{ cloudfall_alert_test_message }}"
+      changed_when: true

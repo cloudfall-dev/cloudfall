@@ -584,6 +584,24 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
     ),
     CommandContract(
         "cloudfall",
+        "alerts test",
+        CommandEffect.SERVERS,
+        "send one test message through a server's alert channel",
+        gate=_YES,
+        output=(
+            _plan("server", "channel:string"),
+            _shape(
+                "status",
+                "action",
+                "server",
+                "channel:string",
+                "message:string",
+                when="with `--yes`",
+            ),
+        ),
+    ),
+    CommandContract(
+        "cloudfall",
         "baseline converge",
         CommandEffect.SERVERS,
         "converge every server to its baseline, with each host's alert channel",

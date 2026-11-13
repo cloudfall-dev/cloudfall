@@ -17,3 +17,5 @@
         {{ cloudfall_certificates | default([]) }}
       cloudfall_inspect_volumes: >-
         {{ cloudfall_volumes | default([]) }}
+      cloudfall_inspect_alert_channel: >-
+        {{ cloudfall_alert_channel | default('') }}

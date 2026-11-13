@@ -633,6 +633,10 @@
   ansible.builtin.include_tasks: volumes.yml
   when: cloudfall_inspect_volumes | length > 0
 
+- name: Collect alert channel evidence
+  ansible.builtin.include_tasks: alert_channel.yml
+  when: cloudfall_inspect_alert_channel | length > 0
+
 - name: Create controller observation directory
   ansible.builtin.file:
     path: "{{ cloudfall_inspect_output_directory }}"

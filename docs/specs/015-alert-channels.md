@@ -163,4 +163,12 @@ Not built yet. Landed so far, checked by unit tests on the controller:
   it would install (the pin, else `apt-cache policy`'s candidate) is 0.26 or later before writing
   its configuration: S-015-5 on the controller; a real alert reaching the chat waits on a Debian
   host
+- Test and audit: `cloudfall alerts test <server>` (plan without `--yes`) runs `alerts-test.yml`
+  limited to that server, which sends one message naming the server, the channel and the time
+  through the installed sender; a server whose baseline names no channel is refused. `inspect`
+  records the channel's files (the sender, whether the token and chat id exist, never the
+  token) and mdadm's `PROGRAM` and smartd's `DEVICESCAN` lines; `audit` adds `alerting.channel`,
+  compliant when all are there and the installed daemons point at the sender, drift otherwise,
+  unknown without evidence: S-015-4 on the controller, S-015-7. A real message reaching the chat
+  waits on a Debian host
 
