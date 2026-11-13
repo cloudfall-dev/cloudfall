@@ -551,6 +551,24 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
     ),
     CommandContract(
         "cloudfall",
+        "logging deploy",
+        CommandEffect.SERVERS,
+        "deploy the declared LoggingStack after meeting its secret requirements",
+        gate=_YES,
+        output=(
+            _plan("loggingStack:string", "missing"),
+            _shape(
+                "status",
+                "action",
+                "playbook:string",
+                "generated:array",
+                "delivered:array",
+                when="with `--yes`",
+            ),
+        ),
+    ),
+    CommandContract(
+        "cloudfall",
         "release approve",
         CommandEffect.PROJECT,
         "record a person's approval of one built release under "

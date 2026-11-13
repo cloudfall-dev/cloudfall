@@ -66,15 +66,18 @@ than silently replacing an unavailable pin with the newest package.
 
 ## 2. Materialize secrets and mTLS files
 
-Cloudfall state contains paths only. Use the existing PKI and secret-delivery
-process to materialize these files before running either logging task:
+Cloudfall state contains paths only. The Grafana password and each SMTP
+password are secrets Cloudfall keeps itself (S-011): `cloudfall logging deploy`
+generates the Grafana password into `secrets/`, takes each SMTP password from
+`cloudfall secrets input`, and copies both to their host paths. Use the existing
+PKI to materialize the certificates and keys before deploying:
 
 | Backend host | Collector hosts |
 | --- | --- |
 | `/etc/cloudfall/logging/server.crt` | `/etc/cloudfall/logging/ca.crt` |
 | `/etc/cloudfall/logging/server.key` | `/etc/cloudfall/logging/client.crt` |
 | `/etc/cloudfall/logging/client-ca.crt` | `/etc/cloudfall/logging/client.key` |
-| `/etc/cloudfall/logging/grafana-admin-password` | |
+| `/etc/cloudfall/logging/grafana-admin-password` (kept by Cloudfall) | |
 
 Each collector may use a different client certificate while keeping the same
 path. The client CA must validate every collector certificate. The collector
@@ -129,9 +132,8 @@ package pins. Secrets carry their state, and `data.missing` names the ones a
 person must supply. `uv run cloudfall secrets generate` stores the Grafana
 password; `uv run cloudfall secrets input smtp-password-<receiver> --owner
 <stack>` stores an SMTP password typed at a terminal. Both keep the value
-sops-encrypted under `secrets/`; copying it to the host file is still the step
-in section 2 until Cloudfall delivers it (S-011). The rest is still provided as
-described above.
+sops-encrypted under `secrets/`, and `cloudfall logging deploy` copies it to
+its host path. The certificates and keys are still provided as described above.
 
 Validation rejects missing servers, environment mismatches, duplicate stacks,
 file sources outside component placement, secret paths outside
@@ -140,14 +142,21 @@ file sources outside component placement, secret paths outside
 
 ## 5. Check and deploy
 
-The check run is the preview step: it shows what would change on each host
-and changes nothing, and it still requires the pre-provisioned secret files
-because that is a deployment precondition:
+Without `--yes` the command is the plan: every requirement with its state,
+the secrets it would generate, and `data.missing`, the secrets a person must
+supply first. With `--yes` it generates the missing generated secrets, stops
+with exit 4 and `error.context.code` `INPUT_REQUIRED` while an input secret is
+missing, then runs `logging.yml` with each stored secret staged in a `0600`
+file on the controller. A secret file already on the host is kept, so one
+provided by hand is never overwritten:
 
 ```console
-task logging:check CONFIG_DIR=../my-project
-task logging:deploy CONFIG_DIR=../my-project
+uv run cloudfall logging deploy
+uv run cloudfall logging deploy --yes
 ```
+
+`task logging:check` and `task logging:deploy` still run the playbook directly,
+without Cloudfall's secrets; they need every file of section 2 on the host.
 
 The deployment order is backend first and collectors second, one host at a
 time. Loki, Prometheus, and Alloy configuration are validated with their

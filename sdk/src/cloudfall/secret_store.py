@@ -119,6 +119,11 @@ class SecretStore:
             reference, hashlib.sha256(value.encode("utf-8")).hexdigest()
         )
 
+    def value(self, reference: SecretValueReference) -> str:
+        """Decrypt and return one stored value; it stays in the caller's memory."""
+        provider = SopsSecretProvider(self.secrets_directory, decrypt=self.decrypt)
+        return provider.fetch_value(reference)
+
     def generate(self, reference: SecretValueReference) -> StoredSecret:
         """Write a fresh random value for ``reference``."""
         return self.write(reference, secrets.token_urlsafe(GENERATED_BYTES))

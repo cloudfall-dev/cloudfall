@@ -4,3 +4,7 @@ cloudfall_logging_backend_grafana_repository_key_url: >-
   https://apt.grafana.com/gpg-full.key
 cloudfall_logging_backend_grafana_repository_key_path: /etc/apt/keyrings/grafana.asc
 cloudfall_logging_backend_grafana_repository_url: https://apt.grafana.com
+# Owner of the secrets Cloudfall delivers (S-011); the tasks that follow give
+# each service its own read access, as for files provided by hand
+cloudfall_logging_backend_secret_owner: root
+cloudfall_logging_backend_secret_group: root
