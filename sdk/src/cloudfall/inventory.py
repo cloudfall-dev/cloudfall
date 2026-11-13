@@ -12,6 +12,7 @@ from cloudfall.domain import (
     AlertDuration,
     AlertSeverity,
     AlertSummary,
+    BlockDevicePath,
     BuildCommand,
     BuildTimeoutSeconds,
     BuildToolName,
@@ -83,6 +84,7 @@ from cloudfall.domain import (
     SystemdUnitName,
     TcpPort,
     TlsMode,
+    VolumeGroupName,
     WebhookUrl,
 )
 
@@ -301,6 +303,31 @@ class ConfigurationFileRequirement:
 
 
 @dataclass(frozen=True, slots=True)
+class StoragePool:
+    """An existing volume group workload volumes go into (S-014).
+
+    ``primary`` takes expendable volumes; a mirrored volume spans ``primary``
+    and ``secondary``. Cloudfall never creates or changes the group itself.
+    """
+
+    resource_id: ResourceId
+    volume_group: VolumeGroupName
+    primary: BlockDevicePath
+    secondary: BlockDevicePath | None
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the pool as the baseline declares it."""
+        result: dict[str, object] = {
+            "id": self.resource_id.value,
+            "volumeGroup": self.volume_group.value,
+            "primary": self.primary.value,
+        }
+        if self.secondary is not None:
+            result["secondary"] = self.secondary.value
+        return result
+
+
+@dataclass(frozen=True, slots=True)
 class BaselineInventory:
     """Reusable desired host contract."""
 
@@ -313,6 +340,13 @@ class BaselineInventory:
     required_services: tuple[ServiceRequirement, ...]
     firewall: FirewallRequirement | None
     configuration_files: tuple[ConfigurationFileRequirement, ...]
+    pools: tuple[StoragePool, ...] = ()
+
+    def pool(self, pool_id: ResourceId | None) -> StoragePool | None:
+        """Return the named pool, or the only one when ``pool_id`` is ``None``."""
+        if pool_id is None:
+            return self.pools[0] if len(self.pools) == 1 else None
+        return next((pool for pool in self.pools if pool.resource_id == pool_id), None)
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the baseline for inspection and audit consumers."""
@@ -332,6 +366,8 @@ class BaselineInventory:
                 for mount in self.mounts
             ]
         }
+        if self.pools:
+            storage["pools"] = [pool.as_dict() for pool in self.pools]
         if self.raid is not None:
             storage["softwareRaid"] = {
                 "level": self.raid.level.value,
@@ -1141,6 +1177,8 @@ class MetricsBackend:
     port: TcpPort
     storage_path: AbsolutePath
     retention_hours: PositiveCount
+    storage_pool: ResourceId | None = None
+    """The baseline's storage pool Prometheus's volume goes into (S-014)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1164,6 +1202,8 @@ class LoggingBackendStorage:
 
     storage_type: LoggingStorageType
     path: AbsolutePath
+    pool: ResourceId | None = None
+    """The baseline's storage pool Loki's volume goes into (S-014)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1696,6 +1736,28 @@ def _baseline_inventory(document: ResourceDocument) -> BaselineInventory:
             _configuration_requirement(item)
             for item in _mapping_list(configuration.get("files"), "configuration files")
         ),
+        pools=tuple(
+            _storage_pool(item)
+            for item in _mapping_list(storage.get("pools", []), "storage pools")
+        ),
+    )
+
+
+def _optional_resource_id(value: object) -> ResourceId | None:
+    return None if value is None else ResourceId.from_boundary(value)
+
+
+def _storage_pool(content: Mapping[str, object]) -> StoragePool:
+    raw_secondary = content.get("secondary")
+    return StoragePool(
+        resource_id=ResourceId.from_boundary(content.get("id")),
+        volume_group=VolumeGroupName.from_boundary(content.get("volumeGroup")),
+        primary=BlockDevicePath.from_boundary(content.get("primary")),
+        secondary=(
+            BlockDevicePath.from_boundary(raw_secondary)
+            if raw_secondary is not None
+            else None
+        ),
     )
 
 
@@ -2225,6 +2287,9 @@ def _logging_stack_inventory(
                 retention_hours=PositiveCount.from_boundary(
                     metrics_backend.get("retentionHours")
                 ),
+                storage_pool=_optional_resource_id(
+                    metrics_backend.get("storagePool")
+                ),
             ),
             collection=MetricsCollection(
                 interval_seconds=PositiveCount.from_boundary(
@@ -2239,6 +2304,7 @@ def _logging_stack_inventory(
             storage=LoggingBackendStorage(
                 storage_type=LoggingStorageType.from_boundary(storage.get("type")),
                 path=AbsolutePath.from_boundary(storage.get("path")),
+                pool=_optional_resource_id(storage.get("pool")),
             ),
             retention_hours=PositiveCount.from_boundary(backend.get("retentionHours")),
         ),

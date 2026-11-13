@@ -104,6 +104,9 @@
                   "type": "integer",
                   "minimum": 24,
                   "maximum": 8760
+                },
+                "storagePool": {
+                  "$ref": "common.schema.json#/$defs/resourceId"
                 }
               },
               "required": [
@@ -157,6 +160,9 @@
                 },
                 "path": {
                   "$ref": "common.schema.json#/$defs/absolutePath"
+                },
+                "pool": {
+                  "$ref": "common.schema.json#/$defs/resourceId"
                 }
               },
               "required": [

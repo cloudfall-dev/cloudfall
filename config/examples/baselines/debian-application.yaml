@@ -20,6 +20,12 @@ spec:
       - path: /
         filesystem: ext4
         minimumBytes: 850000000000
+    # Volume groups the install made; workload volumes go in here (S-014)
+    pools:
+      - id: data
+        volumeGroup: vg_data
+        primary: /dev/nvme0n1p5
+        secondary: /dev/nvme1n1p5
   packages:
     required:
       - name: acl

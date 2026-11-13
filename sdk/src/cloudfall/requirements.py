@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 from cloudfall.domain import (
     AbsolutePath,
+    BlockDevicePath,
     ByteSize,
     Hostname,
     NetworkProtocol,
@@ -31,10 +32,11 @@ from cloudfall.domain import (
     SystemdUnitName,
     TcpPort,
 )
-from cloudfall.inventory import SecretValueReference
+from cloudfall.inventory import SecretValueReference, StoragePool
 
 if TYPE_CHECKING:
     from cloudfall.inventory import (
+        BaselineInventory,
         LoggingStackInventory,
         PlatformInventory,
         ServerInventory,
@@ -134,23 +136,60 @@ class RequirementOwner:
 
 @dataclass(frozen=True, slots=True)
 class VolumeRequirement:
-    """A filesystem mounted at ``path`` before ``units`` start."""
+    """A filesystem mounted at ``path`` before ``units`` start (S-014).
+
+    It lives in ``pool`` as ``lv_<name>``: linear on the pool's primary
+    physical volume when expendable, ``raid1`` over primary and secondary
+    when mirrored.
+    """
 
     name: RequirementName
     path: AbsolutePath
     minimum_size: ByteSize
     placement: VolumePlacement
     units: tuple[SystemdUnitName, ...]
+    pool: StoragePool
 
     requirement_type = RequirementType.VOLUME
 
+    def __post_init__(self) -> None:
+        """Refuse a mirrored volume in a pool with one physical volume."""
+        if self.placement is VolumePlacement.MIRRORED and self.pool.secondary is None:
+            message = (
+                f"volume {self.name.value} is mirrored, but pool "
+                f"{self.pool.resource_id.value} has no secondary physical volume"
+            )
+            raise ValueError(message)
+
+    @property
+    def logical_volume(self) -> str:
+        """Return the LV name: ``lv_`` and the requirement's name."""
+        return f"lv_{self.name.value.replace('-', '_')}"
+
+    @property
+    def volume_type(self) -> str:
+        """Return the LVM segment type the placement maps to."""
+        return "raid1" if self.placement is VolumePlacement.MIRRORED else "linear"
+
+    @property
+    def physical_volumes(self) -> tuple[BlockDevicePath, ...]:
+        """Return the physical volumes every ``lvcreate`` and ``lvextend`` names."""
+        if self.placement is VolumePlacement.MIRRORED and self.pool.secondary:
+            return (self.pool.primary, self.pool.secondary)
+        return (self.pool.primary,)
+
     def as_dict(self) -> dict[str, object]:
-        """Serialize the volume requirement."""
+        """Serialize the volume requirement with where it lives."""
         return {
             "path": self.path.value,
             "minimumBytes": self.minimum_size.value,
             "placement": self.placement.value,
             "units": [unit.value for unit in self.units],
+            "pool": self.pool.resource_id.value,
+            "volumeGroup": self.pool.volume_group.value,
+            "logicalVolume": self.logical_volume,
+            "type": self.volume_type,
+            "physicalVolumes": [item.value for item in self.physical_volumes],
         }
 
 
@@ -331,7 +370,11 @@ def requirements_of(inventory: PlatformInventory) -> tuple[ServerRequirements, .
     by_server: dict[str, list[Requirement]] = {}
     servers = {server.resource_id.value: server for server in inventory.servers}
     for stack in inventory.logging_stacks:
-        for server_id, requirement in _logging_stack_requirements(stack, servers):
+        backend = servers[stack.backend.server_id.value]
+        baseline = inventory.baseline(backend.baseline_id)
+        for server_id, requirement in _logging_stack_requirements(
+            stack, servers, baseline
+        ):
             by_server.setdefault(server_id.value, []).append(requirement)
     return tuple(
         ServerRequirements(
@@ -349,7 +392,9 @@ def requirements_of(inventory: PlatformInventory) -> tuple[ServerRequirements, .
 
 
 def _logging_stack_requirements(
-    stack: LoggingStackInventory, servers: dict[str, ServerInventory]
+    stack: LoggingStackInventory,
+    servers: dict[str, ServerInventory],
+    baseline: BaselineInventory,
 ) -> list[tuple[ResourceId, Requirement]]:
     owner = RequirementOwner(ResourceKind.LOGGING_STACK, stack.resource_id)
     backend = stack.backend.server_id
@@ -367,6 +412,7 @@ def _logging_stack_requirements(
             LOGGING_VOLUME_SIZE,
             VolumePlacement.EXPENDABLE,
             (SystemdUnitName("loki.service"),),
+            _pool(baseline, stack.backend.storage.pool, "loki"),
         ),
     )
     place(
@@ -377,6 +423,7 @@ def _logging_stack_requirements(
             LOGGING_VOLUME_SIZE,
             VolumePlacement.EXPENDABLE,
             (SystemdUnitName("prometheus.service"),),
+            _pool(baseline, stack.metrics.backend.storage_pool, "prometheus"),
         ),
     )
     remote_collectors = tuple(
@@ -460,6 +507,20 @@ def _logging_stack_requirements(
             ),
         )
     return placed
+
+
+def _pool(
+    baseline: BaselineInventory, pool_id: ResourceId | None, volume: str
+) -> StoragePool:
+    """Return the pool a volume goes into; validation refuses one that is missing."""
+    pool = baseline.pool(pool_id)
+    if pool is None:
+        wanted = "its only pool" if pool_id is None else f"pool {pool_id.value}"
+        message = (
+            f"volume {volume} needs {wanted} on Baseline/{baseline.resource_id.value}"
+        )
+        raise ValueError(message)
+    return pool
 
 
 def _secret(

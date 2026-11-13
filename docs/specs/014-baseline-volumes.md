@@ -127,3 +127,12 @@ not just create, or `wipefs`.
 ## Issues
 
 ## Verification
+
+Not built yet. Landed so far, checked by unit tests on the controller:
+
+- `storage.pools` on a `Baseline` (schema, the `StoragePool` model, unique `id` and
+  `volumeGroup`), the `pool` and `storagePool` fields of `LoggingStack`, and the pool refusals
+  of `config validate` (`volume_requirement_pool_missing`, `_unknown`, `_ambiguous`): S-014-1,
+  S-014-2
+- Each volume requirement carries its pool, `lv_<name>`, LV type and physical volumes, listed
+  by `requirements show` and the `logging deploy` plan: S-014-3

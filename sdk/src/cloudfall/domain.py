@@ -1547,6 +1547,46 @@ class FilesystemName:
         return cls(_required_string(value, "filesystem name"))
 
 
+_VOLUME_GROUP_PATTERN = re.compile(r"^[A-Za-z0-9_+.][A-Za-z0-9_+.-]{0,126}$")
+_BLOCK_DEVICE_PATTERN = re.compile(r"^/dev/[A-Za-z0-9_./:-]{1,250}$")
+
+
+@dataclass(frozen=True, slots=True)
+class VolumeGroupName:
+    """An LVM volume group name, as ``vgs`` prints it."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Enforce LVM's name syntax."""
+        if not _VOLUME_GROUP_PATTERN.fullmatch(self.value):
+            message = f"invalid volume group name: {self.value!r}"
+            raise ValueError(message)
+
+    @classmethod
+    def from_boundary(cls, value: object) -> VolumeGroupName:
+        """Coerce a boundary value into a volume group name."""
+        return cls(_required_string(value, "volume group name"))
+
+
+@dataclass(frozen=True, slots=True)
+class BlockDevicePath:
+    """A block device under ``/dev``, such as a physical volume's partition."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Accept device paths only, never ``..``."""
+        if not _BLOCK_DEVICE_PATTERN.fullmatch(self.value) or ".." in self.value:
+            message = f"invalid block device path: {self.value!r}"
+            raise ValueError(message)
+
+    @classmethod
+    def from_boundary(cls, value: object) -> BlockDevicePath:
+        """Coerce a boundary value into a block device path."""
+        return cls(_required_string(value, "block device path"))
+
+
 @dataclass(frozen=True, slots=True)
 class PackageVersion:
     """Opaque package-manager version string."""

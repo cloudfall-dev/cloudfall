@@ -232,6 +232,14 @@ def test_inventory_renders_ansible_host_variables() -> None:
                         "path": "/",
                     }
                 ],
+                "pools": [
+                    {
+                        "id": "data",
+                        "volumeGroup": "vg_data",
+                        "primary": "/dev/nvme0n1p5",
+                        "secondary": "/dev/nvme1n1p5",
+                    }
+                ],
                 "softwareRaid": {
                     "level": "raid1",
                     "minimumActiveDevices": 2,
