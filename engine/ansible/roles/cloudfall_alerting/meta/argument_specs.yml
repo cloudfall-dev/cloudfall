@@ -1,0 +1,18 @@
+---
+argument_specs:
+  main:
+    short_description: Install the alert sender and point mdadm and smartd at it (S-015)
+    options:
+      cloudfall_alerting_channel:
+        type: dict
+        required: true
+        options:
+          id:
+            type: str
+            required: true
+          chatId:
+            type: str
+            required: true
+          tokenSource:
+            type: str
+            required: false

@@ -1,0 +1,74 @@
+---
+# S-015: the host's own events (mdadm, smartd) go to the channel its baseline
+# names. The bot token arrives staged by the controller, from the project's
+# secret store; it is never rendered into a template, argv or log.
+- name: Create the channel's directory
+  ansible.builtin.file:
+    path: "{{ cloudfall_alerting_root }}/{{ cloudfall_alerting_channel.id }}"
+    state: directory
+    owner: "{{ cloudfall_alerting_owner }}"
+    group: "{{ cloudfall_alerting_group }}"
+    mode: "0755"
+
+- name: Deliver the channel's bot token
+  ansible.builtin.copy:
+    src: "{{ cloudfall_alerting_channel.tokenSource }}"
+    dest: "{{ cloudfall_alerting_root }}/{{ cloudfall_alerting_channel.id }}/bot-token"
+    owner: "{{ cloudfall_alerting_owner }}"
+    group: "{{ cloudfall_alerting_group }}"
+    mode: "0640"
+  when: cloudfall_alerting_channel.tokenSource is defined
+  no_log: true
+
+- name: Require the bot token on the host
+  ansible.builtin.stat:
+    path: "{{ cloudfall_alerting_root }}/{{ cloudfall_alerting_channel.id }}/bot-token"
+  register: cloudfall_alerting_token
+
+- name: Stop when the token was neither delivered nor already here
+  ansible.builtin.assert:
+    that:
+      - cloudfall_alerting_token.stat.exists
+    fail_msg: >-
+      The bot token of alert channel {{ cloudfall_alerting_channel.id }} is not on
+      this host; converge through cloudfall, which delivers it from the secret store
+
+- name: Write the channel's chat id
+  ansible.builtin.copy:
+    content: "{{ cloudfall_alerting_channel.chatId }}\n"
+    dest: "{{ cloudfall_alerting_root }}/{{ cloudfall_alerting_channel.id }}/chat-id"
+    owner: "{{ cloudfall_alerting_owner }}"
+    group: "{{ cloudfall_alerting_group }}"
+    mode: "0644"
+
+- name: Install the alert sender
+  ansible.builtin.template:
+    src: cloudfall-alert.j2
+    dest: "{{ cloudfall_alerting_sender }}"
+    owner: "{{ cloudfall_alerting_owner }}"
+    group: "{{ cloudfall_alerting_group }}"
+    mode: "0755"
+
+- name: Check which event sources are installed
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ cloudfall_alerting_mdadm_conf }}"
+    - "{{ cloudfall_alerting_smartd_conf }}"
+  register: cloudfall_alerting_sources
+
+- name: Point mdadm's monitor at the sender
+  ansible.builtin.lineinfile:
+    path: "{{ cloudfall_alerting_mdadm_conf }}"
+    regexp: '^PROGRAM\s'
+    line: "PROGRAM {{ cloudfall_alerting_sender }}"
+  when: cloudfall_alerting_sources.results[0].stat.exists
+  notify: Reload mdadm monitor
+
+- name: Point smartd's warnings at the sender
+  ansible.builtin.lineinfile:
+    path: "{{ cloudfall_alerting_smartd_conf }}"
+    regexp: '^DEVICESCAN\b'
+    line: "DEVICESCAN -d removable -n standby -m root -M exec {{ cloudfall_alerting_sender }}"
+  when: cloudfall_alerting_sources.results[1].stat.exists
+  notify: Reload smartd

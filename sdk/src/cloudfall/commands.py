@@ -584,6 +584,23 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
     ),
     CommandContract(
         "cloudfall",
+        "baseline converge",
+        CommandEffect.SERVERS,
+        "converge every server to its baseline, with each host's alert channel",
+        gate=_YES,
+        output=(
+            _plan("channels:array"),
+            _shape(
+                "status",
+                "action",
+                "playbook:string",
+                "channels:array",
+                when="with `--yes`",
+            ),
+        ),
+    ),
+    CommandContract(
+        "cloudfall",
         "logging deploy",
         CommandEffect.SERVERS,
         "deploy the declared LoggingStack after meeting its secret requirements",
