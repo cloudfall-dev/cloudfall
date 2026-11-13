@@ -37,3 +37,13 @@
       vars:
         cloudfall_firewall_ruleset: "{{ cloudfall_firewall }}"
       when: cloudfall_firewall is defined
+
+    - name: Send this host's events to its alert channel
+      ansible.builtin.include_role:
+        name: cloudfall_alerting
+      vars:
+        cloudfall_alerting_channel: >-
+          {{ (cloudfall_alert_channels | default({})).get(cloudfall_server_id) }}
+      when: >-
+        (cloudfall_alert_channels | default({})).get(cloudfall_server_id)
+        is not none

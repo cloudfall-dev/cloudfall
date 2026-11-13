@@ -1,0 +1,12 @@
+---
+- name: Reload mdadm monitor
+  ansible.builtin.systemd_service:
+    name: mdmonitor.service
+    state: restarted
+  failed_when: false
+
+- name: Reload smartd
+  ansible.builtin.systemd_service:
+    name: smartmontools.service
+    state: restarted
+  failed_when: false

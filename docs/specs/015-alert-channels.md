@@ -144,3 +144,14 @@ Not built yet. Landed so far, checked by unit tests on the controller:
 - The `telegram-bot-token` input secret, owned by the channel, on every server whose baseline
   names it and on the logging backend when a receiver does, once per server; `requirements
   show` lists it: S-015-2
+- Host events: `baseline.yml` runs the new `cloudfall_alerting` role on every server whose
+  baseline names a channel: the token (`0640`), the chat id, `/usr/local/sbin/cloudfall-alert`,
+  mdadm's `PROGRAM` and smartd's `DEVICESCAN ... -M exec`, idempotent; it stops when the token
+  was neither delivered nor already on the host. The new `cloudfall baseline converge` (plan
+  without `--yes`) and the `converge_baseline` MCP tool stage each host's token in a `0600` file
+  from the store and stop with exit 4 and `INPUT_REQUIRED` when it is missing, before any
+  server: S-015-3. The sender sends the token to `curl` on stdin; tests with stand-in `curl`,
+  `logger` and `hostname` show it in no argv and no log line: part of S-015-6. The role ran for
+  real on the controller against scratch files; mdadm and smartd reloads and a real send wait on
+  a Debian host
+

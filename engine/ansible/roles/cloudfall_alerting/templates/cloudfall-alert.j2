@@ -1,0 +1,46 @@
+#!/bin/bash
+# Managed by Cloudfall (S-015): send one alert to channel {{ cloudfall_alerting_channel.id }}.
+#
+#   cloudfall-alert "text"                      a plain message
+#   mdadm PROGRAM:  cloudfall-alert EVENT MD [COMPONENT]
+#   smartd -M exec: cloudfall-alert             (reads SMARTD_* from the environment)
+#
+# The bot token stays in its file and reaches curl on stdin, never in argv or a log.
+set -euo pipefail
+
+directory={{ cloudfall_alerting_root }}/{{ cloudfall_alerting_channel.id }}
+token_file=$directory/bot-token
+chat_file=$directory/chat-id
+# A host whose name does not resolve still sends, under its short name
+host=$(hostname -f 2>/dev/null || hostname)
+
+if [[ -n "${SMARTD_DEVICE:-}" ]]; then
+  text="[${host}] smartd ${SMARTD_FAILTYPE:-event} on ${SMARTD_DEVICE}: ${SMARTD_MESSAGE:-no message}"
+elif [[ $# -ge 2 && "$2" == /dev/md* ]]; then
+  text="[${host}] mdadm ${1} on ${2}${3:+ (${3})}"
+  if [[ -r /proc/mdstat ]]; then
+    md=$(basename "$(readlink -f "$2")")
+    text+=$'\n'"$(grep -A2 "^${md} " /proc/mdstat || true)"
+  fi
+elif [[ $# -ge 1 ]]; then
+  text="[${host}] $*"
+else
+  echo "usage: cloudfall-alert TEXT" >&2
+  exit 2
+fi
+
+if [[ ! -r "$token_file" || ! -r "$chat_file" ]]; then
+  logger -t cloudfall-alert -p daemon.err "no Telegram token or chat id; alert not sent: ${text}"
+  exit 1
+fi
+
+chat_id=$(tr -d '[:space:]' < "$chat_file")
+if ! printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$(tr -d '[:space:]' < "$token_file")" \
+  | curl --silent --show-error --fail --max-time 20 --retry 3 --config - \
+      --data-urlencode "chat_id=${chat_id}" \
+      --data-urlencode "text=${text}" \
+      --output /dev/null; then
+  logger -t cloudfall-alert -p daemon.err "Telegram send failed: ${text}"
+  exit 1
+fi
+logger -t cloudfall-alert -p daemon.notice "sent: ${text%%$'\n'*}"

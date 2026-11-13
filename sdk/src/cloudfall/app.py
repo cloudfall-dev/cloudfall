@@ -66,6 +66,13 @@ from cloudfall.agent_server import (
     server_instructions,
 )
 from cloudfall.agent_tools import AgentConfig
+from cloudfall.alerting import (
+    HostChannel,
+    TokenMissingError,
+    host_channels,
+    require_tokens,
+    staged_channels,
+)
 from cloudfall.ansible_api import (
     AnsibleReadError,
     InventorySource,
@@ -5025,6 +5032,116 @@ def logging_deploy_command(
     )
 
 
+# baseline converge (S-015: with each host's alert channel)
+
+
+baseline_group = app.group(
+    "baseline", description="Converge every server to its baseline"
+)
+
+
+class BaselineConvergePayload(Payload):
+    """``baseline converge``: the plan, or what ran."""
+
+    command = "baseline converge"
+    writes = True
+
+
+@baseline_group.command(
+    "converge",
+    description=(
+        "Run baseline.yml on every declared server: bootstrap, UTC, SSH "
+        "hardening, unattended upgrades, the declared firewall, and each "
+        "host's alert channel (S-015), its bot token delivered from the secret "
+        "store. A token not in the store exits 4, error.context.code "
+        "INPUT_REQUIRED, before any server is touched. Without --yes it shows "
+        "the plan"
+    ),
+    danger_level="mutating",
+    exit_codes=_LIFECYCLE_EXIT_CODES,
+    timeout=None,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0"},
+    supports_raw_payload=True,
+    examples=[
+        ("Show the plan", "cloudfall baseline converge"),
+        ("Converge every server", "cloudfall baseline converge --yes"),
+    ],
+)
+def baseline_converge_command(
+    args: LoggingDeployArgs, ctx: Ctx, fleet: Fleet
+) -> BaselineConvergePayload:
+    """Converge the baseline with each host's channel, or show the plan."""
+    store = SecretStore(
+        fleet.path(args.secrets_dir),
+        decrypt=_sops_decrypt(ctx),
+        encrypt=_sops_encrypt(ctx),
+    )
+    inventory = fleet.inventory
+    hosts = host_channels(inventory)
+    channels = [
+        {
+            "server": host.server.value,
+            "channel": host.channel.resource_id.value,
+            "tokenStored": store.holds(host.token.reference),
+        }
+        for host in hosts
+    ]
+    if not args.yes:
+        return BaselineConvergePayload(
+            {
+                "status": "plan",
+                "action": "baseline-converge",
+                "servers": [server.resource_id.value for server in inventory.servers],
+                "channels": channels,
+                "wouldRun": (
+                    "run baseline.yml on every declared server; install each "
+                    "host's alert sender and deliver its channel's bot token"
+                ),
+                "instruction": _PLAN_INSTRUCTION,
+                "effect": "would_update",
+            }
+        )
+    try:
+        run_baseline(args.context(fleet, ctx), hosts, store)
+    except TokenMissingError as error:
+        raise _token_missing(error) from error
+    except SecretsError as error:
+        raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
+    except LifecycleError as error:
+        raise _lifecycle_failed(error) from error
+    return BaselineConvergePayload(
+        {
+            "status": "ok",
+            "action": "baseline-converge",
+            "playbook": "baseline.yml",
+            "channels": channels,
+            "effect": "updated",
+        }
+    )
+
+
+def run_baseline(
+    context: EngineContext, hosts: tuple[HostChannel, ...], store: SecretStore
+) -> None:
+    """Run ``baseline.yml`` with each host's channel token staged (S-015)."""
+    require_tokens(hosts, store)
+    with staged_channels(hosts, store) as extra_vars:
+        run_engine_playbook(context, "baseline.yml", extra_vars)
+
+
+def _token_missing(error: TokenMissingError) -> Exception:
+    # Exit 4 like the framework's INPUT_REQUIRED; agents branch on the code
+    return Exit.PRECONDITION(
+        str(error),
+        context={"code": "INPUT_REQUIRED", "missing": list(error.channels)},
+        suggestion=(
+            "a person runs `cloudfall secrets input telegram-bot-token --owner "
+            "<channel>` for each missing channel"
+        ),
+    )
+
+
 # release approve: a person's record that one release may be deployed (S-008)
 
 
@@ -5561,6 +5678,47 @@ _ENGINE_EXIT_CODES = ("PRECONDITION", "ENGINE_STEP_FAILED")
 _COMPONENT_PATTERN = r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
 
 
+def _converge_baseline_handler(
+    args: McpServeArgs, root: ServerRoot, context: Callable[[Ctx], EngineContext]
+) -> Callable[[Mapping[str, object], Ctx], Converged]:
+    """Return ``converge_baseline``, staging channel tokens from the secrets dir."""
+
+    def converge_declared_baseline(
+        arguments: Mapping[str, object], call: Ctx
+    ) -> Converged:
+        del arguments  # the tool takes none
+        engine = context(call)
+        store = SecretStore(
+            root.path(args.secrets_dir),
+            decrypt=_sops_decrypt(call),
+            encrypt=_sops_encrypt(call),
+        )
+        try:
+            state = validate_config(engine.project_directory, engine.schema_directory)
+            hosts = host_channels(PlatformInventory.from_state(state))
+            run_baseline(engine, hosts, store)
+        except TokenMissingError as error:
+            raise _token_missing(error) from error
+        except SecretsError as error:
+            raise Exit.PRECONDITION(
+                error.message, context={"code": error.code}
+            ) from error
+        except LifecycleError as error:
+            raise _lifecycle_failed(error) from error
+        except ConfigValidationError as error:
+            raise _config_invalid(error) from error
+        return Converged(
+            status="ok", action="converge-baseline", playbook="baseline.yml"
+        )
+
+    converge_declared_baseline.__annotations__ = {
+        "arguments": Mapping[str, object],
+        "call": Ctx,
+        "return": Converged,
+    }
+    return converge_declared_baseline
+
+
 def _converge_services_handler(
     args: McpServeArgs, root: ServerRoot, context: Callable[[Ctx], EngineContext]
 ) -> Callable[[Mapping[str, object], Ctx], ServicesConverged]:
@@ -5695,7 +5853,7 @@ def _engine_tools(args: McpServeArgs, root: ServerRoot, ctx: Ctx) -> list[McpToo
                 "hardening, unattended upgrades, and the declared firewall"
             ),
             input_schema=no_inputs,
-            handler=converge("converge-baseline", "baseline.yml", lambda _: {}),
+            handler=_converge_baseline_handler(args, root, context),
             danger_level="destructive",
             exit_codes=_ENGINE_EXIT_CODES,
         ),
