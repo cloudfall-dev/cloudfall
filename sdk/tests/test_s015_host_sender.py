@@ -26,6 +26,13 @@ printf '%s\\n' "$*" >> "$RECORD/log"
 FAKE_HOSTNAME = """#!/bin/sh
 echo host.example.internal
 """
+NO_FQDN_HOSTNAME = """#!/bin/sh
+if [ "$1" = -f ]; then
+  echo "hostname: Name or service not known" >&2
+  exit 1
+fi
+echo host
+"""
 
 
 def _play(tmp_path: Path, *, token: bool = True) -> tuple[Path, dict[str, str]]:
@@ -180,3 +187,31 @@ def test_s015_6_the_sender_keeps_the_token_out_of_argv(
     assert "chat_id=145629422" in sent
     assert TOKEN in (record / "stdin").read_text(encoding="utf-8")
     assert TOKEN not in (record / "log").read_text(encoding="utf-8")
+
+
+def test_the_sender_still_sends_when_the_host_has_no_fqdn(
+    tmp_path: Path,
+) -> None:
+    playbook, paths = _play(tmp_path)
+    _run(playbook)
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name, script in (
+        ("curl", FAKE_CURL),
+        ("logger", FAKE_LOGGER),
+        ("hostname", NO_FQDN_HOSTNAME),
+    ):
+        (tools / name).write_text(script, encoding="utf-8")
+        (tools / name).chmod(0o755)
+    record = tmp_path / "record"
+    record.mkdir()
+
+    subprocess.run(  # noqa: S603 - the sender the role installed
+        [paths["cloudfall_alerting_sender"], "Fail", "/dev/md1"],
+        check=True,
+        timeout=60,
+        env={"PATH": f"{tools}{os.pathsep}/usr/bin:/bin", "RECORD": str(record)},
+    )
+
+    sent = (record / "argv").read_text(encoding="utf-8")
+    assert "text=[host] mdadm Fail on /dev/md1" in sent

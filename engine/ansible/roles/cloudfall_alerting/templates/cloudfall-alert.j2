@@ -11,7 +11,8 @@ set -euo pipefail
 directory={{ cloudfall_alerting_root }}/{{ cloudfall_alerting_channel.id }}
 token_file=$directory/bot-token
 chat_file=$directory/chat-id
-host=$(hostname -f)
+# A host whose name does not resolve still sends, under its short name
+host=$(hostname -f 2>/dev/null || hostname)
 
 if [[ -n "${SMARTD_DEVICE:-}" ]]; then
   text="[${host}] smartd ${SMARTD_FAILTYPE:-event} on ${SMARTD_DEVICE}: ${SMARTD_MESSAGE:-no message}"
