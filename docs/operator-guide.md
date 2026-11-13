@@ -59,8 +59,10 @@ with a `CANCELLED` line and exit 130 or 143.
 Every proposal is a schema-validated receipt in `--proposals`
 (default `tmp/operator/proposals`): the trigger evidence (alert labels or
 drifted checks), a diagnosis, the exact operation, and later its outcome.
-An open or failed proposal blocks duplicates for the same trigger — a
-failed remediation deliberately stays visible until a human looks at it.
+An open, running, executed or failed proposal blocks duplicates for the
+same trigger — a failed remediation deliberately stays visible until a
+human looks at it. A proposal closed as `interrupted` (see
+[A run that died midway](#a-run-that-died-midway)) does not.
 
 ## The record
 
@@ -136,6 +138,39 @@ reports success it cannot prove. A playbook that ran is not an outcome; the
 verify step is. Gateway TLS flags are only needed when approving
 alert-triggered proposals; drift approvals verify through the audit.
 
+## A run that died midway
+
+An approval is on the record before anything runs: the receipt turns
+`running` with its approval, then the engine playbook starts. A receipt
+that stays `running` after the process that approved it ended was
+interrupted (killed, a lost SSH session, a power loss), and nobody knows
+what it changed. `operator approve` refuses it, and it keeps blocking new
+proposals for the same alert or drift, so a half-applied change is never
+run again on its own.
+
+The way out is a person's call. Check the server, make sure the
+`operator approve` or `operator run` process that started it is gone,
+then close the receipt:
+
+```sh
+uv run cloudfall operator mark-interrupted op-20260910t150000-abcdef1234567890 \
+  --confirm-dead
+```
+
+Without `--confirm-dead` nothing is written. Only a `running` receipt can be
+closed this way. The receipt turns `interrupted` and records
+`interruption.confirmedBy` (`--by`, default the `USER` environment
+variable) and `interruption.confirmedAt`; the approval stays as it was.
+Nothing runs on the servers. On its next pass the operator proposes again
+for the same trigger if it still fires or still drifts, and that new
+proposal waits for an approval like any other.
+
+A decision record from `decisions approve` works the same way: a run that
+died midway stays `running`, and `cloudfall decisions mark-interrupted
+<decision-id> --confirm-dead` closes it as `interrupted`, after which the
+operation can be proposed again. `cloudfall why` tells who confirmed it and
+when.
+
 ## Graduated autonomy
 
 Declaring an `OperatorPolicy` licenses the daemon to execute routine
@@ -195,8 +230,10 @@ Approval is not a tool. A person approves a proposal by running
 call it would run and verify the change it proposed itself. The same holds
 for `cloudfall release approve`: the `deploy` tool deploys a release of an
 application that declares `approval: manual` only once a person approved
-it at a terminal, and no tool writes that approval. The watch loop is not a
-tool either: it runs until stopped, as the service above.
+it at a terminal, and no tool writes that approval. Closing a `running`
+receipt as interrupted is not a tool either: only a person can tell the
+run is dead. The watch loop is not a tool: it runs until stopped, as the
+service above.
 
 The agent is the brain here and the operator is the record. The agent can
 read the proposals, relay the diagnosis and recommend one; a person

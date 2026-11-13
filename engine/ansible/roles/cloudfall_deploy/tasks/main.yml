@@ -34,15 +34,17 @@
 # A release unpacks into releases/<release>, except when current already runs
 # that release: then it unpacks into a fresh releases/<release>.redeploy-<UTC
 # time>, so nothing is written into the live directory and a failed gate can
-# still roll back to it. The release id is the directory name up to its first
-# dot; release ids have none.
+# still roll back to it. The time has microseconds, so two redeploys in the
+# same second get two directories, and its fixed width keeps the names sorted
+# by time for rollback's newest copy. The release id is the directory name up
+# to its first dot; release ids have none.
 - name: Compute release paths
   ansible.builtin.set_fact:
     cloudfall_deploy_release_directory: >-
       {{ cloudfall_deploy_component.install_root }}/releases/{{
         cloudfall_deploy_release
       }}{{
-        '.redeploy-' ~ now(utc=true, fmt='%Y%m%dT%H%M%SZ')
+        '.redeploy-' ~ now(utc=true, fmt='%Y%m%dT%H%M%S%fZ')
         if (cloudfall_deploy_previous_directory | basename).split('.') | first
         == cloudfall_deploy_release
         else ''
@@ -498,6 +500,23 @@
         state: restarted
         daemon_reload: true
       when: cloudfall_deploy_previous_directory | length > 0
+
+    # A redeploy copy that failed its gate goes, once current points back at
+    # the previous copy and the service runs from it, so rollback's newest
+    # copy of a release is always one that passed. releases/<release> itself
+    # is never a redeploy copy, and the previous copy is never removed.
+    - name: Remove the redeploy copy that failed its gate
+      ansible.builtin.file:
+        path: "{{ cloudfall_deploy_release_directory }}"
+        state: absent
+      when:
+        - cloudfall_deploy_previous_directory | length > 0
+        - not ansible_check_mode
+        - >-
+          (cloudfall_deploy_release_directory | basename).startswith(
+            cloudfall_deploy_release ~ '.redeploy-'
+          )
+        - cloudfall_deploy_release_directory != cloudfall_deploy_previous_directory
 
     - name: Stop the failed first release
       ansible.builtin.systemd_service:

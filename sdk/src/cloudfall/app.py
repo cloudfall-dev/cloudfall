@@ -125,6 +125,7 @@ from cloudfall.decision import (
     Staleness,
     Targets,
     approve,
+    mark_interrupted,
     propose,
     refuse_replayed,
     refuse_unapprovable,
@@ -235,6 +236,7 @@ from cloudfall.operator import (
     ERROR_GATEWAY_UNDECLARED,
     ERROR_PROPOSAL_INTERRUPTED,
     ERROR_PROPOSAL_MISSING,
+    ERROR_PROPOSAL_NOT_RUNNING,
     AlertFeed,
     ApproveOptions,
     DriftCheck,
@@ -253,6 +255,7 @@ from cloudfall.operator import (
     watch,
 )
 from cloudfall.operator import approve as approve_proposal
+from cloudfall.operator import mark_interrupted as mark_proposal_interrupted
 from cloudfall.pki import PkiError, load_or_create_ca
 from cloudfall.project import (
     PROJECT_DIRECTORY_VARIABLE,
@@ -337,6 +340,21 @@ from cloudfall.validation import (
     SchemaCatalog,
     ValidatedConfig,
     validate_config,
+)
+from cloudfall.volumes import ACTIONS_VARIABLE as VOLUME_ACTIONS_VARIABLE
+from cloudfall.volumes import FACTS_PLAYBOOK as VOLUME_FACTS_PLAYBOOK
+from cloudfall.volumes import (
+    REPORT_DIRECTORY_VARIABLE as VOLUME_REPORT_DIRECTORY_VARIABLE,
+)
+from cloudfall.volumes import REQUESTS_VARIABLE as VOLUME_REQUESTS_VARIABLE
+from cloudfall.volumes import (
+    PlannedVolume,
+    VolumeRefusedError,
+    actions_by_server,
+    normalize_report,
+    plan_volumes,
+    read_reports,
+    volume_requests,
 )
 from cloudfall.why import (
     Investigations,
@@ -2499,6 +2517,79 @@ def decisions_approve(args: ApproveDecisionArgs, ctx: Ctx) -> Decided:
     return decided
 
 
+_CONFIRM_DEAD_DESCRIPTION = (
+    "Confirm you checked that the run's process is gone; without it nothing "
+    "is written"
+)
+_BY_DESCRIPTION = (
+    "Who confirms the run is dead (default: the USER environment variable)"
+)
+
+
+def _refuse_unconfirmed(*, confirm_dead: bool, command: str) -> None:
+    """Refuse a close as interrupted that the person did not confirm."""
+    if confirm_dead:
+        return
+    message = (
+        f"{command} closes a started run's record for good; check that its "
+        "process is gone on the controller, then pass --confirm-dead"
+    )
+    raise ParseError(message, context={"flag": "confirm-dead"})
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MarkDecisionInterruptedArgs(DecisionsArgs):
+    """Arguments of ``decisions mark-interrupted``."""
+
+    decision: ResourceId = Arg(description="Decision id of a running record")
+    confirm_dead: bool = Flag(default=False, description=_CONFIRM_DEAD_DESCRIPTION)
+    by: str | None = Flag(default=None, description=_BY_DESCRIPTION)
+
+    def __post_init__(self) -> None:
+        """Refuse an unconfirmed close before the record is read."""
+        DecisionsArgs.__post_init__(self)
+        _refuse_unconfirmed(
+            confirm_dead=self.confirm_dead, command="decisions mark-interrupted"
+        )
+
+
+@decisions.command(
+    "mark-interrupted",
+    # Only a person can tell the run's process is gone, so no agent tool
+    # stands in for it, as with approve.
+    mcp=False,
+    description=(
+        "Close a running decision as interrupted once you confirmed its run is "
+        "dead; nothing on the fleet changes, and the record names who and when"
+    ),
+    danger_level="mutating",
+    exit_codes=["NOT_FOUND", "PRECONDITION", "RECORD_INVALID"],
+    examples=[
+        (
+            "Close a run that died midway",
+            "cloudfall decisions mark-interrupted restart-nginx-20260101 "
+            "--confirm-dead",
+        ),
+    ],
+)
+def decisions_mark_interrupted(
+    args: MarkDecisionInterruptedArgs, ctx: Ctx
+) -> Decided:
+    """Close a running record as interrupted, naming who confirmed it."""
+    by = args.by if args.by is not None else ctx.env.get("USER", "")
+    try:
+        closed = mark_interrupted(args.store(), args.decision, by)
+    except DecisionError as error:
+        if error.code == ERROR_DECISION_MISSING:
+            raise Exit.NOT_FOUND(error.detail, context={"code": error.code}) from error
+        if error.code == ERROR_RECORD_INVALID:
+            raise _record_invalid(error) from error
+        raise _decision_failed(error) from error
+    return Decided(
+        effect="updated", status="ok", decision=closed.as_document(), next=[]
+    )
+
+
 # agent investigate
 
 
@@ -3081,6 +3172,7 @@ def _operator_failed(error: OperatorError) -> Exception:
         ERROR_GATEWAY_UNDECLARED,
         ERROR_GATEWAY_MATERIAL_INVALID,
         ERROR_PROPOSAL_INTERRUPTED,
+        ERROR_PROPOSAL_NOT_RUNNING,
     }:
         return Exit.PRECONDITION(error.message, context=context)
     if error.code == ERROR_FEED_INVALID:
@@ -3170,6 +3262,61 @@ def operator_approve(
         message = "the run finished but its trigger did not resolve"
         raise Exit.NOT_VERIFIED(message, data=approved)
     return approved
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MarkProposalInterruptedArgs(ProposalArgs):
+    """Arguments of ``operator mark-interrupted``."""
+
+    proposal: ResourceId = Arg(description="Proposal id of a running receipt")
+    confirm_dead: bool = Flag(default=False, description=_CONFIRM_DEAD_DESCRIPTION)
+    by: str | None = Flag(default=None, description=_BY_DESCRIPTION)
+
+    def __post_init__(self) -> None:
+        """Refuse an unconfirmed close before the receipt is read."""
+        ProposalArgs.__post_init__(self)
+        _refuse_unconfirmed(
+            confirm_dead=self.confirm_dead, command="operator mark-interrupted"
+        )
+
+
+@operator.command(
+    "mark-interrupted",
+    # Only a person can tell the execution's process is gone, so no agent
+    # tool stands in for it, as with approve.
+    mcp=False,
+    description=(
+        "Close a running proposal as interrupted once you confirmed its "
+        "execution is dead, so the operator may propose it again; nothing on "
+        "the servers changes"
+    ),
+    danger_level="mutating",
+    exit_codes=[
+        "PROJECT_INVALID",
+        "CONFIG_INVALID",
+        "NOT_FOUND",
+        "PRECONDITION",
+        "RECORD_INVALID",
+    ],
+    examples=[
+        (
+            "Close an execution that died midway",
+            "cloudfall operator mark-interrupted nginx-down-20260101 --confirm-dead",
+        ),
+    ],
+)
+def operator_mark_interrupted(
+    args: MarkProposalInterruptedArgs, ctx: Ctx, fleet: Fleet
+) -> Approved:
+    """Close a running receipt as interrupted, naming who confirmed it."""
+    by = args.by if args.by is not None else ctx.env.get("USER", "")
+    try:
+        closed = mark_proposal_interrupted(args.store(fleet), args.proposal, by)
+    except DecisionError as error:
+        raise _decision_failed(error) from error
+    except OperatorError as error:
+        raise _operator_failed(error) from error
+    return Approved(effect="updated", status="ok", proposal=closed.as_document())
 
 
 # operator run
@@ -4668,6 +4815,24 @@ def logging_deploy_command(
             )
         generated, servers = prepare_secrets(inventory, store)
         context = args.context(fleet, ctx)
+        volume_plan: list[PlannedVolume] = []
+        requested = volume_requests(servers)
+        if requested:
+            # Read only; every refusal is decided before any host changes (S-014)
+            with tempfile.TemporaryDirectory(prefix="cloudfall-volumes-") as reports:
+                run_engine_playbook(
+                    context,
+                    VOLUME_FACTS_PLAYBOOK,
+                    {
+                        VOLUME_REQUESTS_VARIABLE: requested,
+                        VOLUME_REPORT_DIRECTORY_VARIABLE: reports,
+                    },
+                )
+                facts = {
+                    server: normalize_report(report)
+                    for server, report in read_reports(Path(reports), servers).items()
+                }
+            volume_plan = plan_volumes(servers, facts)
         files = secret_files(servers, store)
         outcomes: list[CertificateOutcome] = []
         ca_created = False
@@ -4690,7 +4855,11 @@ def logging_deploy_command(
             signed, outcomes = certificate_files(servers, held, ca, now)
             files.extend(signed)
         with staged_files(files) as (extra_vars, delivered):
-            run_engine_playbook(context, PLAYBOOK, extra_vars)
+            run_engine_playbook(
+                context,
+                PLAYBOOK,
+                {**extra_vars, VOLUME_ACTIONS_VARIABLE: actions_by_server(volume_plan)},
+            )
     except InputMissingError as error:
         # Exit 4 like the framework's INPUT_REQUIRED; agents branch on the code
         raise Exit.PRECONDITION(
@@ -4703,6 +4872,16 @@ def logging_deploy_command(
                 "a person runs `cloudfall secrets input <name> --owner <stack>` "
                 "for each missing secret"
             ),
+        ) from error
+    except VolumeRefusedError as error:
+        raise Exit.PRECONDITION(
+            str(error),
+            context={
+                "code": error.code,
+                "server": error.server,
+                "pool": error.pool,
+                "reason": error.reason,
+            },
         ) from error
     except (LoggingDeployError, PkiError) as error:
         raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
@@ -4717,6 +4896,9 @@ def logging_deploy_command(
             "playbook": PLAYBOOK,
             "generated": [item.as_dict() for item in generated],
             "caCreated": ca_created,
+            "volumes": [
+                {"server": item.server, **item.as_dict()} for item in volume_plan
+            ],
             "certificates": [item.as_dict() for item in outcomes],
             "delivered": [item.as_dict() for item in delivered],
             "effect": "updated",

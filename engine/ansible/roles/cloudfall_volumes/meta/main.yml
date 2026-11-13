@@ -1,0 +1,13 @@
+---
+galaxy_info:
+  role_name: cloudfall_volumes
+  author: Cloudfall
+  description: Create, grow and mount the workload volumes the controller decided (S-014)
+  license: AGPL-3.0-or-later
+  min_ansible_version: "2.21"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+        - trixie
+dependencies: []
