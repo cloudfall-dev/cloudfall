@@ -603,16 +603,17 @@ def test_s002_13_the_built_archive_lists_entries_like_the_plain_one(
 # Deploy and rollback of a built release (S-002-12).
 
 DEPLOY_TASKS = (
+    "Inspect the currently active release",
+    "Record the rollback candidate",
     "Compute release paths",
     "Create release and shared directories",
     "Verify the transferred artifact digest",
     "Refuse a release whose digest does not match its metadata",
     "Unpack the verified release",
-    "Inspect the currently active release",
-    "Record the rollback candidate",
     "Switch the current release symlink",
 )
 ROLLBACK_TASKS = (
+    "Find the directories of the rollback target release",
     "Compute rollback paths",
     "Inspect the rollback target release",
     "Require the rollback target on the server",
@@ -727,7 +728,8 @@ def _deploy(tmp_path: Path, install_root: Path, built: dict[str, Any]) -> int:
             "cloudfall_deploy_release": built["release"],
             "cloudfall_deploy_artifact_sha256": built["archive_sha256"],
         },
-        [tasks[0], staged, *tasks[1:]],
+        # After "Compute release paths", which sets the staging archive path.
+        [*tasks[:3], staged, *tasks[3:]],
     )
 
 
