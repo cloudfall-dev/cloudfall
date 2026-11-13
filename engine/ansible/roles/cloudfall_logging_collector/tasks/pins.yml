@@ -19,6 +19,8 @@
     label: "{{ item.name }}={{ item.version }}"
   register: cloudfall_logging_collector_offered
   changed_when: false
+  # A read: a dry run (--check) must see the offered versions too
+  check_mode: false
 
 - name: Require every pinned version to be offered
   ansible.builtin.assert:

@@ -23,7 +23,9 @@ esac
 """
 
 
-def _run(tmp_path: Path, role: str, version: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    tmp_path: Path, role: str, version: str, *, check_mode: bool = False
+) -> subprocess.CompletedProcess[str]:
     tools = tmp_path / "tools"
     tools.mkdir()
     apt_cache = tools / "apt-cache"
@@ -65,6 +67,7 @@ def _run(tmp_path: Path, role: str, version: str) -> subprocess.CompletedProcess
             "local",
             "--skip-tags",
             "packages",
+            *(["--check"] if check_mode else []),
             str(playbook),
         ],
         capture_output=True,
@@ -93,3 +96,18 @@ def test_a_missing_pin_stops_the_run_naming_what_is_offered(
         "loki=9.9.9 is not in this host's APT sources; they offer: 3.7.7, 3.7.2"
         in done.stdout
     )
+
+
+@pytest.mark.parametrize("role", ["backend", "collector"])
+@pytest.mark.parametrize(("version", "passes"), [("3.7.2", True), ("9.9.9", False)])
+def test_a_dry_run_checks_the_pins_too(
+    tmp_path: Path, role: str, version: str, *, passes: bool
+) -> None:
+    done = _run(tmp_path, role, version, check_mode=True)
+
+    assert (done.returncode == 0) is passes, done.stdout
+    if not passes:
+        assert (
+            "loki=9.9.9 is not in this host's APT sources; they offer: 3.7.7, 3.7.2"
+            in done.stdout
+        )
