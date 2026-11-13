@@ -59,7 +59,7 @@
 
 **stdout** (first 20 lines):
 ```
-{"added": [{"id": "null", "kind": "Server", "path": "servers/null.yaml"}], "project": "/Users/roman/PycharmProjects/Atlas/tmp/eval/proj", "status": "ok"}
+{"added": [{"id": "null", "kind": "Server", "path": "servers/null.yaml"}], "project": "tmp/eval/proj", "status": "ok"}
 ```
 
 **stderr** (first 20 lines):
@@ -77,21 +77,21 @@
 **stderr** (first 20 lines):
 ```
 Traceback (most recent call last):
-  File "/Users/roman/PycharmProjects/Atlas/.venv/bin/cloudfall", line 10, in <module>
+  File ".venv/bin/cloudfall", line 10, in <module>
     sys.exit(run())
              ~~~^^
-  File "/Users/roman/PycharmProjects/Atlas/sdk/src/cloudfall/cli.py", line 1649, in run
+  File "sdk/src/cloudfall/cli.py", line 1649, in run
     raise SystemExit(main())
                      ~~~~^^
-  File "/Users/roman/PycharmProjects/Atlas/sdk/src/cloudfall/cli.py", line 979, in main
+  File "sdk/src/cloudfall/cli.py", line 979, in main
     return _run_import_render(arguments)
-  File "/Users/roman/PycharmProjects/Atlas/sdk/src/cloudfall/cli.py", line 1077, in _run_import_render
+  File "sdk/src/cloudfall/cli.py", line 1077, in _run_import_render
     application_id=ResourceId.from_boundary(arguments.application),
                    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/roman/PycharmProjects/Atlas/sdk/src/cloudfall/domain.py", line 59, in from_boundary
+  File "sdk/src/cloudfall/domain.py", line 59, in from_boundary
     return cls(value)
   File "<string>", line 4, in __init__
-  File "/Users/roman/PycharmProjects/Atlas/sdk/src/cloudfall/domain.py", line 48, in __post_init__
+  File "sdk/src/cloudfall/domain.py", line 48, in __post_init__
     raise ValueError(message)
 ValueError: invalid resource id: 'acme%2Fx'
 ```
@@ -166,7 +166,7 @@ cloudfall: error: unrecognized arguments: --token sk-live-SECRET-abc123 --debug
 
 **stdout** (first 20 lines):
 ```
-{"action": "health", "component": "crm-backend", "detail": "run health.yml failed: PasswordAuthentication=no -o 'User=\"cloudfall\"' -o ConnectTimeout=10 -o 'ControlPath=\"/Users/roman/.ansible/cp/34b2d4c4d5\"' -o NumberOfPasswordPrompts=1 h2.example.internal '/bin/sh -c '\"'\"'echo ~cloudfall'\"'\"''\n<h2.example.internal> (255, b'', b'ssh: Could not resolve hostname h2.example.internal: nodename nor servname provided, or not known\\r\\n')\n<h1.example.internal> (255, b'', b'ssh: Could not resolve hostname h1.example.internal: nodename nor servname provided, or not known\\r\\n')\n[ERROR]: Task failed: Failed to connect to the host via ssh: ssh: Could not resolve hostname h2.example.internal: nodename nor servname provided, or not known\nOrigin: /Users/roman/PycharmProjects/Atlas/engine/ansible/roles/cloudfall_deploy/tasks/health_gate.yml:2:3\n\n1 ---\n2 - name: Gate the component on its declared HTTP health check\n    ^ column 3\n\nfatal: [h2]: UNREACHABLE! => {\n    \"changed\": false,\n    \"msg\": \"Task failed: Failed to connect to the host via ssh: ssh: Could not resolve hostname h2.example.internal: nodename nor servname provided, or not known\",\n    \"unreachable\": true\n}\n[ERROR]: Task failed: Failed to connect to the host via ssh: ssh: Could not resolve hostname h1.example.internal: nodename nor servname provided, or not known\nOrigin: /Users/roman/PycharmProjects/Atlas/engine/ansible/roles/cloudfall_deploy/tasks/health_gate.yml:2:3\n\n1 ---\n2 - name: Gate the component on its declared HTTP health check\n    ^ column 3\n\nfatal: [h1]: UNREACHABLE! => {\n    \"changed\": false,\n    \"msg\": \"Task failed: Failed to connect to the host via ssh: ssh: Could not resolve hostname h1.example.internal: nodename nor servname provided, or not known\",\n    \"unreachable\": true\n}\n\nPLAY RECAP *********************************************************************\nh1                         : ok=4    changed=0    unreachable=1    failed=0    skipped=0    rescued=0    ignored=0   \nh2                         : ok=3    changed=0    unreachable=1    failed=0    skipped=0    rescued=0    ignored=0", "healthy": false, "servers": ["h1", "h2"], "status": "unhealthy"}
+{"action": "health", "component": "crm-backend", "detail": "run health.yml failed: PasswordAuthentication=no -o 'User=\"cloudfall\"' -o ConnectTimeout=10 -o 'ControlPath=\"~/.ansible/cp/34b2d4c4d5\"' -o NumberOfPasswordPrompts=1 h2.example.internal '/bin/sh -c '\"'\"'echo ~cloudfall'\"'\"''\n<h2.example.internal> (255, b'', b'ssh: Could not resolve hostname h2.example.internal: nodename nor servname provided, or not known\\r\\n')\n<h1.example.internal> (255, b'', b'ssh: Could not resolve hostname h1.example.internal: nodename nor servname provided, or not known\\r\\n')\n[ERROR]: Task failed: Failed to connect to the host via ssh: ssh: Could not resolve hostname h2.example.internal: nodename nor servname provided, or not known\nOrigin: engine/ansible/roles/cloudfall_deploy/tasks/health_gate.yml:2:3\n\n1 ---\n2 - name: Gate the component on its declared HTTP health check\n    ^ column 3\n\nfatal: [h2]: UNREACHABLE! => {\n    \"changed\": false,\n    \"msg\": \"Task failed: Failed to connect to the host via ssh: ssh: Could not resolve hostname h2.example.internal: nodename nor servname provided, or not known\",\n    \"unreachable\": true\n}\n[ERROR]: Task failed: Failed to connect to the host via ssh: ssh: Could not resolve hostname h1.example.internal: nodename nor servname provided, or not known\nOrigin: engine/ansible/roles/cloudfall_deploy/tasks/health_gate.yml:2:3\n\n1 ---\n2 - name: Gate the component on its declared HTTP health check\n    ^ column 3\n\nfatal: [h1]: UNREACHABLE! => {\n    \"changed\": false,\n    \"msg\": \"Task failed: Failed to connect to the host via ssh: ssh: Could not resolve hostname h1.example.internal: nodename nor servname provided, or not known\",\n    \"unreachable\": true\n}\n\nPLAY RECAP *********************************************************************\nh1                         : ok=4    changed=0    unreachable=1    failed=0    skipped=0    rescued=0    ignored=0   \nh2                         : ok=3    changed=0    unreachable=1    failed=0    skipped=0    rescued=0    ignored=0", "healthy": false, "servers": ["h1", "h2"], "status": "unhealthy"}
 ```
 
 **stderr** (first 20 lines):
@@ -224,7 +224,7 @@ cloudfall: error: unrecognized arguments: --max-output 4096
 
 **stderr** (first 20 lines):
 ```
-{"error": {"code": "render_api_key_missing", "message": "Render API key file does not exist: /Users/roman/PycharmProjects/Atlas/tmp/eval/none.key"}, "status": "error"}
+{"error": {"code": "render_api_key_missing", "message": "Render API key file does not exist: tmp/eval/none.key"}, "status": "error"}
 ```
 
 ### s42-render-401 (exit 2, 0.14s, 0 stdout bytes)
@@ -262,22 +262,22 @@ cloudfall: error: unrecognized arguments: --max-output 4096
 **stderr** (first 20 lines):
 ```
 Traceback (most recent call last):
-  File "/Users/roman/PycharmProjects/Atlas/.venv/bin/cloudfall", line 10, in <module>
+  File ".venv/bin/cloudfall", line 10, in <module>
     sys.exit(run())
              ~~~^^
-  File "/Users/roman/PycharmProjects/Atlas/sdk/src/cloudfall/cli.py", line 1649, in run
+  File "sdk/src/cloudfall/cli.py", line 1649, in run
     raise SystemExit(main())
                      ~~~~^^
-  File "/Users/roman/PycharmProjects/Atlas/sdk/src/cloudfall/cli.py", line 982, in main
+  File "sdk/src/cloudfall/cli.py", line 982, in main
     return _dispatch(arguments, state, schema_directory)
-  File "/Users/roman/PycharmProjects/Atlas/sdk/src/cloudfall/cli.py", line 1128, in _dispatch
+  File "sdk/src/cloudfall/cli.py", line 1128, in _dispatch
     return handler(arguments, state, schema_directory)
-  File "/Users/roman/PycharmProjects/Atlas/sdk/src/cloudfall/cli.py", line 1290, in _run_operator_run
+  File "sdk/src/cloudfall/cli.py", line 1290, in _run_operator_run
     report = operator_run_once(feed, inventory, store)
-  File "/Users/roman/PycharmProjects/Atlas/sdk/src/cloudfall/operator.py", line 624, in run_once
+  File "sdk/src/cloudfall/operator.py", line 624, in run_once
     for alert in feed.fetch():
                  ~~~~~~~~~~^^
-  File "/Users/roman/PycharmProjects/Atlas/sdk/src/cloudfall/operator.py", line 268, in fetch
+  File "sdk/src/cloudfall/operator.py", line 268, in fetch
     context.load_cert_chain(
     ~~~~~~~~~~~~~~~~~~~~~~~^
         certfile=str(self.certificate_path), keyfile=str(self.key_path)
@@ -499,7 +499,7 @@ writer blocked=True wrote=65536 error=None at t=10.0s; cli alive=True (stuck wri
 
 **stdout** (first 20 lines):
 ```
-{"added": [{"id": "h7", "kind": "Server", "path": "servers/h7.yaml"}], "project": "/Users/roman/PycharmProjects/Atlas/tmp/eval/proj", "status": "ok"}
+{"added": [{"id": "h7", "kind": "Server", "path": "servers/h7.yaml"}], "project": "tmp/eval/proj", "status": "ok"}
 ```
 
 **stderr** (first 20 lines):
@@ -511,7 +511,7 @@ writer blocked=True wrote=65536 error=None at t=10.0s; cli alive=True (stuck wri
 
 **stdout** (first 20 lines):
 ```
-{"files": ["pyproject.toml", ".gitignore", "README.md", "servers/.gitkeep", "server-types/.gitkeep", "applications/.gitkeep", "components/.gitkeep", "domains/.gitkeep", "ssh-public-keys/.gitkeep", "logging-stacks/.gitkeep", "services/.gitkeep", "alert-rules/.gitkeep", "operator-policies/.gitkeep"], "next": ["cd /Users/roman/PycharmProjects/Atlas/tmp/eval/init-s62 && uv sync", "uv run cloudfall add ssh-key ~/.ssh/id_ed25519.pub --owner <you>", "uv run cloudfall add server h1 --address <ip-or-hostname>", "uv run cloudfall config validate ."], "project": {"directory": "/Users/roman/PycharmProjects/Atlas/tmp/eval/init-s62", "name": "init-s62", "revision": "b9677a68ceac642c42b300a219a2a552dab1f0da", "source": "https://github.com/cloudfall-dev/cloudfall.git"}, "status": "ok"}
+{"files": ["pyproject.toml", ".gitignore", "README.md", "servers/.gitkeep", "server-types/.gitkeep", "applications/.gitkeep", "components/.gitkeep", "domains/.gitkeep", "ssh-public-keys/.gitkeep", "logging-stacks/.gitkeep", "services/.gitkeep", "alert-rules/.gitkeep", "operator-policies/.gitkeep"], "next": ["cd tmp/eval/init-s62 && uv sync", "uv run cloudfall add ssh-key ~/.ssh/id_ed25519.pub --owner <you>", "uv run cloudfall add server h1 --address <ip-or-hostname>", "uv run cloudfall config validate ."], "project": {"directory": "tmp/eval/init-s62", "name": "init-s62", "revision": "b9677a68ceac642c42b300a219a2a552dab1f0da", "source": "https://github.com/cloudfall-dev/cloudfall.git"}, "status": "ok"}
 ```
 
 **stderr** (first 20 lines):
@@ -645,23 +645,23 @@ cloudfall: error: the following arguments are required: command
 **stderr** (first 20 lines):
 ```
 Traceback (most recent call last):
-  File "/Users/roman/PycharmProjects/Atlas/.venv/bin/cloudfall", line 10, in <module>
+  File ".venv/bin/cloudfall", line 10, in <module>
     sys.exit(run())
              ~~~^^
-  File "/Users/roman/PycharmProjects/Atlas/sdk/src/cloudfall/cli.py", line 1649, in run
+  File "sdk/src/cloudfall/cli.py", line 1649, in run
     raise SystemExit(main())
                      ~~~~^^
-  File "/Users/roman/PycharmProjects/Atlas/sdk/src/cloudfall/cli.py", line 982, in main
+  File "sdk/src/cloudfall/cli.py", line 982, in main
     return _dispatch(arguments, state, schema_directory)
-  File "/Users/roman/PycharmProjects/Atlas/sdk/src/cloudfall/cli.py", line 1128, in _dispatch
+  File "sdk/src/cloudfall/cli.py", line 1128, in _dispatch
     return handler(arguments, state, schema_directory)
-  File "/Users/roman/PycharmProjects/Atlas/sdk/src/cloudfall/cli.py", line 1539, in _run_rollback
+  File "sdk/src/cloudfall/cli.py", line 1539, in _run_rollback
     ReleaseId.from_boundary(arguments.release),
     ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
-  File "/Users/roman/PycharmProjects/Atlas/sdk/src/cloudfall/domain.py", line 713, in from_boundary
+  File "sdk/src/cloudfall/domain.py", line 713, in from_boundary
     return cls(_required_string(value, "release id"))
   File "<string>", line 4, in __init__
-  File "/Users/roman/PycharmProjects/Atlas/sdk/src/cloudfall/domain.py", line 708, in __post_init__
+  File "sdk/src/cloudfall/domain.py", line 708, in __post_init__
     raise ValueError(message)
 ValueError: invalid release id: 'r1'
 ```
@@ -717,7 +717,7 @@ cloudfall: error: unrecognized arguments: --timeout 2
 
 **stdout** (first 20 lines):
 ```
-{"action": "health", "component": "crm-backend", "detail": "run health.yml failed: ******************\nok: [h1] => {\n    \"changed\": false,\n    \"msg\": \"All assertions passed\"\n}\n\nTASK [Probe the selected component on its declared servers] ********************\nincluded: cloudfall_deploy for h2, h1 => (item=crm-backend)\n\nTASK [cloudfall_deploy : Validating arguments against arg spec 'health' - Probe one component's declared health check] ***\nok: [h1]\nok: [h2]\n\nTASK [cloudfall_deploy : Probe the component's declared health check] **********\nincluded: /Users/roman/PycharmProjects/Atlas/engine/ansible/roles/cloudfall_deploy/tasks/health_gate.yml for h1, h2\n\nTASK [cloudfall_deploy : Gate the component on its declared HTTP health check] ***\n[ERROR]: Task failed: Failed to connect to the host via ssh: ssh: connect to host 203.0.113.11 port 22: Operation timed out\nOrigin: /Users/roman/PycharmProjects/Atlas/engine/ansible/roles/cloudfall_deploy/tasks/health_gate.yml:2:3\n\n1 ---\n2 - name: Gate the component on its declared HTTP health check\n    ^ column 3\n\nfatal: [h2]: UNREACHABLE! => {\"changed\": false, \"msg\": \"Task failed: Failed to connect to the host via ssh: ssh: connect to host 203.0.113.11 port 22: Operation timed out\", \"unreachable\": true}\n[ERROR]: Task failed: Failed to connect to the host via ssh: ssh: connect to host 203.0.113.10 port 22: Operation timed out\nOrigin: /Users/roman/PycharmProjects/Atlas/engine/ansible/roles/cloudfall_deploy/tas
+{"action": "health", "component": "crm-backend", "detail": "run health.yml failed: ******************\nok: [h1] => {\n    \"changed\": false,\n    \"msg\": \"All assertions passed\"\n}\n\nTASK [Probe the selected component on its declared servers] ********************\nincluded: cloudfall_deploy for h2, h1 => (item=crm-backend)\n\nTASK [cloudfall_deploy : Validating arguments against arg spec 'health' - Probe one component's declared health check] ***\nok: [h1]\nok: [h2]\n\nTASK [cloudfall_deploy : Probe the component's declared health check] **********\nincluded: engine/ansible/roles/cloudfall_deploy/tasks/health_gate.yml for h1, h2\n\nTASK [cloudfall_deploy : Gate the component on its declared HTTP health check] ***\n[ERROR]: Task failed: Failed to connect to the host via ssh: ssh: connect to host 203.0.113.11 port 22: Operation timed out\nOrigin: engine/ansible/roles/cloudfall_deploy/tasks/health_gate.yml:2:3\n\n1 ---\n2 - name: Gate the component on its declared HTTP health check\n    ^ column 3\n\nfatal: [h2]: UNREACHABLE! => {\"changed\": false, \"msg\": \"Task failed: Failed to connect to the host via ssh: ssh: connect to host 203.0.113.11 port 22: Operation timed out\", \"unreachable\": true}\n[ERROR]: Task failed: Failed to connect to the host via ssh: ssh: connect to host 203.0.113.10 port 22: Operation timed out\nOrigin: engine/ansible/roles/cloudfall_deploy/tas
 [truncated — 2203 characters total]
 ```
 
@@ -749,7 +749,7 @@ cloudfall: error: unrecognized arguments: --timeout 2
 
 **stdout** (first 20 lines):
 ```
-{"added": [{"id": "h8", "kind": "Server", "path": "servers/h8.yaml"}], "project": "/Users/roman/PycharmProjects/Atlas/tmp/eval/proj", "status": "ok"}
+{"added": [{"id": "h8", "kind": "Server", "path": "servers/h8.yaml"}], "project": "tmp/eval/proj", "status": "ok"}
 ```
 
 **stderr** (first 20 lines):
@@ -766,14 +766,14 @@ cloudfall: error: unrecognized arguments: --timeout 2
 
 **stderr** (first 20 lines):
 ```
-{"error": {"code": "resource_exists", "message": "Server/h8 already exists: /Users/roman/PycharmProjects/Atlas/tmp/eval/proj/servers/h8.yaml"}, "status": "error"}
+{"error": {"code": "resource_exists", "message": "Server/h8 already exists: tmp/eval/proj/servers/h8.yaml"}, "status": "error"}
 ```
 
 ### s12-add-sshkey-1 (exit 0, 0.27s, 170 stdout bytes)
 
 **stdout** (first 20 lines):
 ```
-{"added": [{"id": "agent", "kind": "SshPublicKey", "path": "ssh-public-keys/agent.yaml"}], "project": "/Users/roman/PycharmProjects/Atlas/tmp/eval/proj", "status": "ok"}
+{"added": [{"id": "agent", "kind": "SshPublicKey", "path": "ssh-public-keys/agent.yaml"}], "project": "tmp/eval/proj", "status": "ok"}
 ```
 
 **stderr** (first 20 lines):
@@ -790,7 +790,7 @@ cloudfall: error: unrecognized arguments: --timeout 2
 
 **stderr** (first 20 lines):
 ```
-{"error": {"code": "resource_exists", "message": "SshPublicKey/agent already exists: /Users/roman/PycharmProjects/Atlas/tmp/eval/proj/ssh-public-keys/agent.yaml"}, "status": "error"}
+{"error": {"code": "resource_exists", "message": "SshPublicKey/agent already exists: tmp/eval/proj/ssh-public-keys/agent.yaml"}, "status": "error"}
 ```
 
 ### s12-idempotency-key (exit 2, 0.13s, 0 stdout bytes)
@@ -829,7 +829,7 @@ cloudfall: error: unrecognized arguments: --idempotency-key k1
 
 **stderr** (first 20 lines):
 ```
-{"error": {"code": "project_revision_uncommitted", "message": "the source checkout /Users/roman/PycharmProjects/Atlas has uncommitted changes, so HEAD b9677a68ceac642c42b300a219a2a552dab1f0da is not the code that is running; commit them or pass --rev"}, "status": "error"}
+{"error": {"code": "project_revision_uncommitted", "message": "the source checkout . has uncommitted changes, so HEAD b9677a68ceac642c42b300a219a2a552dab1f0da is not the code that is running; commit them or pass --rev"}, "status": "error"}
 ```
 
 ## §13 — Partial Failure & Atomicity
@@ -966,7 +966,7 @@ cloudfall: error: unrecognized arguments: --dry-run
 
 **stderr** (first 20 lines):
 ```
-{"error": {"code": "secrets_source_missing", "message": "secret source does not exist: /Users/roman/PycharmProjects/Atlas/tmp/eval/secrets/production/shared.env (referenced as scope=platform path=/shared)"}, "status": "error"}
+{"error": {"code": "secrets_source_missing", "message": "secret source does not exist: tmp/eval/secrets/production/shared.env (referenced as scope=platform path=/shared)"}, "status": "error"}
 ```
 
 ### s45-mtls-foreign-client (exit 2, 0.27s, 0 stdout bytes)
@@ -1008,7 +1008,7 @@ cloudfall: error: unrecognized arguments: --dry-run
 
 **stdout** (first 20 lines):
 ```
-{"application": "demo", "components": ["demo"], "domains": [], "environmentFiles": ["/Users/roman/PycharmProjects/Atlas/tmp/eval/inj/env/demo.env"], "gaps": [{"category": "assumption", "detail": "assigned listen port 8100; PORT is written to the component environment file and the application must honor it", "subject": "demo"}, {"category": "assumption", "detail": "buildCommand is not executed; Cloudfall materializes locked dependencies at deploy time instead", "subject": "demo"}, {"category": "action", "detail": "build releases from the declared branch: cloudfall-engine artifact build ... --ref main", "subject": "demo"}, {"category": "assumption", "detail": "no PYTHON_VERSION declared; assuming 3.14", "subject": "demo"}, {"category": "action", "detail": "Cloudfall deploys python components with uv sync --frozen; the repository needs pyproject.toml and uv.lock", "subject": "demo"}, {"category": "unsupported", "detail": "cron services are not modeled yet; recreate the schedule ('0 3 * * *') as a systemd timer manually", "subject": "nightly"}, {"category": "action", "detail": "review /Users/roman/PycharmProjects/Atlas/tmp/eval/inj/env/demo.env and pass it to deployment with --env-file", "subject": "demo"}], "report": "/Users/roman/PycharmProjects/Atlas/tmp/eval/inj/out/IMPORT-REPORT.md", "services": [], "status": "ok", "written": ["/Users/roman/PycharmProjects/Atlas/tmp/eval/inj/out/applications/demo.yaml", "/Users/roman/PycharmProjects/Atlas/tmp/eval/inj/out/components/demo.yam
+{"application": "demo", "components": ["demo"], "domains": [], "environmentFiles": ["tmp/eval/inj/env/demo.env"], "gaps": [{"category": "assumption", "detail": "assigned listen port 8100; PORT is written to the component environment file and the application must honor it", "subject": "demo"}, {"category": "assumption", "detail": "buildCommand is not executed; Cloudfall materializes locked dependencies at deploy time instead", "subject": "demo"}, {"category": "action", "detail": "build releases from the declared branch: cloudfall-engine artifact build ... --ref main", "subject": "demo"}, {"category": "assumption", "detail": "no PYTHON_VERSION declared; assuming 3.14", "subject": "demo"}, {"category": "action", "detail": "Cloudfall deploys python components with uv sync --frozen; the repository needs pyproject.toml and uv.lock", "subject": "demo"}, {"category": "unsupported", "detail": "cron services are not modeled yet; recreate the schedule ('0 3 * * *') as a systemd timer manually", "subject": "nightly"}, {"category": "action", "detail": "review tmp/eval/inj/env/demo.env and pass it to deployment with --env-file", "subject": "demo"}], "report": "tmp/eval/inj/out/IMPORT-REPORT.md", "services": [], "status": "ok", "written": ["tmp/eval/inj/out/applications/demo.yaml", "tmp/eval/inj/out/components/demo.yam
 [truncated — 1504 characters total]
 ```
 
@@ -1033,7 +1033,7 @@ servers[id=h6] = {"address": "203.0.113.6", "environment": "production", "hostna
 
 **stdout** (first 20 lines):
 ```
-{"action": "health", "component": "crm-backend", "detail": "run health.yml failed: red servers] ********************\nincluded: cloudfall_deploy for h1, h2 => (item=crm-backend)\n\nTASK [cloudfall_deploy : Validating arguments against arg spec 'health' - Probe one component's declared health check] ***\nok: [h1]\nok: [h2]\n\nTASK [cloudfall_deploy : Probe the component's declared health check] **********\nincluded: /Users/roman/PycharmProjects/Atlas/engine/ansible/roles/cloudfall_deploy/tasks/health_gate.yml for h1, h2\n\nTASK [cloudfall_deploy : Gate the component on its declared HTTP health check] ***\n[ERROR]: Task failed: Failed to connect to the host via ssh: ssh: Could not resolve hostname h1.example.internal: nodename nor servname provided, or not known\nOrigin: /Users/roman/PycharmProjects/Atlas/engine/ansible/roles/cloudfall_deploy/tasks/health_gate.yml:2:3\n\n1 ---\n2 - name: Gate the component on its declared HTTP health check\n    ^ column 3\n\nfatal: [h1]: UNREACHABLE! => {\"changed\": false, \"msg\": \"Task failed: Failed to connect to the host via ssh: ssh: Could not resolve hostname h1.example.internal: nodename nor servname provided, or not known\", \"unreachable\": true}\n[ERROR]: Task failed: Failed to connect to the host via ssh: ssh: Could not resolve hostname h2.example.internal: nodename nor servname provided, or not known\nOrigin: /Users/roman/PycharmProjects/Atlas/engine/ansible/roles/cloudfall_deploy/tasks/health_gate.yml:2:3\n\n1 ---\n2 - name: Gate
+{"action": "health", "component": "crm-backend", "detail": "run health.yml failed: red servers] ********************\nincluded: cloudfall_deploy for h1, h2 => (item=crm-backend)\n\nTASK [cloudfall_deploy : Validating arguments against arg spec 'health' - Probe one component's declared health check] ***\nok: [h1]\nok: [h2]\n\nTASK [cloudfall_deploy : Probe the component's declared health check] **********\nincluded: engine/ansible/roles/cloudfall_deploy/tasks/health_gate.yml for h1, h2\n\nTASK [cloudfall_deploy : Gate the component on its declared HTTP health check] ***\n[ERROR]: Task failed: Failed to connect to the host via ssh: ssh: Could not resolve hostname h1.example.internal: nodename nor servname provided, or not known\nOrigin: engine/ansible/roles/cloudfall_deploy/tasks/health_gate.yml:2:3\n\n1 ---\n2 - name: Gate the component on its declared HTTP health check\n    ^ column 3\n\nfatal: [h1]: UNREACHABLE! => {\"changed\": false, \"msg\": \"Task failed: Failed to connect to the host via ssh: ssh: Could not resolve hostname h1.example.internal: nodename nor servname provided, or not known\", \"unreachable\": true}\n[ERROR]: Task failed: Failed to connect to the host via ssh: ssh: Could not resolve hostname h2.example.internal: nodename nor servname provided, or not known\nOrigin: engine/ansible/roles/cloudfall_deploy/tasks/health_gate.yml:2:3\n\n1 ---\n2 - name: Gate
 [truncated — 2191 characters total]
 ```
 
