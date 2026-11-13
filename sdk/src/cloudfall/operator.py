@@ -1137,6 +1137,31 @@ class AutonomyDecision:
         return {"granted": self.granted, "reason": self.reason}
 
 
+_SUSPENDING_STATUSES = frozenset({ProposalStatus.FAILED, ProposalStatus.INTERRUPTED})
+"""Receipts that suspend autonomy for their kind when they are its latest.
+
+An interrupted run is at least as uncertain as a failed one: what it changed
+on the server is unknown.
+"""
+
+_SETTLED_STATUSES = frozenset({ProposalStatus.VERIFIED}) | _SUSPENDING_STATUSES
+"""Receipts whose run is over, the autonomy history of their kind."""
+
+
+def _rate_limit_moment(receipt: OperatorProposal) -> str | None:
+    """When a receipt's run counts in the hourly rate limit, if it does.
+
+    A run with an outcome counts from its ``executedAt``. An interrupted run
+    has none, so it counts from when a person confirmed it dead, the latest
+    moment it is known to have run. A run still in progress does not count.
+    """
+    if receipt.outcome is not None:
+        return receipt.outcome.executed_at
+    if receipt.interruption is not None:
+        return receipt.interruption.confirmed_at
+    return None
+
+
 def autonomy_decision(
     proposal: OperatorProposal,
     policy: OperatorPolicyInventory,
@@ -1156,8 +1181,7 @@ def autonomy_decision(
         for receipt in store.list()
         if receipt.operation_kind is proposal.operation_kind
         and receipt.resource_id != proposal.resource_id
-        and receipt.status
-        in (ProposalStatus.VERIFIED, ProposalStatus.FAILED)
+        and receipt.status in _SETTLED_STATUSES
     ]
     verified = sum(
         1
@@ -1171,9 +1195,11 @@ def autonomy_decision(
             f"{grant.required_verified_runs.value} required"
         )
         return AutonomyDecision(granted=False, reason=reason)
-    if history and history[-1].status is ProposalStatus.FAILED:
+    if history and history[-1].status in _SUSPENDING_STATUSES:
+        last = history[-1].status
+        outcome = "failed" if last is ProposalStatus.FAILED else "was interrupted"
         reason = (
-            f"most recent {proposal.operation_kind.value} receipt failed; "
+            f"most recent {proposal.operation_kind.value} receipt {outcome}; "
             "autonomy suspended until a human-approved run verifies"
         )
         return AutonomyDecision(granted=False, reason=reason)
@@ -1192,9 +1218,8 @@ def autonomy_decision(
         for receipt in store.list()
         if receipt.approval is not None
         and receipt.approval.mode == "autonomous"
-        and receipt.outcome is not None
-        and datetime.fromisoformat(receipt.outcome.executed_at).timestamp()
-        > hour_ago
+        and (ran_at := _rate_limit_moment(receipt)) is not None
+        and datetime.fromisoformat(ran_at).timestamp() > hour_ago
     )
     if recent_autonomous >= policy.max_autonomous_per_hour.value:
         reason = (
