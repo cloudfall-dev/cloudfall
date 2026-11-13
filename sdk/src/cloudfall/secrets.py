@@ -103,9 +103,9 @@ class SopsSecretProvider:
         text = (
             self.decrypt(source)
             if self.decrypt is not None
-            else _sops_decrypt(source)
+            else sops_decrypt(source)
         )
-        return _parse_dotenv(text, source)
+        return parse_dotenv(text, source)
 
     def source_path(
         self, reference: SecretReference | SecretValueReference
@@ -135,9 +135,9 @@ class SopsSecretProvider:
         text = (
             self.decrypt(source)
             if self.decrypt is not None
-            else _sops_decrypt(source)
+            else sops_decrypt(source)
         )
-        values = [value for name, value in _parse_dotenv(text, source) if name == key]
+        values = [value for name, value in parse_dotenv(text, source) if name == key]
         if not values:
             message = f"secret key {key} is missing from {source}"
             raise SecretsError(ERROR_KEY_MISSING, message)
@@ -510,7 +510,8 @@ def _declared_component(
     return component
 
 
-def _sops_decrypt(source: Path) -> str:
+def sops_decrypt(source: Path) -> str:
+    """Decrypt one sops file outside a command; commands go through ``ctx.run``."""
     binary = shutil.which("sops")
     if binary is None:
         message = (
@@ -533,7 +534,8 @@ def _sops_decrypt(source: Path) -> str:
     return completed.stdout
 
 
-def _parse_dotenv(text: str, source: Path) -> tuple[tuple[str, str], ...]:
+def parse_dotenv(text: str, source: Path) -> tuple[tuple[str, str], ...]:
+    """Parse ``KEY=VALUE`` lines in order, skipping blanks and comments."""
     pairs: list[tuple[str, str]] = []
     for line_number, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.strip()

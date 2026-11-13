@@ -125,8 +125,13 @@ uv run ansible-inventory --inventory tmp/ansible-inventory.json \
 `requirements show` lists what the stack needs from each server: the Loki and
 Prometheus volumes, the gateway port open to remote collectors, the Grafana and
 SMTP passwords, the gateway and collector certificates, the gateway name and the
-package pins. Today these are still provided as described above; Cloudfall will
-provide them itself (S-011).
+package pins. Secrets carry their state, and `data.missing` names the ones a
+person must supply. `uv run cloudfall secrets generate` stores the Grafana
+password; `uv run cloudfall secrets input smtp-password-<receiver> --owner
+<stack>` stores an SMTP password typed at a terminal. Both keep the value
+sops-encrypted under `secrets/`; copying it to the host file is still the step
+in section 2 until Cloudfall delivers it (S-011). The rest is still provided as
+described above.
 
 Validation rejects missing servers, environment mismatches, duplicate stacks,
 file sources outside component placement, secret paths outside

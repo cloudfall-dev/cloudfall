@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import dataclasses
 import errno
+import getpass
 import os
 import shutil
+import sys
 import tempfile
 import threading
 
@@ -273,8 +275,23 @@ from cloudfall.render_api import (
     import_render_api,
     read_api_key,
 )
-from cloudfall.requirements import requirements_of
+from cloudfall.requirements import (
+    SecretRequirement,
+    SecretSource,
+    requirements_of,
+)
 from cloudfall.resources import default_engine_directory, default_schema_directory
+from cloudfall.secret_store import (
+    ERROR_KEY_EXISTS,
+    SecretStore,
+    encrypt_failed,
+    needs_input,
+    requirement_states,
+    secret_requirements,
+    sops_binary,
+    sops_encrypt_argv,
+    sops_root,
+)
 from cloudfall.secrets import (
     ERROR_DECRYPT_FAILED,
     ERROR_SOPS_MISSING,
@@ -739,8 +756,23 @@ requirements = app.group(
 )
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SecretsDirArgs(ProjectArgs):
+    """Options of a command that reads or writes the project's secret store."""
+
+    secrets_dir: Path = Flag(
+        default=Path("secrets"),
+        description="sops-encrypted secrets directory (default: secrets)",
+        secret=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Keep the secrets directory inside the project."""
+        _inside_project(self.secrets_dir, "secrets-dir")
+
+
 class RequirementsPayload(Payload):
-    """``requirements show``: the host requirements, by server."""
+    """``requirements show``: the host requirements, by server, with their states."""
 
     command = "requirements show"
 
@@ -749,26 +781,35 @@ class RequirementsPayload(Payload):
     "show",
     description=(
         "Show the volumes, ports, secrets, certificates, DNS names and package "
-        "pins each declared workload needs from its servers (S-011); reads "
-        "the project only, never a server"
+        "pins each declared workload needs from its servers (S-011), each with "
+        "its state; data.missing lists the secrets a person must supply. Reads "
+        "the project only: secret states come from key names, never values"
     ),
     danger_level="safe",
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID"],
+    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PRECONDITION"],
     examples=[
         ("Show the project's host requirements", "cloudfall requirements show")
     ],
 )
 def requirements_show(
-    _args: ProjectArgs, _ctx: Ctx, fleet: Fleet
+    args: SecretsDirArgs, ctx: Ctx, fleet: Fleet
 ) -> RequirementsPayload:
     """Answer the requirements the project's workloads place on its servers."""
+    store = _secret_store(args, ctx, fleet)
+    try:
+        servers = requirement_states(requirements_of(fleet.inventory), store)
+    except SecretsError as error:
+        raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
     return RequirementsPayload(
-        {
-            "status": "ok",
-            "servers": [
-                server.as_dict() for server in requirements_of(fleet.inventory)
-            ],
-        }
+        {"status": "ok", "servers": servers, "missing": needs_input(servers)}
+    )
+
+
+def _secret_store(args: SecretsDirArgs, ctx: Ctx, fleet: Fleet) -> SecretStore:
+    return SecretStore(
+        fleet.path(args.secrets_dir),
+        decrypt=_sops_decrypt(ctx),
+        encrypt=_sops_encrypt(ctx),
     )
 
 
@@ -3686,6 +3727,189 @@ def _sops_decrypt(ctx: Ctx) -> Callable[[Path], str]:
         return done.stdout
 
     return decrypt
+
+
+def _sops_encrypt(ctx: Ctx) -> Callable[[Path, str], str]:
+    """Encrypt dotenv text through ``ctx.run``; the text travels on stdin only."""
+
+    def encrypt(target: Path, plaintext: str) -> str:
+        done = ctx.run(
+            sops_encrypt_argv(sops_binary(), target),
+            input=plaintext,
+            cwd=sops_root(target),
+            check=False,
+        )
+        if done.returncode != 0:
+            raise encrypt_failed(target, done.stderr)
+        return done.stdout
+
+    return encrypt
+
+
+class SecretsWrittenPayload(Payload):
+    """What ``secrets generate`` and ``input`` wrote: references and hashes only."""
+
+    writes = True
+
+
+class SecretsGeneratedPayload(SecretsWrittenPayload):
+    """``secrets generate``: what was generated, and what was already stored."""
+
+    command = "secrets generate"
+
+
+class SecretsInputPayload(SecretsWrittenPayload):
+    """``secrets input``: the one secret a person supplied."""
+
+    command = "secrets input"
+
+
+@secrets.command(
+    "generate",
+    description=(
+        "Generate every secret a requirement marks `generate` that the store "
+        "lacks, and keep it sops-encrypted under secrets/; a stored key is "
+        "never overwritten. The answer names references and hashes, never values"
+    ),
+    danger_level="mutating",
+    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PRECONDITION"],
+    timeout=120,
+    subprocess=Subprocess("sops"),
+    examples=[("Generate the missing secrets", "cloudfall secrets generate")],
+)
+def secrets_generate(
+    args: SecretsDirArgs, ctx: Ctx, fleet: Fleet
+) -> SecretsGeneratedPayload:
+    """Write a random value for each generated secret the store lacks."""
+    store = _secret_store(args, ctx, fleet)
+    written: list[dict[str, object]] = []
+    skipped: list[dict[str, object]] = []
+    try:
+        for secret in secret_requirements(requirements_of(fleet.inventory)):
+            if secret.source is not SecretSource.GENERATE:
+                continue
+            if store.holds(secret.reference):
+                skipped.append(
+                    {"name": secret.name.value, "reference": secret.reference.as_dict()}
+                )
+                continue
+            stored = store.generate(secret.reference)
+            written.append({"name": secret.name.value, **stored.as_dict()})
+    except SecretsError as error:
+        raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
+    return SecretsGeneratedPayload(
+        {
+            "status": "ok",
+            "effect": "updated" if written else "noop",
+            "written": written,
+            "skipped": skipped,
+        }
+    )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SecretsInputArgs(SecretsDirArgs):
+    """Arguments of ``secrets input``."""
+
+    name: str = Arg(
+        description="Secret requirement to supply, as `requirements show` names it"
+    )
+    owner: ResourceId = Flag(
+        description="Id of the resource that yields it, such as a LoggingStack"
+    )
+    value: str | None = Flag(
+        default=None,
+        secret=True,
+        description=(
+            "The value, instead of asking at a terminal; pass it through "
+            "--value-from-file or --value-from-env so it stays out of shell history"
+        ),
+    )
+
+
+@secrets.command(
+    "input",
+    description=(
+        "Store one secret a requirement marks `input`, typed at a terminal with "
+        "echo off or read with --value-from-file or --value-from-env, "
+        "sops-encrypted under secrets/; a stored key is never overwritten. Off "
+        "a terminal without either it exits 4 with INPUT_REQUIRED"
+    ),
+    danger_level="mutating",
+    interactive=True,
+    exit_codes=[
+        "PROJECT_INVALID",
+        "CONFIG_INVALID",
+        "PRECONDITION",
+        "NOT_FOUND",
+        "CONFLICT",
+    ],
+    timeout=None,
+    subprocess=Subprocess("sops"),
+    examples=[
+        (
+            "Type the SMTP password of a logging stack's alert receiver",
+            "cloudfall secrets input smtp-password-operations-email "
+            "--owner operations",
+        ),
+    ],
+)
+def secrets_input(
+    args: SecretsInputArgs, ctx: Ctx, fleet: Fleet
+) -> SecretsInputPayload:
+    """Store the value a person supplies for one input secret."""
+    secret = _input_secret(fleet, args.name, args.owner)
+    prompt = (
+        f"Value for {secret.name.value} of {args.owner.value} "
+        f"(lands on the host at {secret.path.value})"
+    )
+    if args.value is not None:
+        value = args.value.removesuffix("\n")
+    elif sys.stdin.isatty() and sys.stderr.isatty():
+        value = getpass.getpass(f"{prompt}: ", stream=sys.stderr)
+    else:
+        # Off a terminal this ends with INPUT_REQUIRED, suggesting the file flag
+        value = ctx.prompt(prompt, flag="value-from-file")
+    store = _secret_store(args, ctx, fleet)
+    effect = (
+        "updated" if store.source_path(secret.reference).is_file() else "created"
+    )
+    try:
+        stored = store.write(secret.reference, value)
+    except SecretsError as error:
+        if error.code == ERROR_KEY_EXISTS:
+            raise Exit.CONFLICT(error.message, context={"code": error.code}) from error
+        raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
+    return SecretsInputPayload(
+        {
+            "status": "ok",
+            "effect": effect,
+            "written": [{"name": secret.name.value, **stored.as_dict()}],
+        }
+    )
+
+
+def _input_secret(
+    fleet: Fleet, name: str, owner: ResourceId
+) -> SecretRequirement:
+    for server in requirements_of(fleet.inventory):
+        for requirement in server.requirements:
+            secret = requirement.spec
+            if (
+                not isinstance(secret, SecretRequirement)
+                or secret.name.value != name
+                or requirement.owner.resource_id != owner
+            ):
+                continue
+            if secret.source is not SecretSource.INPUT:
+                message = (
+                    f"{name} of {owner.value} is generated, not typed: run "
+                    "`cloudfall secrets generate`"
+                )
+                raise Exit.PRECONDITION(message, context={"code": "secrets_not_input"})
+            return secret
+    message = f"no secret requirement {name} of {owner.value} is declared"
+    raise Exit.NOT_FOUND(message, context={"code": "secrets_requirement_unknown"})
 
 
 @secrets.command(

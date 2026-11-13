@@ -268,8 +268,8 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "cloudfall",
         "requirements show",
         CommandEffect.READ,
-        "show what each declared workload needs from its servers",
-        output=(_shape("status", "servers"),),
+        "show what each declared workload needs from its servers, with states",
+        output=(_shape("status", "servers", "missing"),),
     ),
     CommandContract(
         "cloudfall",
@@ -427,6 +427,20 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.READ,
         "map a live Render workspace onto config fragments under `tmp/`",
         output=_IMPORTED,
+    ),
+    CommandContract(
+        "cloudfall",
+        "secrets generate",
+        CommandEffect.PROJECT,
+        "generate the requirement secrets the store lacks, sops-encrypted",
+        output=(_shape("status", "written", "skipped"),),
+    ),
+    CommandContract(
+        "cloudfall",
+        "secrets input",
+        CommandEffect.PROJECT,
+        "store one requirement secret a person types, sops-encrypted",
+        output=(_shape("status", "written"),),
     ),
     CommandContract(
         "cloudfall",

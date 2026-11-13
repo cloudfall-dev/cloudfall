@@ -145,6 +145,14 @@ requirement type is a new provider, not new code in every role. v1 ships these b
 
 - `migration.mode: none` (cloudfall-dev/cloudfall#203)
 - `cloudfall requirements show`: the requirements every declared `LoggingStack` places on its
-  servers, by server, read from the project only. It has no state column yet: each state
-  (`met`, `will create`, `will grow`, `needs input`) comes with the provider that can observe
-  it, and so does `INPUT_REQUIRED`
+  servers, by server, read from the project only (cloudfall-dev/cloudfall#204)
+- Secrets provider, project side: each secret requirement names a key in
+  `secrets/<environment>/logging-stacks/<stack>.env`. `requirements show` gives secrets their
+  state (`met`, `will-create`, `needs-input`) from key names, which sops keeps in clear, and
+  lists in `data.missing` what a person must supply; other types say `unchecked` until their
+  provider lands. `cloudfall secrets generate` writes every missing `generate` secret;
+  `cloudfall secrets input <name> --owner <id>` takes one `input` secret at a terminal with echo
+  off, or through `--value-from-file` / `--value-from-env`, and off a terminal without either
+  exits 4 with `INPUT_REQUIRED`. A stored key is never overwritten (exit 6, `CONFLICT`).
+  Delivering the stored values to the host files is the next step: until then the role still
+  requires those files on the host

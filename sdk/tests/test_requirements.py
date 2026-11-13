@@ -13,8 +13,9 @@ from cloudfall.domain import (
     Hostname,
     ResourceId,
     ResourceKind,
+    SecretKeyName,
 )
-from cloudfall.inventory import PlatformInventory
+from cloudfall.inventory import PlatformInventory, SecretValueReference
 from cloudfall.requirements import (
     CertificateRequirement,
     CertificateUsage,
@@ -150,6 +151,11 @@ def test_a_server_rejects_two_requirements_of_one_type_and_name() -> None:
             RequirementName("grafana-admin-password"),
             SecretSource.GENERATE,
             AbsolutePath("/etc/cloudfall/logging/grafana-admin-password"),
+            SecretValueReference(
+                environment=ResourceId("production"),
+                path=AbsolutePath("/logging-stacks/operations"),
+                key=SecretKeyName("GRAFANA_ADMIN_PASSWORD"),
+            ),
         ),
     )
 
@@ -176,5 +182,14 @@ def test_requirements_show_answers_the_requirements_by_server(
         "type": "secret",
         "name": "smtp-password-operations-email",
         "owner": {"kind": "LoggingStack", "id": "operations"},
-        "spec": {"source": "input", "path": "/etc/cloudfall/logging/smtp-password"},
+        "spec": {
+            "source": "input",
+            "path": "/etc/cloudfall/logging/smtp-password",
+            "reference": {
+                "environment": "production",
+                "path": "/logging-stacks/operations",
+                "key": "SMTP_PASSWORD_OPERATIONS_EMAIL",
+            },
+        },
+        "state": "needs-input",
     }

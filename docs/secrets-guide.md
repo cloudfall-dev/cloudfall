@@ -142,6 +142,26 @@ the key, and the value's SHA-256 (an operator proposal keeps them as
 `ownedRoles` in its receipt's `outcome`); the password is set on every converge, so a
 rotation is a commit in the private repository and a services converge.
 
+## Secrets a workload requires
+
+Some secrets belong to the platform rather than to an application: the Grafana
+admin password of a `LoggingStack`, or the SMTP password its alert receiver
+logs in with. Cloudfall derives them from the resource (`cloudfall requirements
+show`) and keeps them in `secrets/<environment>/logging-stacks/<stack>.env`, one
+key per secret:
+
+```console
+uv run cloudfall secrets generate
+uv run cloudfall secrets input smtp-password-operations-email --owner operations
+```
+
+`generate` writes a random value for each secret Cloudfall may invent and the
+store lacks. `input` asks for one value at a terminal with echo off; a script
+passes it through `--value-from-file` or `--value-from-env` instead, never on
+the command line. Off a terminal without either it exits 4 with
+`INPUT_REQUIRED`. Neither overwrites a stored key, and their answers name the
+key and the value's SHA-256, never the value.
+
 ## Drift detection
 
 Rendering writes an `EnvironmentReceipt` (component, content hash, key
