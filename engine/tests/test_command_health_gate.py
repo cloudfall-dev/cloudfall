@@ -736,6 +736,7 @@ def _rescue_variables(
         "ansible_check_mode": False,
         "cloudfall_server_id": "h1",
         "cloudfall_deploy_previous_directory": previous_directory,
+        "cloudfall_deploy_release_directory": f"/srv/releases/{RELEASE}",
         "cloudfall_deploy_failed_health_result": result,
         "cloudfall_deploy_unit_hand_made": False,
         "cloudfall_deploy_unit_managed_before": False,

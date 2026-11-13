@@ -242,8 +242,10 @@ failed rollback is an incident, not a deployment.
 The deploy role transfers the artifact and refuses it if the digest does not
 match the build metadata, unpacks it under `releases/<release-id>/` (or,
 when `current` already runs that release, under a fresh
-`releases/<release-id>.redeploy-<UTC time>/`, so the live directory is never
-written into; a rollback to that release id takes its newest copy),
+`releases/<release-id>.redeploy-<UTC time to the microsecond>/`, so the live
+directory is never written into; a redeploy copy that fails its health gate
+is removed once the previous copy runs again, so a rollback to that release
+id takes its newest copy that passed),
 materializes locked dependencies with a pinned `uv` (`uv sync --frozen
 --no-dev`, with the managed Python toolchain and cache under the component's
 `shared/` directory), optionally installs an environment file, runs the
