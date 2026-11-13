@@ -153,12 +153,27 @@ managed `conf.d` drop-in, and creates one login role and database per
 declared application using peer authentication over the local socket — no
 database passwords exist anywhere. Components connect as their application's
 Linux user. Backups run `pg_dump` in custom format on the declared systemd
-calendar with bounded retention, and
+calendar with bounded retention, writing `<database>-<timestamp>.dump` per
+database and, beside them in the same backup directory,
+`globals-<timestamp>.sql` from `pg_dumpall --globals-only`: the roles and
+other cluster-wide objects no per-database dump holds, without role
+passwords (converge sets each owner role's password from its secret).
 `/usr/local/sbin/cloudfall-postgresql-restore-check` proves the newest dump
-of every database restores into a scratch database before dropping it:
+of every database restores into a scratch database
+(`<database>_restore_check`, the name cut to its first 49 characters) before
+dropping it: every table the dump holds must come back with the row count
+the dump holds, and a dump without a table fails the drill. No declared
+database may carry another's scratch name:
 
 ```console
 sudo -u postgres /usr/local/sbin/cloudfall-postgresql-restore-check
+```
+
+To restore onto a fresh server, load the globals first, then each database:
+
+```console
+sudo -u postgres psql --file globals-<timestamp>.sql postgres
+sudo -u postgres pg_restore --create --dbname postgres <database>-<timestamp>.dump
 ```
 
 A service that declares `postgresql.remoteAccess` also listens on its

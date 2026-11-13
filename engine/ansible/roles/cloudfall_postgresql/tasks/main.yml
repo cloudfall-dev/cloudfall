@@ -12,6 +12,29 @@
       PostgreSQL deployment requires its declared Debian server and a
       loopback-only bind address
 
+# The restore drill drops <name>_restore_check (the name cut to 49 bytes, as
+# PostgreSQL cuts the whole at 63) before restoring into it.
+- name: Refuse a database named as a restore-drill scratch database
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudfall_postgresql_database_names
+        | map('regex_replace', '^(.{0,49}).*$', '\\1_restore_check')
+        | select('in', cloudfall_postgresql_database_names)
+        | list
+        | length == 0
+    fail_msg: >-
+      A database of service {{ cloudfall_postgresql_service.id }} is named
+      as the scratch database the restore drill drops: no declared database
+      may be named <another declared name>_restore_check
+  vars:
+    cloudfall_postgresql_database_names: >-
+      {{
+        cloudfall_postgresql_service.postgresql.databases
+        | map(attribute='name')
+        | list
+      }}
+
 - name: Refuse remote access that is not narrowed to declared sources
   ansible.builtin.assert:
     that:

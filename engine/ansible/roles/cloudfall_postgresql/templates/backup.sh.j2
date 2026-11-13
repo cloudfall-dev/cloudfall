@@ -7,11 +7,16 @@ port="{{ cloudfall_postgresql_service.bind.port }}"
 retention_days="{{ cloudfall_postgresql_service.backup.retentionDays }}"
 timestamp="$(date --utc +%Y%m%dT%H%M%SZ)"
 
+# Roles and other globals, which no pg_dump of one database holds. Role
+# passwords stay out: converge sets each owner role's from its secret.
+pg_dumpall --port "${port}" --globals-only --no-role-passwords \
+  --file "${backup_directory}/globals-${timestamp}.sql"
 {% for database in cloudfall_postgresql_service.postgresql.databases %}
 pg_dump --port "${port}" --format=custom \
   --file "${backup_directory}/{{ database.name }}-${timestamp}.dump" \
   "{{ database.name }}"
 {% endfor %}
 
-find "${backup_directory}" -name '*.dump' -type f \
+find "${backup_directory}" -type f \
+  \( -name '*.dump' -o -name 'globals-*.sql' \) \
   -mtime "+${retention_days}" -delete
