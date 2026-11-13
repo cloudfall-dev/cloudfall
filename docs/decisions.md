@@ -78,8 +78,16 @@ entry that supersedes it, never by editing an old one.
 
 ## D-10: Components are isolated by the systemd sandbox, and separate servers are recommended, not required
 
-- Decided: 2026-11-02, by the maintainer; reasoning in docs/decisions/2026-11-02-isolation-without-containers.md
+- Decided: 2026-11-02, in cloudfall-dev/cloudfall#191
 - Rule: On every server, components are kept apart by each unit's systemd sandbox (own user, ProtectSystem, ProtectHome, PrivateTmp, ProtectProc, SystemCallFilter, capability and address-family limits, cgroup limits), a database role per component, secrets through systemd credentials, keys scoped by environment and a non-root deploy user; runners are ephemeral sandboxed units, denied production directories, network peers and keys when they share a server with production; separate servers for different trust levels (production and staging, build or CI and production, different owners) are recommended, and a team may place everything on one server, several independent projects included, by declaring the accepted risk in the plan; Cloudfall warns about an undeclared placement of two trust levels on one server, and warns more strongly when they belong to different owners; Cloudfall adds no container runtime and no hypervisor of its own
-- Why: A Unix user alone keeps only files and signals apart; containers use the same kernel mechanisms systemd exposes and add no boundary, only a runtime to operate; a separate kernel is the one stronger boundary and comes from a separate server, but requiring it would rule out the one-server teams Cloudfall serves, and a team can accept that risk for its own projects, not for other owners
+- Why: A Unix user alone keeps only files and signals apart; containers use the same kernel mechanisms systemd exposes and add no boundary, only a runtime to operate; a separate kernel is the one stronger boundary and comes from a separate server, but requiring it would rule out the one-server teams Cloudfall serves, and a team can accept that risk for its own projects, not for other owners; the full reasoning is in docs/decisions/2026-11-02-isolation-without-containers.md
 - Applies to: engine/ansible/roles/cloudfall_deploy/templates/component.service.j2, engine/ansible/roles/cloudfall_access, server placement in plans, runner and CI setup
+- Enforced by: review
+
+## D-11: The resource every server runs is a Baseline
+
+- Decided: 2026-11-13, in cloudfall-dev/cloudfall#198
+- Rule: The kind is Baseline, stored under baselines/, referenced as Server.spec.baseline, checked by baseline.schema.json and declared with cloudfall add baseline; its storage part stays in it; the old kind ServerType, folder server-types/ and field serverType keep validating for one minor release with a deprecation warning from config validate and a command that rewrites a project to the new names, and a server that sets both serverType and baseline is an error
+- Why: On Hetzner and most clouds a server type is a hardware model (CX22, AX41-NVMe), and the docs and CLI already call this resource the baseline; splitting storage out is new behaviour that needs its own spec
+- Applies to: sdk/src/cloudfall/*, engine/*, config/schemas/v1/server-type.schema.json, config/schemas/v1/baseline.schema.json, config/examples/*, docs/*, cloudfall add, config validate
 - Enforced by: review
