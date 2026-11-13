@@ -53,6 +53,34 @@
     cloudfall_component_lock_clear_token: >-
       {{ (cloudfall_component_lock_clear | default({})).get(inventory_hostname, '') }}
   tasks:
+    # Compared and removed in one command on the server, so no round trip
+    # sits between the two: read in one task and removed in another, a lock a
+    # run took in between went with the one shown (#271). The record is the
+    # flat JSON object component-lock-take.yml writes; its "token" key is
+    # matched as a fixed string, with the token passed as an argument, never
+    # in the script. A token that is not written as is in JSON matches
+    # nothing, so its lock stays and the caller reports it.
+    - name: Clear the lock a person was shown, if it still holds that token
+      ansible.builtin.command:
+        argv:
+          - sh
+          - -c
+          - |
+            [ -e "$1" ] || exit 0
+            grep -q -F -e "\"token\": \"$2\"" -- "$1"
+            case $? in
+              0) rm -f -- "$1" && echo cleared ;;
+              1) ;;
+              *) exit 2 ;;
+            esac
+          - sh
+          - "{{ cloudfall_component_lock_path }}"
+          - "{{ cloudfall_component_lock_clear_token }}"
+      register: cloudfall_component_lock_cleared
+      changed_when: cloudfall_component_lock_cleared.stdout == 'cleared'
+      when: cloudfall_component_lock_clear_token | length > 0
+
+    # After a clear, what is there now: nothing, or a lock taken since.
     - name: Look for the component's lock
       ansible.builtin.stat:
         path: "{{ cloudfall_component_lock_path }}"
@@ -64,18 +92,6 @@
         src: "{{ cloudfall_component_lock_path }}"
       register: cloudfall_component_lock_read
       when: cloudfall_component_lock_stat.stat.exists | default(false)
-
-    - name: Clear the lock a person was shown
-      ansible.builtin.file:
-        path: "{{ cloudfall_component_lock_path }}"
-        state: absent
-      register: cloudfall_component_lock_cleared
-      when:
-        - cloudfall_component_lock_clear_token | length > 0
-        - cloudfall_component_lock_read.content is defined
-        - >-
-          (cloudfall_component_lock_read.content | b64decode | from_json).token
-          == cloudfall_component_lock_clear_token
 
     - name: Write the reading on the management host
       ansible.builtin.copy:
