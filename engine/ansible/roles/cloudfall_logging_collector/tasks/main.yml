@@ -96,6 +96,13 @@
     update_cache: true
   when: cloudfall_logging_collector_repository is changed
 
+- name: Check the package pins before anything is installed
+  ansible.builtin.include_tasks: pins.yml
+  vars:
+    cloudfall_logging_collector_pins:
+      - name: alloy
+        version: "{{ cloudfall_logging_collector_stack.software.alloyPackageVersion }}"
+
 - name: Create Alloy service group before package configuration
   ansible.builtin.group:
     name: alloy
