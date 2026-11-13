@@ -38,9 +38,14 @@
 - name: Run one declared backup operation with a controller receipt
   hosts: cloudfall_backup_servers
   become: true
-  gather_facts: true
+  # Facts are gathered by rollout-start.yml, after its reach check; the run
+  # has one server today, so the check passes, and it holds if that changes.
+  gather_facts: false
   any_errors_fatal: true
   serial: 1
+  pre_tasks:
+    - name: Stop at a server whose earlier servers did not finish
+      ansible.builtin.import_tasks: tasks/rollout-start.yml
   tasks:
     - name: Select the requested service on this host
       ansible.builtin.set_fact:

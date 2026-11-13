@@ -1,0 +1,41 @@
+---
+# Start one server's turn in a play that changes servers one by one
+# (serial: 1). Import it as the play's first pre_task, with gather_facts off.
+#
+# any_errors_fatal does not count an unreachable server as failed, so serial: 1
+# would go on to the next server. Each server first checks that every server
+# before it in this play finished: Ansible drops a server it could not reach,
+# or one that failed, from ansible_play_hosts. Facts are gathered only after
+# the check, so a server is not contacted once an earlier one was missed.
+#
+# cloudfall_rollout_earlier_servers names servers of an earlier play of the
+# same run that must have finished too; that play marks each server it
+# finished with cloudfall_rollout_finished.
+- name: Stop the rollout at a server it did not finish
+  ansible.builtin.assert:
+    that:
+      - cloudfall_rollout_unfinished | length == 0
+    fail_msg: >-
+      Stopped before {{ inventory_hostname }}: the run did not finish on
+      {{ cloudfall_rollout_unfinished | join(', ') }} (unreachable or
+      failed); fix that server and run the command again
+    quiet: true
+  vars:
+    cloudfall_rollout_unfinished: >-
+      {{
+        (
+          cloudfall_rollout_earlier_servers | default([])
+          | map('extract', hostvars)
+          | rejectattr('cloudfall_rollout_finished', 'defined')
+          | map(attribute='inventory_hostname')
+          | list
+        )
+        + (
+          ansible_play_hosts_all[:ansible_play_hosts_all.index(inventory_hostname)]
+          | reject('in', ansible_play_hosts)
+          | list
+        )
+      }}
+
+- name: Gather facts of the server
+  ansible.builtin.gather_facts:

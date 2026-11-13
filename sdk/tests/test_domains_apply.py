@@ -550,6 +550,8 @@ def _recap_hosts(output: str) -> list[str]:
 
 DOMAINS_TASKS = {
     "Gathering Facts",
+    "Stop the rollout at a server it did not finish",
+    "Gather facts of the server",
     "Require an upstream or routes on every Domain this run renders",
     "Render declared domains as managed virtual hosts",
     "cloudfall_nginx_site : Record what this host rendered",
@@ -589,15 +591,20 @@ def test_s004_1_domains_yml_runs_no_baseline_firewall_or_service_role() -> None:
     """The stub above stands in for this role; nothing else can run."""
     plays = yaml.safe_load((PLAYBOOKS / "domains.yml").read_text(encoding="utf-8"))
     included: list[str] = []
+    rollout_start = "tasks/rollout-start.yml"
     for play in plays:
-        assert set(play) & {"roles", "import_playbook", "pre_tasks", "post_tasks"} == (
-            set()
-        )
+        assert set(play) & {"roles", "import_playbook", "post_tasks"} == set()
+        # The only pre_task is the shared reach check of a rolling play (#254).
+        for task in play.get("pre_tasks", []):
+            assert task["ansible.builtin.import_tasks"] == rollout_start
         for task in play["tasks"]:
             role = task.get("ansible.builtin.include_role")
             if role is not None:
                 included.append(role["name"])
     assert included == ["cloudfall_nginx_site"]
+    shared = (PLAYBOOKS / rollout_start).read_text(encoding="utf-8")
+    for keyword in ("include_role", "import_role", "include_tasks", "import_tasks"):
+        assert keyword not in shared
     meta = yaml.safe_load((NGINX_SITE / "meta" / "main.yml").read_text("utf-8"))
     assert meta["dependencies"] == []
     for tasks in (NGINX_SITE / "tasks").glob("*.yml"):

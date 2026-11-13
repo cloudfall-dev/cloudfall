@@ -58,37 +58,15 @@
 - name: Deploy one Cloudfall component release on its release server
   hosts: cloudfall_release_servers
   become: true
-  # Facts are gathered after the reach check, so a server is not contacted
-  # once an earlier one was missed.
+  # Facts are gathered by rollout-start.yml, after its reach check.
   gather_facts: false
   any_errors_fatal: true
   serial: 1
   pre_tasks:
-    # any_errors_fatal does not count an unreachable server as failed, so
-    # serial: 1 would go on to the next one. Each server checks that every
-    # server before it finished.
-    - name: Stop the rollout at a server of the component it did not finish
-      ansible.builtin.assert:
-        that:
-          - cloudfall_unfinished_servers | length == 0
-        fail_msg: >-
-          Stopped before {{ inventory_hostname }}: the run did not finish on
-          {{ cloudfall_unfinished_servers | join(', ') }} (unreachable or
-          failed); fix that server and run the command again
-        quiet: true
-      vars:
-        cloudfall_unfinished_servers: >-
-          {{
-            ansible_play_hosts_all[:ansible_play_hosts_all.index(inventory_hostname)]
-            | map('extract', hostvars)
-            | rejectattr('cloudfall_rollout_finished', 'defined')
-            | map(attribute='inventory_hostname')
-            | list
-          }}
-
-    - name: Gather facts of the server
-      ansible.builtin.gather_facts:
+    - name: Stop at a server whose earlier servers did not finish
+      ansible.builtin.import_tasks: tasks/rollout-start.yml
   post_tasks:
+    # The next play checks the release server through this mark.
     - name: Record that the server finished
       ansible.builtin.set_fact:
         cloudfall_rollout_finished: true
@@ -117,42 +95,18 @@
     cloudfall_deploy_component_id | default('') | replace('-', '_')
     }}:!cloudfall_release_servers
   become: true
-  # Facts are gathered after the reach check, so a server is not contacted
-  # once an earlier one was missed.
+  # Facts are gathered by rollout-start.yml, after its reach check.
   gather_facts: false
   any_errors_fatal: true
   serial: 1
   pre_tasks:
-    # As in the release server's play; the release server came before every
-    # server of this one, so it must have finished too.
-    - name: Stop the rollout at a server of the component it did not finish
-      ansible.builtin.assert:
-        that:
-          - cloudfall_unfinished_servers | length == 0
-        fail_msg: >-
-          Stopped before {{ inventory_hostname }}: the run did not finish on
-          {{ cloudfall_unfinished_servers | join(', ') }} (unreachable or
-          failed); fix that server and run the command again
-        quiet: true
+    # The release server came before every server of this play, so it must
+    # have finished too.
+    - name: Stop at a server whose earlier servers did not finish
+      ansible.builtin.import_tasks: tasks/rollout-start.yml
       vars:
-        cloudfall_unfinished_servers: >-
-          {{
-            (
-              groups['cloudfall_release_servers'] | default([])
-              + ansible_play_hosts_all[:ansible_play_hosts_all.index(inventory_hostname)]
-            )
-            | map('extract', hostvars)
-            | rejectattr('cloudfall_rollout_finished', 'defined')
-            | map(attribute='inventory_hostname')
-            | list
-          }}
-
-    - name: Gather facts of the server
-      ansible.builtin.gather_facts:
-  post_tasks:
-    - name: Record that the server finished
-      ansible.builtin.set_fact:
-        cloudfall_rollout_finished: true
+        cloudfall_rollout_earlier_servers: >-
+          {{ groups['cloudfall_release_servers'] | default([]) }}
   tasks:
     - name: Deploy the selected component on its declared servers
       ansible.builtin.include_role:
