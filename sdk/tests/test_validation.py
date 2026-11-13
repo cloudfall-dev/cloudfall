@@ -222,7 +222,7 @@ def test_service_rejects_a_database_named_as_a_restore_drill_scratch(
     tmp_path: Path, database: str, scratch: str
 ) -> None:
     project_directory = tmp_path / "config"
-    shutil.copytree(ROOT / "config" / "examples", project_directory)
+    copy_examples(project_directory)
     service_path = project_directory / "services" / "postgresql-main.yaml"
     colliding = service_path.read_text(encoding="utf-8").replace(
         "      - name: crm\n        application: crm",
