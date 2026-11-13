@@ -144,11 +144,13 @@ def _rescue_variables(  # noqa: PLR0913 - one knob per rescue condition.
     was_active: bool = True,
     was_enabled: str = "enabled",
     check_mode: bool = False,
+    release_directory: str = "/srv/apps/asrest/releases/r2",
 ) -> dict[str, object]:
     return {
         "ansible_check_mode": check_mode,
         "cloudfall_server_id": "h1",
         "cloudfall_deploy_previous_directory": previous_directory,
+        "cloudfall_deploy_release_directory": release_directory,
         "cloudfall_deploy_failed_health_result": None,
         "cloudfall_deploy_unit_hand_made": hand_made,
         "cloudfall_deploy_unit_managed_before": managed_before,
@@ -163,13 +165,14 @@ def _rescue_variables(  # noqa: PLR0913 - one knob per rescue condition.
     }
 
 
-def _rescue(
+def _rescue(  # noqa: PLR0913 - one knob per rescue condition.
     previous_directory: str,
     *,
     hand_made: bool = False,
     managed_before: bool = False,
     was_active: bool = True,
     check_mode: bool = False,
+    release_directory: str = "/srv/apps/asrest/releases/r2",
 ) -> set[str]:
     """Name every rescue step that runs once a gate task has failed."""
     variables = _rescue_variables(
@@ -178,6 +181,7 @@ def _rescue(
         managed_before=managed_before,
         was_active=was_active,
         check_mode=check_mode,
+        release_directory=release_directory,
     )
     return {
         str(task["name"])
@@ -553,9 +557,88 @@ def test_the_current_release_redeploys_into_a_fresh_directory(
     directory = _release_directory(previous_directory)
 
     assert re.fullmatch(
-        rf"{RELEASES}/{RELEASE}\.redeploy-[0-9]{{8}}T[0-9]{{6}}Z", directory
+        rf"{RELEASES}/{RELEASE}\.redeploy-[0-9]{{8}}T[0-9]{{12}}Z", directory
     )
     assert directory != previous_directory
+
+
+def test_two_redeploys_in_the_same_second_get_two_directories() -> None:
+    """The copy's time has microseconds (#245)."""
+    first = _release_directory(f"{RELEASES}/{RELEASE}")
+    second = _release_directory(f"{RELEASES}/{RELEASE}")
+
+    assert first != second
+    assert sorted([second, first]) == [first, second]
+
+
+# A redeploy copy that failed its gate is removed by the rescue (#245).
+
+REMOVE_FAILED_COPY = "Remove the redeploy copy that failed its gate"
+
+
+@pytest.mark.parametrize(
+    ("previous_directory", "release_directory", "removed"),
+    [
+        (
+            "/srv/apps/asrest/releases/r2",
+            "/srv/apps/asrest/releases/r2.redeploy-20261113T101500123456Z",
+            True,
+        ),
+        (
+            "/srv/apps/asrest/releases/r2.redeploy-20261101T000000Z",
+            "/srv/apps/asrest/releases/r2.redeploy-20261113T101500123456Z",
+            True,
+        ),
+        ("/srv/apps/asrest/releases/r1", "/srv/apps/asrest/releases/r2", False),
+        ("", "/srv/apps/asrest/releases/r2", False),
+        (
+            "/srv/apps/asrest/releases/r2.redeploy-20261113T101500123456Z",
+            "/srv/apps/asrest/releases/r2.redeploy-20261113T101500123456Z",
+            False,
+        ),
+    ],
+    ids=[
+        "redeploy-of-the-first-copy",
+        "redeploy-of-a-redeploy",
+        "another-release",
+        "first-release",
+        "the-previous-copy-itself",
+    ],
+)
+def test_the_rescue_removes_only_a_failed_redeploy_copy(
+    previous_directory: str, release_directory: str, *, removed: bool
+) -> None:
+    ran = _rescue(previous_directory, release_directory=release_directory)
+
+    assert (REMOVE_FAILED_COPY in ran) is removed
+    if removed:
+        assert RESTORE in ran
+
+
+def test_check_mode_removes_no_redeploy_copy() -> None:
+    ran = _rescue(
+        "/srv/apps/asrest/releases/r2",
+        release_directory=(
+            "/srv/apps/asrest/releases/r2.redeploy-20261113T101500123456Z"
+        ),
+        check_mode=True,
+    )
+
+    assert REMOVE_FAILED_COPY not in ran
+
+
+def test_the_failed_copy_goes_after_the_previous_release_runs_again() -> None:
+    names = [str(task["name"]) for task in _section("rescue")]
+    remove = _task(REMOVE_FAILED_COPY, _section("rescue"))["ansible.builtin.file"]
+    assert isinstance(remove, dict)
+
+    assert names.index(RESTORE) < names.index(RESTART_RESTORED)
+    assert names.index(RESTART_RESTORED) < names.index(REMOVE_FAILED_COPY)
+    assert names.index(REMOVE_FAILED_COPY) < names.index(GATE_RESTORED)
+    assert remove == {
+        "path": "{{ cloudfall_deploy_release_directory }}",
+        "state": "absent",
+    }
 
 
 def test_the_release_directory_is_chosen_after_reading_current() -> None:
