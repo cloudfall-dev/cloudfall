@@ -2,9 +2,13 @@
 - name: Migrate external data into declared Cloudfall services
   hosts: cloudfall_servers
   become: true
-  gather_facts: true
+  # Facts are gathered by rollout-start.yml, after its reach check.
+  gather_facts: false
   any_errors_fatal: true
   serial: 1
+  pre_tasks:
+    - name: Stop at a server whose earlier servers did not finish
+      ansible.builtin.import_tasks: tasks/rollout-start.yml
   tasks:
     - name: Migrate data into the selected PostgreSQL service
       ansible.builtin.include_role:

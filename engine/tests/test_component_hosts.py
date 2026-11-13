@@ -1,12 +1,13 @@
-"""Deploy, rollback, restart, health and backup contact only their servers.
+"""Playbooks contact only their servers and stop at one they could not reach.
 
 Each playbook runs for real under ``ansible-playbook`` against two declared
 servers: ``h2`` runs locally, and ``h1`` points at a closed local SSH port,
 so contacting it makes it unreachable. ``h1`` comes first in inventory order,
 so a play over every server would fail on it before it reached ``h2``. The
-deploy role is replaced, through ``--roles``, by one that records each host.
-When the component is on both servers, an unreachable one must stop the
-rollout before the next server, which ``any_errors_fatal`` alone does not do.
+roles are replaced, through ``--roles``, by one that records each host.
+Deploy, rollback, restart, health and backup contact only their servers.
+When a playbook changes servers one by one, an unreachable one must stop it
+before the next server, which ``any_errors_fatal`` alone does not do.
 """
 
 from __future__ import annotations
@@ -30,6 +31,9 @@ EXAMPLES = ROOT / "config" / "examples"
 ENGINE = ROOT / "engine"
 RELEASE = "20261027T000000Z-abcdef1"
 STUB_TASKS = """---
+- name: Contact the host, as the replaced role would
+  ansible.builtin.ping:
+
 - name: Record the host this entry point ran on
   ansible.builtin.lineinfile:
     path: "{{ stub_log }}"
@@ -54,6 +58,42 @@ EXTRA_VARS: dict[str, dict[str, str]] = {
 }
 COMPONENT_PLAYBOOKS = list(EXTRA_VARS)
 ROLLOUT_PLAYBOOKS = ["deploy", "rollback", "restart"]
+# The other playbooks that change servers one by one (serial: 1), and the
+# servers their stubbed roles record when both servers are reached. The
+# logging backend is on h2, so the collectors' play is the one rolling over
+# h1 and h2.
+ROLLING_PLAYBOOKS: dict[str, tuple[dict[str, str], list[str]]] = {
+    "baseline": ({}, ["h1", "h2"]),
+    "bootstrap": ({}, ["h1", "h2"]),
+    "data": (
+        {
+            "cloudfall_data_service_id": "postgresql-main",
+            "cloudfall_data_database": "crm",
+            "cloudfall_data_source_url_file": "/dev/null",
+        },
+        ["h2"],
+    ),
+    "domains": ({}, ["h2"]),
+    "logging": ({}, ["h2", "h1"]),
+    "services": ({}, ["h1", "h2"]),
+    "time": ({}, ["h1", "h2"]),
+}
+# Every role a rolling playbook includes, replaced by the recording stub.
+STUBBED_ROLES = (
+    "cloudfall_access",
+    "cloudfall_bootstrap",
+    "cloudfall_data_migration",
+    "cloudfall_firewall",
+    "cloudfall_inspect",
+    "cloudfall_logging_backend",
+    "cloudfall_logging_collector",
+    "cloudfall_nginx_site",
+    "cloudfall_postgresql",
+    "cloudfall_redis",
+    "cloudfall_time",
+    "cloudfall_unattended_upgrades",
+    "cloudfall_volumes",
+)
 
 
 @dataclass(frozen=True)
@@ -84,6 +124,7 @@ def _project(tmp_path: Path, fleet: Fleet) -> Path:
     service.write_text(yaml.safe_dump(document), encoding="utf-8")
     logging = project / "logging-stacks" / "operations.yaml"
     document = yaml.safe_load(logging.read_text(encoding="utf-8"))
+    document["spec"]["backend"]["server"] = "h2"
     for file_source in document["spec"]["collectors"]["files"]:
         file_source["servers"] = ["h2"]
     logging.write_text(yaml.safe_dump(document), encoding="utf-8")
@@ -123,6 +164,10 @@ def _roles(tmp_path: Path) -> Path:
     tasks.mkdir(parents=True)
     for name in ("main.yml", "rollback.yml", "restart.yml", "health.yml"):
         (tasks / name).write_text(STUB_TASKS, encoding="utf-8")
+    for role in STUBBED_ROLES:
+        role_tasks = roles / role / "tasks"
+        role_tasks.mkdir(parents=True)
+        (role_tasks / "main.yml").write_text(STUB_TASKS, encoding="utf-8")
     return roles
 
 
@@ -195,6 +240,67 @@ def test_every_reached_server_of_the_component_rolls_out_in_order(
 
     assert exit_code == 0
     assert log.read_text(encoding="utf-8").splitlines() == ["h1", "h2"]
+
+
+@pytest.mark.parametrize("playbook", ROLLING_PLAYBOOKS)
+def test_an_unreachable_server_stops_every_rolling_playbook(
+    playbook: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """h1 comes first and is unreachable, so h2 must never be changed (#254)."""
+    log = tmp_path / "hosts.log"
+    extra_vars, _ = ROLLING_PLAYBOOKS[playbook]
+
+    exit_code = _run(tmp_path, playbook, {**extra_vars, "stub_log": str(log)})
+
+    output = capsys.readouterr().err
+    assert exit_code == 82
+    assert "UNREACHABLE!" in output
+    assert "Stopped before h2: the run did not finish on h1" in output
+    # The logging backend (h2) comes before the collectors' play, which is
+    # the one that stops.
+    expected = ["h2"] if playbook == "logging" else []
+    assert _logged_hosts(log) == expected
+
+
+@pytest.mark.parametrize("playbook", ROLLING_PLAYBOOKS)
+def test_every_reached_server_runs_each_rolling_playbook(
+    playbook: str, tmp_path: Path
+) -> None:
+    """The check never stops a run whose earlier servers all finished."""
+    log = tmp_path / "hosts.log"
+    extra_vars, expected = ROLLING_PLAYBOOKS[playbook]
+
+    exit_code = _run(
+        tmp_path,
+        playbook,
+        {**extra_vars, "stub_log": str(log)},
+        Fleet(unreachable=()),
+    )
+
+    assert exit_code == 0
+    assert _logged_hosts(log) == expected
+
+
+def test_inspect_goes_on_past_an_unreachable_server(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Inspect only reads, so it observes what it can reach (#254)."""
+    log = tmp_path / "hosts.log"
+
+    exit_code = _run(tmp_path, "inspect", {"stub_log": str(log)})
+
+    output = capsys.readouterr().err
+    assert exit_code == 82
+    assert "UNREACHABLE!" in output
+    assert "Stopped before" not in output
+    assert _logged_hosts(log) == ["h2"]
+
+
+def _logged_hosts(log: Path) -> list[str]:
+    """Each host the stubs recorded, once, in the order it was first seen."""
+    if not log.exists():
+        return []
+    return list(dict.fromkeys(log.read_text(encoding="utf-8").splitlines()))
 
 
 @pytest.mark.parametrize(("release_server", "other"), [("h1", "h2"), ("h2", "h1")])

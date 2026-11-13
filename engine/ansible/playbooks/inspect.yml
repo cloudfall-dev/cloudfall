@@ -5,6 +5,9 @@
   gather_facts: true
   any_errors_fatal: true
   serial: 1
+  # Inspect only reads, so it goes on past a server it cannot reach and
+  # reports it as missing: no rollout-start.yml check here, unlike the
+  # playbooks that change servers one by one.
   roles:
     - role: cloudfall_inspect
       cloudfall_inspect_server_id: "{{ cloudfall_server_id }}"
