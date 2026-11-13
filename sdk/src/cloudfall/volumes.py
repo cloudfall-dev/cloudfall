@@ -131,16 +131,20 @@ def normalize_report(raw: dict[str, object]) -> dict[str, object]:
         }
         for row in _rows(raw, "pvs", "pv")
     }
-    rows = {str(row["lv_name"]): row for row in _rows(raw, "lvs", "lv")}
+    # Keyed by volume group too: another group may hold an LV of the same name
+    rows = {
+        (str(row["vg_name"]), str(row["lv_name"])): row
+        for row in _rows(raw, "lvs", "lv")
+    }
     filesystems = raw.get("filesystems")
     logical: dict[str, object] = {}
-    for name, row in rows.items():
+    for (group, name), row in rows.items():
         if name.startswith("["):
             continue
-        logical[name] = {
+        logical[f"{group}/{name}"] = {
             "type": str(row["segtype"]),
             "sizeBytes": int(str(row["lv_size"])),
-            "devices": sorted(_devices(name, rows)),
+            "devices": sorted(_devices(group, name, rows)),
             "mapper": str(row.get("lv_dm_path", "")) or None,
             "filesystem": (
                 filesystems.get(name) if isinstance(filesystems, dict) else None
@@ -164,10 +168,12 @@ def _rows(raw: dict[str, object], key: str, kind: str) -> list[dict[str, object]
     return [row for section in report for row in section.get(kind, [])]
 
 
-def _devices(name: str, rows: dict[str, dict[str, object]]) -> set[str]:
+def _devices(
+    group: str, name: str, rows: dict[tuple[str, str], dict[str, object]]
+) -> set[str]:
     """Return the physical volumes an LV sits on, through raid1's hidden images."""
     found: set[str] = set()
-    for part in str(rows[name].get("devices", "")).split(","):
+    for part in str(rows[group, name].get("devices", "")).split(","):
         device = part.strip().rsplit("(", 1)[0]
         if not device:
             continue
@@ -175,8 +181,8 @@ def _devices(name: str, rows: dict[str, dict[str, object]]) -> set[str]:
             found.add(device)
             continue
         hidden = f"[{device}]"
-        if hidden in rows:
-            found |= _devices(hidden, rows)
+        if (group, hidden) in rows:
+            found |= _devices(group, hidden, rows)
     return found
 
 
@@ -224,7 +230,8 @@ def _plan(
     path = _mapping(paths, spec.path.value) if spec.path.value in paths else {}
     lv_path = f"/dev/{group}/{spec.logical_volume}"
     mounted_from = path.get("mountedFrom")
-    if spec.logical_volume not in logical:
+    key = f"{group}/{spec.logical_volume}"
+    if key not in logical:
         if mounted_from is not None:
             reason = f"{spec.path.value} is already mounted from {mounted_from}"
             raise VolumeRefusedError(server, pool, reason)
@@ -235,7 +242,7 @@ def _plan(
             )
             raise VolumeRefusedError(server, pool, reason)
         return PlannedVolume(server, spec, VolumeAction.CREATE, wanted)
-    held = _mapping(logical, spec.logical_volume)
+    held = _mapping(logical, key)
     _refuse_mismatch(server, pool, spec, held)
     if mounted_from is not None and mounted_from not in {lv_path, held.get("mapper")}:
         reason = f"{spec.path.value} is already mounted from {mounted_from}"
@@ -271,7 +278,15 @@ def _refuse_mismatch(
         reason = f"{spec.logical_volume} sits on {devices}, not on {', '.join(wanted)}"
         raise VolumeRefusedError(server, pool, reason)
     filesystem = held.get("filesystem")
-    if filesystem not in {"ext4", None}:
+    if filesystem is None:
+        # A run that stopped between lvcreate and mkfs leaves a bare LV; mkfs
+        # runs only on an LV made in the same run, so it is never formatted here
+        reason = (
+            f"{spec.logical_volume} exists but has no filesystem; check it holds "
+            "no data, then run mkfs.ext4 on it by hand or remove it"
+        )
+        raise VolumeRefusedError(server, pool, reason)
+    if filesystem != "ext4":
         reason = f"{spec.logical_volume} holds {filesystem}, not ext4"
         raise VolumeRefusedError(server, pool, reason)
 
@@ -287,9 +302,9 @@ def _check_free_space(
         current = 0
         if item.action is VolumeAction.GROW:
             logical = _mapping(reports[item.server], "logicalVolumes")
-            current = _integer(
-                _mapping(logical, item.requirement.logical_volume), "sizeBytes"
-            )
+            spec = item.requirement
+            held = f"{spec.pool.volume_group.value}/{spec.logical_volume}"
+            current = _integer(_mapping(logical, held), "sizeBytes")
         extra = item.size_bytes - current
         for device in item.requirement.physical_volumes:
             key = (item.server, device.value)

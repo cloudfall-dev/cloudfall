@@ -173,10 +173,10 @@ def test_s014_6_a_raid1_volume_reads_its_disks_through_hidden_images() -> None:
 
     facts = normalize_report(raw)
 
-    garage = facts["logicalVolumes"]["lv_garage"]  # type: ignore[index]
+    garage = facts["logicalVolumes"]["vg_data/lv_garage"]  # type: ignore[index]
     assert garage["type"] == "raid1"
     assert garage["devices"] == [PRIMARY, SECONDARY]
-    assert "[lv_garage_rimage_0]" not in facts["logicalVolumes"]  # type: ignore[operator]
+    assert "vg_data/[lv_garage_rimage_0]" not in facts["logicalVolumes"]  # type: ignore[operator]
 
 
 def test_s014_7_a_missing_volume_group_is_refused() -> None:
@@ -205,6 +205,23 @@ def test_s014_7_a_volume_with_another_filesystem_is_refused() -> None:
     lvs = [_linear("lv_loki", 10 * GIB)]
     raw = _raw(lvs=lvs, filesystems={"lv_loki": "xfs"})
     assert "holds xfs, not ext4" in _refusal(raw)
+
+
+def test_s014_7_a_volume_without_a_filesystem_is_refused() -> None:
+    # A run that stopped between lvcreate and mkfs leaves a bare LV; the next
+    # run must refuse it up front, never mount or grow it, and never format it
+    lvs = [_linear("lv_loki", 10 * GIB)]
+    raw = _raw(lvs=lvs, filesystems={"lv_loki": None})
+    assert "has no filesystem" in _refusal(raw)
+
+
+def test_s014_7_a_same_named_volume_in_another_group_is_not_this_one() -> None:
+    other = {**_linear("lv_loki", 4 * GIB, "/dev/sdz1"), "vg_name": "vg_old"}
+    raw = _raw(groups=("vg_data", "vg_old"), lvs=[other])
+    assert _plan(raw) == {
+        "loki": VolumeAction.CREATE,
+        "prometheus": VolumeAction.CREATE,
+    }
 
 
 def test_s014_7_a_path_with_files_is_never_mounted_over() -> None:
