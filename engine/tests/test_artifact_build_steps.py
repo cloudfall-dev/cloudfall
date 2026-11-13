@@ -28,6 +28,7 @@ from cloudfall.domain import ARTIFACT_CLONE_TIMEOUT_SECONDS
 from cloudfall.inventory import PlatformInventory
 from cloudfall.validation import SchemaCatalog, validate_config
 from cloudfall_engine.cli import BuildBudget, main
+from examples_project import copy_examples
 from treaty import Timeout
 
 ROOT = Path(__file__).parents[2]
@@ -236,7 +237,7 @@ def _fixture(  # noqa: PLR0913 - one knob per criterion.
     (repository / "web" / "package.json").write_text("{}\n", encoding="utf-8")
     fixture.commit("<h1>v1</h1>\n")
 
-    shutil.copytree(EXAMPLES, fixture.project)
+    copy_examples(fixture.project)
     path = fixture.project / "components" / "crm-backend.yaml"
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
     spec = document["spec"]
@@ -602,16 +603,17 @@ def test_s002_13_the_built_archive_lists_entries_like_the_plain_one(
 # Deploy and rollback of a built release (S-002-12).
 
 DEPLOY_TASKS = (
+    "Inspect the currently active release",
+    "Record the rollback candidate",
     "Compute release paths",
     "Create release and shared directories",
     "Verify the transferred artifact digest",
     "Refuse a release whose digest does not match its metadata",
     "Unpack the verified release",
-    "Inspect the currently active release",
-    "Record the rollback candidate",
     "Switch the current release symlink",
 )
 ROLLBACK_TASKS = (
+    "Find the directories of the rollback target release",
     "Compute rollback paths",
     "Inspect the rollback target release",
     "Require the rollback target on the server",
@@ -726,7 +728,8 @@ def _deploy(tmp_path: Path, install_root: Path, built: dict[str, Any]) -> int:
             "cloudfall_deploy_release": built["release"],
             "cloudfall_deploy_artifact_sha256": built["archive_sha256"],
         },
-        [tasks[0], staged, *tasks[1:]],
+        # After "Compute release paths", which sets the staging archive path.
+        [*tasks[:3], staged, *tasks[3:]],
     )
 
 

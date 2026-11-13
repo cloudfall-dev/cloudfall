@@ -1,11 +1,62 @@
 #!/usr/bin/env bash
 # Managed by Cloudfall. Local changes will be overwritten.
 # Restores the newest dump of every declared database into a scratch
-# database, counts catalog rows, and drops the scratch database again.
+# database, compares the row count of every table the dump holds with the
+# restored table, and drops the scratch database again. The expected counts
+# are read from the dump itself: pg_dump wrote them from one snapshot of the
+# source, so writes to the source since then cannot make them disagree.
+# Roles and other globals are dumped beside the databases, as
+# globals-<timestamp>.sql, and are not part of this drill.
 set -euo pipefail
 
 backup_directory="{{ cloudfall_postgresql_service.backup.directory }}"
 port="{{ cloudfall_postgresql_service.bind.port }}"
+
+# One "schema.table<TAB>rows" line per data block of a dump, the name quoted
+# as pg_dump quotes it. Every table the dump holds has a block, empty or not.
+dump_counts() {
+  pg_restore --data-only "$1" | awk '
+    copying && $0 == "\\." { print table "\t" rows; copying = 0; next }
+    copying { rows++; next }
+    /^COPY / {
+      rest = substr($0, 6); table = ""; quoted = 0
+      for (i = 1; i <= length(rest); i++) {
+        c = substr(rest, i, 1)
+        if (c == " " && !quoted) break
+        if (c == "\"") quoted = !quoted
+        table = table c
+      }
+      rows = 0; copying = 1
+    }' | LC_ALL=C sort
+}
+
+# The same lines for every table of a restored database: format('%I') quotes
+# a name as pg_dump does, and the count is exact, as data copy counts.
+restored_counts() {
+  psql --port "${port}" --no-psqlrc --tuples-only --no-align \
+    --set ON_ERROR_STOP=1 --command "
+      SELECT format('%I.%I', n.nspname, c.relname) || E'\t' ||
+        (xpath('/row/c/text()',
+               query_to_xml(format('SELECT count(*) AS c FROM %I.%I',
+                                   n.nspname, c.relname),
+                            false, true, '')))[1]::text
+      FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      WHERE c.relkind = 'r'
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND n.nspname !~ '^pg_toast'" "$1" | LC_ALL=C sort
+}
+
+# The lines of the dump the restored database does not have as they are.
+not_restored() {
+  LC_ALL=C comm -23 <(printf '%s\n' "$1") <(printf '%s\n' "$2")
+}
+
+# "<tables> tables, <rows> rows" of a dump's count lines.
+totals() {
+  awk -F '\t' '{ rows += $2 }
+    END { printf "%d tables, %.0f rows\n", NR, rows }' <<<"$1"
+}
 
 {% for database in cloudfall_postgresql_service.postgresql.databases %}
 latest="$(find "${backup_directory}" -name '{{ database.name }}-*.dump' \
@@ -14,14 +65,27 @@ if [ -z "${latest}" ]; then
   echo "no backup found for {{ database.name }}" >&2
   exit 1
 fi
-scratch="{{ database.name }}_restore_check"
+expected="$(dump_counts "${latest}")"
+if [ -z "${expected}" ]; then
+  echo "restore check failed for {{ database.name }}:" \
+    "${latest} holds no table" >&2
+  exit 1
+fi
+# PostgreSQL cuts a name at 63 bytes, so the scratch name keeps to them.
+scratch="{{ database.name[:49] }}_restore_check"
 dropdb --port "${port}" --if-exists "${scratch}"
 createdb --port "${port}" "${scratch}"
 pg_restore --port "${port}" --dbname "${scratch}" --no-owner \
   --exit-on-error "${latest}"
-relations="$(psql --port "${port}" --tuples-only --no-align \
-  --command 'SELECT count(*) FROM pg_class' "${scratch}")"
+restored="$(restored_counts "${scratch}")"
 dropdb --port "${port}" "${scratch}"
+missing="$(not_restored "${expected}" "${restored}")"
+if [ -n "${missing}" ]; then
+  printf '%s\n' "restore check failed for {{ database.name }}: ${latest}" \
+    "has these tables and rows the restore did not bring back:" \
+    "${missing}" >&2
+  exit 1
+fi
 echo "restore check passed for {{ database.name }}:" \
-  "${latest} (${relations} catalog relations)"
+  "${latest} ($(totals "${expected}"), as in the dump)"
 {% endfor %}

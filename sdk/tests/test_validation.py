@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 import pytest
 from cloudfall.cli import main
 from cloudfall.domain import ResourceId, ResourceKind
 from cloudfall.validation import ConfigValidationError, validate_config
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -61,7 +61,7 @@ def test_component_install_root_must_stay_below_application_root(
     tmp_path: Path,
 ) -> None:
     project_directory = tmp_path / "config"
-    shutil.copytree(ROOT / "config" / "examples", project_directory)
+    copy_examples(project_directory)
     component_path = project_directory / "components" / "crm-backend.yaml"
     component = component_path.read_text(encoding="utf-8").replace(
         "/srv/apps/crm/backend", "/opt/crm/backend"
@@ -93,7 +93,7 @@ def test_s002_14_reserved_runtimes_are_refused_as_config_invalid(
     field: str,
 ) -> None:
     project_directory = tmp_path / "config"
-    shutil.copytree(ROOT / "config" / "examples", project_directory)
+    copy_examples(project_directory)
     component_path = project_directory / "components" / "crm-backend.yaml"
     component_path.write_text(
         component_path.read_text(encoding="utf-8").replace(original, replacement, 1),
@@ -124,7 +124,7 @@ def test_baseline_rejects_duplicate_configuration_paths(
     tmp_path: Path,
 ) -> None:
     project_directory = tmp_path / "config"
-    shutil.copytree(ROOT / "config" / "examples", project_directory)
+    copy_examples(project_directory)
     baseline_path = project_directory / "baselines" / "debian-application.yaml"
     duplicated = baseline_path.read_text(encoding="utf-8") + (
         "      - path: /etc/ssh/sshd_config\n        capture: metadata\n"
@@ -141,7 +141,7 @@ def test_ssh_public_key_algorithm_must_match_wire_payload(
     tmp_path: Path,
 ) -> None:
     project_directory = tmp_path / "config"
-    shutil.copytree(ROOT / "config" / "examples", project_directory)
+    copy_examples(project_directory)
     key_directory = project_directory / "ssh-public-keys"
     example_key = (
         key_directory / "example-admin.yaml"
@@ -161,7 +161,7 @@ def test_baseline_rejects_duplicate_firewall_rules(
     tmp_path: Path,
 ) -> None:
     project_directory = tmp_path / "config"
-    shutil.copytree(ROOT / "config" / "examples", project_directory)
+    copy_examples(project_directory)
     baseline_path = project_directory / "baselines" / "debian-application.yaml"
     duplicated = baseline_path.read_text(encoding="utf-8").replace(
         "      - port: 443\n        protocol: tcp\n        description: https",
@@ -179,7 +179,7 @@ def test_service_database_must_reference_a_declared_application(
     tmp_path: Path,
 ) -> None:
     project_directory = tmp_path / "config"
-    shutil.copytree(ROOT / "config" / "examples", project_directory)
+    copy_examples(project_directory)
     service_path = project_directory / "services" / "postgresql-main.yaml"
     invalid = service_path.read_text(encoding="utf-8").replace(
         "application: crm", "application: billing"
@@ -195,7 +195,7 @@ def test_service_database_must_reference_a_declared_application(
 
 def test_service_rejects_duplicate_database_names(tmp_path: Path) -> None:
     project_directory = tmp_path / "config"
-    shutil.copytree(ROOT / "config" / "examples", project_directory)
+    copy_examples(project_directory)
     service_path = project_directory / "services" / "postgresql-main.yaml"
     duplicated = service_path.read_text(encoding="utf-8").replace(
         "      - name: crm\n        application: crm",
@@ -210,11 +210,45 @@ def test_service_rejects_duplicate_database_names(tmp_path: Path) -> None:
     assert error.value.issue.code == "service_database_duplicate"
 
 
+@pytest.mark.parametrize(
+    ("database", "scratch"),
+    [
+        ("crm", "crm_restore_check"),
+        # PostgreSQL cuts names at 63 bytes; the drill keeps the first 49.
+        ("c" * 63, "c" * 49 + "_restore_check"),
+    ],
+)
+def test_service_rejects_a_database_named_as_a_restore_drill_scratch(
+    tmp_path: Path, database: str, scratch: str
+) -> None:
+    project_directory = tmp_path / "config"
+    copy_examples(project_directory)
+    service_path = project_directory / "services" / "postgresql-main.yaml"
+    colliding = service_path.read_text(encoding="utf-8").replace(
+        "      - name: crm\n        application: crm",
+        f"      - name: {database}\n        application: crm\n"
+        f"      - name: {scratch}\n        application: crm",
+    )
+    service_path.write_text(colliding, encoding="utf-8")
+
+    with pytest.raises(ConfigValidationError) as error:
+        validate_config(project_directory, SCHEMAS)
+
+    assert error.value.issue.code == "service_database_restore_check_name"
+    assert error.value.issue.field_path == (
+        "spec",
+        "postgresql",
+        "databases",
+        1,
+        "name",
+    )
+
+
 def test_second_service_of_one_kind_per_server_is_rejected(
     tmp_path: Path,
 ) -> None:
     project_directory = tmp_path / "config"
-    shutil.copytree(ROOT / "config" / "examples", project_directory)
+    copy_examples(project_directory)
     original = project_directory / "services" / "postgresql-main.yaml"
     second = original.read_text(encoding="utf-8").replace(
         "id: postgresql-main", "id: postgresql-second"
@@ -233,7 +267,7 @@ def test_logging_stack_rejects_conflicting_listener_ports(
     tmp_path: Path,
 ) -> None:
     project_directory = tmp_path / "config"
-    shutil.copytree(ROOT / "config" / "examples", project_directory)
+    copy_examples(project_directory)
     logging_path = project_directory / "logging-stacks" / "operations.yaml"
     conflicting = logging_path.read_text(encoding="utf-8").replace(
         "port: 9090", "port: 3100", 1
@@ -250,7 +284,7 @@ def test_logging_collector_must_reference_an_existing_server(
     tmp_path: Path,
 ) -> None:
     project_directory = tmp_path / "config"
-    shutil.copytree(ROOT / "config" / "examples", project_directory)
+    copy_examples(project_directory)
     logging_path = project_directory / "logging-stacks" / "operations.yaml"
     invalid = logging_path.read_text(encoding="utf-8").replace(
         "      - h2", "      - h9", 1
@@ -268,7 +302,7 @@ def test_logging_migration_cannot_disable_legacy_agents(
     tmp_path: Path,
 ) -> None:
     project_directory = tmp_path / "config"
-    shutil.copytree(ROOT / "config" / "examples", project_directory)
+    copy_examples(project_directory)
     logging_path = project_directory / "logging-stacks" / "operations.yaml"
     invalid = logging_path.read_text(encoding="utf-8").replace(
         "preserveLegacyAgents: true", "preserveLegacyAgents: false"
@@ -285,7 +319,7 @@ def test_logging_secret_paths_stay_in_managed_directory(
     tmp_path: Path,
 ) -> None:
     project_directory = tmp_path / "config"
-    shutil.copytree(ROOT / "config" / "examples", project_directory)
+    copy_examples(project_directory)
     logging_path = project_directory / "logging-stacks" / "operations.yaml"
     invalid = logging_path.read_text(encoding="utf-8").replace(
         "/etc/cloudfall/logging/server.key", "/var/lib/cloudfall-unsafe/server.key"
@@ -365,7 +399,7 @@ def test_cli_emits_structured_failure(
 
 def _project_with_release(tmp_path: Path, release: object) -> Path:
     project_directory = tmp_path / "config"
-    shutil.copytree(ROOT / "config" / "examples", project_directory)
+    copy_examples(project_directory)
     component_path = project_directory / "components" / "crm-backend.yaml"
     component = component_path.read_text(encoding="utf-8").replace(
         "  healthCheck:\n",
@@ -432,7 +466,7 @@ def test_s005_11_config_validate_accepts_a_declared_release(
 
 def _logging_migration_project(tmp_path: Path, migration: str) -> Path:
     project_directory = tmp_path / "config"
-    shutil.copytree(ROOT / "config" / "examples", project_directory)
+    copy_examples(project_directory)
     logging_path = project_directory / "logging-stacks" / "operations.yaml"
     original = logging_path.read_text(encoding="utf-8")
     declared = "  migration:\n    mode: parallel\n    preserveLegacyAgents: true\n"

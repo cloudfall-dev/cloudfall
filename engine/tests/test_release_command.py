@@ -13,7 +13,6 @@ role's own conditions and receipt template with Ansible's templating.
 from __future__ import annotations
 
 import json
-import shutil
 import sys
 from pathlib import Path
 from typing import cast
@@ -26,6 +25,7 @@ from cloudfall.inventory import PlatformInventory
 from cloudfall.validation import SchemaCatalog, validate_config
 from cloudfall_engine.ansible_inventory import render_ansible_inventory
 from cloudfall_engine.cli import main
+from examples_project import copy_examples
 from jsonschema.exceptions import ValidationError
 
 ROOT = Path(__file__).parents[2]
@@ -557,7 +557,7 @@ STUB_ROLE = """---
 def _two_host_project(tmp_path: Path, *, release: bool) -> Path:
     """Copy the example project with ``deployment.servers: [h2, h1]``."""
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     path = project / "components" / "crm-backend.yaml"
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
     document["spec"]["deployment"]["servers"] = ["h2", "h1"]

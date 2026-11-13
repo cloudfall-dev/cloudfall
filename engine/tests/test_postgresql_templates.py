@@ -63,6 +63,16 @@ def test_backup_script_dumps_and_prunes_each_database() -> None:
     assert '-mtime "+${retention_days}" -delete' in rendered
 
 
+def test_backup_script_dumps_the_globals_beside_the_databases() -> None:
+    rendered = _render("backup.sh.j2")
+
+    assert (
+        'pg_dumpall --port "${port}" --globals-only --no-role-passwords' in rendered
+    )
+    assert '--file "${backup_directory}/globals-${timestamp}.sql"' in rendered
+    assert "-name '*.dump' -o -name 'globals-*.sql'" in rendered
+
+
 def test_restore_check_restores_into_a_scratch_database() -> None:
     rendered = _render("restore-check.sh.j2")
 

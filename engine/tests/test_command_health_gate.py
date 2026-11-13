@@ -51,8 +51,10 @@ UNIT_GATE = [
     "Gate the release on a service unit that did not restart while settling",
 ]
 RUN = "Run the command health check"
+RECORD_FAILED = "Record the health check result of the failed release"
 RESTORE = "Restore the previous release symlink"
 RESTART_RESTORED = "Restart the restored release"
+GATE_RESTORED = "Gate the restored release on its health check"
 STOP_FIRST = "Stop the failed first release"
 FAILED_RECEIPT = "Receipt the release that failed its command health check"
 FAIL = "Fail the deployment after rolling back"
@@ -734,7 +736,9 @@ def _rescue_variables(
         "ansible_check_mode": False,
         "cloudfall_server_id": "h1",
         "cloudfall_deploy_previous_directory": previous_directory,
+        "cloudfall_deploy_failed_health_result": result,
         "cloudfall_deploy_unit_hand_made": False,
+        "cloudfall_deploy_unit_managed_before": False,
         "cloudfall_deploy_unit_was_active": {"rc": 0},
         "cloudfall_deploy_unit_kept_path": (
             "/etc/systemd/system/crm-backend.service.pre-cloudfall"
@@ -769,9 +773,11 @@ def _deploy_failure(
 
 def test_s009_5_a_failed_check_rolls_back_receipts_then_fails() -> None:
     assert _rescue(f"/srv/releases/{PREVIOUS}", _failed_check(timed_out=False)) == [
+        RECORD_FAILED,
         RESTORE,
         RESTART_RESTORED,
         FAILED_RECEIPT,
+        GATE_RESTORED,
         FAIL,
     ]
     receipt = _task(FAILED_RECEIPT, _section("rescue"))
@@ -789,6 +795,7 @@ def test_s009_5_the_deploy_error_names_the_check_its_exit_and_the_rollback() -> 
 
 def test_s009_6_a_failed_first_release_is_stopped_and_receipted() -> None:
     assert _rescue("", _failed_check(timed_out=False)) == [
+        RECORD_FAILED,
         STOP_FIRST,
         FAILED_RECEIPT,
         FAIL,

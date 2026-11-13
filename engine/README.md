@@ -153,12 +153,27 @@ managed `conf.d` drop-in, and creates one login role and database per
 declared application using peer authentication over the local socket — no
 database passwords exist anywhere. Components connect as their application's
 Linux user. Backups run `pg_dump` in custom format on the declared systemd
-calendar with bounded retention, and
+calendar with bounded retention, writing `<database>-<timestamp>.dump` per
+database and, beside them in the same backup directory,
+`globals-<timestamp>.sql` from `pg_dumpall --globals-only`: the roles and
+other cluster-wide objects no per-database dump holds, without role
+passwords (converge sets each owner role's password from its secret).
 `/usr/local/sbin/cloudfall-postgresql-restore-check` proves the newest dump
-of every database restores into a scratch database before dropping it:
+of every database restores into a scratch database
+(`<database>_restore_check`, the name cut to its first 49 characters) before
+dropping it: every table the dump holds must come back with the row count
+the dump holds, and a dump without a table fails the drill. No declared
+database may carry another's scratch name:
 
 ```console
 sudo -u postgres /usr/local/sbin/cloudfall-postgresql-restore-check
+```
+
+To restore onto a fresh server, load the globals first, then each database:
+
+```console
+sudo -u postgres psql --file globals-<timestamp>.sql postgres
+sudo -u postgres pg_restore --create --dbname postgres <database>-<timestamp>.dump
 ```
 
 A service that declares `postgresql.remoteAccess` also listens on its
@@ -225,16 +240,20 @@ check to pass; it deliberately does not auto-restore on failure, because a
 failed rollback is an incident, not a deployment.
 
 The deploy role transfers the artifact and refuses it if the digest does not
-match the build metadata, unpacks it under `releases/<release-id>/`,
+match the build metadata, unpacks it under `releases/<release-id>/` (or,
+when `current` already runs that release, under a fresh
+`releases/<release-id>.redeploy-<UTC time>/`, so the live directory is never
+written into; a rollback to that release id takes its newest copy),
 materializes locked dependencies with a pinned `uv` (`uv sync --frozen
 --no-dev`, with the managed Python toolchain and cache under the component's
 `shared/` directory), optionally installs an environment file, runs the
 component's `release.command` when it declares one, renders the
 systemd unit from the declared service command, and then activates behind a
 health gate: symlink switch, restart, and the declared HTTP health check. If
-the health check fails, the previous release is restored and restarted
-automatically and the run fails; a first release with no predecessor is
-stopped instead. A unit of the same name that Cloudfall did not render (no
+the health check fails, the previous release is restored with the service unit
+it ran under, restarted, and gated on its own health check, and the run fails;
+a restored release that fails that check fails the run with its own message. A
+first release with no predecessor is stopped instead. A unit of the same name that Cloudfall did not render (no
 `# Managed by Cloudfall` header, such as a hand-made unit adopted on a
 brownfield move) is kept at `/etc/systemd/system/<name>.service.pre-cloudfall`
 before the managed unit replaces it, together with whether it was enabled and
@@ -242,7 +261,9 @@ active; when that first release fails its health check, the kept unit is
 copied back, its enabled state restored, and it is started again if it was
 running. The kept copy stays after a successful deploy and is never
 overwritten; a later hand-made unit that differs from it refuses the deploy.
-Check mode only reports the unit it would keep. Successful runs write a
+Check mode only reports the unit it would keep, and the uv release it would
+install; it transfers and unpacks nothing, so it skips the digest check and
+`uv sync`. Successful runs write a
 schema-valid release receipt on the
 controller.
 

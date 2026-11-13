@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 import pytest
@@ -11,6 +10,7 @@ from cloudfall.cli import main
 from cloudfall.domain import ResourceId, ResourceKind
 from cloudfall.inventory import PlatformInventory
 from cloudfall.validation import ConfigValidationError, validate_config
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -32,7 +32,7 @@ _BUILD_BLOCK = """\
 
 def _project_with_component_spec(tmp_path: Path, extra: str) -> Path:
     project_directory = tmp_path / "config"
-    shutil.copytree(EXAMPLES, project_directory)
+    copy_examples(project_directory)
     component_path = project_directory / "components" / "crm-backend.yaml"
     component_path.write_text(
         component_path.read_text(encoding="utf-8") + extra, encoding="utf-8"

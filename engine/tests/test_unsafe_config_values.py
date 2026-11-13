@@ -10,7 +10,6 @@ never appear, and the text must reach its target exactly as declared.
 from __future__ import annotations
 
 import json
-import shutil
 import sys
 from pathlib import Path
 from typing import cast
@@ -20,6 +19,7 @@ from cloudfall.inventory import PlatformInventory
 from cloudfall.observe import write_overlay
 from cloudfall.validation import validate_config
 from cloudfall_engine.cli import main
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -42,7 +42,7 @@ def _payload(marker: Path) -> str:
 def _project(tmp_path: Path, spec: dict[str, object]) -> Path:
     """Copy the example project with ``spec`` merged into ``crm-backend``'s."""
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     path = project / "components" / "crm-backend.yaml"
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
     document["spec"].update(spec)
@@ -301,7 +301,7 @@ def test_a_package_version_in_the_observe_overlay_is_not_templated(
     """The overlay ``cloudfall observe`` writes hands its strings over as data."""
     marker = tmp_path / "pwned"
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     path = project / "baselines" / "debian-application.yaml"
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
     document["spec"]["packages"]["required"][0]["version"] = _payload(marker)

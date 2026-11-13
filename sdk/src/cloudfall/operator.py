@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, cast
 
+from cloudfall import record_files
 from cloudfall.audit import AuditStatus, audit_inventory
 from cloudfall.decision import ApprovalChannel
 from cloudfall.domain import AlertSeverity, ResourceId
@@ -53,6 +54,9 @@ _ERROR_PROPOSAL_EXISTS = "operator_proposal_exists"
 ERROR_PROPOSAL_MISSING = "operator_proposal_missing"
 """Code of the error ``ProposalStore`` raises for an id it holds no receipt for."""
 _ERROR_PROPOSAL_NOT_OPEN = "operator_proposal_not_open"
+ERROR_PROPOSAL_INTERRUPTED = "operator_proposal_run_interrupted"
+"""Code of the refusal of a proposal whose run started and recorded no outcome."""
+_NOT_OPEN_CODES = frozenset({_ERROR_PROPOSAL_NOT_OPEN, ERROR_PROPOSAL_INTERRUPTED})
 _ERROR_CHANNEL_UNKNOWN = "operator_approval_channel_unknown"
 _ERROR_OPERATION_UNSUPPORTED = "operator_operation_unsupported"
 ERROR_GATEWAY_UNDECLARED = "operator_gateway_undeclared"
@@ -85,6 +89,13 @@ class ProposalStatus(StrEnum):
     EXECUTED = "executed"
     VERIFIED = "verified"
     FAILED = "failed"
+    RUNNING = "running"
+    """Approved, and its execution started; no outcome is recorded yet.
+
+    Recorded before the executor runs, so an execution whose process ended
+    before it recorded an outcome stays ``running``: it was interrupted, and
+    it is never approved again.
+    """
 
 
 class TriggerKind(StrEnum):
@@ -107,7 +118,12 @@ _OPERATION_PLAYBOOKS: Mapping[OperationKind, str] = {
 }
 
 _BLOCKING_STATUSES = frozenset(
-    {ProposalStatus.PROPOSED, ProposalStatus.EXECUTED, ProposalStatus.FAILED}
+    {
+        ProposalStatus.PROPOSED,
+        ProposalStatus.RUNNING,
+        ProposalStatus.EXECUTED,
+        ProposalStatus.FAILED,
+    }
 )
 
 # The audit check ``server_type.id`` is ``baseline.id`` since 0.8.0 (D-11). A
@@ -527,18 +543,30 @@ class ProposalStore:
     def save(self, proposal: OperatorProposal) -> Path:
         """Persist a new proposal, refusing to overwrite an existing one."""
         path = self._path(proposal.resource_id)
-        if path.exists():
-            message = f"proposal already exists: {path}"
-            raise OperatorError(_ERROR_PROPOSAL_EXISTS, message)
-        return self._write(path, proposal)
+        content = self._content(proposal)
+        with record_files.locked(self.directory):
+            try:
+                record_files.create(path, content)
+            except FileExistsError as error:
+                message = f"proposal already exists: {path}"
+                raise OperatorError(_ERROR_PROPOSAL_EXISTS, message) from error
+        return path
 
     def update(self, proposal: OperatorProposal) -> Path:
         """Persist a state change of an existing proposal."""
-        path = self._path(proposal.resource_id)
-        if not path.exists():
-            message = f"proposal does not exist: {path}"
-            raise OperatorError(ERROR_PROPOSAL_MISSING, message)
-        return self._write(path, proposal)
+        with record_files.locked(self.directory):
+            return self._replace(proposal)
+
+    def start(self, running: OperatorProposal) -> Path:
+        """Record an approved execution as started, if its receipt is still open.
+
+        The receipt on disk is read again under the store's lock: a second
+        approval of the same proposal, a person's or a policy's, finds it
+        ``running`` and is refused before anything runs.
+        """
+        with record_files.locked(self.directory):
+            refuse_not_open(self.load(running.resource_id))
+            return self._replace(running)
 
     def load(self, proposal_id: ResourceId) -> OperatorProposal:
         """Load and re-validate one proposal receipt."""
@@ -587,14 +615,20 @@ class ProposalStore:
     def _path(self, proposal_id: ResourceId) -> Path:
         return self.directory / f"{proposal_id.value}.json"
 
-    def _write(self, path: Path, proposal: OperatorProposal) -> Path:
+    def _replace(self, proposal: OperatorProposal) -> Path:
+        """Replace one existing receipt; the caller holds the store's lock."""
+        path = self._path(proposal.resource_id)
+        content = self._content(proposal)
+        if not path.exists():
+            message = f"proposal does not exist: {path}"
+            raise OperatorError(ERROR_PROPOSAL_MISSING, message)
+        record_files.replace(path, content)
+        return path
+
+    def _content(self, proposal: OperatorProposal) -> str:
         document = proposal.as_document()
         self.catalog.validate_named(_PROPOSAL_SCHEMA, document)
-        self.directory.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(document, indent=2) + "\n", encoding="utf-8"
-        )
-        return path
+        return json.dumps(document, indent=2) + "\n"
 
 
 def _proposal_from_document(document: Mapping[str, object]) -> OperatorProposal:
@@ -906,12 +940,7 @@ def approve(  # noqa: PLR0913 - the run's contract plus how the approval came.
         )
         raise OperatorError(_ERROR_CHANNEL_UNKNOWN, message)
     proposal = store.load(proposal_id)
-    if proposal.status is not ProposalStatus.PROPOSED:
-        message = (
-            f"proposal {proposal_id.value} is {proposal.status.value}, "
-            "only proposed proposals can be approved"
-        )
-        raise OperatorError(_ERROR_PROPOSAL_NOT_OPEN, message)
+    refuse_not_open(proposal)
     return _execute_and_verify(
         store,
         proposal,
@@ -920,6 +949,25 @@ def approve(  # noqa: PLR0913 - the run's contract plus how the approval came.
         ApprovalRecord(mode="human", policy=None, via=via),
         options,
     )
+
+
+def refuse_not_open(proposal: OperatorProposal) -> None:
+    """Refuse a proposal that is not open, before anything runs."""
+    if proposal.status is ProposalStatus.PROPOSED:
+        return
+    if proposal.status is ProposalStatus.RUNNING:
+        message = (
+            f"proposal {proposal.resource_id.value} was approved and its "
+            "execution started, but no outcome is recorded: it is still running "
+            "or it was interrupted. It is not approved again; check the server, "
+            "then let the operator propose it again"
+        )
+        raise OperatorError(ERROR_PROPOSAL_INTERRUPTED, message)
+    message = (
+        f"proposal {proposal.resource_id.value} is {proposal.status.value}, "
+        "only proposed proposals can be approved"
+    )
+    raise OperatorError(_ERROR_PROPOSAL_NOT_OPEN, message)
 
 
 def _execution_failure_detail(error: OperatorError | LifecycleError) -> str:
@@ -946,6 +994,9 @@ def _execute_and_verify(  # noqa: PLR0913 - internal execution contract.
 ) -> OperatorProposal:
     resolved_options = options if options is not None else ApproveOptions()
     executed_at = _utc_now()
+    # The approval and the started execution are on record before the
+    # executor runs: one killed midway stays running, never approvable.
+    store.start(replace(proposal, status=ProposalStatus.RUNNING, approval=approval))
     try:
         owned_roles = executor(proposal) or ()
     except (OperatorError, LifecycleError) as error:
@@ -1169,14 +1220,21 @@ def autonomous_pass(  # noqa: PLR0913 - boundary mirrors approve().
         if not decision.granted:
             withheld.append((proposal.resource_id.value, decision.reason))
             continue
-        result = _execute_and_verify(
-            store,
-            proposal,
-            executor,
-            verifier_for(proposal),
-            ApprovalRecord(mode="autonomous", policy=policy.resource_id),
-            options,
-        )
+        try:
+            result = _execute_and_verify(
+                store,
+                proposal,
+                executor,
+                verifier_for(proposal),
+                ApprovalRecord(mode="autonomous", policy=policy.resource_id),
+                options,
+            )
+        except OperatorError as error:
+            # A person approved it since this pass listed the store.
+            if error.code not in _NOT_OPEN_CODES:
+                raise
+            withheld.append((proposal.resource_id.value, error.message))
+            continue
         executed.append((result.resource_id.value, result.status.value))
         if result.outcome is not None and result.outcome.owned_roles:
             owned_roles[result.resource_id.value] = result.outcome.owned_roles

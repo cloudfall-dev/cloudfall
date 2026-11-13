@@ -32,6 +32,7 @@ from cloudfall.lifecycle import (
     StepRunner,
     observe_domain,
 )
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -46,7 +47,7 @@ NOT_AFTER = "Jan  5 09:34:43 2027 GMT"
 def _project(tmp_path: Path, vhost: Path) -> Path:
     """Copy the examples, with crm-site's vhost at ``vhost``."""
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     path = project / "domains" / "crm-site.yaml"
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
     document["spec"]["proxy"]["configurationPath"] = str(vhost)
@@ -386,7 +387,7 @@ class _Recorder:
 def _recorded(tmp_path: Path, run: StepRunner) -> tuple[EngineContext, DomainObserve]:
     project = tmp_path / "project"
     if not project.exists():
-        shutil.copytree(EXAMPLES, project)
+        copy_examples(project)
     context = EngineContext(
         project_directory=project,
         schema_directory=SCHEMAS,
@@ -430,7 +431,7 @@ def test_s004_4_observe_refuses_an_unknown_domain_before_any_engine_step(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
 
     exit_code, payload = _cli(project, capsys, "nope")
 
@@ -549,7 +550,7 @@ def test_s004_14_the_cli_answers_snake_case_and_leaves_the_project_as_it_was(
 ) -> None:
     """A stand-in engine hands back a reading; the CLI renders outside the project."""
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     engine = _stand_in_engine(
         tmp_path,
         _reading(
@@ -587,7 +588,7 @@ def test_s004_15_the_cli_answers_the_receipt_comparison(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     vhost = tmp_path / "applied.conf"
     vhost.write_text("server { listen 80; }\n", encoding="utf-8")
     _write_receipt(project, vhost)
@@ -610,7 +611,7 @@ def test_an_unreachable_proxy_server_exits_engine_step_failed(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     server = project / "servers" / "h2.yaml"
     document = yaml.safe_load(server.read_text(encoding="utf-8"))
     # .invalid never resolves (RFC 6761), so the run fails without a network.

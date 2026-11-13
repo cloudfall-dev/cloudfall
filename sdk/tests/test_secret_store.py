@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +25,7 @@ from cloudfall.secret_store import (
     SecretStore,
 )
 from cloudfall.secrets import SecretsError, parse_dotenv
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 EXAMPLES = ROOT / "config" / "examples"
@@ -173,7 +173,7 @@ def test_a_generated_value_is_random_and_url_safe(tmp_path: Path) -> None:
 
 def _project(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     (project / ".sops.yaml").write_text(
         "creation_rules:\n  - path_regex: secrets/.*\\.env$\n    age: age1example\n",
         encoding="utf-8",
