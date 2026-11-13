@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 import pytest
@@ -24,6 +23,7 @@ from cloudfall.inventory import (
     firewall_rules_for_server,
 )
 from cloudfall.validation import validate_config
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -97,7 +97,7 @@ def test_s005_6_the_release_server_is_the_first_deployment_server(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "config"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     path = project / "components" / "crm-backend.yaml"
     text = path.read_text(encoding="utf-8")
     text = text.replace("      - h1\n      - h2\n", "      - h2\n      - h1\n")
@@ -279,7 +279,7 @@ def test_logging_migration_mode_none_renders_without_the_legacy_guard(
     tmp_path: Path,
 ) -> None:
     project_directory = tmp_path / "config"
-    shutil.copytree(EXAMPLES, project_directory)
+    copy_examples(project_directory)
     logging_path = project_directory / "logging-stacks" / "operations.yaml"
     logging_path.write_text(
         logging_path.read_text(encoding="utf-8").replace(

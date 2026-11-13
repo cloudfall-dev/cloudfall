@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +23,7 @@ from cloudfall.lifecycle import (
     LifecycleError,
     converge_domains,
 )
+from examples_project import copy_examples
 from mcp import ClientSession, StdioServerParameters, stdio_client
 from mcp.types import TextContent
 
@@ -98,7 +98,7 @@ class _Recorder:
 
 def _project(tmp_path: Path) -> Path:
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     (project / "domains" / "crm-admin.yaml").write_text(
         SECOND_DOMAIN, encoding="utf-8"
     )

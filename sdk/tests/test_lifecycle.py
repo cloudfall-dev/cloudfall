@@ -27,6 +27,7 @@ from cloudfall.lifecycle import (
     verify_artifact,
 )
 from cloudfall.validation import SchemaCatalog
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -506,7 +507,7 @@ def test_release_artifact_build_reads_the_engine_envelope(tmp_path: Path) -> Non
     _git("-C", str(repository), "add", ".")
     _git("-C", str(repository), "commit", "--quiet", "--message", "initial")
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     component = project / "components" / "crm-backend.yaml"
     component.write_text(
         component.read_text(encoding="utf-8").replace(
@@ -551,7 +552,7 @@ def test_s002_7_the_sdk_leaves_the_build_limit_to_the_engine(
     _git("-C", str(repository), "add", ".")
     _git("-C", str(repository), "commit", "--quiet", "--message", "initial")
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     component = project / "components" / "crm-backend.yaml"
     component.write_text(
         component.read_text(encoding="utf-8").replace(

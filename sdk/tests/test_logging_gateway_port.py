@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest
@@ -12,6 +11,7 @@ from cloudfall.inventory import (
     logging_gateway_rules_for_server,
 )
 from cloudfall.validation import ConfigValidationError, validate_config
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -26,7 +26,7 @@ H2_NETWORK = (
 
 def _project(tmp_path: Path) -> Path:
     project = tmp_path / "config"
-    shutil.copytree(EXAMPLES, project, ignore=shutil.ignore_patterns("tmp"))
+    copy_examples(project)
     return project
 
 

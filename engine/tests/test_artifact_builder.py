@@ -15,6 +15,7 @@ from cloudfall.inventory import PlatformInventory
 from cloudfall.validation import validate_config
 from cloudfall_engine.artifact import ArtifactBuildError, build_artifact
 from cloudfall_engine.cli import main
+from examples_project import copy_examples
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -57,7 +58,7 @@ def _fixture_inventory(tmp_path: Path) -> PlatformInventory:
     _git("-C", str(repository), "commit", "--quiet", "--message", "initial")
 
     project_directory = tmp_path / "config"
-    shutil.copytree(EXAMPLES, project_directory)
+    copy_examples(project_directory)
     component_path = project_directory / "components" / "crm-backend.yaml"
     component = component_path.read_text(encoding="utf-8").replace(
         "https://github.com/example/crm-backend.git",

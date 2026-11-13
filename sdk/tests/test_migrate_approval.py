@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 from cloudfall.app import app
 from cloudfall.cli import main
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -102,7 +103,7 @@ def _project(tmp_path: Path, repository: Path | None = None) -> Path:
     machine; the component builds from the local repository.
     """
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     shutil.rmtree(project / "domains")
     if repository is not None:
         component = project / "components" / "crm-backend.yaml"

@@ -7,7 +7,6 @@ import grp
 import json
 import os
 import pwd
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +15,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 EXAMPLES = ROOT / "config" / "examples"
@@ -104,7 +104,7 @@ def _tools(tmp_path: Path) -> Path:
 
 def _project(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project, ignore=shutil.ignore_patterns("tmp"))
+    copy_examples(project)
     (project / ".sops.yaml").write_text(
         "creation_rules:\n  - path_regex: secrets/.*\\.env$\n    age: age1example\n",
         encoding="utf-8",

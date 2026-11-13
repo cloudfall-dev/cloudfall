@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -19,6 +18,7 @@ from cloudfall.service_evidence import (
     load_domain_observations,
 )
 from cloudfall.validation import validate_config
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -52,7 +52,7 @@ class _RecordingClient:
 
 def _single_host_inventory(tmp_path: Path) -> PlatformInventory:
     project_directory = tmp_path / "config"
-    shutil.copytree(EXAMPLES, project_directory)
+    copy_examples(project_directory)
     domain_path = project_directory / "domains" / "crm-site.yaml"
     single_host = domain_path.read_text(encoding="utf-8").replace(
         "    server: h1", "    server: h2"

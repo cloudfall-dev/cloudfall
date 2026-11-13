@@ -8,12 +8,12 @@ owned database renders shows up here as a diff.
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from cloudfall.ansible_data import unmarked
 from cloudfall_engine.cli import main
+from examples_project import copy_examples
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 if TYPE_CHECKING:
@@ -114,7 +114,7 @@ def test_examples_under_the_deprecated_server_type_names_render_the_same(
 ) -> None:
     """A project still on ServerType converges exactly as it would on Baseline."""
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     (project / "baselines").rename(project / "server-types")
     for path in (project / "server-types").glob("*.yaml"):
         text = path.read_text(encoding="utf-8")

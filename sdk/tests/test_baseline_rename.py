@@ -18,6 +18,7 @@ from cloudfall.domain import ResourceId, ResourceKind
 from cloudfall.inventory import PlatformInventory
 from cloudfall.observation import load_observations
 from cloudfall.validation import ConfigValidationError, validate_config
+from examples_project import copy_examples
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -288,7 +289,7 @@ def test_add_server_type_is_a_deprecated_name_of_add_baseline(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     project = tmp_path / "project"
-    shutil.copytree(ROOT / "config" / "examples", project)
+    copy_examples(project)
 
     exit_code, payload = _run(
         capsys, "add", "server-type", "debian-minimal", "--project", str(project)
@@ -336,7 +337,7 @@ def test_add_server_takes_type_as_a_deprecated_name_of_baseline(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     project = tmp_path / "project"
-    shutil.copytree(ROOT / "config" / "examples", project)
+    copy_examples(project)
     server = ("add", "server", "h3", "--address", "192.0.2.30")
 
     exit_code, payload = _run(
