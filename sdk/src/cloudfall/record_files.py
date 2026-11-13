@@ -43,15 +43,17 @@ def locked(directory: Path) -> Iterator[None]:
 
 
 def create(path: Path, content: str) -> None:
-    """Write a new record; raise ``FileExistsError`` when one of its name exists."""
+    """Write a new record; raise ``FileExistsError`` when one of its name exists.
+
+    The staged file is hard-linked to the record's name, which fails when the
+    name exists, so the record appears whole: never empty, even to a reader
+    that takes no lock or after a crash between two steps.
+    """
     staged = _staged(path, content)
     try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _RECORD_MODE)
-    except FileExistsError:
+        os.link(staged, path)
+    finally:
         staged.unlink()
-        raise
-    os.close(descriptor)
-    staged.replace(path)
 
 
 def replace(path: Path, content: str) -> None:
