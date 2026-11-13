@@ -1,6 +1,6 @@
 # S-014: Data volumes in a Baseline's storage pools
 
-status: approved
+status: built
 serves: G-1, G-3
 
 ## Problem
@@ -126,12 +126,52 @@ not just create, or `wipefs`.
 
 ## Issues
 
+Feature issue cloudfall-dev/cloudfall#263. The spec was built in slices without build issues,
+by cloudfall-dev/cloudfall#248, #249 and #253 (with the repair #259), and proven live in #262;
+the build issue below closes it out.
+
+- cloudfall-dev/cloudfall#264: S-014-1, S-014-2, S-014-3, S-014-4, S-014-5, S-014-6, S-014-7, S-014-8, S-014-9
+
 ## Verification
 
 Proving run on a Debian 13 host with two block volumes, 2026-11-13
 (`docs/proving-runs/2026-11-13-hetzner-s011.md`): S-014-3, S-014-4 and S-014-8 held live, and
 S-014-5 for keeping a volume; growing, raid1 (S-014-6) and the refusals (S-014-7) rest on unit
-tests. Landed, slice by slice:
+tests. Per criterion:
+
+- S-014-1: unit tests, `test_s014_1_a_baseline_with_pools_validates` and
+  `test_s014_1_malformed_pools_are_refused`; the proving run's project, with one pool,
+  validated
+- S-014-2: unit tests, `test_s014_2_a_backend_baseline_without_pools_is_refused`,
+  `test_s014_2_an_unknown_pool_is_refused` and `test_s014_2_two_pools_need_a_name`
+- S-014-3: held live, the plan named `lv_loki` and `lv_prometheus`, pool `data`, `linear` on
+  the primary volume; `requirements show --project config/examples` lists both with pool, LV,
+  type and physical volumes (`test_s014_3_requirements_show_names_pool_lv_and_type`)
+- S-014-4: held live, both volumes linear on the primary physical volume only (`lvs -o
+  devices`), ext4, mounted by UUID with `nofail,x-systemd.device-timeout=10s`, owned by `loki`
+  and `prometheus`, each unit with `RequiresMountsFor`; the controller's `create` actions in
+  `test_s014_4_missing_volumes_are_created_linear_on_primary`
+- S-014-5: a second deploy kept both volumes, held live; growing and never shrinking rest on
+  `test_s014_5_an_existing_volume_is_kept_grown_but_never_shrunk` and the role's `lvextend
+  --resizefs` naming the same physical volumes (rendered, not run: no size override exists
+  yet to raise a volume live)
+- S-014-6: unit tests only, `test_a_mirrored_volume_spans_both_physical_volumes` (a mirrored
+  volume is `raid1` over primary then secondary, the order `lvcreate` names them) and
+  `test_s014_6_a_raid1_volume_reads_its_disks_through_hidden_images`; no workload declares a
+  mirrored volume yet, so no raid1 volume was made live
+- S-014-7: unit tests only, the `test_s014_7_*` refusals on LVM's JSON (each names server,
+  pool and reason, raised before any host change) and
+  `test_a_mirrored_volume_needs_a_secondary`, which refuses when the requirement is built,
+  naming the volume and the pool; no refusal was exercised live
+- S-014-8: held live, `volume.loki` and `volume.prometheus` compliant, and drift once Loki's
+  volume was unmounted; the other drifts on observation fixtures (`test_s014_8_*`)
+- S-014-9: `test_s014_9_no_playbook_or_role_runs_a_destructive_lvm_command` scans every
+  playbook, role and template under `engine/ansible` for the forbidden commands and LVM
+  modules, and `test_s014_9_mkfs_runs_only_on_a_volume_created_in_the_same_run` holds the
+  only `mkfs` to the same `create` actions as `lvcreate`, which the controller gives only to
+  a volume that does not exist
+
+Landed, slice by slice:
 
 - `storage.pools` on a `Baseline` (schema, the `StoragePool` model, unique `id` and
   `volumeGroup`), the `pool` and `storagePool` fields of `LoggingStack`, and the pool refusals
@@ -149,11 +189,11 @@ tests. Landed, slice by slice:
   for a created volume only, `lvextend --resizefs` naming the same physical volumes, an fstab
   line by UUID with `nofail,x-systemd.device-timeout=10s`, `mount`, and a `RequiresMountsFor`
   drop-in per unit. Decisions are covered by unit tests on LVM's JSON; the role's commands were
-  rendered and linted, not run: macOS has no LVM. S-014-4 to S-014-7 and S-014-9 wait on a
-  Debian host
+  rendered and linted, not run: macOS has no LVM. The proving run (#262) later ran them on a
+  Debian host for S-014-4 and S-014-5's keep
 - Audit: the inventory renders `cloudfall_volumes` (name, path) per server; `inspect` reads
   `lvs -a` as JSON with `lv_health_status` and what is mounted at each path into new `volumes`
   evidence; `audit` adds `volume.<name>`: compliant when the LV exists with its type, physical
   volumes, at least its size, healthy, and mounted at its path from itself; drift when missing,
   unmounted, too small, of another type, on other disks or degraded; unknown without evidence
-  (S-014-8). Checked on observation fixtures; no Debian host yet
+  (S-014-8). Checked on observation fixtures, then live in the proving run (#262)
