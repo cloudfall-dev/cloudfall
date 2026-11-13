@@ -648,12 +648,24 @@ def _audit_volume(
         "health": held.get("health") or None,
         "mountedFrom": source,
     }
-    matches = (
+    held_matches = (
         held.get("type") == desired["type"]
         and held.get("devices") == desired["physicalVolumes"]
         and isinstance(size, int)
         and size >= volume.minimum_size.value
         and not held.get("health")
+    )
+    if held_matches and volume.path.value not in mounts:
+        return AuditCheck(
+            check=check,
+            status=AuditStatus.UNKNOWN,
+            desired=desired,
+            observed=observed,
+            message="the observation did not read what is mounted at this path",
+        )
+    matches = (
+        held_matches
+        and isinstance(source, str)
         and source in {lv_path, held.get("mapper")}
     )
     return _comparison(check, desired, observed, matches=bool(matches))

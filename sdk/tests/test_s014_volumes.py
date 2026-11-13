@@ -304,3 +304,21 @@ def test_s014_8_a_missing_volume_is_drift(tmp_path: Path) -> None:
         evidence["lvsJson"] = json.dumps(report)
 
     assert _volume_check(tmp_path, remove) == ("drift", {"present": False})
+
+
+def test_s014_8_a_path_inspect_did_not_read_is_unknown(tmp_path: Path) -> None:
+    """Q-1: no findmnt read for the path is not proof the volume is unmounted."""
+    status, _observed = _volume_check(
+        tmp_path, lambda evidence: evidence["mounts"].pop(LOKI)
+    )
+    assert status == "unknown"
+
+
+def test_s014_8_unmounted_without_a_mapper_path_is_drift(tmp_path: Path) -> None:
+    """Q-1: a missing ``lv_dm_path`` must not let an unmounted LV match None."""
+
+    def edit(evidence: dict[str, object]) -> None:
+        _lvs(evidence, lv_dm_path="")
+        evidence["mounts"].update({LOKI: None})  # type: ignore[attr-defined]
+
+    assert _volume_check(tmp_path, edit)[0] == "drift"
