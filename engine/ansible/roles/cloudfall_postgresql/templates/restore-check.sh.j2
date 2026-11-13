@@ -31,13 +31,15 @@ dump_counts() {
 }
 
 # The same lines for every table of a restored database: format('%I') quotes
-# a name as pg_dump does, and the count is exact, as data copy counts.
+# a name as pg_dump does, and the count is exact, as data copy counts. ONLY
+# leaves out the rows of inheritance children, which pg_dump copies in each
+# child's own block; a partitioned parent holds no rows and is not listed.
 restored_counts() {
   psql --port "${port}" --no-psqlrc --tuples-only --no-align \
     --set ON_ERROR_STOP=1 --command "
       SELECT format('%I.%I', n.nspname, c.relname) || E'\t' ||
         (xpath('/row/c/text()',
-               query_to_xml(format('SELECT count(*) AS c FROM %I.%I',
+               query_to_xml(format('SELECT count(*) AS c FROM ONLY %I.%I',
                                    n.nspname, c.relname),
                             false, true, '')))[1]::text
       FROM pg_catalog.pg_class c

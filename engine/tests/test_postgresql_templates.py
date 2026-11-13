@@ -84,6 +84,14 @@ def test_restore_check_restores_into_a_scratch_database() -> None:
     assert "no backup found for crm" in rendered
 
 
+def test_restore_check_counts_each_table_without_its_children() -> None:
+    """A dump's COPY block for a parent table holds only the parent's rows."""
+    rendered = _render("restore-check.sh.j2")
+
+    assert "SELECT count(*) AS c FROM ONLY %I.%I" in rendered
+    assert "count(*) AS c FROM %I.%I" not in rendered
+
+
 def test_backup_units_run_as_postgres_on_the_declared_calendar() -> None:
     service = _render("backup.service.j2")
     timer = _render("backup.timer.j2")

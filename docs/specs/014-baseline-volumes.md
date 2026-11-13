@@ -136,3 +136,21 @@ Not built yet. Landed so far, checked by unit tests on the controller:
   S-014-2
 - Each volume requirement carries its pool, `lv_<name>`, LV type and physical volumes, listed
   by `requirements show` and the `logging deploy` plan: S-014-3
+- Converge: `logging deploy --yes` first runs `logging-volumes.yml`, which only reads the host
+  (`vgs`, `pvs`, `lvs -a` as JSON, `blkid` per volume, `findmnt` and the contents of each mount
+  path). The controller turns that into `create`, `grow` or `keep` per volume, or a
+  `volume_refused` error naming the server, the pool and the reason, before the certificate
+  requests or any other host change; every refusal of the Behaviour is decided there, and raid1
+  volumes are read through their hidden images. `logging.yml` then runs the new
+  `cloudfall_volumes` role on the backend before the stack: `lvcreate` and `mkfs.ext4 -F -m 0`
+  for a created volume only, `lvextend --resizefs` naming the same physical volumes, an fstab
+  line by UUID with `nofail,x-systemd.device-timeout=10s`, `mount`, and a `RequiresMountsFor`
+  drop-in per unit. Decisions are covered by unit tests on LVM's JSON; the role's commands were
+  rendered and linted, not run: macOS has no LVM. S-014-4 to S-014-7 and S-014-9 wait on a
+  Debian host
+- Audit: the inventory renders `cloudfall_volumes` (name, path) per server; `inspect` reads
+  `lvs -a` as JSON with `lv_health_status` and what is mounted at each path into new `volumes`
+  evidence; `audit` adds `volume.<name>`: compliant when the LV exists with its type, physical
+  volumes, at least its size, healthy, and mounted at its path from itself; drift when missing,
+  unmounted, too small, of another type, on other disks or degraded; unknown without evidence
+  (S-014-8). Checked on observation fixtures; no Debian host yet

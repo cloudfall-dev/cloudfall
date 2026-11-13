@@ -1,0 +1,101 @@
+---
+# S-014 volume provider, host side, read only: each logging host reports its
+# volume groups, physical volumes, logical volumes, the filesystem on each
+# requested volume, and whether each mount path is mounted or holds files.
+# The controller decides from this report; nothing here changes the host.
+- name: Report volume facts from logging hosts
+  hosts: cloudfall_logging_backends:cloudfall_logging_collectors
+  become: true
+  gather_facts: false
+  vars:
+    cloudfall_volume_items: >-
+      {{ (cloudfall_volume_requests | default({})).get(cloudfall_server_id, []) }}
+  tasks:
+    - name: Read LVM's reports
+      ansible.builtin.command:
+        argv: "{{ item.argv }}"
+      loop:
+        - {key: vgs, argv: [vgs, --reportformat, json, -o, vg_name]}
+        - key: pvs
+          argv: [pvs, --reportformat, json, --units, b, --nosuffix, -o, "pv_name,vg_name,pv_free"]
+        - key: lvs
+          argv: [lvs, -a, --reportformat, json, --units, b, --nosuffix, -o, "lv_name,vg_name,segtype,lv_size,devices,lv_dm_path"]
+      loop_control:
+        label: "{{ item.key }}"
+      register: cloudfall_volume_lvm
+      changed_when: false
+      when: cloudfall_volume_items | length > 0
+
+    - name: Read the filesystem on each requested volume
+      ansible.builtin.command:
+        argv:
+          - blkid
+          - -s
+          - TYPE
+          - -o
+          - value
+          - "/dev/{{ item.volumeGroup }}/{{ item.logicalVolume }}"
+      loop: "{{ cloudfall_volume_items }}"
+      loop_control:
+        label: "{{ item.volumeGroup }}/{{ item.logicalVolume }}"
+      register: cloudfall_volume_filesystems
+      changed_when: false
+      failed_when: false
+
+    - name: Read what is mounted at each path
+      ansible.builtin.command:
+        argv:
+          - findmnt
+          - --noheadings
+          - --output
+          - SOURCE
+          - --mountpoint
+          - "{{ item.path }}"
+      loop: "{{ cloudfall_volume_items }}"
+      loop_control:
+        label: "{{ item.path }}"
+      register: cloudfall_volume_mounts
+      changed_when: false
+      failed_when: cloudfall_volume_mounts.rc not in [0, 1]
+
+    - name: Look for files under each path
+      ansible.builtin.find:
+        paths: "{{ item.path }}"
+        file_type: any
+        hidden: true
+        recurse: false
+      loop: "{{ cloudfall_volume_items }}"
+      loop_control:
+        label: "{{ item.path }}"
+      register: cloudfall_volume_contents
+
+    - name: Hand the report to the controller
+      ansible.builtin.copy:
+        content: "{{ cloudfall_volume_report | to_json }}"
+        dest: "{{ cloudfall_volume_report_directory }}/{{ cloudfall_server_id }}.json"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      when: cloudfall_volume_items | length > 0
+      vars:
+        cloudfall_volume_report:
+          vgs: "{{ cloudfall_volume_lvm.results[0].stdout }}"
+          pvs: "{{ cloudfall_volume_lvm.results[1].stdout }}"
+          lvs: "{{ cloudfall_volume_lvm.results[2].stdout }}"
+          filesystems: >-
+            {%- set found = {} -%}
+            {%- for read in cloudfall_volume_filesystems.results -%}
+            {%- set _ = found.update({read.item.logicalVolume:
+                  (read.stdout | trim) if read.rc == 0 and read.stdout | trim
+                  else none}) -%}
+            {%- endfor -%}
+            {{ found }}
+          paths: >-
+            {%- set found = {} -%}
+            {%- for mount, contents in cloudfall_volume_mounts.results
+                  | zip(cloudfall_volume_contents.results) -%}
+            {%- set _ = found.update({mount.item.path: {
+                  'mountedFrom': (mount.stdout | trim) if mount.rc == 0 else none,
+                  'empty': (contents.matched | default(0)) == 0}}) -%}
+            {%- endfor -%}
+            {{ found }}

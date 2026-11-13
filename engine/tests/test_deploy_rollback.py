@@ -263,7 +263,7 @@ def test_a_dry_run_of_the_current_release_plans_a_fresh_directory(
     exit_code, output = _dry_run(host)
 
     assert exit_code == 0, output
-    fresh = rf"\(item=[^)]*/releases/{RELEASE}\.redeploy-[0-9]{{8}}T[0-9]{{6}}Z\)"
+    fresh = rf"\(item=[^)]*/releases/{RELEASE}\.redeploy-[0-9]{{8}}T[0-9]{{12}}Z\)"
     assert re.search(fresh, output), output
     assert f"/releases/{RELEASE})" not in output
     assert host.current.readlink() == live
@@ -344,6 +344,113 @@ def test_a_rollback_to_a_missing_release_is_refused(tmp_path: Path) -> None:
     assert exit_code != 0
     assert f"Release {PREVIOUS} does not exist under" in output
     assert host.current.readlink() == live
+
+
+# A redeploy copy that failed its gate is gone, so rollback takes the newest
+# copy that passed (#245).
+
+FAILED_REDEPLOY_TASKS = (
+    "Inspect the currently active release",
+    "Record the rollback candidate",
+    "Compute release paths",
+    "Create release and shared directories",
+    "Switch the current release symlink",
+)
+FAILED_REDEPLOY_RESCUE = (
+    "Restore the previous release symlink",
+    "Restart the restored release",
+    "Remove the redeploy copy that failed its gate",
+)
+
+
+def _main_tasks(names: tuple[str, ...]) -> list[dict[str, object]]:
+    """Load main.yml's own tasks by name, block and rescue included.
+
+    The role chowns to the application user as root; the controller here
+    has no root, so the tasks lose only their owner and group.
+    """
+    loaded = DataLoader().load_from_file(str(ROLE / "tasks" / "main.yml"))
+    assert isinstance(loaded, list)
+    flat: list[dict[str, object]] = []
+    for task in loaded:
+        flat.append(task)
+        for section in ("block", "rescue"):
+            nested = task.get(section)
+            if isinstance(nested, list):
+                flat.extend(nested)
+    tasks: list[dict[str, object]] = []
+    for name in names:
+        # A JSON round trip drops Ansible's tagged types, which YAML can't dump.
+        task = json.loads(json.dumps(next(t for t in flat if t["name"] == name)))
+        for module in task.values():
+            if isinstance(module, dict):
+                module.pop("owner", None)
+                module.pop("group", None)
+        tasks.append(task)
+    return tasks
+
+
+def _failed_redeploy(host: _Host) -> tuple[int, str]:
+    """Redeploy current's release, fail its gate, and run the role's rescue."""
+    playbook = host.tmp_path / "failed-redeploy.yml"
+    playbook.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "name": "Redeploy the current release and fail its gate",
+                    "hosts": "cloudfall_servers",
+                    "gather_facts": False,
+                    "vars": {
+                        "cloudfall_deploy_component": (
+                            "{{ cloudfall_components | first }}"
+                        ),
+                        "cloudfall_deploy_release": RELEASE,
+                    },
+                    "tasks": [
+                        *_main_tasks(FAILED_REDEPLOY_TASKS[:4]),
+                        {
+                            "name": "Activate the release behind the health gate",
+                            "block": [
+                                *_main_tasks(FAILED_REDEPLOY_TASKS[4:]),
+                                {
+                                    "name": "Fail the health gate",
+                                    "ansible.builtin.fail": {"msg": "unhealthy"},
+                                },
+                            ],
+                            "rescue": _main_tasks(FAILED_REDEPLOY_RESCUE),
+                        },
+                    ],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return host.run(playbook, extra={})
+
+
+def test_a_failed_redeploy_copy_is_removed_and_rollback_takes_the_passing_one(
+    tmp_path: Path,
+) -> None:
+    host = _Host(tmp_path)
+    host.release(RELEASE)
+    passing = host.release(f"{RELEASE}.redeploy-20261101T000000Z")
+    host.current.symlink_to(passing)
+
+    exit_code, output = _failed_redeploy(host)
+
+    assert exit_code == 0, output
+    assert host.current.readlink() == passing
+    assert sorted(path.name for path in host.releases.iterdir()) == [
+        RELEASE,
+        passing.name,
+    ]
+
+    host.current.unlink()
+    host.current.symlink_to(host.release(PREVIOUS))
+    exit_code, output = _rollback(host, RELEASE)
+
+    assert exit_code == 0, output
+    assert host.current.readlink() == passing
 
 
 # The receipt names the release a redeployed directory holds.

@@ -55,7 +55,30 @@ if args == ["--version"]:
     print("ansible-playbook [core 2.21.0]")
     sys.exit(0)
 extra = json.loads(args[args.index("--extra-vars") + 1])
+if args[-1].endswith("logging-volumes.yml"):
+    root = extra["cloudfall_volume_report_directory"]
+    for server, items in extra["cloudfall_volume_requests"].items():
+        def report(rows):
+            return json.dumps({{"report": [rows]}})
+        pvs = [
+            {{"pv_name": device, "vg_name": "vg_data", "pv_free": str(100 * 1024**3)}}
+            for device in ("/dev/nvme0n1p5", "/dev/nvme1n1p5")
+        ]
+        group = os.environ.get("CLOUDFALL_TEST_VG", "vg_data")
+        content = {{
+            "vgs": report({{"vg": [{{"vg_name": group}}]}}),
+            "pvs": report({{"pv": pvs}}),
+            "lvs": report({{"lv": []}}),
+            "filesystems": {{item["logicalVolume"]: None for item in items}},
+            "paths": {{
+                item["path"]: {{"mountedFrom": None, "empty": True}} for item in items
+            }},
+        }}
+        with open(os.path.join(root, server + ".json"), "w") as out:
+            json.dump(content, out)
+    sys.exit(0)
 if args[-1].endswith("logging-requests.yml"):
+    open(os.environ["CLOUDFALL_TEST_RECORD"] + ".requests", "w").close()
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
@@ -88,7 +111,14 @@ for server, files in extra.get("cloudfall_logging_delivered_files", {{}}).items(
                 "staged_mode": oct(os.stat(item["source"]).st_mode & 0o777),
             }}
 with open(os.environ["CLOUDFALL_TEST_RECORD"], "w", encoding="utf-8") as handle:
-    json.dump({{"playbook": args[-1], "files": seen}}, handle)
+    json.dump(
+        {{
+            "playbook": args[-1],
+            "files": seen,
+            "volumes": extra.get("cloudfall_volume_actions", {{}}),
+        }},
+        handle,
+    )
 """
 
 
@@ -236,6 +266,17 @@ def test_the_deploy_generates_stages_and_removes_each_secret(
     assert all(item["staged_mode"] == "0o600" for item in files.values())
     assert all(not Path(item["source"]).exists() for item in files.values())
     assert data["ca_created"] is True
+    volumes = record["volumes"]["h1"]
+    assert [(item["logicalVolume"], item["action"]) for item in volumes] == [
+        ("lv_loki", "create"),
+        ("lv_prometheus", "create"),
+    ]
+    planned = data["volumes"]
+    assert isinstance(planned, list)
+    assert [item["logical_volume"] for item in planned] == [
+        "lv_loki",
+        "lv_prometheus",
+    ]
     states = data["certificates"]
     assert isinstance(states, list)
     assert {(item["server"], item["name"], item["state"]) for item in states} == {
@@ -501,3 +542,34 @@ def test_hosts_make_their_own_keys_and_hand_over_requests_only(
         path.read_text(encoding="utf-8") for path in (reports / "h1").iterdir()
     )
     assert "PRIVATE KEY" not in reported + done.stdout
+
+
+def test_a_refused_volume_stops_the_deploy_before_any_host_change(
+    tmp_path: Path,
+) -> None:
+    project, environment = _project(tmp_path)
+    environment["CLOUDFALL_TEST_VG"] = "vg_other"
+    code, _ = _cloudfall(
+        project,
+        environment,
+        "secrets",
+        "input",
+        "smtp-password-operations-email",
+        "--owner",
+        "operations",
+        "--value-from-env",
+        "CLOUDFALL_TEST_SMTP",
+    )
+    assert code == 0
+
+    code, envelope = _cloudfall(project, environment, "logging", "deploy", "--yes")
+
+    assert code == 4
+    error = envelope["error"]
+    assert isinstance(error, dict)
+    assert error["context"]["code"] == "volume_refused"
+    assert error["context"]["server"] == "h1"
+    assert error["context"]["pool"] == "data"
+    assert "vg_data does not exist" in error["context"]["reason"]
+    assert not (tmp_path / "record.json.requests").exists()
+    assert not (tmp_path / "record.json").exists()

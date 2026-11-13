@@ -53,7 +53,11 @@ an unresolved storage finding.
 The logging host's baseline declares a storage pool (`storage.pools`): an
 existing LVM volume group with its physical volumes. Loki's and Prometheus's
 data volumes go there (S-014); with more than one pool, name it in
-`backend.storage.pool` and `metrics.backend.storagePool`.
+`backend.storage.pool` and `metrics.backend.storagePool`. `logging deploy`
+creates each volume (`lv_loki`, `lv_prometheus`, linear on the pool's primary
+physical volume), mounts it and makes the service wait for it; it stops
+before changing anything when the group, the free space, an existing volume
+or a mount path is not what it expects.
 
 Choose an internal gateway name, such as `logs.internal.example`. It needs no
 DNS record when the backend declares a `network` block or an IP `address`:

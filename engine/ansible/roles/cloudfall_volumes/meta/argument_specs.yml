@@ -1,0 +1,12 @@
+---
+argument_specs:
+  main:
+    short_description: Apply the volume actions the controller decided (S-014)
+    options:
+      cloudfall_volumes_actions:
+        type: list
+        elements: dict
+        required: true
+      cloudfall_volumes_fstab:
+        type: str
+        default: /etc/fstab

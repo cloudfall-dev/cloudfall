@@ -1724,10 +1724,24 @@ def _validate_baseline(spec: Mapping[str, object], source: SourceLocation) -> No
             )
             raise ConfigValidationError(issue)
     if "pools" in storage:
-        for entry_key in ("id", "volumeGroup"):
-            _validate_unique_entry_keys(
-                storage, "pools", entry_key, source, ("spec", "storage", "pools")
-            )
+        pools = _validate_unique_entry_keys(
+            storage, "pools", "id", source, ("spec", "storage", "pools")
+        )
+        _validate_unique_entry_keys(
+            storage, "pools", "volumeGroup", source, ("spec", "storage", "pools")
+        )
+        for index, pool in enumerate(pools):
+            if pool.get("secondary") == pool.get("primary"):
+                issue = ValidationIssue(
+                    code="storage_pool_same_physical_volume",
+                    message=(
+                        f"storage pool {pool.get('id')} names "
+                        f"{pool.get('primary')} as both primary and secondary"
+                    ),
+                    source=source,
+                    field_path=("spec", "storage", "pools", index, "secondary"),
+                )
+                raise ConfigValidationError(issue)
     _validate_baseline_firewall(spec, source)
 
 

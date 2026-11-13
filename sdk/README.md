@@ -129,10 +129,11 @@ only with `confirm_destructive: true`.
 The fleet-declaring tools `add_ssh-key`, `add_baseline` and `add_server`
 are `cloudfall add`: they write schema-validated resource files into the
 project and never overwrite an existing resource. `cloudfall init`,
-`decisions approve`, `operator approve`, `operator run` and
-`dashboard serve` are never tools: the server starts inside an existing
-project, approving a recorded operation or an operator proposal is a
-command a person runs from a shell, and the loops run until stopped.
+`decisions approve`, `operator approve`, the two `mark-interrupted`
+commands, `operator run` and `dashboard serve` are never tools: the server
+starts inside an existing project, approving a recorded operation or an
+operator proposal, or confirming that a run which died midway is dead, is
+a command a person runs from a shell, and the loops run until stopped.
 `decisions approve` and `operator approve` ask the person to type the
 decision or proposal id at a terminal; off a terminal they exit 4 with
 `PERSON_REQUIRED`, `--yes` or not. That is a

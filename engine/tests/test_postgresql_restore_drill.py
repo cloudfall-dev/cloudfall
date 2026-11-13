@@ -92,9 +92,19 @@ def _stand_in(directory: Path, name: str, body: str) -> None:
 
 
 def _drill(
-    tmp_path: Path, dump_data: str, restored: str, *names: str
+    tmp_path: Path,
+    dump_data: str,
+    restored: str,
+    *names: str,
+    restored_with_children: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run the rendered drill with stand-ins for the PostgreSQL tools."""
+    """Run the rendered drill with stand-ins for the PostgreSQL tools.
+
+    ``restored`` is what the restored database answers when each table is
+    counted without its inheritance children (``FROM ONLY``);
+    ``restored_with_children`` what it answers otherwise, ``restored`` when
+    no table has children.
+    """
     backups = tmp_path / "backups"
     backups.mkdir()
     for name in names or ("crm",):
@@ -103,6 +113,9 @@ def _drill(
     tools.mkdir()
     (tmp_path / "dump.sql").write_text(dump_data)
     (tmp_path / "restored.tsv").write_text(restored)
+    (tmp_path / "restored-with-children.tsv").write_text(
+        restored if restored_with_children is None else restored_with_children
+    )
     log = tmp_path / "calls.log"
     _stand_in(
         tools,
@@ -114,7 +127,11 @@ def _drill(
     _stand_in(
         tools,
         "psql",
-        f'echo "psql $*" >> "{log}"\ncat "{tmp_path / "restored.tsv"}"',
+        f'echo "psql $*" >> "{log}"\n'
+        'case "$*" in\n'
+        f'  *"FROM ONLY %I.%I"*) cat "{tmp_path / "restored.tsv"}" ;;\n'
+        f'  *) cat "{tmp_path / "restored-with-children.tsv"}" ;;\n'
+        "esac",
     )
     _stand_in(tools, "createdb", f'echo "createdb $*" >> "{log}"')
     _stand_in(tools, "dropdb", f'echo "dropdb $*" >> "{log}"')
@@ -158,6 +175,33 @@ def test_a_restored_table_with_other_rows_than_the_dump_fails(
     assert result.returncode != 0
     assert "public.customers\t2" in result.stderr
     assert "restore check passed" not in result.stdout
+
+
+def test_a_parent_table_is_counted_without_its_inheritance_children(
+    tmp_path: Path,
+) -> None:
+    """pg_dump writes a parent's own rows; each child has its own block."""
+    dump_data = """\
+COPY public.events (id) FROM stdin;
+1
+2
+\\.
+
+COPY public.events_2026 (id) FROM stdin;
+3
+4
+5
+\\.
+"""
+    restored = "public.events\t2\npublic.events_2026\t3\n"
+    with_children = "public.events\t5\npublic.events_2026\t3\n"
+
+    result = _drill(
+        tmp_path, dump_data, restored, restored_with_children=with_children
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "(2 tables, 5 rows, as in the dump)" in result.stdout
 
 
 def test_a_dump_without_tables_fails(tmp_path: Path) -> None:
@@ -212,3 +256,30 @@ def test_the_scratch_name_stays_distinct_within_the_identifier_limit() -> None:
     assert 'scratch="crm_restore_check"' in rendered
     assert f'scratch="{"a" * 49}_restore_check"' in rendered
     assert len("a" * 49 + "_restore_check") == 63
+
+
+def test_a_lone_database_of_the_longest_name_drills_into_a_63_byte_scratch(
+    tmp_path: Path,
+) -> None:
+    """The schema allows 63 bytes, the most PostgreSQL keeps of a name."""
+    longest = "a" * 63
+    scratch = "a" * 49 + "_restore_check"
+
+    result = _drill(tmp_path, DUMP_DATA, RESTORED, longest)
+
+    assert result.returncode == 0, result.stderr
+    assert f"restore check passed for {longest}:" in result.stdout
+    calls = (tmp_path / "calls.log").read_text()
+    assert f"createdb --port 5432 {scratch}\n" in calls
+    assert f"--dbname {scratch} " in calls
+    assert f"dropdb --port 5432 {scratch}\n" in calls
+    assert len(scratch.encode()) == 63
+
+
+def test_a_name_is_cut_only_past_49_bytes() -> None:
+    """At 49 bytes the scratch name is exactly 63; one byte more is cut."""
+    rendered = _render(Path("/var/backups"), "b" * 49, "c" * 50)
+
+    assert f'scratch="{"b" * 49}_restore_check"' in rendered
+    assert f'scratch="{"c" * 49}_restore_check"' in rendered
+    assert f'scratch="{"c" * 50}_restore_check"' not in rendered

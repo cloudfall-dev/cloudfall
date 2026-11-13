@@ -152,6 +152,13 @@
         "exists": true,
         "certificate": "-----BEGIN CERTIFICATE-----\nMIIBeDCCAR+gAwIBAgIUJkDh0SxIPsEwh5hodV2Tno+DyFYwCgYIKoZIzj0EAwIw\nIjEgMB4GA1UEAwwXQ2xvdWRmYWxsIHByb2R1Y3Rpb24gQ0EwHhcNMjYwNzE0MTAw\nMDAwWhcNMjYxMDEyMTAwMDAwWjAeMRwwGgYDVQQDDBNoMS5leGFtcGxlLmludGVy\nbmFsMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEOh/Lef3A/zYy+M8FjQ7grBpI\n5u5AWnO0z0lDaJSYiClTjlnsWwPksB6eMvtsXgf3pMLLnqmLHIWq8ojS515iOKM3\nMDUwHgYDVR0RBBcwFYITaDEuZXhhbXBsZS5pbnRlcm5hbDATBgNVHSUEDDAKBggr\nBgEFBQcDAjAKBggqhkjOPQQDAgNHADBEAiBuHrIDVMAltmpPvo43MCMvZos0naS1\nkYSxCEldGaTwyAIgZHPxLDA/HMr3CRyGEKjL3ZTAp9YxOOE3Odqoc8iMwHE=\n-----END CERTIFICATE-----\n"
       }
-    ]
+    ],
+    "volumes": {
+      "lvsJson": "{\"report\": [{\"lv\": [{\"lv_name\": \"lv_loki\", \"vg_name\": \"vg_data\", \"segtype\": \"linear\", \"lv_size\": \"10737418240\", \"devices\": \"/dev/nvme0n1p5(0)\", \"lv_dm_path\": \"/dev/mapper/vg_data-lv_loki\", \"lv_health_status\": \"\"}, {\"lv_name\": \"lv_prometheus\", \"vg_name\": \"vg_data\", \"segtype\": \"linear\", \"lv_size\": \"10737418240\", \"devices\": \"/dev/nvme0n1p5(0)\", \"lv_dm_path\": \"/dev/mapper/vg_data-lv_prometheus\", \"lv_health_status\": \"\"}]}]}",
+      "mounts": {
+        "/var/lib/loki-cloudfall": "/dev/mapper/vg_data-lv_loki",
+        "/var/lib/prometheus-cloudfall": "/dev/mapper/vg_data-lv_prometheus"
+      }
+    }
   }
 }

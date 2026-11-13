@@ -15,6 +15,7 @@ from cloudfall.decision import (
     ApprovalRequest,
     DecisionStatus,
     approve,
+    mark_interrupted,
     propose,
 )
 from cloudfall.domain import ResourceId
@@ -41,7 +42,7 @@ from cloudfall.why import (
     render_why_html,
 )
 from test_catalog import _repository
-from test_decision import MOMENT, _proposal, _Runner, _store
+from test_decision import MOMENT, _killed, _proposal, _Runner, _store
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -240,6 +241,24 @@ def test_a_superseded_proposal_says_what_replaced_it(tmp_path: Path) -> None:
     assert told.explanations[0].story[-1] == (
         f"It was superseded by {second.decision_id.value}, a newer proposal of "
         "the same operation, targets and inputs; nobody approved it."
+    )
+
+
+def test_an_interrupted_run_says_who_confirmed_it_dead(tmp_path: Path) -> None:
+    """The record alone tells how a run that died midway was closed (#244)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    running = _killed(repository, store)
+    mark_interrupted(store, running.decision_id, "alice", lambda: LATER)
+
+    told = answer(store, WhyQuery.from_boundary(status=["interrupted"]))
+
+    assert [e.decision.decision_id for e in told.explanations] == [
+        running.decision_id
+    ]
+    assert told.explanations[0].story[-1] == (
+        "It ended interrupted: alice confirmed at 2026-09-22T08:00:00Z that its "
+        "run is dead; no outcome was recorded, so what it changed is unknown."
     )
 
 

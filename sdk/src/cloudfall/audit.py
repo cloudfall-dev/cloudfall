@@ -19,7 +19,12 @@ from cloudfall.inventory import (
     remote_access_rules_for_server,
 )
 from cloudfall.pki import RENEW_BEFORE, certificate_names
-from cloudfall.requirements import CertificateRequirement, requirements_of
+from cloudfall.requirements import (
+    CertificateRequirement,
+    VolumeRequirement,
+    requirements_of,
+)
+from cloudfall.volumes import parse_logical_volumes
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -152,6 +157,14 @@ def audit_inventory(
         )
         for server in requirements_of(inventory)
     }
+    volumes = {
+        server.server_id.value: tuple(
+            requirement.spec
+            for requirement in server.requirements
+            if isinstance(requirement.spec, VolumeRequirement)
+        )
+        for server in requirements_of(inventory)
+    }
     stacks_by_backend = {
         stack.backend.server_id: stack for stack in inventory.logging_stacks
     }
@@ -174,6 +187,7 @@ def audit_inventory(
             observations.for_server(server.resource_id),
             _gateway_rules(server, inventory),
             certificates.get(server.resource_id.value, ()),
+            volumes.get(server.resource_id.value, ()),
         )
         for server in inventory.servers
     )
@@ -202,6 +216,7 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
     snapshot: ObservedServerSnapshot | None,
     gateway_rules: tuple[SourceRestrictedFirewallRule, ...] = (),
     certificates: tuple[CertificateRequirement, ...] = (),
+    volumes: tuple[VolumeRequirement, ...] = (),
 ) -> ServerAudit:
     if snapshot is None:
         check = AuditCheck(
@@ -242,6 +257,7 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
             )
         )
     checks.extend(_audit_certificates(certificates, snapshot))
+    checks.extend(_audit_volumes(volumes, snapshot))
     checks.extend(_audit_service_binds(services, snapshot))
     checks.extend(_audit_alert_rules(alert_rules, snapshot))
     checks.extend(
@@ -565,6 +581,94 @@ def _audit_certificates(
         )
         for requirement in certificates
     )
+
+
+def _audit_volumes(
+    volumes: tuple[VolumeRequirement, ...],
+    snapshot: ObservedServerSnapshot,
+) -> tuple[AuditCheck, ...]:
+    """Check each required volume: type, disks, size, health and mount (S-014-8)."""
+    if not volumes:
+        return ()
+    evidence = snapshot.spec.get("volumes")
+    report = (
+        evidence.get("lvsJson")
+        if isinstance(evidence, dict)
+        else None
+    )
+    mounts = evidence.get("mounts") if isinstance(evidence, dict) else None
+    if not isinstance(report, str) or not isinstance(mounts, dict):
+        return tuple(
+            AuditCheck(
+                check=f"volume.{volume.name.value}",
+                status=AuditStatus.UNKNOWN,
+                desired=_volume_desired(volume),
+                observed=None,
+                message="the observation carries no volume evidence",
+            )
+            for volume in volumes
+        )
+    logical = parse_logical_volumes(report)
+    return tuple(
+        _audit_volume(volume, logical, mounts) for volume in volumes
+    )
+
+
+def _volume_desired(volume: VolumeRequirement) -> dict[str, object]:
+    return {
+        "logicalVolume": f"{volume.pool.volume_group.value}/{volume.logical_volume}",
+        "type": volume.volume_type,
+        "physicalVolumes": sorted(item.value for item in volume.physical_volumes),
+        "minimumBytes": volume.minimum_size.value,
+        "healthy": True,
+        "mountedAt": volume.path.value,
+    }
+
+
+def _audit_volume(
+    volume: VolumeRequirement,
+    logical: Mapping[str, Mapping[str, object]],
+    mounts: Mapping[str, object],
+) -> AuditCheck:
+    desired = _volume_desired(volume)
+    check = f"volume.{volume.name.value}"
+    held = logical.get(
+        f"{volume.pool.volume_group.value}/{volume.logical_volume}"
+    )
+    if held is None:
+        return _comparison(check, desired, {"present": False}, matches=False)
+    source = mounts.get(volume.path.value)
+    lv_path = f"/dev/{volume.pool.volume_group.value}/{volume.logical_volume}"
+    size = held.get("sizeBytes")
+    observed = {
+        "logicalVolume": f"{volume.pool.volume_group.value}/{volume.logical_volume}",
+        "type": held.get("type"),
+        "physicalVolumes": held.get("devices"),
+        "sizeBytes": size,
+        "health": held.get("health") or None,
+        "mountedFrom": source,
+    }
+    held_matches = (
+        held.get("type") == desired["type"]
+        and held.get("devices") == desired["physicalVolumes"]
+        and isinstance(size, int)
+        and size >= volume.minimum_size.value
+        and not held.get("health")
+    )
+    if held_matches and volume.path.value not in mounts:
+        return AuditCheck(
+            check=check,
+            status=AuditStatus.UNKNOWN,
+            desired=desired,
+            observed=observed,
+            message="the observation did not read what is mounted at this path",
+        )
+    matches = (
+        held_matches
+        and isinstance(source, str)
+        and source in {lv_path, held.get("mapper")}
+    )
+    return _comparison(check, desired, observed, matches=bool(matches))
 
 
 def _audit_certificate(

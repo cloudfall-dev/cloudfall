@@ -186,7 +186,7 @@
           "additionalProperties": false
         },
         "status": {
-          "description": "running: approved and its run started, with no outcome recorded yet; found so after the run's process ended, the run was interrupted, and it is not approved again.",
+          "description": "running: approved and its run started, with no outcome recorded yet; found so after the run's process ended, the run was interrupted, and it is not approved again. interrupted: a running record a person closed once they confirmed its run is dead; interruption names who and when.",
           "enum": [
             "proposed",
             "approved",
@@ -196,8 +196,29 @@
             "failed",
             "ran",
             "superseded",
-            "running"
+            "running",
+            "interrupted"
           ]
+        },
+        "interruption": {
+          "description": "Who closed a running record as interrupted, once they confirmed its run is dead, and when. Set when the status is interrupted.",
+          "type": "object",
+          "properties": {
+            "confirmedBy": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "confirmedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "confirmedBy",
+            "confirmedAt"
+          ],
+          "additionalProperties": false
         },
         "ranExitCode": {
           "description": "The exit code of a read operation's run, which happens when it is proposed. Set when the status is ran.",
@@ -423,6 +444,21 @@
           "then": {
             "required": [
               "approval"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "interrupted"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "approval",
+              "interruption"
             ]
           }
         }
