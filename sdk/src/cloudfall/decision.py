@@ -516,6 +516,17 @@ class DecisionStore:
             refuse_unapprovable(current)
             return self._replace(running)
 
+    def supersede(self, superseded: Decision) -> None:
+        """Record a proposal as superseded, if its record is still proposed.
+
+        The record on disk is read again under the store's lock: a proposal
+        approved since the caller read it keeps its approval and its run.
+        """
+        with record_files.locked(self.directory):
+            current = self.load(superseded.decision_id)
+            if current.status is DecisionStatus.PROPOSED:
+                self._replace(superseded)
+
     def load(self, decision_id: ResourceId) -> Decision:
         """Load and re-validate one decision record."""
         path = self._path(decision_id)
@@ -652,7 +663,7 @@ def propose(
             and older.replay == decision.replay
             and older.same_call(decision)
         ):
-            store.update(
+            store.supersede(
                 replace(
                     older,
                     status=DecisionStatus.SUPERSEDED,

@@ -1146,6 +1146,46 @@ def test_concurrent_writers_of_one_id_save_it_once(tmp_path: Path) -> None:
     assert store.load(fresh.decision_id) == fresh
 
 
+def test_a_proposal_approved_during_a_newer_check_is_not_superseded(
+    tmp_path: Path,
+) -> None:
+    """An older proposal approved while a newer check runs keeps its run (#217).
+
+    The newer proposal reads the store before its check mode starts.
+    """
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    older = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    approvals: list[Decision] = []
+    check = _Runner()
+
+    def _check_while_approved(
+        argv: Sequence[str], environment: Mapping[str, str], diff_path: Path
+    ) -> int:
+        approvals.append(
+            approve(
+                ApprovalRequest(
+                    decision=older,
+                    approver="roman",
+                    repository=repository,
+                    via=TERMINAL,
+                ),
+                store,
+                lambda: MOMENT,
+                _Runner(),
+            )
+        )
+        return check(argv, environment, diff_path)
+
+    propose(_proposal(repository), store, lambda: LATER, _check_while_approved)
+
+    kept = store.load(older.decision_id)
+    assert kept.status is approvals[0].status
+    assert kept.approval is not None
+    assert kept.execution is not None
+    assert kept.superseded_by is None
+
+
 def test_a_replayed_decision_is_never_approved(tmp_path: Path) -> None:
     """Its check output came from a recording, not the hosts (#36)."""
     repository = _repository(tmp_path)
