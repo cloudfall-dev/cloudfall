@@ -1,6 +1,6 @@
 # S-011: Host requirements, satisfied by Cloudfall
 
-status: draft
+status: approved
 
 ## Problem
 
@@ -88,7 +88,8 @@ requirement type is a new provider, not new code in every role. v1 ships these b
   mount is active, the rule is in the ruleset, the certificate chains to the project CA and is
   not near expiry
 - Off a terminal (an agent, CI), a requirement in `needs input` stops the command with exit 4
-  and `error.context.code` `INPUT_REQUIRED`, naming each missing input and the command a person
+  and `error.context.code` `INPUT_REQUIRED` (the CLI framework's code for an answer no one can
+  give; `PERSON_REQUIRED` shares exit 4, so branch on the code), naming each missing input and the command a person
   runs to supply it (`cloudfall secrets input <ref>`). Nothing else stops for input
 
 ### LoggingStack, the first consumer
@@ -139,3 +140,11 @@ requirement type is a new provider, not new code in every role. v1 ships these b
   playbook output, command answers or receipts; answers name the reference and its SHA-256
 - S-011-10: A `LoggingStack` whose files were provided by hand before this change converges
   with every such requirement `met` and no file rewritten
+
+## Build
+
+- `migration.mode: none` (cloudfall-dev/cloudfall#203)
+- `cloudfall requirements show`: the requirements every declared `LoggingStack` places on its
+  servers, by server, read from the project only. It has no state column yet: each state
+  (`met`, `will create`, `will grow`, `needs input`) comes with the provider that can observe
+  it, and so does `INPUT_REQUIRED`

@@ -266,6 +266,13 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
     ),
     CommandContract(
         "cloudfall",
+        "requirements show",
+        CommandEffect.READ,
+        "show what each declared workload needs from its servers",
+        output=(_shape("status", "servers"),),
+    ),
+    CommandContract(
+        "cloudfall",
         "operations list",
         CommandEffect.READ,
         "list the operations an agent may run, with their risk levels",

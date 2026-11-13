@@ -113,6 +113,7 @@ Do not recursively broaden unrelated `/var/log` permissions.
 ```console
 uv run cloudfall config validate
 uv run cloudfall inventory show
+uv run cloudfall requirements show
 uv run cloudfall-engine inventory render \
   --output tmp/ansible-inventory.json
 uv run ansible-inventory --inventory tmp/ansible-inventory.json \
@@ -120,6 +121,12 @@ uv run ansible-inventory --inventory tmp/ansible-inventory.json \
 uv run ansible-inventory --inventory tmp/ansible-inventory.json \
   --graph cloudfall_logging_collectors
 ```
+
+`requirements show` lists what the stack needs from each server: the Loki and
+Prometheus volumes, the gateway port open to remote collectors, the Grafana and
+SMTP passwords, the gateway and collector certificates, the gateway name and the
+package pins. Today these are still provided as described above; Cloudfall will
+provide them itself (S-011).
 
 Validation rejects missing servers, environment mismatches, duplicate stacks,
 file sources outside component placement, secret paths outside
