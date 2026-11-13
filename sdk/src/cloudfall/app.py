@@ -225,6 +225,7 @@ from cloudfall.logging_deploy import (
     LoggingDeployError,
     certificate_files,
     certificate_requests,
+    channel_token_files,
     declared_stack,
     prepare_secrets,
     preview_logging_deploy,
@@ -4949,7 +4950,7 @@ def logging_deploy_command(
                     for server, report in read_reports(Path(reports), servers).items()
                 }
             volume_plan = plan_volumes(servers, facts)
-        files = secret_files(servers, store)
+        files = secret_files(servers, store) + channel_token_files(inventory, store)
         outcomes: list[CertificateOutcome] = []
         ca_created = False
         requests = certificate_requests(servers)

@@ -26,6 +26,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from cloudfall.domain import ResourceKind
 from cloudfall.pki import CertificateState
 from cloudfall.requirements import (
     CertificateRequirement,
@@ -104,7 +105,10 @@ class StagedFile:
     content: str = field(repr=False)
     mode: str
     force: bool
-    """Replace a file already there: only a certificate signed in this run."""
+    """Replace a file already there: a certificate signed in this run, or a
+    channel token, whose store is the source of truth."""
+    group: str | None = None
+    """The group that reads it, when not the role's default (``root``)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +258,73 @@ def secret_files(
     ]
 
 
+def alertmanager_token_path(channel: ResourceId) -> str:
+    """Return Alertmanager's own copy of a channel's bot token (S-015).
+
+    Apart from the host's copy under ``/etc/cloudfall/alerting``, so the
+    baseline and the stack never fight over its group.
+    """
+    return f"/etc/cloudfall/logging/alert-channel-{channel.value}-bot-token"
+
+
+def channel_receivers(
+    inventory: PlatformInventory,
+) -> list[tuple[ResourceId, SecretRequirement]]:
+    """Return each channel a stack receiver names, with its token requirement."""
+    stack = declared_stack(inventory)
+    if stack.alerting is None:
+        return []
+    named = {
+        receiver.channel.value: receiver.channel
+        for receiver in stack.alerting.receivers
+        if receiver.channel is not None
+    }
+    found: list[tuple[ResourceId, SecretRequirement]] = []
+    for server in requirements_of(inventory):
+        if server.server_id != stack.backend.server_id:
+            continue
+        for requirement in server.requirements:
+            spec = requirement.spec
+            if (
+                requirement.owner.kind is ResourceKind.ALERT_CHANNEL
+                and requirement.owner.resource_id.value in named
+                and isinstance(spec, SecretRequirement)
+            ):
+                found.append((named[requirement.owner.resource_id.value], spec))
+    return found
+
+
+def channel_token_files(
+    inventory: PlatformInventory, store: SecretStore
+) -> list[StagedFile]:
+    """Stage each receiver channel's token for Alertmanager, or stop first.
+
+    A token not in the store raises ``InputMissingError`` before any server.
+    """
+    stack = declared_stack(inventory)
+    receivers = channel_receivers(inventory)
+    missing: list[dict[str, object]] = [
+        {"name": f"telegram-bot-token of {channel.value}"}
+        for channel, spec in receivers
+        if not store.holds(spec.reference)
+    ]
+    if missing:
+        raise InputMissingError(tuple(missing))
+    return [
+        StagedFile(
+            stack.backend.server_id,
+            DeliveryRole.BACKEND,
+            f"alert-channel-{channel.value}",
+            alertmanager_token_path(channel),
+            store.value(spec.reference),
+            "0640",
+            force=True,
+            group="prometheus",
+        )
+        for channel, spec in receivers
+    ]
+
+
 def certificate_requests(
     servers: tuple[ServerRequirements, ...],
 ) -> dict[str, list[dict[str, str]]]:
@@ -373,6 +444,7 @@ def staged_files(
                     "source": str(source),
                     "mode": item.mode,
                     "force": item.force,
+                    **({} if item.group is None else {"group": item.group}),
                 }
             )
             hashes.append(

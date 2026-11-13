@@ -27,7 +27,7 @@
     src: "{{ item.source }}"
     dest: "{{ item.path }}"
     owner: "{{ cloudfall_logging_backend_file_owner }}"
-    group: "{{ cloudfall_logging_backend_file_group }}"
+    group: "{{ item.group | default(cloudfall_logging_backend_file_group) }}"
     mode: "{{ item.mode }}"
     force: "{{ item.force }}"
   loop: "{{ cloudfall_logging_backend_delivered }}"

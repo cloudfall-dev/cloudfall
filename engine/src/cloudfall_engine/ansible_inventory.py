@@ -12,6 +12,7 @@ from cloudfall.inventory import (
     logging_gateway_rules_for_server,
     remote_access_rules_for_server,
 )
+from cloudfall.logging_deploy import alertmanager_token_path
 from cloudfall.requirements import (
     CertificateRequirement,
     VolumeRequirement,
@@ -149,6 +150,7 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
                 inventory.logging_stacks,
                 inventory.alert_rules,
             ),
+            **_host_alert_channels(server, inventory),
             **(
                 {"cloudfall_certificates": certificates[server.resource_id.value]}
                 if server.resource_id.value in certificates
@@ -232,6 +234,26 @@ def _volumes_by_server(
                     }
                 )
     return found
+
+
+def _host_alert_channels(
+    server: ServerInventory, inventory: PlatformInventory
+) -> dict[str, object]:
+    """Return the channels Alertmanager on this backend delivers to (S-015)."""
+    channels = {item.resource_id: item for item in inventory.alert_channels}
+    found = [
+        {
+            "receiver": receiver.resource_id.value,
+            "channel": receiver.channel.value,
+            "chatId": channels[receiver.channel].telegram_chat_id.value,
+            "botTokenFile": alertmanager_token_path(receiver.channel),
+        }
+        for stack in inventory.logging_stacks
+        if stack.backend.server_id == server.resource_id and stack.alerting
+        for receiver in stack.alerting.receivers
+        if receiver.channel is not None
+    ]
+    return {"cloudfall_logging_alert_channels": found} if found else {}
 
 
 def _host_infrastructure(server: ServerInventory) -> dict[str, object]:
