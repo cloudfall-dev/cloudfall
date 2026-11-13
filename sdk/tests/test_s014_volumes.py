@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
+import yaml
 from cloudfall.inventory import PlatformInventory
 from cloudfall.requirements import requirements_of
 from cloudfall.validation import validate_config
@@ -242,6 +244,63 @@ def test_s014_7_a_path_mounted_from_another_device_is_refused() -> None:
         }
     )
     assert "already mounted from /dev/sdz1" in _refusal(raw)
+
+
+ANSIBLE = ROOT / "engine" / "ansible"
+VOLUMES_ROLE_TASKS = ANSIBLE / "roles" / "cloudfall_volumes" / "tasks" / "main.yml"
+_NEVER_RUN = ("pvcreate", "vgcreate", "vgextend", "lvremove", "lvreduce", "wipefs")
+_LVM_MODULES = ("lvg", "lvol", "filesystem", "parted")
+"""Modules that would make, change or format LVM structure behind the role's back."""
+_FORBIDDEN = (
+    *_NEVER_RUN,
+    *(f"{module}:" for module in _LVM_MODULES),
+    *(f"community.general.{module}" for module in _LVM_MODULES),
+)
+
+
+def _ansible_sources() -> list[Path]:
+    return sorted(
+        path
+        for path in ANSIBLE.rglob("*")
+        if path.is_file() and path.suffix in {".yml", ".yaml", ".j2", ".sh", ".py"}
+    )
+
+
+def test_s014_9_no_playbook_or_role_runs_a_destructive_lvm_command() -> None:
+    """S-014-9: the engine never makes or removes LVM structure, nor wipes a disk."""
+    sources = _ansible_sources()
+    assert VOLUMES_ROLE_TASKS in sources
+    assert ANSIBLE / "playbooks" / "logging-volumes.yml" in sources
+    offenders = [
+        (path.relative_to(ROOT).as_posix(), word)
+        for path in sources
+        for word in _FORBIDDEN
+        if re.search(rf"(?<![\w.-]){re.escape(word)}", path.read_text(encoding="utf-8"))
+        # Loki's own config template has a ``filesystem:`` storage key.
+        and not (word == "filesystem:" and path.suffix == ".j2")
+    ]
+    assert offenders == []
+
+
+def test_s014_9_mkfs_runs_only_on_a_volume_created_in_the_same_run() -> None:
+    """S-014-9: one mkfs, over exactly the volumes the run's lvcreate made."""
+    sources = _ansible_sources()
+    with_mkfs = [path for path in sources if "mkfs" in path.read_text(encoding="utf-8")]
+    assert with_mkfs == [VOLUMES_ROLE_TASKS]
+    tasks = yaml.safe_load(VOLUMES_ROLE_TASKS.read_text(encoding="utf-8"))
+    (create,) = [task for task in tasks if "lvcreate" in str(task)]
+    (mkfs,) = [task for task in tasks if "mkfs" in str(task)]
+    created = (
+        "{{ cloudfall_volumes_actions | selectattr('action', 'equalto', 'create') "
+        "| list }}"
+    )
+    assert create["loop"] == mkfs["loop"] == created
+    assert tasks.index(create) < tasks.index(mkfs)
+    # The controller asks for ``create`` only where no such LV exists: an LV
+    # it finds is kept or grown (S-014-5), a bare one is refused (S-014-7).
+    lvs = [_linear("lv_loki", 10 * GIB), _linear("lv_prometheus", 10 * GIB)]
+    raw = _raw(lvs=lvs, filesystems={"lv_loki": "ext4", "lv_prometheus": "ext4"})
+    assert VolumeAction.CREATE not in _plan(raw).values()
 
 
 COMPLIANT = ROOT / "config" / "tests" / "observed" / "compliant"
