@@ -55,13 +55,30 @@ spec:
 
 | Field | Required | Meaning |
 |---|---|---|
-| `version` | yes | Exact `X.Y.Z` of major 8 or 9; installed as `elasticsearch=X.Y.Z` from Elastic's APT repository for that major and held (`apt-mark hold`), so an unattended upgrade never restarts a node |
+| `version` | yes | Exact `X.Y.Z` of a supported line (below); installed as `elasticsearch=X.Y.Z` from Elastic's APT repository for that major and held (`apt-mark hold`), so an unattended upgrade never restarts a node |
 | `heapMb` | yes | `-Xms` and `-Xmx`, 512 to 31744 (above that the JVM loses compressed object pointers) |
 | `nodes` | no | The servers of the cluster; must contain `spec.server`. Absent means `[spec.server]` |
+| `clusterName` | no | `cluster.name`; absent means the service id |
+| `existingCluster` | no | `seedHosts` and `caCertificateFile` of a cluster Cloudfall did not create, which the nodes join (below) |
 | `users` | no | Application users, each limited to its index patterns |
 | `remoteAccess` | no | `listenAddress` and `allowedSources`, the shape PostgreSQL uses (S-006) |
 | `snapshotRepository` | no | An S3-compatible repository; absent means a filesystem repository in `backup.directory` |
 | `restoreCheckIndices` | no | Index patterns the restore drill restores; absent means the smallest index of the newest snapshot |
+
+### Supported versions
+
+Cloudfall installs only lines Elastic still supports: `8.19.z` and `9.y.z` at the time of
+writing. Any other version, 7.x and the earlier 8.x minors included, fails validation; there
+is no flag that allows it. The accepted lines live in one table in the SDK with the
+end-of-life date of each, taken from Elastic's end-of-life page when a Cloudfall release is
+cut:
+
+- within 90 days of a line's date, `config validate` warns `ELASTICSEARCH_VERSION_ENDING`
+  and names the date
+- after the date, the warning stays, and `audit` reports the service as running an
+  unsupported version
+- the line leaves the table in the next minor release of Cloudfall, with a changelog entry;
+  from then on the version fails validation
 
 ### One node is a cluster of one
 
@@ -69,7 +86,7 @@ The role never sets `discovery.type: single-node`. A service with one node is a 
 only master-eligible node is `spec.server`; growing it is adding a server to `nodes` and
 converging, with no change to the first node's identity or data.
 
-- `cluster.name` is the service id; `node.name` is the server id
+- `cluster.name` is `clusterName`, or the service id; `node.name` is the server id
 - `cluster.initial_master_nodes` is written only for the first start of `spec.server`, while
   its data path holds no cluster state, and removed from the file on the next converge. A
   node that joins later never gets it
@@ -84,6 +101,43 @@ converging, with no change to the first node's identity or data.
 
 `spec.server` is the service's home: the snapshot and restore-drill timers, the user
 converge and `cloudfall backup run` execute there once, not on every node.
+
+### Joining an existing cluster
+
+A team that already runs a cluster does not copy its data: it brings the cluster to a
+supported version by its own means, declares `existingCluster`, and the Cloudfall nodes join
+it. Shards relocate by Elasticsearch's own allocation, and the old nodes are drained and
+stopped by the team.
+
+```yaml
+elasticsearch:
+  version: 8.19.6
+  heapMb: 8192
+  clusterName: search
+  nodes: [h1]
+  existingCluster:
+    seedHosts: ["10.0.0.11:9300", "10.0.0.12:9300"]
+    caCertificateFile: pki/search-old-ca.pem
+  snapshotRepository: { type: s3, bucket: search-snapshots, endpoint: s3.example.com, basePath: search, credentialsRef: { environment: production, path: /services/search-main, key: S3 } }
+```
+
+- `caCertificateFile` is a path inside the project to the certificate (never the key) of the
+  CA that signed the old nodes' transport certificates. A Cloudfall node trusts it next to
+  the project CA and uses `verification_mode: certificate` while `existingCluster` is
+  declared, since the old certificates carry names Cloudfall does not know
+- The old nodes must trust the project CA and admit the new nodes' addresses; that is the
+  team's change on hosts Cloudfall does not manage, and the guide gives the steps
+- A joining node never gets `cluster.initial_master_nodes`; `discovery.seed_hosts` holds the
+  declared seed hosts and the Cloudfall nodes
+- Before installing anything the role asks a seed host for the cluster's name and node
+  versions, and refuses when the name differs from `clusterName`, when any node runs another
+  major, or when any node is newer than `version`
+- Cloudfall's own account works as on any node (the file realm is per node). The `elastic`
+  password is left alone: it belongs to the cluster the team already has. Declared users are
+  converged as usual, and users that exist already are left alone
+- When the old nodes are gone, the team removes `existingCluster` and converges: the foreign
+  CA and seed hosts leave the configuration one node at a time, `verification_mode` returns
+  to `full`, and `clusterName` keeps the name
 
 ### What each node needs
 
@@ -156,11 +210,14 @@ project CA.
 `cloudfall config validate` refuses with `CONFIG_INVALID`:
 
 - `elasticsearch` on another kind, or its absence on this one
-- `version` that is not `X.Y.Z` of major 8 or 9 (`service_elasticsearch_version`)
+- `version` that is not `X.Y.Z` of a supported line (`service_elasticsearch_version`)
 - `nodes` without `spec.server`, with an undeclared server, or with a duplicate
   (`service_elasticsearch_nodes`)
+- `existingCluster` without `clusterName`, with a `caCertificateFile` that is missing,
+  outside the project or not a CA certificate, or with a seed host that is one of the
+  declared nodes (`service_elasticsearch_existing_cluster`)
 - a server that is a node of two Elasticsearch services (`service_elasticsearch_server_shared`)
-- two or more nodes without `snapshotRepository`
+- two or more nodes, or `existingCluster`, without `snapshotRepository`
   (`service_elasticsearch_snapshot_repository_local`)
 - a user named `elastic`, `cloudfall`, or after a built-in user or role
   (`service_elasticsearch_user_reserved`), a pattern of `*` or one that starts with `.`
@@ -178,6 +235,30 @@ project CA.
   exporter as the `cloudfall` account, with the service id as the label the PostgreSQL and
   Redis exporters use
 
+### Moving in from another install
+
+Cloudfall ships no migration from an unsupported version or a foreign setup: the sources
+differ too much to test. It ships two things instead.
+
+**A guide an agent builds the move from**, `docs/elasticsearch-migration-guide.md`: what to
+read from the source (version, indices, sizes, mappings, writers), how to choose the path,
+and what the generated project playbook must and must not do. Its rules:
+
+- the source is read-only, unless the operator owns it and it is one major behind a
+  supported line; then the path is upgrade the source, then join (above)
+- otherwise the data moves into a new cluster (reindex from remote, or a snapshot through a
+  temporary node of the intermediate major), never by upgrading someone else's cluster
+- a generated playbook lives in the project and runs only through `cloudfall-engine playbook
+  run`, behind the same approval as any change to a server
+- the move is done when `data check` says so, not when the playbook ends
+
+**An independent check**, `cloudfall data check <service> --source-url-file <file>
+[--index <pattern>]...`. It reads both clusters and changes neither: per index it compares
+presence, document count and mappings, answers `ok` only when every selected index matches,
+and writes a `DataCheckReceipt` under `tmp/` naming each index, both counts and the verdict.
+A difference exits non-zero with `data.status` `drift`. The source URL and credentials are
+read from the file and appear in no answer or receipt.
+
 ### Documentation
 
 `docs/elasticsearch-service-guide.md` covers declaring a one-node service, growing it, the
@@ -192,7 +273,9 @@ Touches `config/schemas/v1/service.schema.json`, `config/examples/services/`,
 `engine/src/cloudfall_engine/ansible_inventory.py`, a new role
 `engine/ansible/roles/cloudfall_elasticsearch`, `engine/ansible/playbooks/services.yml`,
 `engine/ansible/playbooks/backup.yml`,
-`engine/ansible/roles/cloudfall_logging_collector/templates/config.alloy.j2`, and the guide.
+`engine/ansible/roles/cloudfall_logging_collector/templates/config.alloy.j2`,
+`sdk/src/cloudfall/app.py` (`data check`), a new `config/schemas/v1/data-check-receipt.schema.json`,
+and the two guides.
 
 ## Acceptance criteria
 
@@ -241,6 +324,27 @@ Touches `config/schemas/v1/service.schema.json`, `config/examples/services/`,
 - S-012-15: With `metrics.enabled`, the rendered collector configuration holds one
   Elasticsearch exporter for the node, labelled with the service id, and none without it
 
+- S-012-16: `version: 7.17.26` and `version: 8.18.0` each fail `cloudfall config validate`
+  with `service_elasticsearch_version`; a version of a line within 90 days of its end-of-life
+  date validates with the warning `ELASTICSEARCH_VERSION_ENDING` naming the date
+- S-012-17: With a two-node cluster of a supported version that Cloudfall did not create and
+  that trusts the project CA, converging a service with `existingCluster` adds its server as
+  a third node of the same `cluster_uuid`; no index is lost, the `elastic` password is
+  unchanged, and `elasticsearch.yml` on the new node never held `cluster.initial_master_nodes`
+- S-012-18: The converge of S-012-17 stops before installing the package when the cluster's
+  name differs from `clusterName`, when a node of it runs another major, and when a node of
+  it is newer than `version`
+- S-012-19: After the old nodes are stopped and `existingCluster` is removed, a converge
+  leaves no foreign CA and no old seed host in the configuration, `cluster_name` is
+  unchanged, and the cluster is green
+- S-012-20: `cloudfall data check` against a source and a target holding the same three
+  indices exits 0 and writes a receipt with three matching entries; after one document is
+  deleted on the target it exits non-zero with `data.status` `drift` and names that index
+  and both counts; the source's credentials appear in neither the answer nor the receipt,
+  and neither cluster's indices change
+- S-012-21: `docs/elasticsearch-migration-guide.md` states the four rules above, and
+  following it for a source one major behind leads to the join path with no data copy
+
 ## Out of scope
 
 - OpenSearch: a separate `serviceKind` with its own packages and security model
@@ -249,8 +353,10 @@ Touches `config/schemas/v1/service.schema.json`, `config/examples/services/`,
   the role refuses a `version` whose major differs from the installed one
 - Removing a node: draining its shards and its vote is an operation with its own verify step
 - Dedicated node roles (master-only, data tiers, coordinating); every node holds every role
-- Moving data in from an existing cluster (reindex from remote, snapshot restore); a later
-  `cloudfall data copy` source
+- A built-in data move from another cluster (`data copy` for Elasticsearch): the guide and
+  `data check` cover it
+- Upgrading, draining or stopping the nodes of an existing cluster that Cloudfall did not
+  create
 - More than one Elasticsearch node per server
 - Index templates, mappings, lifecycle policies and API keys: the application's own
 - A shared mount for a filesystem repository on several nodes
