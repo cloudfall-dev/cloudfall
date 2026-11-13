@@ -87,8 +87,9 @@ requirement type is a new provider, not new code in every role. v1 ships these b
 - `audit` checks every requirement as declared: the LV exists with its type and size, the
   mount is active, the rule is in the ruleset, the certificate chains to the project CA and is
   not near expiry
-- Off a terminal (an agent, CI), a requirement in `needs input` stops the command with the
-  `INPUT_REQUIRED` exit code (its own number; 4 is `PERSON_REQUIRED`), naming each missing input and the command a person
+- Off a terminal (an agent, CI), a requirement in `needs input` stops the command with exit 4
+  and `error.context.code` `INPUT_REQUIRED` (the CLI framework's code for an answer no one can
+  give; `PERSON_REQUIRED` shares exit 4, so branch on the code), naming each missing input and the command a person
   runs to supply it (`cloudfall secrets input <ref>`). Nothing else stops for input
 
 ### LoggingStack, the first consumer
@@ -121,7 +122,7 @@ requirement type is a new provider, not new code in every role. v1 ships these b
 - S-011-2: The plan of S-011-1 lists, per requirement, its type, its target and the state
   `will create`; the Grafana password shows `will create`, an SMTP receiver password shows
   `needs input`
-- S-011-3: The same plan run off a terminal exits with `INPUT_REQUIRED`, and
+- S-011-3: The same plan run off a terminal exits 4 with `INPUT_REQUIRED`, and
   `error.context` names the SMTP password reference and the command that supplies it
 - S-011-4: After the input is supplied and the stack converges on a fresh Debian 13 host
   prepared by `bootstrap` and `baseline`, Loki and Prometheus write to their own LVs
