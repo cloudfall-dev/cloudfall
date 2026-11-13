@@ -12,6 +12,24 @@
           Validated state must declare exactly one logging backend and at least
           one collector before deployment
 
+- name: Provide the volumes the controller decided
+  hosts: cloudfall_logging_backends
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    # S-014: create, grow and mount each volume before its service's role
+    # makes the data directory on it
+    - name: Apply the volume actions for this host
+      ansible.builtin.include_role:
+        name: cloudfall_volumes
+      vars:
+        cloudfall_volumes_actions: >-
+          {{ (cloudfall_volume_actions | default({})).get(cloudfall_server_id, []) }}
+      when: >-
+        (cloudfall_volume_actions | default({})).get(cloudfall_server_id, [])
+        | length > 0
+
 - name: Open the logging gateway to its remote collectors
   hosts: cloudfall_logging_backends
   become: true

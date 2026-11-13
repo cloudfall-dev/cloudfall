@@ -341,6 +341,21 @@ from cloudfall.validation import (
     ValidatedConfig,
     validate_config,
 )
+from cloudfall.volumes import ACTIONS_VARIABLE as VOLUME_ACTIONS_VARIABLE
+from cloudfall.volumes import FACTS_PLAYBOOK as VOLUME_FACTS_PLAYBOOK
+from cloudfall.volumes import (
+    REPORT_DIRECTORY_VARIABLE as VOLUME_REPORT_DIRECTORY_VARIABLE,
+)
+from cloudfall.volumes import REQUESTS_VARIABLE as VOLUME_REQUESTS_VARIABLE
+from cloudfall.volumes import (
+    PlannedVolume,
+    VolumeRefusedError,
+    actions_by_server,
+    normalize_report,
+    plan_volumes,
+    read_reports,
+    volume_requests,
+)
 from cloudfall.why import (
     Investigations,
     WhyError,
@@ -4800,6 +4815,24 @@ def logging_deploy_command(
             )
         generated, servers = prepare_secrets(inventory, store)
         context = args.context(fleet, ctx)
+        volume_plan: list[PlannedVolume] = []
+        requested = volume_requests(servers)
+        if requested:
+            # Read only; every refusal is decided before any host changes (S-014)
+            with tempfile.TemporaryDirectory(prefix="cloudfall-volumes-") as reports:
+                run_engine_playbook(
+                    context,
+                    VOLUME_FACTS_PLAYBOOK,
+                    {
+                        VOLUME_REQUESTS_VARIABLE: requested,
+                        VOLUME_REPORT_DIRECTORY_VARIABLE: reports,
+                    },
+                )
+                facts = {
+                    server: normalize_report(report)
+                    for server, report in read_reports(Path(reports), servers).items()
+                }
+            volume_plan = plan_volumes(servers, facts)
         files = secret_files(servers, store)
         outcomes: list[CertificateOutcome] = []
         ca_created = False
@@ -4822,7 +4855,11 @@ def logging_deploy_command(
             signed, outcomes = certificate_files(servers, held, ca, now)
             files.extend(signed)
         with staged_files(files) as (extra_vars, delivered):
-            run_engine_playbook(context, PLAYBOOK, extra_vars)
+            run_engine_playbook(
+                context,
+                PLAYBOOK,
+                {**extra_vars, VOLUME_ACTIONS_VARIABLE: actions_by_server(volume_plan)},
+            )
     except InputMissingError as error:
         # Exit 4 like the framework's INPUT_REQUIRED; agents branch on the code
         raise Exit.PRECONDITION(
@@ -4835,6 +4872,16 @@ def logging_deploy_command(
                 "a person runs `cloudfall secrets input <name> --owner <stack>` "
                 "for each missing secret"
             ),
+        ) from error
+    except VolumeRefusedError as error:
+        raise Exit.PRECONDITION(
+            str(error),
+            context={
+                "code": error.code,
+                "server": error.server,
+                "pool": error.pool,
+                "reason": error.reason,
+            },
         ) from error
     except (LoggingDeployError, PkiError) as error:
         raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
@@ -4849,6 +4896,9 @@ def logging_deploy_command(
             "playbook": PLAYBOOK,
             "generated": [item.as_dict() for item in generated],
             "caCreated": ca_created,
+            "volumes": [
+                {"server": item.server, **item.as_dict()} for item in volume_plan
+            ],
             "certificates": [item.as_dict() for item in outcomes],
             "delivered": [item.as_dict() for item in delivered],
             "effect": "updated",
