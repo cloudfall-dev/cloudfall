@@ -50,8 +50,17 @@ print(json.dumps({"changed": False, "ansible_facts": {
 
 SYSTEMCTL = """#!/bin/sh
 # Stand-in for systemctl: logs its arguments and answers for a loaded,
-# running unit.
+# running unit, or, with no "$0.loaded" file, as systemd answers for a unit
+# that has no unit file.
 echo "$@" >> "$0.log"
+if [ ! -e "$0.loaded" ]; then
+  case "$1" in
+    show) printf 'ActiveState=inactive\\nLoadState=not-found\\nSubState=dead\\n' ;;
+    is-enabled) echo not-found; exit 1 ;;
+    list-unit-files) exit 1 ;;
+  esac
+  exit 0
+fi
 case "$1" in
   show) printf 'ActiveState=active\\nLoadState=loaded\\nSubState=running\\n' ;;
   is-enabled) echo enabled ;;
@@ -88,9 +97,15 @@ def _executable(path: Path, text: str) -> None:
 
 @dataclass(frozen=True, slots=True)
 class _Host:
-    """A stand-in server: this controller with fake facts and ``systemctl``."""
+    """A stand-in server: this controller with fake facts and ``systemctl``.
+
+    ``unit_loaded`` says whether systemd knows the component's unit, as it
+    does once a deploy has installed it; a first deploy's dry run writes no
+    unit file, so systemd does not.
+    """
 
     tmp_path: Path
+    unit_loaded: bool = True
 
     @property
     def install_root(self) -> Path:
@@ -153,6 +168,8 @@ class _Host:
         library = self.tmp_path / "library"
         _executable(library / "cloudfall_test_facts.py", FACTS_MODULE)
         _executable(self.tmp_path / "bin" / "systemctl", SYSTEMCTL)
+        if self.unit_loaded:
+            (self.tmp_path / "bin" / "systemctl.loaded").write_text("", "utf-8")
         systemd_run = self.tmp_path / "bin" / "systemd-run"
         _executable(systemd_run, SYSTEMD_RUN)
         host = {
@@ -215,7 +232,7 @@ def _dry_run(host: _Host) -> tuple[int, str]:
 def test_a_dry_run_of_a_first_deploy_passes_and_creates_nothing(
     tmp_path: Path,
 ) -> None:
-    host = _Host(tmp_path)
+    host = _Host(tmp_path, unit_loaded=False)
 
     exit_code, output = _dry_run(host)
 

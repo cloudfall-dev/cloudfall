@@ -348,12 +348,17 @@
         force: true
         follow: false
 
+    # A dry run writes no unit file, so systemd knows no unit to restart on a
+    # first deploy.
     - name: Restart the component service
       ansible.builtin.systemd_service:
         name: "{{ cloudfall_deploy_component.service.name }}.service"
         enabled: true
         state: restarted
         daemon_reload: true
+      when: >-
+        not ansible_check_mode
+        or cloudfall_deploy_unit_existing.stat.exists
 
     - name: Gate the release on its declared health check
       ansible.builtin.uri:
