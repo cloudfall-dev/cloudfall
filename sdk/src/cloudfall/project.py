@@ -655,7 +655,7 @@ from this directory, which the CLI recognizes as the project. From
 elsewhere, pass `--project <dir>` or set `CLOUDFALL_PROJECT=<dir>`.
 Relative paths, including every `{tmp}/` default, resolve against the
 project either way. Run `uv sync` once after cloning and after any change
-to the `rev` pin in `pyproject.toml`.
+to the `cloudfall==<version>` pin in `pyproject.toml`.
 
 Resources are plain YAML, one document per file, in the kind directories,
 and only those directories are read as resources:

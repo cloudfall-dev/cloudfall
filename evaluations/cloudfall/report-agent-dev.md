@@ -9,7 +9,7 @@
 These constraints must hold on every call to cloudfall, regardless of language or framework:
 
 ```
-binary:  uv run cloudfall   (resolved: /Users/roman/PycharmProjects/Atlas/.venv/bin/cloudfall)
+binary:  uv run cloudfall   (resolved: .venv/bin/cloudfall)
 stdin:   closed (DEVNULL / equivalent); never pipe payloads in (cloudfall reads no stdin)
 timeout: 60s read commands (config, inventory, audit, services, operator list/show);
          3700s deploy / rollback / restart / backup / data migrate / migrate --yes (engine step cap 3600s)
