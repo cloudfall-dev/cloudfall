@@ -85,6 +85,7 @@ class ResourceKind(StrEnum):
     LOGGING_STACK = "LoggingStack"
     SERVICE = "Service"
     ALERT_RULE = "AlertRule"
+    ALERT_CHANNEL = "AlertChannel"
     OPERATOR_POLICY = "OperatorPolicy"
 
     @classmethod
@@ -111,6 +112,7 @@ _RESOURCE_DIRECTORIES: Mapping[ResourceKind, str] = {
     ResourceKind.DOMAIN: "domains",
     ResourceKind.LOGGING_STACK: "logging-stacks",
     ResourceKind.ALERT_RULE: "alert-rules",
+    ResourceKind.ALERT_CHANNEL: "alert-channels",
     ResourceKind.OPERATOR_POLICY: "operator-policies",
 }
 
@@ -1549,6 +1551,27 @@ class FilesystemName:
 
 _VOLUME_GROUP_PATTERN = re.compile(r"^(?!\.\.?$)[A-Za-z0-9_+.][A-Za-z0-9_+.-]{0,126}$")
 _BLOCK_DEVICE_PATTERN = re.compile(r"^/dev/(?!.*\.\.)[A-Za-z0-9_./:-]{1,250}$")
+
+
+_TELEGRAM_CHAT_ID_PATTERN = re.compile(r"^-?[0-9]{1,20}$")
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramChatId:
+    """A Telegram chat id: digits, led by ``-`` for a group."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Accept digits with an optional leading ``-`` only."""
+        if not _TELEGRAM_CHAT_ID_PATTERN.fullmatch(self.value):
+            message = f"invalid Telegram chat id: {self.value!r}"
+            raise ValueError(message)
+
+    @classmethod
+    def from_boundary(cls, value: object) -> TelegramChatId:
+        """Coerce a boundary value into a chat id."""
+        return cls(_required_string(value, "Telegram chat id"))
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cloudfall.internal/schemas/v1/alert-channel.schema.json",
+  "title": "Cloudfall alert channel",
+  "x-cloudfall-kind": "AlertChannel",
+  "type": "object",
+  "properties": {
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "kind": {
+      "const": "AlertChannel"
+    },
+    "metadata": {
+      "$ref": "common.schema.json#/$defs/metadata"
+    },
+    "spec": {
+      "type": "object",
+      "properties": {
+        "telegram": {
+          "type": "object",
+          "properties": {
+            "chatId": {
+              "type": "string",
+              "pattern": "^-?[0-9]{1,20}$"
+            }
+          },
+          "required": [
+            "chatId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "telegram"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "additionalProperties": false
+}

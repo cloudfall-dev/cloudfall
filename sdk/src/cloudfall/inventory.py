@@ -83,6 +83,7 @@ from cloudfall.domain import (
     SystemdCalendar,
     SystemdUnitName,
     TcpPort,
+    TelegramChatId,
     TlsMode,
     VolumeGroupName,
     WebhookUrl,
@@ -303,6 +304,21 @@ class ConfigurationFileRequirement:
 
 
 @dataclass(frozen=True, slots=True)
+class AlertChannelInventory:
+    """Where a host's events and a stack's alerts go (S-015): a Telegram chat."""
+
+    resource_id: ResourceId
+    telegram_chat_id: TelegramChatId
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the channel; the bot token is a secret and never here."""
+        return {
+            "id": self.resource_id.value,
+            "telegram": {"chatId": self.telegram_chat_id.value},
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class StoragePool:
     """An existing volume group workload volumes go into (S-014).
 
@@ -341,6 +357,8 @@ class BaselineInventory:
     firewall: FirewallRequirement | None
     configuration_files: tuple[ConfigurationFileRequirement, ...]
     pools: tuple[StoragePool, ...] = ()
+    alert_channel: ResourceId | None = None
+    """The AlertChannel this baseline's hosts send their events to (S-015)."""
 
     def pool(self, pool_id: ResourceId | None) -> StoragePool | None:
         """Return the named pool, or the only one when ``pool_id`` is ``None``."""
@@ -402,6 +420,8 @@ class BaselineInventory:
         }
         if self.firewall is not None:
             result["firewall"] = self.firewall.as_dict()
+        if self.alert_channel is not None:
+            result["alerting"] = {"channel": self.alert_channel.value}
         return result
 
 
@@ -1317,10 +1337,13 @@ class AlertReceiverInventory:
     resource_id: ResourceId
     webhook: WebhookUrl | None
     email: EmailReceiverInventory | None
+    channel: ResourceId | None = None
+    """An AlertChannel the receiver delivers to (S-015)."""
 
     def __post_init__(self) -> None:
         """Reject receivers without exactly one channel."""
-        if (self.webhook is None) == (self.email is None):
+        declared = [self.webhook, self.email, self.channel]
+        if sum(item is not None for item in declared) != 1:
             message = (
                 "alert receiver must declare exactly one channel: "
                 f"{self.resource_id.value}"
@@ -1334,6 +1357,8 @@ class AlertReceiverInventory:
             result["webhook"] = {"url": self.webhook.value}
         if self.email is not None:
             result["email"] = self.email.as_dict()
+        if self.channel is not None:
+            result["channel"] = self.channel.value
         return result
 
 
@@ -1502,6 +1527,7 @@ class PlatformInventory:
     logging_stacks: tuple[LoggingStackInventory, ...]
     alert_rules: tuple[AlertRuleInventory, ...]
     operator_policies: tuple[OperatorPolicyInventory, ...]
+    alert_channels: tuple[AlertChannelInventory, ...] = ()
 
     @classmethod
     def from_state(cls, state: ValidatedConfig) -> PlatformInventory:
@@ -1549,6 +1575,17 @@ class PlatformInventory:
             _operator_policy_inventory(document)
             for document in state.resources(ResourceKind.OPERATOR_POLICY)
         )
+        alert_channels = tuple(
+            AlertChannelInventory(
+                resource_id=document.key.resource_id,
+                telegram_chat_id=TelegramChatId.from_boundary(
+                    _mapping(_mapping(document.content, "spec"), "telegram").get(
+                        "chatId"
+                    )
+                ),
+            )
+            for document in state.resources(ResourceKind.ALERT_CHANNEL)
+        )
         return cls(
             servers=servers,
             baselines=baselines,
@@ -1560,6 +1597,7 @@ class PlatformInventory:
             logging_stacks=logging_stacks,
             alert_rules=alert_rules,
             operator_policies=operator_policies,
+            alert_channels=alert_channels,
         )
 
     def baseline(self, baseline_id: ResourceId) -> BaselineInventory:
@@ -1739,6 +1777,11 @@ def _baseline_inventory(document: ResourceDocument) -> BaselineInventory:
         pools=tuple(
             _storage_pool(item)
             for item in _mapping_list(storage.get("pools", []), "storage pools")
+        ),
+        alert_channel=(
+            ResourceId.from_boundary(_mapping(spec, "alerting").get("channel"))
+            if spec.get("alerting") is not None
+            else None
         ),
     )
 
@@ -2408,10 +2451,14 @@ def _alert_receiver(content: Mapping[str, object]) -> AlertReceiverInventory:
                 else None
             ),
         )
+    raw_channel = content.get("channel")
     return AlertReceiverInventory(
         resource_id=ResourceId.from_boundary(content.get("id")),
         webhook=webhook,
         email=email,
+        channel=(
+            ResourceId.from_boundary(raw_channel) if raw_channel is not None else None
+        ),
     )
 
 

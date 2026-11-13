@@ -297,6 +297,18 @@
             "files"
           ],
           "additionalProperties": false
+        },
+        "alerting": {
+          "type": "object",
+          "properties": {
+            "channel": {
+              "$ref": "common.schema.json#/$defs/resourceId"
+            }
+          },
+          "required": [
+            "channel"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [

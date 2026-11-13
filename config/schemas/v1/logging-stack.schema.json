@@ -347,6 +347,9 @@
                         "authUsername"
                       ]
                     }
+                  },
+                  "channel": {
+                    "$ref": "common.schema.json#/$defs/resourceId"
                   }
                 },
                 "required": [
@@ -361,6 +364,11 @@
                   {
                     "required": [
                       "email"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "channel"
                     ]
                   }
                 ],
