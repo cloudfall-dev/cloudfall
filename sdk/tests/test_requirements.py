@@ -20,6 +20,7 @@ from cloudfall.requirements import (
     CertificateUsage,
     PortRequirement,
     Requirement,
+    RequirementName,
     RequirementOwner,
     RequirementType,
     SecretRequirement,
@@ -120,12 +121,33 @@ def test_a_single_host_stack_opens_no_port(tmp_path: Path) -> None:
     assert not _by_name(servers["h1"], RequirementType.PORT)
 
 
+def test_a_receiver_with_the_longest_valid_id_yields_its_smtp_password(
+    tmp_path: Path,
+) -> None:
+    receiver = "r" * 63
+    project = tmp_path / "config"
+    shutil.copytree(EXAMPLES, project)
+    stack = project / "logging-stacks" / "operations.yaml"
+    original = stack.read_text(encoding="utf-8")
+    stack.write_text(
+        original.replace("id: operations-email", f"id: {receiver}"),
+        encoding="utf-8",
+    )
+
+    secrets = _by_name(_requirements(project)["h1"], RequirementType.SECRET)
+
+    smtp = secrets[f"smtp-password-{receiver}"].spec
+    assert isinstance(smtp, SecretRequirement)
+    assert smtp.source is SecretSource.INPUT
+    assert smtp.path == AbsolutePath("/etc/cloudfall/logging/smtp-password")
+
+
 def test_a_server_rejects_two_requirements_of_one_type_and_name() -> None:
     owner = RequirementOwner(ResourceKind.LOGGING_STACK, ResourceId("operations"))
     secret = Requirement(
         owner,
         SecretRequirement(
-            ResourceId("grafana-admin-password"),
+            RequirementName("grafana-admin-password"),
             SecretSource.GENERATE,
             AbsolutePath("/etc/cloudfall/logging/grafana-admin-password"),
         ),

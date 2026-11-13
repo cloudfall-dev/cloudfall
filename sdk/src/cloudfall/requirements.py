@@ -13,6 +13,7 @@ Cloudfall provide it describe the same requirement.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -40,6 +41,34 @@ if TYPE_CHECKING:
 GIBIBYTE = 1024**3
 LOGGING_VOLUME_SIZE = ByteSize(10 * GIBIBYTE)
 """The starting size of each logging data volume; it grows, never shrinks."""
+
+_REQUIREMENT_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
+_REQUIREMENT_NAME_MAX_LENGTH = 127
+"""Room for a fixed prefix in front of the longest resource id (63)."""
+
+
+@dataclass(frozen=True, slots=True)
+class RequirementName:
+    """The name of a requirement, unique per type on one server.
+
+    It is often derived from a resource id with a prefix (the SMTP password
+    of receiver ``ops`` is ``smtp-password-ops``), so it allows more than the
+    63 characters of a resource id.
+    """
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Enforce the resource-id syntax with the longer bound."""
+        if not _REQUIREMENT_NAME_PATTERN.fullmatch(self.value):
+            message = f"invalid requirement name: {self.value!r}"
+            raise ValueError(message)
+        if len(self.value) > _REQUIREMENT_NAME_MAX_LENGTH:
+            message = (
+                f"requirement name exceeds {_REQUIREMENT_NAME_MAX_LENGTH} "
+                f"characters: {self.value!r}"
+            )
+            raise ValueError(message)
 
 
 class RequirementType(StrEnum):
@@ -94,7 +123,7 @@ class RequirementOwner:
 class VolumeRequirement:
     """A filesystem mounted at ``path`` before ``units`` start."""
 
-    name: ResourceId
+    name: RequirementName
     path: AbsolutePath
     minimum_size: ByteSize
     placement: VolumePlacement
@@ -116,7 +145,7 @@ class VolumeRequirement:
 class PortRequirement:
     """An inbound port open to the named servers only."""
 
-    name: ResourceId
+    name: RequirementName
     port: TcpPort
     protocol: NetworkProtocol
     sources: tuple[ResourceId, ...]
@@ -142,7 +171,7 @@ class PortRequirement:
 class SecretRequirement:
     """A secret value that lands on the host as the file at ``path``."""
 
-    name: ResourceId
+    name: RequirementName
     source: SecretSource
     path: AbsolutePath
 
@@ -157,7 +186,7 @@ class SecretRequirement:
 class CertificateRequirement:
     """A certificate and key chained to the project CA, with that CA beside it."""
 
-    name: ResourceId
+    name: RequirementName
     usage: CertificateUsage
     subject_names: tuple[Hostname, ...]
     certificate_path: AbsolutePath
@@ -187,7 +216,7 @@ class CertificateRequirement:
 class DnsNameRequirement:
     """A DNS name that resolves to the server it is required on."""
 
-    name: ResourceId
+    name: RequirementName
     hostname: Hostname
 
     requirement_type = RequirementType.DNS_NAME
@@ -201,7 +230,7 @@ class DnsNameRequirement:
 class PackageRequirement:
     """A package pinned to a version that must exist for the host's release."""
 
-    name: ResourceId
+    name: RequirementName
     package: PackageName
     version: PackageVersion
 
@@ -311,7 +340,7 @@ def _logging_stack_requirements(
     place(
         backend,
         VolumeRequirement(
-            ResourceId("loki"),
+            RequirementName("loki"),
             stack.backend.storage.path,
             LOGGING_VOLUME_SIZE,
             VolumePlacement.EXPENDABLE,
@@ -321,7 +350,7 @@ def _logging_stack_requirements(
     place(
         backend,
         VolumeRequirement(
-            ResourceId("prometheus"),
+            RequirementName("prometheus"),
             stack.metrics.backend.storage_path,
             LOGGING_VOLUME_SIZE,
             VolumePlacement.EXPENDABLE,
@@ -335,7 +364,7 @@ def _logging_stack_requirements(
         place(
             backend,
             PortRequirement(
-                ResourceId("logging-gateway"),
+                RequirementName("logging-gateway"),
                 stack.gateway.port,
                 NetworkProtocol.TCP,
                 remote_collectors,
@@ -344,7 +373,7 @@ def _logging_stack_requirements(
     place(
         backend,
         SecretRequirement(
-            ResourceId("grafana-admin-password"),
+            RequirementName("grafana-admin-password"),
             SecretSource.GENERATE,
             stack.grafana.admin_password_path,
         ),
@@ -357,7 +386,7 @@ def _logging_stack_requirements(
             place(
                 backend,
                 SecretRequirement(
-                    ResourceId(f"smtp-password-{receiver.resource_id.value}"),
+                    RequirementName(f"smtp-password-{receiver.resource_id.value}"),
                     SecretSource.INPUT,
                     email.auth_password_file,
                 ),
@@ -366,7 +395,7 @@ def _logging_stack_requirements(
     place(
         backend,
         CertificateRequirement(
-            ResourceId("logging-gateway"),
+            RequirementName("logging-gateway"),
             CertificateUsage.SERVER,
             (stack.gateway.server_name,),
             tls.certificate_path,
@@ -376,19 +405,21 @@ def _logging_stack_requirements(
     )
     place(
         backend,
-        DnsNameRequirement(ResourceId("logging-gateway"), stack.gateway.server_name),
+        DnsNameRequirement(
+            RequirementName("logging-gateway"), stack.gateway.server_name
+        ),
     )
     for package, version in _backend_packages(stack):
         place(
             backend,
-            PackageRequirement(ResourceId(package), PackageName(package), version),
+            PackageRequirement(RequirementName(package), PackageName(package), version),
         )
     client_tls = stack.collectors.client_tls
     for server_id in collectors:
         place(
             server_id,
             CertificateRequirement(
-                ResourceId("logging-collector"),
+                RequirementName("logging-collector"),
                 CertificateUsage.CLIENT,
                 (servers[server_id.value].hostname,),
                 client_tls.certificate_path,
@@ -399,7 +430,9 @@ def _logging_stack_requirements(
         place(
             server_id,
             PackageRequirement(
-                ResourceId("alloy"), PackageName("alloy"), stack.software.alloy
+                RequirementName("alloy"),
+                PackageName("alloy"),
+                stack.software.alloy,
             ),
         )
     return placed
