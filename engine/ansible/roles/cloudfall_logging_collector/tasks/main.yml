@@ -15,6 +15,9 @@
       Logging collection requires a declared Debian collector and the declared
       migration guard (parallel with legacy agents preserved, or none)
 
+- name: Deliver the files Cloudfall provides for the stack
+  ansible.builtin.include_tasks: deliver.yml
+
 - name: Inspect pre-provisioned collector TLS files
   ansible.builtin.stat:
     path: "{{ item }}"

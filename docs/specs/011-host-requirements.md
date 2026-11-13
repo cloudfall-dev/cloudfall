@@ -179,5 +179,12 @@ none against a live Debian host:
   and `CA:FALSE` come from the requirement, never from the request. A held certificate is `met`,
   `will-renew` within 30 days of expiry or for other names or usage, or `foreign` when another
   CA signed it, and is then kept (part of S-011-6, S-011-7 and S-011-10). Checked with
-  `openssl verify` for both purposes. The host side (keys made on the host, requests fetched,
-  certificates delivered) is the next step
+  `openssl verify` for both purposes
+- Certificate provider, host side: `logging deploy --yes` runs `logging-requests.yml`, where each
+  host makes the key a requirement names unless it has one (`0600`, `umask 077`) and a signing
+  request, and hands the request and any certificate already in place to the controller. The CA
+  signs the missing and due ones; `logging.yml` copies each new certificate and the CA to its
+  host path, replacing the old certificate, while a `met` or `foreign` one is left as it is.
+  The answer lists each certificate's state and whether the CA was created (S-011-6 on the
+  controller: no host key reaches the project or an answer). The request playbook and the
+  delivery tasks ran for real on the controller; no Debian host yet

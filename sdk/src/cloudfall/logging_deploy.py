@@ -1,26 +1,35 @@
-"""Deploy the declared LoggingStack with the secrets Cloudfall keeps for it (S-011).
+"""Deploy the declared LoggingStack with what Cloudfall provides for it (S-011).
 
 The plan resolves every requirement and its state, and changes nothing. The
-deploy first meets what the secrets provider can meet on the controller:
-missing generated secrets are written to the store, and a secret only a
-person can supply stops the run before any server is touched. Then each
-stored value is staged in a 0600 file in a private temp dir and
-``logging.yml`` copies it to the host path the stack declares, keeping any
-file a person already put there. The staged files are removed when the run
-ends, whether it passed or failed.
+deploy first meets what the controller can meet: missing generated secrets
+are written to the store, and a secret only a person can supply stops the
+run before any server is touched. Then every host that needs a certificate
+makes its own key, if it has none, and a signing request
+(``logging-requests.yml``); the project CA signs the requests whose
+certificate is missing or due, so private keys never leave their hosts.
+Finally each secret, each new certificate and its CA are staged in files in
+a private temp dir and ``logging.yml`` copies them to the host paths the
+stack declares. A secret file already on a host is kept; a certificate is
+replaced only when it was just signed. The staged files are removed when the
+run ends, whether it passed or failed.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import tempfile
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from cloudfall.pki import CertificateState
 from cloudfall.requirements import (
+    CertificateRequirement,
+    CertificateUsage,
     RequirementState,
     SecretRequirement,
     SecretSource,
@@ -35,16 +44,33 @@ from cloudfall.secret_store import (
 )
 
 if TYPE_CHECKING:
+    import datetime
     from collections.abc import Iterator
 
     from cloudfall.domain import ResourceId
     from cloudfall.inventory import LoggingStackInventory, PlatformInventory
+    from cloudfall.pki import ProjectCa
 
-SECRET_FILES_VARIABLE = "cloudfall_logging_secret_files"  # noqa: S105 - a name
-"""The ``logging.yml`` variable: server id, then ``[{path, source}]``."""
+DELIVERED_FILES_VARIABLE = "cloudfall_logging_delivered_files"
+"""``logging.yml``'s variable: server id, then the files its roles copy."""
+REQUESTS_VARIABLE = "cloudfall_logging_certificate_requests"
+"""The ``logging-requests.yml`` variable: server id, then the certificates it needs."""
+REQUESTS_DIRECTORY_VARIABLE = "cloudfall_logging_request_directory"
+"""Where ``logging-requests.yml`` writes each request on the controller."""
 PLAYBOOK = "logging.yml"
+REQUESTS_PLAYBOOK = "logging-requests.yml"
 ERROR_STACK_UNDECLARED = "logging_stack_undeclared"
-_FILE_MODE = 0o600
+ERROR_REQUEST_MISSING = "logging_certificate_request_missing"
+_STAGED_MODE = 0o600
+_PRIVATE_MODE = "0600"
+_PUBLIC_MODE = "0644"
+
+
+class DeliveryRole(StrEnum):
+    """The role that copies a staged file to its host."""
+
+    BACKEND = "backend"
+    COLLECTOR = "collector"
 
 
 class LoggingDeployError(RuntimeError):
@@ -68,21 +94,62 @@ class InputMissingError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class DeliveredSecret:
-    """One secret staged for a server: where it lands and its hash, never the value."""
+class StagedFile:
+    """One file a role copies to its host; ``content`` never leaves this process."""
+
+    server: ResourceId
+    role: DeliveryRole
+    name: str
+    path: str
+    content: str = field(repr=False)
+    mode: str
+    force: bool
+    """Replace a file already there: only a certificate signed in this run."""
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveredFile:
+    """One file staged for a server: where it lands and its hash, never the content."""
 
     server: ResourceId
     name: str
     path: str
     sha256: str
+    replaces: bool
 
     def as_dict(self) -> dict[str, object]:
-        """Serialize the delivery; the host keeps a file already there."""
+        """Serialize the delivery; ``replaces`` says a file there is overwritten."""
         return {
             "server": self.server.value,
             "name": self.name,
             "path": self.path,
             "sha256": self.sha256,
+            "replaces": self.replaces,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class HeldCertificate:
+    """What one host reported for one certificate requirement."""
+
+    request: str
+    certificate: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CertificateOutcome:
+    """The state a held certificate was in, and whether it was signed now."""
+
+    server: ResourceId
+    name: str
+    state: CertificateState
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the outcome."""
+        return {
+            "server": self.server.value,
+            "name": self.name,
+            "state": self.state.value,
         }
 
 
@@ -130,7 +197,12 @@ def preview_logging_deploy(
     )
     if to_generate:
         effect += f"; first generate {', '.join(to_generate)} into the secret store"
-    effect += "; copy each stored secret to its host path, keeping a file already there"
+    effect += (
+        "; copy each stored secret to its host path, keeping a file already "
+        "there; make a key and a signing request on each host that needs a "
+        "certificate, sign the missing and due ones with the project CA, and "
+        "copy them with the CA"
+    )
     return {
         "status": "plan",
         "action": "logging-deploy",
@@ -162,44 +234,168 @@ def prepare_secrets(
     return generated, servers
 
 
-@contextmanager
-def staged_secret_files(
+def secret_files(
     servers: tuple[ServerRequirements, ...], store: SecretStore
-) -> Iterator[tuple[dict[str, object], tuple[DeliveredSecret, ...]]]:
-    """Stage every server's secrets in 0600 files; yield the extra vars and hashes.
+) -> list[StagedFile]:
+    """Return every stored secret as a file the backend role copies, never replacing."""
+    return [
+        StagedFile(
+            server.server_id,
+            DeliveryRole.BACKEND,
+            requirement.spec.name.value,
+            requirement.spec.path.value,
+            store.value(requirement.spec.reference),
+            _PRIVATE_MODE,
+            force=False,
+        )
+        for server in servers
+        for requirement in server.requirements
+        if isinstance(requirement.spec, SecretRequirement)
+    ]
 
-    The values pass through memory and the private temp dir only; the
-    directory is removed when the block ends.
+
+def certificate_requests(
+    servers: tuple[ServerRequirements, ...],
+) -> dict[str, list[dict[str, str]]]:
+    """Return, by server, the certificates whose key and request a host makes."""
+    requests: dict[str, list[dict[str, str]]] = {}
+    for server, spec in _certificates(servers):
+        requests.setdefault(server.value, []).append(
+            {
+                "name": spec.name.value,
+                "keyPath": spec.key_path.value,
+                "certificatePath": spec.certificate_path.value,
+                "commonName": spec.subject_names[0].value.removesuffix("."),
+            }
+        )
+    return requests
+
+
+def read_requests(
+    directory: Path, servers: tuple[ServerRequirements, ...]
+) -> dict[tuple[str, str], HeldCertificate]:
+    """Read what ``logging-requests.yml`` wrote: one JSON file per certificate."""
+    held: dict[tuple[str, str], HeldCertificate] = {}
+    for server, spec in _certificates(servers):
+        source = directory / server.value / f"{spec.name.value}.json"
+        if not source.is_file():
+            message = (
+                f"{server.value} wrote no signing request for {spec.name.value}; "
+                f"expected {source}"
+            )
+            raise LoggingDeployError(ERROR_REQUEST_MISSING, message)
+        content = json.loads(source.read_text(encoding="utf-8"))
+        request = content.get("request")
+        certificate = content.get("certificate")
+        if not isinstance(request, str) or not (
+            certificate is None or isinstance(certificate, str)
+        ):
+            message = f"{source} is not a signing request report"
+            raise LoggingDeployError(ERROR_REQUEST_MISSING, message)
+        held[(server.value, spec.name.value)] = HeldCertificate(request, certificate)
+    return held
+
+
+def certificate_files(
+    servers: tuple[ServerRequirements, ...],
+    held: dict[tuple[str, str], HeldCertificate],
+    ca: ProjectCa,
+    now: datetime.datetime,
+) -> tuple[list[StagedFile], list[CertificateOutcome]]:
+    """Sign the missing and due certificates; stage each with the CA beside it.
+
+    A ``met`` certificate and a ``foreign`` one (another CA's, provided by
+    hand) are left as they are, and so is the CA file next to them.
+    """
+    files: list[StagedFile] = []
+    outcomes: list[CertificateOutcome] = []
+    for server, spec in _certificates(servers):
+        report = held[(server.value, spec.name.value)]
+        state = ca.state(report.certificate, spec, now)
+        outcomes.append(CertificateOutcome(server, spec.name.value, state))
+        if state not in {CertificateState.WILL_CREATE, CertificateState.WILL_RENEW}:
+            continue
+        role = (
+            DeliveryRole.BACKEND
+            if spec.usage is CertificateUsage.SERVER
+            else DeliveryRole.COLLECTOR
+        )
+        files.append(
+            StagedFile(
+                server,
+                role,
+                spec.name.value,
+                spec.certificate_path.value,
+                ca.sign(report.request, spec, now),
+                _PUBLIC_MODE,
+                force=True,
+            )
+        )
+        files.append(
+            StagedFile(
+                server,
+                role,
+                f"{spec.name.value}-ca",
+                spec.ca_path.value,
+                ca.certificate_pem,
+                _PUBLIC_MODE,
+                force=True,
+            )
+        )
+    return files, outcomes
+
+
+@contextmanager
+def staged_files(
+    files: list[StagedFile],
+) -> Iterator[tuple[dict[str, object], tuple[DeliveredFile, ...]]]:
+    """Stage each file in a private temp dir; yield the extra vars and the hashes.
+
+    Contents pass through memory and the temp dir only; the directory is
+    removed when the block ends.
     """
     with tempfile.TemporaryDirectory(prefix="cloudfall-logging-") as directory:
         root = Path(directory)
         root.chmod(0o700)
-        files: dict[str, list[dict[str, str]]] = {}
-        delivered: list[DeliveredSecret] = []
-        for server in servers:
-            for requirement in server.requirements:
-                spec = requirement.spec
-                if not isinstance(spec, SecretRequirement):
-                    continue
-                value = store.value(spec.reference)
-                source = root / f"{server.server_id.value}-{spec.name.value}"
-                descriptor = os.open(
-                    source, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _FILE_MODE
+        delivered: dict[str, list[dict[str, object]]] = {}
+        hashes: list[DeliveredFile] = []
+        for index, item in enumerate(files):
+            source = root / f"{index}-{item.server.value}-{item.name}"
+            descriptor = os.open(
+                source, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _STAGED_MODE
+            )
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(item.content)
+            delivered.setdefault(item.server.value, []).append(
+                {
+                    "role": item.role.value,
+                    "path": item.path,
+                    "source": str(source),
+                    "mode": item.mode,
+                    "force": item.force,
+                }
+            )
+            hashes.append(
+                DeliveredFile(
+                    item.server,
+                    item.name,
+                    item.path,
+                    hashlib.sha256(item.content.encode("utf-8")).hexdigest(),
+                    item.force,
                 )
-                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                    handle.write(value)
-                files.setdefault(server.server_id.value, []).append(
-                    {"path": spec.path.value, "source": str(source)}
-                )
-                delivered.append(
-                    DeliveredSecret(
-                        server.server_id,
-                        spec.name.value,
-                        spec.path.value,
-                        hashlib.sha256(value.encode("utf-8")).hexdigest(),
-                    )
-                )
-        yield {SECRET_FILES_VARIABLE: files}, tuple(delivered)
+            )
+        yield {DELIVERED_FILES_VARIABLE: delivered}, tuple(hashes)
+
+
+def _certificates(
+    servers: tuple[ServerRequirements, ...],
+) -> list[tuple[ResourceId, CertificateRequirement]]:
+    return [
+        (server.server_id, requirement.spec)
+        for server in servers
+        for requirement in server.requirements
+        if isinstance(requirement.spec, CertificateRequirement)
+    ]
 
 
 def _secrets(servers: tuple[ServerRequirements, ...]) -> list[SecretRequirement]:
