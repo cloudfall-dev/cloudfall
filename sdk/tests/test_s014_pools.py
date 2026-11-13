@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 import pytest
@@ -19,6 +18,7 @@ from cloudfall.domain import (
 from cloudfall.inventory import StoragePool
 from cloudfall.requirements import RequirementName, VolumePlacement, VolumeRequirement
 from cloudfall.validation import ConfigValidationError, validate_config
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -33,8 +33,7 @@ POOLS = (
 
 
 def _project(tmp_path: Path, pools: str = POOLS, stack: str | None = None) -> Path:
-    project = tmp_path / "config"
-    shutil.copytree(EXAMPLES, project, ignore=shutil.ignore_patterns("tmp"))
+    project = copy_examples(tmp_path / "config")
     baseline = project / "baselines" / "debian-application.yaml"
     text = baseline.read_text(encoding="utf-8")
     assert POOLS in text
