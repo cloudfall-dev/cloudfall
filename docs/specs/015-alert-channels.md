@@ -134,9 +134,61 @@ stops naming the version when it is older.
 
 ## Issues
 
+Feature issue cloudfall-dev/cloudfall#274, built in four slices; cloudfall-dev/cloudfall#281
+repairs the `cloudfall_alerting` role's smartd line and handlers (S-015-3).
+
+- cloudfall-dev/cloudfall#276: S-015-1, S-015-2
+- cloudfall-dev/cloudfall#277: S-015-3
+- cloudfall-dev/cloudfall#278: S-015-5
+- cloudfall-dev/cloudfall#279: S-015-4, S-015-6, S-015-7, S-015-8
+
 ## Verification
 
-Not built yet. Landed so far, checked by unit tests on the controller:
+Not built yet: every criterion has a test on the controller, but the parts below marked "not
+yet verified live" wait on a Debian host with a real Telegram bot, a real mdadm array and the
+journal, and S-015-3 on the repair in #281. Per criterion:
+
+- S-015-1: unit tests, `test_s015_1_*` in `sdk/tests/test_s015_channels.py`: a numeric and a
+  group chat id validate; other characters, a trailing newline, and a `Baseline` or receiver
+  naming an undeclared channel are refused
+- S-015-2: unit tests, `test_s015_2_*` in `sdk/tests/test_s015_channels.py`: the token on
+  every server of the baseline, on the backend for a receiver alone, once per server
+- S-015-3: `test_s015_3_a_missing_token_stops_before_any_server` and
+  `test_s015_3_the_token_reaches_each_host_in_a_private_file` (the CLI stops with exit 4 and
+  `INPUT_REQUIRED` before any playbook, and stages a `0600` file); the role run for real
+  against scratch files, idempotent, in `test_s015_3_the_role_installs_the_sender_and_wires_both_sources`
+  and `test_s015_3_without_a_token_the_role_stops`. Not yet verified live: mdadm and smartd
+  reloads on a Debian host, after #281
+- S-015-4: `test_s015_4_the_plan_names_the_channel_and_sends_nothing`,
+  `test_s015_4_the_message_goes_to_that_server_only` (`alerts-test.yml`, limited to the
+  server) and `test_s015_4_a_server_without_a_channel_is_refused`; the message's FQDN prefix
+  in `test_s015_6_the_sender_keeps_the_token_out_of_argv`. Not yet verified live: a message
+  reaching a real chat, and `mdadm --monitor --scan --test --oneshot` sending one per array
+- S-015-5: unit tests, `test_s015_5_*` in `sdk/tests/test_s015_alertmanager.py`: the native
+  `telegram_configs` with `bot_token_file` and the chat id, the token staged for Alertmanager
+  or the deploy stopped, the group made before the token lands, and an Alertmanager older
+  than 0.26 refused. Not yet verified live: a firing rule reaching the chat
+- S-015-6: `test_s015_6_the_token_reaches_no_argv_inventory_answer_or_record` stores a
+  sentinel token and runs `requirements show`, `baseline converge`, `logging deploy` and
+  `alerts test`, each as a plan and with `--yes`: the sentinel is in no `ansible-playbook`
+  argv, no rendered inventory, no command answer, and no file under the project but the
+  secret store; `test_s015_6_the_token_is_handed_over_staged_and_then_removed` shows the
+  staged file is gone after the run; `test_s015_6_the_sender_keeps_the_token_out_of_argv`
+  shows the sender hands it to `curl` on stdin and logs no line with it; the inspect test
+  marked `proves: S-015-6` shows the observation holds only whether the token file exists.
+  Not yet verified live: the journal of a real host after a send and a failed send
+- S-015-7: unit tests, `test_s015_7_*` in `sdk/tests/test_s015_test_and_audit.py`: compliant
+  when the sender, the token, the chat id and the installed daemons' lines are there, drift
+  for each one missing or pointing elsewhere, unknown without evidence. Not yet verified
+  live: `audit` on a converged host
+- S-015-8: `test_s015_8_a_host_without_a_channel_converges_with_no_channel` (no secret read,
+  an empty channel map to `baseline.yml`), `test_s015_8_a_channel_adds_one_host_variable_and_nothing_else`
+  (a no-channel project renders no alerting variable; a channel adds only its own),
+  `test_s015_8_baseline_skips_the_alerting_role_without_a_channel` (the playbook's task,
+  run, skips the role) and `test_s015_8_a_host_without_a_channel_audits_as_before` (no
+  `alerting.channel` check, every check compliant on the compliant fixture)
+
+Landed, slice by slice, checked by unit tests on the controller:
 
 - The `AlertChannel` kind (`alert-channels/`, Telegram chat id), a `Baseline`'s
   `alerting.channel` and a `LoggingStack` receiver's `channel`, refused by `config validate`

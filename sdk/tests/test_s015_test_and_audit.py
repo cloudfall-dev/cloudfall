@@ -178,6 +178,7 @@ def test_s015_7_no_evidence_is_unknown(tmp_path: Path) -> None:
     assert _channel_status(tmp_path, None) == "unknown"
 
 
+# proves: S-015-6 (the observation inspect writes never holds the token)
 def test_inspect_reads_the_channel_files_but_not_the_token(tmp_path: Path) -> None:
     host = tmp_path / "host"
     channel = host / "alerting" / "operations"
