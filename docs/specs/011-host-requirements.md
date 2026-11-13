@@ -173,3 +173,11 @@ none against a live Debian host:
   role copies it to its host path and keeps a file already there (S-011-10 for secrets). The
   role's delivery tasks ran for real on the controller; the full stack has not run against a
   Debian host
+- Certificate provider, controller side: one CA per environment, its key and certificate
+  sops-encrypted at `secrets/<environment>/pki/ca.env`, created on first use. It signs only the
+  public key of a host's request: names, usage (`serverAuth` or `clientAuth`), a 90-day lifetime
+  and `CA:FALSE` come from the requirement, never from the request. A held certificate is `met`,
+  `will-renew` within 30 days of expiry or for other names or usage, or `foreign` when another
+  CA signed it, and is then kept (part of S-011-6, S-011-7 and S-011-10). Checked with
+  `openssl verify` for both purposes. The host side (keys made on the host, requests fetched,
+  certificates delivered) is the next step
