@@ -180,10 +180,20 @@ class _Host:
             "cloudfall_server_id": "h1",
             "cloudfall_components": [self.component()],
         }
+        # The component's group, as the rendered inventory has it: the deploy
+        # playbook targets only the servers in component_<id>.
+        component_group = f"component_{COMPONENT_ID.replace('-', '_')}"
         inventory = self.tmp_path / "inventory.json"
         inventory.write_text(
             json.dumps(
-                {"all": {"children": {"cloudfall_servers": {"hosts": {"h1": host}}}}}
+                {
+                    "all": {
+                        "children": {
+                            "cloudfall_servers": {"hosts": {"h1": host}},
+                            component_group: {"hosts": {"h1": {}}},
+                        }
+                    }
+                }
             ),
             encoding="utf-8",
         )
