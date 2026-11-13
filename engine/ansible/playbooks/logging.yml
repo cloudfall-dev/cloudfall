@@ -12,6 +12,21 @@
           Validated state must declare exactly one logging backend and at least
           one collector before deployment
 
+- name: Open the logging gateway to its remote collectors
+  hosts: cloudfall_logging_backends
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    # The declared firewall carries the gateway rule (S-011): the gateway port
+    # opened to each remote collector's addresses only
+    - name: Enforce the declared firewall with the gateway rule
+      ansible.builtin.include_role:
+        name: cloudfall_firewall
+      vars:
+        cloudfall_firewall_ruleset: "{{ cloudfall_firewall }}"
+      when: cloudfall_firewall is defined
+
 - name: Deploy Cloudfall logging backend
   hosts: cloudfall_logging_backends
   become: true

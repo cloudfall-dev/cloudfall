@@ -188,3 +188,11 @@ none against a live Debian host:
   The answer lists each certificate's state and whether the CA was created (S-011-6 on the
   controller: no host key reaches the project or an answer). The request playbook and the
   delivery tasks ran for real on the controller; no Debian host yet
+- Port provider: the backend's declared firewall gains one rule opening the gateway port to
+  each remote collector's addresses only (`network.ipv4/32` and `network.ipv6Cidr`, or the IP
+  in `address`), beside the `remoteAccess` rules of S-006; `logging.yml` enforces that firewall
+  on the backend before the stack. A stack whose collectors all run on the backend, a baseline
+  without a firewall, or one that already opens the port to everyone adds no rule. A remote
+  collector with no IP behind a firewall fails `config validate` with
+  `logging_gateway_collector_unaddressed` (S-011-6 for ports, S-011-8). Checked on the rendered
+  inventory and nftables ruleset; no Debian host yet

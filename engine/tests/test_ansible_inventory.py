@@ -166,6 +166,12 @@ def test_inventory_renders_ansible_host_variables() -> None:
                 {"port": 22, "protocol": "tcp", "description": "ssh"},
                 {"port": 80, "protocol": "tcp", "description": "http"},
                 {"port": 443, "protocol": "tcp", "description": "https"},
+                {
+                    "port": 3101,
+                    "protocol": "tcp",
+                    "sources": ["203.0.113.12/32", "2001:db8:12::/64"],
+                    "description": "operations logging gateway",
+                },
             ],
         },
         "cloudfall_baseline": {

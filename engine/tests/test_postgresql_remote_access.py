@@ -168,12 +168,19 @@ def test_s006_8_the_firewall_entry_carries_its_sources(tmp_path: Path) -> None:
     host = _host(_inventory(_project(tmp_path, REMOTE_ACCESS)))
     firewall = cast("dict[str, list[dict[str, object]]]", host["cloudfall_firewall"])
 
-    assert firewall["allowedInbound"][-1] == {
-        "port": 5432,
+    remote_access = [
+        rule
+        for rule in firewall["allowedInbound"]
+        if rule["description"] == "postgresql-main remoteAccess"
+    ]
+    assert remote_access == [
+        {
+            "port": 5432,
         "protocol": "tcp",
-        "sources": ["10.0.0.0/24"],
-        "description": "postgresql-main remoteAccess",
-    }
+            "sources": ["10.0.0.0/24"],
+            "description": "postgresql-main remoteAccess",
+        }
+    ]
     unrestricted = [
         rule for rule in firewall["allowedInbound"] if "sources" not in rule
     ]
