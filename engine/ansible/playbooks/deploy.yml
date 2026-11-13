@@ -3,6 +3,8 @@
 # server (the first entry of deployment.servers). That server deploys first,
 # in its own play, so the command has run before any server's current release
 # moves, and a failed command stops the playbook before the other plays start.
+# Only the component's own group (component_<id>) is contacted, in inventory
+# order, so a server the component is not on cannot fail its deploy.
 - name: Select the release server of the deployed component
   hosts: localhost
   connection: local
@@ -20,6 +22,19 @@
           Deployment requires cloudfall_deploy_component_id,
           cloudfall_deploy_release, cloudfall_deploy_artifact_archive, and
           cloudfall_deploy_artifact_sha256 extra variables
+
+    - name: Require the component's group in the inventory
+      ansible.builtin.assert:
+        that:
+          - groups[cloudfall_deploy_component_group] | default([]) | length > 0
+        fail_msg: >-
+          The inventory has no servers in group
+          {{ cloudfall_deploy_component_group }}; declare
+          deployment.servers for component {{ cloudfall_deploy_component_id }}
+          and render the inventory again
+      vars:
+        cloudfall_deploy_component_group: >-
+          component_{{ cloudfall_deploy_component_id | replace('-', '_') }}
 
     - name: Deploy the release server first
       ansible.builtin.add_host:
@@ -63,7 +78,13 @@
         label: "{{ cloudfall_component_item.id }}"
 
 - name: Deploy one Cloudfall component release
-  hosts: cloudfall_servers:!cloudfall_release_servers
+  # The intersection keeps cloudfall_servers' inventory order. Without the
+  # component id (a syntax check) the pattern names no group; a run never gets
+  # here without it, since the first play refuses that.
+  hosts: >-
+    cloudfall_servers:&component_{{
+    cloudfall_deploy_component_id | default('') | replace('-', '_')
+    }}:!cloudfall_release_servers
   become: true
   gather_facts: true
   any_errors_fatal: true
