@@ -528,6 +528,42 @@
             "additionalProperties": false
           }
         },
+        "certificates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "$ref": "common.schema.json#/$defs/resourceId"
+              },
+              "path": {
+                "$ref": "common.schema.json#/$defs/absolutePath"
+              },
+              "exists": {
+                "type": "boolean"
+              },
+              "certificate": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 65536
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "path",
+              "exists",
+              "certificate"
+            ],
+            "additionalProperties": false
+          }
+        },
         "alerting": {
           "type": "object",
           "properties": {

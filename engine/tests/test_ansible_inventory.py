@@ -248,6 +248,10 @@ def test_inventory_renders_ansible_host_variables() -> None:
         "cloudfall_applications": [{"approval": "manual", "id": "crm", "user": "crm"}],
         "cloudfall_server_id": "h1",
         "cloudfall_logging_gateway_address": "127.0.0.1",
+        "cloudfall_certificates": [
+            {"name": "logging-gateway", "path": "/etc/cloudfall/logging/server.crt"},
+            {"name": "logging-collector", "path": "/etc/cloudfall/logging/client.crt"},
+        ],
         "cloudfall_network": {
             "ipv4": "203.0.113.11",
             "ipv6Cidr": "2001:db8:11::/64",
