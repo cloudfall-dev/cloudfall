@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -56,6 +57,7 @@ if args == ["--version"]:
     sys.exit(0)
 extra = json.loads(args[args.index("--extra-vars") + 1])
 if args[-1].endswith("logging-volumes.yml"):
+    open(os.environ["CLOUDFALL_TEST_RECORD"] + ".volumes", "w").close()
     root = extra["cloudfall_volume_report_directory"]
     for server, items in extra["cloudfall_volume_requests"].items():
         def report(rows):
@@ -203,6 +205,91 @@ def test_a_missing_input_stops_the_deploy_before_anything_changes(
     assert error["context"]["code"] == "INPUT_REQUIRED"
     assert error["context"]["missing"] == ["smtp-password-operations-email"]
     assert not (project / "secrets" / "production" / "logging-stacks").exists()
+    assert not (tmp_path / "record.json").exists()
+
+
+_CHANNEL = """---
+apiVersion: cloudfall/v1
+kind: AlertChannel
+metadata:
+  id: operations
+  description: The operators' chat
+spec:
+  telegram:
+    chatId: "-100123"
+"""
+
+
+def _add_channel_receiver(project: Path) -> None:
+    (project / "alert-channels").mkdir()
+    (project / "alert-channels" / "operations.yaml").write_text(
+        _CHANNEL, encoding="utf-8"
+    )
+    stack = project / "logging-stacks" / "operations.yaml"
+    text = stack.read_text(encoding="utf-8")
+    old = "    receivers:\n"
+    assert old in text
+    stack.write_text(
+        text.replace(old, old + "      - id: chat\n        channel: operations\n"),
+        encoding="utf-8",
+    )
+
+
+def _tree(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+@pytest.mark.parametrize("smtp_stored", [False, True])
+def test_a_missing_channel_token_refuses_before_any_secret_is_generated(
+    tmp_path: Path,
+    smtp_stored: bool,  # noqa: FBT001 - a parametrized precondition
+) -> None:
+    # 289: --yes generated grafana-admin-password, ran the volume facts, and
+    # only then refused on the channel token, naming it alone
+    project, environment = _project(tmp_path)
+    _add_channel_receiver(project)
+    if smtp_stored:
+        code, _ = _cloudfall(
+            project,
+            environment,
+            "secrets",
+            "input",
+            "smtp-password-operations-email",
+            "--owner",
+            "operations",
+            "--value-from-env",
+            "CLOUDFALL_TEST_SMTP",
+        )
+        assert code == 0
+    secrets = project / "secrets"
+    before = _tree(secrets)
+
+    code, envelope = _cloudfall(project, environment, "logging", "deploy")
+    assert code == 0
+    planned = _data(envelope)["missing"]
+    assert isinstance(planned, list)
+    assert "first generate grafana-admin-password" in str(
+        _data(envelope)["would_run"]
+    )
+
+    code, envelope = _cloudfall(project, environment, "logging", "deploy", "--yes")
+
+    assert code == 4
+    error = envelope["error"]
+    assert isinstance(error, dict)
+    assert error["context"]["code"] == "INPUT_REQUIRED"
+    expected = ["telegram-bot-token of operations"]
+    if not smtp_stored:
+        expected.insert(0, "smtp-password-operations-email")
+    assert error["context"]["missing"] == expected
+    assert error["context"]["missing"] == [item["name"] for item in planned]
+    assert _tree(secrets) == before
+    assert not (tmp_path / "record.json.volumes").exists()
+    assert not (tmp_path / "record.json.requests").exists()
     assert not (tmp_path / "record.json").exists()
 
 
