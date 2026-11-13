@@ -1,0 +1,35 @@
+---
+# Package pins Cloudfall checks before anything is installed (S-011): every
+# pinned version must be in the host's APT sources, or the run stops here,
+# naming the package, the pin and the versions the host does offer.
+- name: Refresh the APT cache before checking pins
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  tags: [packages]
+
+- name: List the versions the host's APT sources offer for each pinned package
+  ansible.builtin.command:
+    argv:
+      - apt-cache
+      - madison
+      - "{{ item.name }}"
+  loop: "{{ cloudfall_logging_backend_pins }}"
+  loop_control:
+    label: "{{ item.name }}={{ item.version }}"
+  register: cloudfall_logging_backend_offered
+  changed_when: false
+
+- name: Require every pinned version to be offered
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.item.version in (item.stdout_lines
+        | map('split', '|') | map(attribute=1) | map('trim') | list)
+    fail_msg: >-
+      {{ item.item.name }}={{ item.item.version }} is not in this host's APT
+      sources; they offer: {{ item.stdout_lines | map('split', '|')
+      | map(attribute=1) | map('trim') | join(', ') or 'nothing' }}
+  loop: "{{ cloudfall_logging_backend_offered.results }}"
+  loop_control:
+    label: "{{ item.item.name }}={{ item.item.version }}"

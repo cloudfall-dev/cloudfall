@@ -196,3 +196,9 @@ none against a live Debian host:
   collector with no IP behind a firewall fails `config validate` with
   `logging_gateway_collector_unaddressed` (S-011-6 for ports, S-011-8). Checked on the rendered
   inventory and nftables ruleset; no Debian host yet
+- Package provider: both logging roles check every pin right after the Grafana repository is
+  in place and before any account, configuration or package changes: `apt-cache madison` must
+  offer the pinned version, or the run stops naming the pin and the versions the host offers.
+  The check runs on the host, so it comes with `--yes`, not in the plan: the Grafana sources
+  are only on the host once a deploy adds them (part of S-011-4). Checked with a stand-in
+  `apt-cache`; no Debian host yet

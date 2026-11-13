@@ -62,7 +62,9 @@ apt-cache policy loki grafana alloy
 ```
 
 Use the complete APT version strings in state. Cloudfall deliberately fails rather
-than silently replacing an unavailable pin with the newest package.
+than silently replacing an unavailable pin with the newest package: each role
+checks its pins with `apt-cache madison` before it installs or configures
+anything, and names the versions the host offers when a pin is missing.
 
 ## 2. Secrets and mTLS files
 

@@ -109,6 +109,23 @@
     update_cache: true
   when: cloudfall_logging_backend_repository is changed
 
+- name: Check the package pins before anything is installed
+  ansible.builtin.include_tasks: pins.yml
+  vars:
+    cloudfall_logging_backend_pins: >-
+      {{
+        [{'name': 'loki', 'version': cloudfall_logging_backend_stack.software.lokiPackageVersion},
+         {'name': 'grafana', 'version': cloudfall_logging_backend_stack.software.grafanaPackageVersion}]
+        + ([{'name': 'prometheus',
+             'version': cloudfall_logging_backend_stack.software.prometheusPackageVersion}]
+           if 'prometheusPackageVersion' in cloudfall_logging_backend_stack.software else [])
+        + ([{'name': 'prometheus-alertmanager',
+             'version': cloudfall_logging_backend_stack.alerting.alertmanager.packageVersion}]
+           if 'alerting' in cloudfall_logging_backend_stack
+           and 'packageVersion' in cloudfall_logging_backend_stack.alerting.alertmanager
+           else [])
+      }}
+
 - name: Create Loki service group before package configuration
   ansible.builtin.group:
     name: loki
