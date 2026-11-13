@@ -202,3 +202,9 @@ none against a live Debian host:
   The check runs on the host, so it comes with `--yes`, not in the plan: the Grafana sources
   are only on the host once a deploy adds them (part of S-011-4). Checked with a stand-in
   `apt-cache`; no Debian host yet
+- DNS provider: the gateway name needs no DNS record. Each collector pins it in `/etc/hosts`
+  to the backend's IPv4 (from its `network` or an IP `address`), or to `127.0.0.1` on the
+  backend itself, replacing any line for that name and keeping the rest; the certificate is for
+  that name, so mTLS holds. A backend known only by a hostname leaves the name to DNS. Writing
+  records at a DNS provider is not built: Cloudfall holds no DNS credentials today. Checked on
+  the rendered inventory and with the task run on a scratch hosts file; no Debian host yet

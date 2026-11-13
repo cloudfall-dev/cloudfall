@@ -247,6 +247,12 @@ def test_inventory_renders_ansible_host_variables() -> None:
         "cloudfall_lifecycle": "active",
         "cloudfall_applications": [{"approval": "manual", "id": "crm", "user": "crm"}],
         "cloudfall_server_id": "h1",
+        "cloudfall_logging_gateway_address": "127.0.0.1",
+        "cloudfall_network": {
+            "ipv4": "203.0.113.11",
+            "ipv6Cidr": "2001:db8:11::/64",
+            "reverseDns": "h1.example.internal",
+        },
     }
     assert logging_backend["id"] == "operations"
     assert _mapping_entry(logging_backend, "backend")["server"] == "h1"

@@ -2537,6 +2537,30 @@ def logging_gateway_rules_for_server(
     return tuple(rules)
 
 
+def logging_gateway_address(
+    stack: LoggingStackInventory,
+    collector_id: ResourceId,
+    servers: tuple[ServerInventory, ...],
+) -> str | None:
+    """Return where a collector reaches the gateway name, if Cloudfall knows it.
+
+    A collector on the backend reaches it on loopback; any other uses the
+    backend's IPv4, from its ``network`` or an IP ``address``. ``None`` leaves
+    the name to DNS (S-011).
+    """
+    if collector_id == stack.backend.server_id:
+        return "127.0.0.1"
+    backend = next(
+        item for item in servers if item.resource_id == stack.backend.server_id
+    )
+    if backend.network is not None:
+        return backend.network.ipv4.value
+    try:
+        return str(ip_address(backend.address.value))
+    except ValueError:
+        return None
+
+
 def server_source_networks(server: ServerInventory) -> tuple[IpNetworkCidr, ...]:
     """Return the networks a server's traffic comes from: its IPs, or none known."""
     if server.network is not None:

@@ -50,9 +50,12 @@ Add the dedicated logging host as a `Server` and give it an accurate
 `Baseline`. Do not use the capacity-constrained public proxy or a host with
 an unresolved storage finding.
 
-Choose an internal gateway name, such as `logs.internal.example`, whose A/AAAA
-record points to the logging host. The server certificate must contain that
-name as a DNS subject alternative name.
+Choose an internal gateway name, such as `logs.internal.example`. It needs no
+DNS record when the backend declares a `network` block or an IP `address`:
+each collector pins the name to the backend's IPv4 in `/etc/hosts`, and to
+loopback on the backend itself. Otherwise give the name an A/AAAA record
+pointing at the logging host. The certificate Cloudfall signs carries that
+name.
 
 Before pinning versions, confirm that all packages exist for the target Debian
 release:
