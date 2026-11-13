@@ -148,3 +148,9 @@ Not built yet. Landed so far, checked by unit tests on the controller:
   drop-in per unit. Decisions are covered by unit tests on LVM's JSON; the role's commands were
   rendered and linted, not run: macOS has no LVM. S-014-4 to S-014-7 and S-014-9 wait on a
   Debian host
+- Audit: the inventory renders `cloudfall_volumes` (name, path) per server; `inspect` reads
+  `lvs -a` as JSON with `lv_health_status` and what is mounted at each path into new `volumes`
+  evidence; `audit` adds `volume.<name>`: compliant when the LV exists with its type, physical
+  volumes, at least its size, healthy, and mounted at its path from itself; drift when missing,
+  unmounted, too small, of another type, on other disks or degraded; unknown without evidence
+  (S-014-8). Checked on observation fixtures; no Debian host yet

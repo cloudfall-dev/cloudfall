@@ -528,6 +528,42 @@
             "additionalProperties": false
           }
         },
+        "volumes": {
+          "type": "object",
+          "properties": {
+            "lvsJson": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 1048576
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "mounts": {
+              "type": "object",
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          },
+          "required": [
+            "lvsJson",
+            "mounts"
+          ],
+          "additionalProperties": false
+        },
         "certificates": {
           "type": "array",
           "items": {

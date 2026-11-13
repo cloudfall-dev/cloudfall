@@ -12,7 +12,11 @@ from cloudfall.inventory import (
     logging_gateway_rules_for_server,
     remote_access_rules_for_server,
 )
-from cloudfall.requirements import CertificateRequirement, requirements_of
+from cloudfall.requirements import (
+    CertificateRequirement,
+    VolumeRequirement,
+    requirements_of,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -115,6 +119,7 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
         component.resource_id: component for component in inventory.components
     }
     certificates = _certificates_by_server(inventory)
+    volumes = _volumes_by_server(inventory)
     return {
         server.resource_id.value: {
             "ansible_host": server.address.value,
@@ -147,6 +152,11 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
             **(
                 {"cloudfall_certificates": certificates[server.resource_id.value]}
                 if server.resource_id.value in certificates
+                else {}
+            ),
+            **(
+                {"cloudfall_volumes": volumes[server.resource_id.value]}
+                if server.resource_id.value in volumes
                 else {}
             ),
             "cloudfall_baseline": baselines_by_id[server.baseline_id].as_dict(),
@@ -205,6 +215,23 @@ def _certificates_by_server(
             for requirement in server.requirements
         )
     }
+
+
+def _volumes_by_server(
+    inventory: PlatformInventory,
+) -> dict[str, list[dict[str, str]]]:
+    """Return, by server, the volumes its host requirements name (S-014)."""
+    found: dict[str, list[dict[str, str]]] = {}
+    for server in requirements_of(inventory):
+        for requirement in server.requirements:
+            if isinstance(requirement.spec, VolumeRequirement):
+                found.setdefault(server.server_id.value, []).append(
+                    {
+                        "name": requirement.spec.name.value,
+                        "path": requirement.spec.path.value,
+                    }
+                )
+    return found
 
 
 def _host_infrastructure(server: ServerInventory) -> dict[str, object]:
