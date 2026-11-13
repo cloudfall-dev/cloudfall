@@ -91,6 +91,10 @@ Private keys and the password must not be world-readable. The roles verify all
 files before installing packages, then apply the minimum service-readable
 ownership and modes.
 
+The gateway port needs no firewall entry by hand: `logging deploy` opens it on
+the backend to each remote collector's addresses only, so a collector behind a
+default-deny firewall needs an IP, as its `address` or a `network` block.
+
 ## 3. Declare the stack and sources
 
 Copy the synthetic

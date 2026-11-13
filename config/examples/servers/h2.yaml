@@ -10,6 +10,11 @@ spec:
   environment: production
   baseline: debian-application
   lifecycle: active
+  # Its IPs let h1's firewall open the logging gateway to h2 alone (S-011)
+  network:
+    ipv4: 203.0.113.12
+    ipv6Cidr: 2001:db8:12::/64
+    reverseDns: h2.example.internal
   ssh:
     user: cloudfall
     port: 22

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from ipaddress import ip_address
 from typing import TYPE_CHECKING, cast
 
 from cloudfall.domain import (
@@ -2488,6 +2489,66 @@ def remote_access_rules_for_server(
             )
         )
     return tuple(rules)
+
+
+def logging_gateway_rules_for_server(
+    server: ServerInventory,
+    servers: tuple[ServerInventory, ...],
+    logging_stacks: tuple[LoggingStackInventory, ...],
+    open_ports: frozenset[tuple[int, NetworkProtocol]],
+) -> tuple[SourceRestrictedFirewallRule, ...]:
+    """Return the logging gateway's port, opened to its remote collectors only (S-011).
+
+    A stack whose collectors all run on the backend, or a port the firewall
+    already opens to everyone (``open_ports``), adds no rule.
+    """
+    by_id = {item.resource_id.value: item for item in servers}
+    rules: list[SourceRestrictedFirewallRule] = []
+    for stack in logging_stacks:
+        if stack.backend.server_id != server.resource_id:
+            continue
+        if (stack.gateway.port.value, NetworkProtocol.TCP) in open_ports:
+            continue
+        remote = [
+            by_id[item.value]
+            for item in stack.collectors.server_ids
+            if item != server.resource_id
+        ]
+        if not remote:
+            continue
+        sources: list[IpNetworkCidr] = []
+        for collector in remote:
+            networks = server_source_networks(collector)
+            if not networks:
+                message = (
+                    f"collector {collector.resource_id.value} of LoggingStack "
+                    f"{stack.resource_id.value} has no IP for the gateway rule"
+                )
+                raise ValueError(message)
+            sources.extend(item for item in networks if item not in sources)
+        rules.append(
+            SourceRestrictedFirewallRule(
+                port=stack.gateway.port,
+                protocol=NetworkProtocol.TCP,
+                sources=tuple(sources),
+                description=f"{stack.resource_id.value} logging gateway",
+            )
+        )
+    return tuple(rules)
+
+
+def server_source_networks(server: ServerInventory) -> tuple[IpNetworkCidr, ...]:
+    """Return the networks a server's traffic comes from: its IPs, or none known."""
+    if server.network is not None:
+        return (
+            IpNetworkCidr(f"{server.network.ipv4.value}/32"),
+            IpNetworkCidr(server.network.ipv6_cidr.value),
+        )
+    try:
+        address = ip_address(server.address.value)
+    except ValueError:
+        return ()
+    return (IpNetworkCidr(f"{address}/{address.max_prefixlen}"),)
 
 
 def _configuration_requirement(

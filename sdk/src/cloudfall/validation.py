@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from dataclasses import dataclass
-from ipaddress import IPv4Address, IPv6Network
+from ipaddress import IPv4Address, IPv6Network, ip_address
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, cast
 
@@ -1223,6 +1223,7 @@ def _validate_logging_references(
     collectors = _required_mapping(spec, "collectors", document.source)
     collector_ids = _resource_id_list(collectors, "servers", document.source)
     collector_set = frozenset(collector_ids)
+    remote_collectors: list[ResourceDocument] = []
     for server_id in collector_ids:
         server = _require_resource(
             index,
@@ -1232,6 +1233,11 @@ def _validate_logging_references(
             ("spec", "collectors", "servers"),
         )
         _require_server_environment(server, environment, document.source)
+        if server_id != backend_id:
+            remote_collectors.append(server)
+    _validate_logging_gateway_sources(
+        document, spec, backend_server, tuple(remote_collectors), index
+    )
 
     raw_files = collectors.get("files")
     if not isinstance(raw_files, list):
@@ -1287,6 +1293,78 @@ def _validate_logging_references(
             position,
             index,
         )
+
+
+def _validate_logging_gateway_sources(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    backend_server: ResourceDocument,
+    remote_collectors: tuple[ResourceDocument, ...],
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> None:
+    """Refuse a remote collector the backend's firewall cannot admit (S-011).
+
+    The gateway port opens to each remote collector's addresses only, so a
+    collector behind a default-deny firewall needs an IP: its ``address``, or
+    ``network``. A firewall that already opens the port to everyone, or none,
+    needs nothing.
+    """
+    if not remote_collectors:
+        return
+    server_spec = _required_mapping(
+        backend_server.content, "spec", backend_server.source
+    )
+    baseline_id = _resource_id_value(server_spec, "baseline", backend_server.source)
+    baseline = _require_resource(
+        index,
+        ResourceKind.BASELINE,
+        baseline_id,
+        backend_server.source,
+        ("spec", "baseline"),
+    )
+    baseline_spec = _required_mapping(baseline.content, "spec", baseline.source)
+    if "firewall" not in baseline_spec:
+        return
+    gateway = _required_mapping(spec, "gateway", document.source)
+    port = gateway.get("port")
+    firewall = _required_mapping(baseline_spec, "firewall", baseline.source)
+    raw_rules = firewall.get("allowedInbound")
+    rules = raw_rules if isinstance(raw_rules, list) else []
+    if any(
+        isinstance(rule, dict)
+        and rule.get("port") == port
+        and rule.get("protocol") == "tcp"
+        for rule in rules
+    ):
+        return
+    for collector in remote_collectors:
+        collector_spec = _required_mapping(
+            collector.content, "spec", collector.source
+        )
+        if "network" in collector_spec or _is_ip(collector_spec.get("address")):
+            continue
+        issue = ValidationIssue(
+            code="logging_gateway_collector_unaddressed",
+            message=(
+                f"Server/{collector.key.resource_id} collects for this stack, but "
+                "its address is a name and it declares no network, so the "
+                f"firewall of Baseline/{baseline_id} cannot open tcp port {port} "
+                "to it; give it an IP address or a network block"
+            ),
+            source=document.source,
+            field_path=("spec", "collectors", "servers"),
+        )
+        raise ConfigValidationError(issue)
+
+
+def _is_ip(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        ip_address(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _validate_logging_secret_paths(

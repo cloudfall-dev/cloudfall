@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, cast
 from cloudfall.inventory import (
     DomainStaticRoute,
     firewall_rules_for_server,
+    logging_gateway_rules_for_server,
     remote_access_rules_for_server,
 )
 
@@ -24,7 +25,6 @@ if TYPE_CHECKING:
         LoggingStackInventory,
         PlatformInventory,
         ServerInventory,
-        ServiceInventory,
     )
 
 # cloudfall_bootstrap's default, below which validation holds every installRoot.
@@ -133,7 +133,7 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
             **_host_firewall(
                 server,
                 baselines_by_id[server.baseline_id],
-                inventory.services,
+                inventory,
             ),
             **_host_logging(server, inventory.logging_stacks, inventory.alert_rules),
             "cloudfall_baseline": baselines_by_id[server.baseline_id].as_dict(),
@@ -182,9 +182,9 @@ def _host_infrastructure(server: ServerInventory) -> dict[str, object]:
 def _host_firewall(
     server: ServerInventory,
     baseline: BaselineInventory,
-    services: tuple[ServiceInventory, ...],
+    inventory: PlatformInventory,
 ) -> dict[str, object]:
-    remote_access = remote_access_rules_for_server(server, services)
+    remote_access = remote_access_rules_for_server(server, inventory.services)
     if baseline.firewall is None:
         if remote_access:
             message = (
@@ -194,12 +194,19 @@ def _host_firewall(
             raise ValueError(message)
         return {}
     rules = firewall_rules_for_server(baseline.firewall, server.ssh_port)
+    gateway = logging_gateway_rules_for_server(
+        server,
+        inventory.servers,
+        inventory.logging_stacks,
+        frozenset((rule.port.value, rule.protocol) for rule in rules),
+    )
     return {
         "cloudfall_firewall": {
             "policy": baseline.firewall.policy.value,
             "allowedInbound": [
                 *(rule.as_dict() for rule in rules),
                 *(rule.as_dict() for rule in remote_access),
+                *(rule.as_dict() for rule in gateway),
             ],
         }
     }
