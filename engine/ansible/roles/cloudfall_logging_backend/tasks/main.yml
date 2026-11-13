@@ -19,6 +19,14 @@
       Logging deployment requires its declared Debian backend and the declared
       migration guard (parallel with legacy agents preserved, or none)
 
+# Before delivery: a channel token is delivered with group prometheus, and a
+# copy to a group not there yet fails after writing the file world-readable.
+- name: Create Prometheus service group before package configuration
+  ansible.builtin.group:
+    name: prometheus
+    system: true
+    state: present
+
 - name: Deliver the files Cloudfall provides for the stack
   ansible.builtin.include_tasks: deliver.yml
 
@@ -188,12 +196,6 @@
     mode: "0644"
   notify: Restart Loki
 
-- name: Create Prometheus service group before package configuration
-  ansible.builtin.group:
-    name: prometheus
-    system: true
-    state: present
-
 - name: Create Prometheus service account before package configuration
   ansible.builtin.user:
     name: prometheus
@@ -272,6 +274,35 @@
   loop: "{{ cloudfall_logging_backend_smtp_files.results | default([]) }}"
   loop_control:
     label: "{{ item.item.id }}"
+
+- name: Read the Alertmanager version a Telegram receiver needs
+  ansible.builtin.command:
+    argv:
+      - apt-cache
+      - policy
+      - prometheus-alertmanager
+  register: cloudfall_logging_backend_alertmanager_policy
+  changed_when: false
+  when: cloudfall_logging_alert_channels | default([]) | length > 0
+
+- name: Require Alertmanager 0.26 or later for bot_token_file (S-015)
+  ansible.builtin.assert:
+    that:
+      - cloudfall_logging_backend_alertmanager_version is version('0.26', '>=')
+    fail_msg: >-
+      A Telegram receiver needs Alertmanager 0.26 or later for bot_token_file;
+      this host would install {{ cloudfall_logging_backend_alertmanager_version }}
+  vars:
+    cloudfall_logging_backend_alertmanager_version: >-
+      {{
+        (cloudfall_logging_backend_stack.alerting.alertmanager.packageVersion
+         if 'packageVersion' in cloudfall_logging_backend_stack.alerting.alertmanager
+         else (cloudfall_logging_backend_alertmanager_policy.stdout.splitlines()
+               | select('search', 'Candidate:') | first
+               | split(':', 1) | last | trim))
+        | regex_replace('^[0-9]+:', '') | regex_replace('[-+~].*$', '')
+      }}
+  when: cloudfall_logging_alert_channels | default([]) | length > 0
 
 - name: Install declared Alertmanager configuration before package configuration
   ansible.builtin.template:

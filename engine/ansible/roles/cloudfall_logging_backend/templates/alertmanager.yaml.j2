@@ -19,6 +19,14 @@ receivers:
       - url: {{ receiver.webhook.url | tojson }}
 {% endfor %}
 {% endif %}
+{% set channels = cloudfall_logging_alert_channels | default([]) %}
+{% if channels %}
+    telegram_configs:
+{% for channel in channels %}
+      - bot_token_file: {{ channel.botTokenFile | tojson }}
+        chat_id: {{ channel.chatId | int }}
+{% endfor %}
+{% endif %}
 {% if emails %}
     email_configs:
 {% for receiver in emails %}

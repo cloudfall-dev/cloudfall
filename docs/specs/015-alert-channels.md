@@ -154,4 +154,13 @@ Not built yet. Landed so far, checked by unit tests on the controller:
   `logger` and `hostname` show it in no argv and no log line: part of S-015-6. The role ran for
   real on the controller against scratch files; mdadm and smartd reloads and a real send wait on
   a Debian host
+- Alert rules: a receiver with `channel` renders Alertmanager's native `telegram_configs`
+  (`bot_token_file`, numeric `chat_id`) from the inventory's `cloudfall_logging_alert_channels`.
+  `logging deploy` stages the channel's token for Alertmanager at
+  `/etc/cloudfall/logging/alert-channel-<id>-bot-token` (`0640`, group `prometheus`), apart from
+  the host's copy, so the baseline and the stack never fight over its group; a token not in the
+  store stops the deploy with `INPUT_REQUIRED`. The backend role checks the Alertmanager version
+  it would install (the pin, else `apt-cache policy`'s candidate) is 0.26 or later before writing
+  its configuration: S-015-5 on the controller; a real alert reaching the chat waits on a Debian
+  host
 
