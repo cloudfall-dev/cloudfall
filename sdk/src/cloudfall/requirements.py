@@ -27,9 +27,11 @@ from cloudfall.domain import (
     PackageVersion,
     ResourceId,
     ResourceKind,
+    SecretKeyName,
     SystemdUnitName,
     TcpPort,
 )
+from cloudfall.inventory import SecretValueReference
 
 if TYPE_CHECKING:
     from cloudfall.inventory import (
@@ -107,6 +109,17 @@ class CertificateUsage(StrEnum):
     CLIENT = "client"
 
 
+class RequirementState(StrEnum):
+    """Where a requirement stands, as the provider that meets it observes it."""
+
+    MET = "met"
+    WILL_CREATE = "will-create"
+    WILL_GROW = "will-grow"
+    NEEDS_INPUT = "needs-input"
+    UNCHECKED = "unchecked"
+    """No provider observes this type yet."""
+
+
 @dataclass(frozen=True, slots=True)
 class RequirementOwner:
     """The resource whose kind yields a requirement."""
@@ -169,17 +182,26 @@ class PortRequirement:
 
 @dataclass(frozen=True, slots=True)
 class SecretRequirement:
-    """A secret value that lands on the host as the file at ``path``."""
+    """A secret value, kept in the project's store, that lands on the host at ``path``.
+
+    ``reference`` names where the store keeps it: one sops-encrypted dotenv
+    file per owning resource, one key per secret.
+    """
 
     name: RequirementName
     source: SecretSource
     path: AbsolutePath
+    reference: SecretValueReference
 
     requirement_type = RequirementType.SECRET
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the secret requirement; it never carries a value."""
-        return {"source": self.source.value, "path": self.path.value}
+        return {
+            "source": self.source.value,
+            "path": self.path.value,
+            "reference": self.reference.as_dict(),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,7 +394,8 @@ def _logging_stack_requirements(
         )
     place(
         backend,
-        SecretRequirement(
+        _secret(
+            stack,
             RequirementName("grafana-admin-password"),
             SecretSource.GENERATE,
             stack.grafana.admin_password_path,
@@ -385,7 +408,8 @@ def _logging_stack_requirements(
                 continue
             place(
                 backend,
-                SecretRequirement(
+                _secret(
+                    stack,
                     RequirementName(f"smtp-password-{receiver.resource_id.value}"),
                     SecretSource.INPUT,
                     email.auth_password_file,
@@ -436,6 +460,25 @@ def _logging_stack_requirements(
             ),
         )
     return placed
+
+
+def _secret(
+    stack: LoggingStackInventory,
+    name: RequirementName,
+    source: SecretSource,
+    path: AbsolutePath,
+) -> SecretRequirement:
+    """Keep a stack's secrets in ``secrets/<environment>/logging-stacks/<id>.env``."""
+    return SecretRequirement(
+        name,
+        source,
+        path,
+        SecretValueReference(
+            environment=stack.environment,
+            path=AbsolutePath(f"/logging-stacks/{stack.resource_id.value}"),
+            key=SecretKeyName(name.value.upper().replace("-", "_")),
+        ),
+    )
 
 
 def _backend_packages(
