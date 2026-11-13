@@ -244,7 +244,9 @@ def test_a_project_serves_its_commands_with_the_project_bound(tmp_path: Path) ->
     assert not {
         "init",
         "decisions_approve",
+        "decisions_mark-interrupted",
         "operator_approve",
+        "operator_mark-interrupted",
         "operator_run",
         "dashboard_serve",
         "cleanup",

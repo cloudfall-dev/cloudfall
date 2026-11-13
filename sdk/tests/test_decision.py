@@ -30,6 +30,7 @@ from cloudfall.decision import (
     Targets,
     approve,
     gate,
+    mark_interrupted,
     propose,
     read_basis,
     refuse_unapprovable,
@@ -1100,6 +1101,161 @@ def test_the_cli_refuses_an_interrupted_run_as_a_precondition(
     assert payload["error"]["code"] == "PRECONDITION"
     assert payload["error"]["context"]["code"] == "decision_run_interrupted"
     assert "interrupted" in payload["error"]["message"]
+    assert (
+        f"cloudfall decisions mark-interrupted {proposed.decision_id.value} "
+        "--confirm-dead" in payload["error"]["message"]
+    )
+
+
+def _killed(repository: Path, store: DecisionStore) -> Decision:
+    """Propose and approve one decision whose run dies midway; it stays running."""
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    with pytest.raises(_KilledError):
+        approve(
+            ApprovalRequest(
+                decision=proposed, approver="roman", repository=repository, via=TERMINAL
+            ),
+            store,
+            lambda: MOMENT,
+            _DyingRunner(store),
+        )
+    return store.load(proposed.decision_id)
+
+
+def test_a_run_a_person_confirmed_dead_is_closed_as_interrupted(
+    tmp_path: Path,
+) -> None:
+    """A running record has a way out, and the record says who took it (#244)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    running = _killed(repository, store)
+
+    closed = mark_interrupted(store, running.decision_id, "alice", lambda: LATER)
+
+    assert closed.status is DecisionStatus.INTERRUPTED
+    assert closed.interruption is not None
+    assert closed.interruption.confirmed_by == "alice"
+    assert closed.interruption.confirmed_at == "2026-09-21T14:45:00Z"
+    assert closed.approval == running.approval
+    assert closed.execution is None
+    assert closed.verdict is not None
+    assert "alice" in closed.verdict
+    assert store.load(running.decision_id) == closed
+    on_disk = json.loads(
+        (
+            repository / DECISION_DIRECTORY / f"{running.decision_id.value}.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert on_disk["spec"]["status"] == "interrupted"
+    assert on_disk["spec"]["interruption"] == {
+        "confirmedBy": "alice",
+        "confirmedAt": "2026-09-21T14:45:00Z",
+    }
+
+
+def test_an_interrupted_decision_is_never_approved(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    running = _killed(repository, store)
+    closed = mark_interrupted(store, running.decision_id, "alice", lambda: LATER)
+
+    with pytest.raises(DecisionError) as error:
+        refuse_unapprovable(closed)
+
+    assert error.value.code == "decision_not_proposed"
+
+
+@pytest.mark.parametrize("status", ["proposed", "interrupted"])
+def test_only_a_running_decision_is_closed_as_interrupted(
+    tmp_path: Path, status: str
+) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    if status == "proposed":
+        record = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    else:
+        running = _killed(repository, store)
+        record = mark_interrupted(store, running.decision_id, "alice", lambda: LATER)
+
+    with pytest.raises(DecisionError) as error:
+        mark_interrupted(store, record.decision_id, "bob", lambda: LATEST)
+
+    assert error.value.code == "decision_not_running"
+    assert store.load(record.decision_id) == record
+
+
+@pytest.mark.parametrize("confirmed_by", ["  ", "al\nice", "x" * 129])
+def test_an_interruption_records_a_readable_name(
+    tmp_path: Path, confirmed_by: str
+) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    running = _killed(repository, store)
+
+    with pytest.raises(DecisionError) as error:
+        mark_interrupted(store, running.decision_id, confirmed_by, lambda: LATER)
+
+    assert error.value.code == "record_confirmer_invalid"
+    assert store.load(running.decision_id) == running
+
+
+def _mark_interrupted(repository: Path, decision_id: str, *flags: str) -> list[str]:
+    return [
+        *("decisions", "mark-interrupted", decision_id),
+        *("--repository", str(repository)),
+        *flags,
+    ]
+
+
+def test_the_cli_closes_a_running_decision_only_once_the_person_confirms(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    running = _killed(repository, store)
+    identifier = running.decision_id.value
+
+    unconfirmed = main(_mark_interrupted(repository, identifier, "--by", "alice"))
+    refused = json.loads(capsys.readouterr().out)
+    still = store.load(running.decision_id)
+    confirmed = main(
+        _mark_interrupted(repository, identifier, "--by", "alice", "--confirm-dead")
+    )
+    closed = json.loads(capsys.readouterr().out)
+
+    assert unconfirmed == 2, refused
+    assert "--confirm-dead" in refused["error"]["message"]
+    assert still.status is DecisionStatus.RUNNING
+    assert confirmed == 0, closed
+    assert closed["data"]["decision"]["spec"]["status"] == "interrupted"
+    assert closed["data"]["decision"]["spec"]["interruption"]["confirmedBy"] == "alice"
+    assert store.load(running.decision_id).status is DecisionStatus.INTERRUPTED
+
+
+def test_the_cli_refuses_to_close_a_decision_that_is_not_running(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+
+    exit_code = main(
+        _mark_interrupted(
+            repository, proposed.decision_id.value, "--by", "alice", "--confirm-dead"
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 4
+    assert payload["error"]["code"] == "PRECONDITION"
+    assert payload["error"]["context"]["code"] == "decision_not_running"
+    assert store.load(proposed.decision_id) == proposed
+
+
+def test_closing_a_run_as_interrupted_is_never_a_tool() -> None:
+    command = app.commands[CommandPath("decisions.mark-interrupted")]
+
+    assert command.mcp is False
 
 
 def test_a_new_record_is_created_once_and_no_temporary_file_stays(

@@ -493,7 +493,7 @@ def _tone(status: DecisionStatus, ran_exit_code: object = None) -> str:
         return "healthy" if ran_exit_code == 0 else "critical"
     if status is DecisionStatus.VERIFIED:
         return "healthy"
-    if status is DecisionStatus.FAILED:
+    if status in {DecisionStatus.FAILED, DecisionStatus.INTERRUPTED}:
         return "critical"
     if status in {DecisionStatus.REJECTED, DecisionStatus.SUPERSEDED}:
         return "unknown"

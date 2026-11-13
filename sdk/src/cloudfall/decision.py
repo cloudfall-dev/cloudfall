@@ -82,6 +82,10 @@ ERROR_DECISION_MISSING = "decision_missing"
 _ERROR_NOT_PROPOSED = "decision_not_proposed"
 ERROR_DECISION_REPLAYED = "decision_replayed"
 ERROR_DECISION_INTERRUPTED = "decision_run_interrupted"
+ERROR_NOT_RUNNING = "decision_not_running"
+ERROR_CONFIRMER_INVALID = "record_confirmer_invalid"
+_CONFIRMER_MAX_LENGTH = 128
+"""``confirmedBy`` ``maxLength`` in the decision and proposal schemas."""
 _ERROR_APPROVER_UNKNOWN = "decision_approver_unknown"
 _ERROR_CHANNEL_UNKNOWN = "decision_approval_channel_unknown"
 ERROR_RECORD_INVALID = "decision_record_invalid"
@@ -139,6 +143,13 @@ class DecisionStatus(StrEnum):
     Recorded before the first playbook starts, so a run whose process ended
     before it recorded an outcome stays ``running``: it was interrupted, and
     it is never approved again.
+    """
+
+    INTERRUPTED = "interrupted"
+    """A ``running`` record a person closed once they confirmed its run is dead.
+
+    No outcome was recorded, so what the run changed is unknown; the record
+    names who confirmed it and when.
     """
 
 
@@ -401,6 +412,52 @@ class Approval:
 
 
 @dataclass(frozen=True, slots=True)
+class Interruption:
+    """Who confirmed a started run is dead, and when; it closes a ``running`` record.
+
+    Shared by decision records and operator proposal receipts.
+    """
+
+    confirmed_by: str
+    confirmed_at: str
+
+    def __post_init__(self) -> None:
+        """Refuse a blank, overlong or unprintable name."""
+        if not self.confirmed_by.strip():
+            message = "an interruption records who confirmed it; pass --by or set USER"
+            raise DecisionError(ERROR_CONFIRMER_INVALID, message)
+        if len(self.confirmed_by) > _CONFIRMER_MAX_LENGTH:
+            message = (
+                f"the name of who confirmed it is longer than "
+                f"{_CONFIRMER_MAX_LENGTH} characters"
+            )
+            raise DecisionError(ERROR_CONFIRMER_INVALID, message)
+        # The record is read back in a terminal: a newline or an escape
+        # sequence could forge or hide a line there.
+        if not self.confirmed_by.isprintable():
+            message = (
+                f"the name of who confirmed it has a control character: "
+                f"{self.confirmed_by!r}"
+            )
+            raise DecisionError(ERROR_CONFIRMER_INVALID, message)
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the interruption for the record."""
+        return {"confirmedBy": self.confirmed_by, "confirmedAt": self.confirmed_at}
+
+    @classmethod
+    def from_record(cls, value: object) -> Interruption | None:
+        """Read the interruption a record holds; None when it holds none."""
+        if not isinstance(value, dict):
+            return None
+        record = cast("Mapping[str, object]", value)
+        return cls(
+            confirmed_by=str(record["confirmedBy"]),
+            confirmed_at=str(record["confirmedAt"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Decision:
     """One decision: the proposal, its basis, its check run and its fate."""
 
@@ -425,6 +482,8 @@ class Decision:
     superseded_by: ResourceId | None = None
     replay: str | None = None
     """The recording its check output was played back from; None when live."""
+    interruption: Interruption | None = None
+    """Who closed its ``running`` record as interrupted, and when."""
 
     def same_call(self, other: Decision) -> bool:
         """Return whether both name the same operation, targets and inputs."""
@@ -467,6 +526,8 @@ class Decision:
             spec["supersededBy"] = self.superseded_by.value
         if self.replay is not None:
             spec["replay"] = self.replay
+        if self.interruption is not None:
+            spec["interruption"] = self.interruption.as_dict()
         return {
             "apiVersion": API_VERSION,
             "kind": DECISION_KIND,
@@ -526,6 +587,30 @@ class DecisionStore:
             current = self.load(superseded.decision_id)
             if current.status is DecisionStatus.PROPOSED:
                 self._replace(superseded)
+
+    def interrupt(
+        self, decision_id: ResourceId, interruption: Interruption
+    ) -> Decision:
+        """Close a ``running`` record as interrupted, if it is still running.
+
+        The record on disk is read again under the store's lock: a run that
+        recorded its outcome since the caller read it keeps that outcome.
+        """
+        with record_files.locked(self.directory):
+            current = self.load(decision_id)
+            refuse_not_running(current)
+            closed = replace(
+                current,
+                status=DecisionStatus.INTERRUPTED,
+                interruption=interruption,
+                verdict=(
+                    f"{interruption.confirmed_by} confirmed at "
+                    f"{interruption.confirmed_at} that its run is dead; no "
+                    "outcome was recorded, so what it changed is unknown"
+                ),
+            )
+            self._replace(closed)
+            return closed
 
     def load(self, decision_id: ResourceId) -> Decision:
         """Load and re-validate one decision record."""
@@ -814,7 +899,9 @@ def refuse_unapprovable(decision: Decision) -> None:
             f"decision {decision.decision_id} was approved{approved} and its "
             "run started, but no outcome is recorded: it is still running "
             "or it was interrupted. It is not approved again; check the hosts, "
-            "then propose it again"
+            "and once its run is dead, close it with `cloudfall decisions "
+            f"mark-interrupted {decision.decision_id} --confirm-dead`, then "
+            "propose it again"
         )
         raise DecisionError(ERROR_DECISION_INTERRUPTED, message)
     else:
@@ -823,6 +910,36 @@ def refuse_unapprovable(decision: Decision) -> None:
             "there is nothing left to approve"
         )
     raise DecisionError(_ERROR_NOT_PROPOSED, message)
+
+
+def refuse_not_running(decision: Decision) -> None:
+    """Refuse to close a decision as interrupted unless its record is ``running``."""
+    if decision.status is DecisionStatus.RUNNING:
+        return
+    message = (
+        f"decision {decision.decision_id} is {decision.status.value}, not "
+        "running, so there is no started run to close as interrupted"
+    )
+    raise DecisionError(ERROR_NOT_RUNNING, message)
+
+
+def mark_interrupted(
+    store: DecisionStore,
+    decision_id: ResourceId,
+    confirmed_by: str,
+    now: Callable[[], datetime] | None = None,
+) -> Decision:
+    """Close a ``running`` decision as interrupted, once a person confirmed it.
+
+    Only the person can tell the run's process is gone: a record left
+    ``running`` may belong to a run still going. Nothing on the fleet
+    changes; the record says who confirmed it and when.
+    """
+    interruption = Interruption(
+        confirmed_by=confirmed_by.strip(),
+        confirmed_at=_timestamp((now or _utc_now)()),
+    )
+    return store.interrupt(decision_id, interruption)
 
 
 def refuse_replayed(decision: Decision) -> None:
@@ -1222,6 +1339,7 @@ def _decision_from_document(document: Mapping[str, object]) -> Decision:
         execution=_run_from_document(spec.get("execution")),
         verification=_run_from_document(spec.get("verify")),
         approval=_approval_from_document(approval),
+        interruption=Interruption.from_record(spec.get("interruption")),
     )
 
 
