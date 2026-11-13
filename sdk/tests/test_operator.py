@@ -349,7 +349,7 @@ def _audit_report(*checks: tuple[str, AuditStatus]) -> AuditReport:
     )
     server = ServerAudit(
         server_id="h1",
-        server_type_id="debian-application",
+        baseline_id="debian-application",
         status=status,
         observation="synthetic",
         observed_at="2026-09-10T15:00:00Z",

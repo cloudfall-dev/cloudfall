@@ -61,9 +61,9 @@ def test_the_overlay_carries_only_what_ansible_cannot_know(tmp_path: Path) -> No
 
     hosts = document["all"]["children"][OBSERVED_GROUP]["hosts"]  # type: ignore[index]
     assert sorted(hosts) == ["web-1", "web-2"]
-    assert sorted(hosts["web-1"]) == ["cloudfall_server_id", "cloudfall_server_type"]
+    assert sorted(hosts["web-1"]) == ["cloudfall_baseline", "cloudfall_server_id"]
     assert hosts["web-1"]["cloudfall_server_id"] == "web-1"
-    assert hosts["web-1"]["cloudfall_server_type"]["id"] == "web"
+    assert hosts["web-1"]["cloudfall_baseline"]["id"] == "web"
 
 
 def test_ansible_merges_the_overlay_over_the_team_inventory(tmp_path: Path) -> None:
@@ -93,7 +93,7 @@ def test_ansible_merges_the_overlay_over_the_team_inventory(tmp_path: Path) -> N
     assert host_vars["ansible_user"] == "ansible"
     # The overlay's strings stay unsafe in Ansible, never templated (#174).
     assert host_vars["cloudfall_server_id"] == {"__ansible_unsafe": "web-1"}
-    assert host_vars["cloudfall_server_type"]["id"] == {"__ansible_unsafe": "web"}
+    assert host_vars["cloudfall_baseline"]["id"] == {"__ansible_unsafe": "web"}
     assert "cloudfall" in host_vars
 
 

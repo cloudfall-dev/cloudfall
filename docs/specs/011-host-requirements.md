@@ -12,7 +12,7 @@ does not create, and today a person prepares each of them by hand before the fir
 | Need | Today |
 |---|---|
 | A data volume for Loki and one for Prometheus, sized, on the right disk, mounted before the unit starts | made by hand (`lvcreate`, `mkfs`, fstab, `RequiresMountsFor`); the role only checks that the path exists |
-| The gateway port open to the collector hosts | added by hand to the `ServerType` firewall, open to everyone |
+| The gateway port open to the collector hosts | added by hand to the `Baseline` firewall, open to everyone |
 | A private CA, a gateway certificate, a client certificate per collector | made with the operator's own PKI and copied to `/etc/cloudfall/logging/`; the role refuses to run without them |
 | The Grafana admin password, the SMTP password of the alert receiver | written by hand to files on the backend host |
 | A DNS name for the gateway | created by hand in the DNS provider |
@@ -21,7 +21,7 @@ does not create, and today a person prepares each of them by hand before the fir
 
 The same gaps return for every `Service` with data (PostgreSQL, Garage) and for any future
 platform workload. The result: "Cloudfall prepared this server" does not mean "Cloudfall can
-deploy onto it". cloudfall-dev/cloudfall#201 covers declaring volumes in `ServerType`; this spec
+deploy onto it". cloudfall-dev/cloudfall#201 covers declaring volumes in `Baseline`; this spec
 covers the other half: a workload says what it needs, and Cloudfall provides it.
 
 ## Behaviour
@@ -56,7 +56,7 @@ Each requirement type has a **provider**: a unit with `check`, `apply` and `audi
 before the workload's role. Providers are how Cloudfall stays a plugin system: a new
 requirement type is a new provider, not new code in every role. v1 ships these built-in:
 
-- `volume`: LVM inside the storage pools a `ServerType` declares (#201). `mirrored` becomes a
+- `volume`: LVM inside the storage pools a `Baseline` declares (#201). `mirrored` becomes a
   raid1 LV over two PVs, `expendable` a linear LV on the PV the pool names. It creates the LV,
   the filesystem, an fstab line by UUID with `nofail`, the mount, the owner, and a
   `RequiresMountsFor` drop-in for every unit named. It only takes free space, never shrinks,
@@ -103,12 +103,12 @@ requirement type is a new provider, not new code in every role. v1 ships these b
 - A project that still provides the files by hand keeps working: a requirement whose file
   already exists and passes the role's checks is `met`, and nothing overwrites it
 - After this, deploying a stack onto a server that `cloudfall add server` plus `baseline`
-  prepared needs: the `LoggingStack` resource, a storage pool in the server type, and the
+  prepared needs: the `LoggingStack` resource, a storage pool in the baseline, and the
   inputs Cloudfall cannot generate
 
 ## Acceptance criteria
 
-- S-011-1: A project with one `Server` whose type declares a storage pool, and a
+- S-011-1: A project with one `Server` whose baseline declares a storage pool, and a
   `LoggingStack` with that server as backend and only collector, `migration.mode: none`, and no
   files under `/etc/cloudfall/logging/`, passes `cloudfall config validate` with exit 0
 - S-011-2: The plan of S-011-1 lists, per requirement, its type, its target and the state
@@ -135,7 +135,7 @@ requirement type is a new provider, not new code in every role. v1 ships these b
 
 ## Out of scope
 
-- Declaring storage pools, VGs and PVs in `ServerType`: cloudfall-dev/cloudfall#201. This spec
+- Declaring storage pools, VGs and PVs in `Baseline`: cloudfall-dev/cloudfall#201. This spec
   consumes that declaration
 - Third-party providers loaded from outside the package. v1 keeps the provider interface
   internal and documented; loading external ones is a later spec

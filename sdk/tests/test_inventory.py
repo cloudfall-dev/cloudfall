@@ -148,7 +148,7 @@ def test_inventory_rejects_unknown_query_targets() -> None:
 def test_inventory_serialization_excludes_secret_references() -> None:
     payload = _inventory().as_dict()
     servers = payload["servers"]
-    server_types = payload["serverTypes"]
+    baselines = payload["baselines"]
     applications = payload["applications"]
     components = payload["components"]
     domains = payload["domains"]
@@ -156,13 +156,13 @@ def test_inventory_serialization_excludes_secret_references() -> None:
     logging_stacks = payload["loggingStacks"]
 
     assert isinstance(servers, list)
-    assert isinstance(server_types, list)
+    assert isinstance(baselines, list)
     assert isinstance(applications, list)
     assert isinstance(components, list)
     assert isinstance(domains, list)
     assert isinstance(ssh_public_keys, list)
     assert len(servers) == 2
-    assert len(server_types) == 1
+    assert len(baselines) == 1
     assert len(applications) == 1
     assert len(components) == 1
     assert len(domains) == 1
@@ -226,7 +226,7 @@ def test_inventory_serialization_excludes_secret_references() -> None:
             },
         ],
     }
-    assert server_types[0]["id"] == "debian-application"
+    assert baselines[0]["id"] == "debian-application"
     serialized = json.dumps(payload).lower()
     assert "private key" not in serialized
     assert "passwordvalue" not in serialized

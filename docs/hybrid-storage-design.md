@@ -185,7 +185,7 @@ method, while the server is still disposable.
 
 ## Cloudfall audit boundaries
 
-Create a dedicated Cloudfall `ServerType` for this storage class. Do not reuse a
+Create a dedicated Cloudfall `Baseline` for this storage class. Do not reuse a
 legacy profile whose root and RAID capacity thresholds describe a full-disk
 mirror.
 

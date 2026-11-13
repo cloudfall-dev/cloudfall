@@ -58,7 +58,7 @@ and update the evidence).
 A project is the unit Cloudfall operates: one directory, usually a private
 repository, holding everything needed to run one user's stack.
 
-- **Fleet** — the machines: `Server`, `ServerType`, and `SshPublicKey`
+- **Fleet** — the machines: `Server`, `Baseline`, and `SshPublicKey`
   resources
 - **Applications** — the workloads: `Application`, `Component`, `Service`,
   and `Domain` resources
@@ -110,7 +110,7 @@ independent release cycles or access control require it.
 ## Config
 
 The config is declarative only, organized as typed resources validated
-against versioned JSON Schemas: servers, server types, applications,
+against versioned JSON Schemas: servers, baselines, applications,
 components, services, domains, logging stacks, alert rules, operator
 policy, and SSH public keys.
 
@@ -169,7 +169,7 @@ service with a health endpoint fits the model.
 ## Infrastructure model
 
 Servers are traditional long-lived Debian hosts (not immutable), described
-by reusable `ServerType` resources; bare-metal server types
+by reusable `Baseline` resources; bare-metal baselines
 add software RAID1 and the hybrid storage layout, while cloud VPS types do
 not. Any server can run any declared service or component:
 

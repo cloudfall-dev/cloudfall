@@ -20,7 +20,7 @@ uv sync
 ```
 
 The project holds one directory per resource kind (`servers/`,
-`server-types/`, `ssh-public-keys/`, `applications/`, `components/`,
+`baselines/`, `ssh-public-keys/`, `applications/`, `components/`,
 `services/`, `domains/`, `alert-rules/`, `operator-policies/`,
 `logging-stacks/`), a `secrets/` directory with a `.sops.yaml` template for
 its encrypted fragments, a README with the next steps (pass `--description`
@@ -92,7 +92,7 @@ command cannot ship unclassified.
 
 ## Inspect servers and audit drift
 
-Each `Server` references a reusable `ServerType`
+Each `Server` references a reusable `Baseline`
 describing its required Debian version, software RAID, filesystem capacity,
 packages, systemd services, and allowlisted configuration evidence.
 

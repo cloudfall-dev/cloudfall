@@ -75,7 +75,7 @@ def test_a_drift_report_keeps_the_order_the_checks_ran_in(
 
     report = json.loads(capsys.readouterr().out)["data"]
     assert code == 83
-    assert report["servers"][0]["checks"][0]["check"] == "server_type.id"
+    assert report["servers"][0]["checks"][0]["check"] == "baseline.id"
 
 
 def test_migrate_resolves_env_and_data_files_against_the_project(

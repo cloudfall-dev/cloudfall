@@ -1,7 +1,7 @@
 """Create Cloudfall projects.
 
 A project is one directory holding everything Cloudfall needs to run one
-user's stack: the fleet (servers, server types, SSH public keys), the
+user's stack: the fleet (servers, baselines, SSH public keys), the
 applications (applications, components, services, domains), the operating
 declarations (alert rules, operator policies, logging stacks), and the
 ``pyproject.toml`` that pins the released Cloudfall the project runs with.

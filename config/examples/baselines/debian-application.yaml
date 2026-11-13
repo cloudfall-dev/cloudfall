@@ -1,6 +1,6 @@
 ---
 apiVersion: cloudfall/v1
-kind: ServerType
+kind: Baseline
 metadata:
   id: debian-application
   description: Baseline for dedicated Debian application servers

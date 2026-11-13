@@ -302,7 +302,7 @@ def test_a_package_version_in_the_observe_overlay_is_not_templated(
     marker = tmp_path / "pwned"
     project = tmp_path / "project"
     shutil.copytree(EXAMPLES, project)
-    path = project / "server-types" / "debian-application.yaml"
+    path = project / "baselines" / "debian-application.yaml"
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
     document["spec"]["packages"]["required"][0]["version"] = _payload(marker)
     path.write_text(yaml.safe_dump(document), encoding="utf-8")
@@ -317,20 +317,20 @@ def test_a_package_version_in_the_observe_overlay_is_not_templated(
     _local(hosts)
     combined = tmp_path / "inventory.json"
     combined.write_text(json.dumps(overlay), encoding="utf-8")
-    seen = tmp_path / "server-type.json"
+    seen = tmp_path / "baseline.json"
     playbook = tmp_path / "probe.yml"
     playbook.write_text(
         yaml.safe_dump(
             [
                 {
-                    "name": "Read the observed server type",
+                    "name": "Read the observed baseline",
                     "hosts": "h1",
                     "gather_facts": False,
                     "tasks": [
                         {
-                            "name": "Keep the server type",
+                            "name": "Keep the baseline",
                             "ansible.builtin.copy": {
-                                "content": "{{ cloudfall_server_type | to_json }}",
+                                "content": "{{ cloudfall_baseline | to_json }}",
                                 "dest": str(seen),
                                 "mode": "0644",
                             },
@@ -344,5 +344,5 @@ def test_a_package_version_in_the_observe_overlay_is_not_templated(
 
     assert _run(playbook, combined, {}) == 0
     assert not marker.exists()
-    server_type = json.loads(seen.read_text(encoding="utf-8"))
-    assert server_type["packages"]["required"][0]["version"] == _payload(marker)
+    baseline = json.loads(seen.read_text(encoding="utf-8"))
+    assert baseline["packages"]["required"][0]["version"] == _payload(marker)

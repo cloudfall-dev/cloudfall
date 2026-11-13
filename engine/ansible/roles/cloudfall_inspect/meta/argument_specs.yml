@@ -9,7 +9,7 @@ argument_specs:
       cloudfall_inspect_output_directory:
         type: path
         required: true
-      cloudfall_inspect_server_type:
+      cloudfall_inspect_baseline:
         type: dict
         required: true
       cloudfall_inspect_server_id:

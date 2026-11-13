@@ -58,15 +58,15 @@ def _billing(**extra: object) -> dict[str, object]:
 
 
 def _standalone_project(tmp_path: Path, service: dict[str, object]) -> Path:
-    """Write a project of one Server, its server type, and one Service."""
+    """Write a project of one Server, its baseline, and one Service."""
     project = tmp_path / "project"
     (project / "servers").mkdir(parents=True)
-    (project / "server-types").mkdir()
+    (project / "baselines").mkdir()
     (project / "services").mkdir()
     shutil.copy(EXAMPLES / "servers" / "h1.yaml", project / "servers" / "h1.yaml")
     shutil.copy(
-        EXAMPLES / "server-types" / "debian-application.yaml",
-        project / "server-types" / "debian-application.yaml",
+        EXAMPLES / "baselines" / "debian-application.yaml",
+        project / "baselines" / "debian-application.yaml",
     )
     _write_service(project, service)
     return project
@@ -104,7 +104,7 @@ def test_s006_1_owner_database_validates_without_application(
     assert exit_code == 0
     assert document["data"]["by_kind"] == {
         "Server": 1,
-        "ServerType": 1,
+        "Baseline": 1,
         "Service": 1,
     }
 
@@ -250,10 +250,10 @@ def test_s006_11_remote_access_needs_a_firewall(tmp_path: Path) -> None:
     project = _standalone_project(
         tmp_path, _owned_service([_billing()], remote_access=REMOTE_ACCESS)
     )
-    server_type_path = project / "server-types" / "debian-application.yaml"
-    server_type = yaml.safe_load(server_type_path.read_text(encoding="utf-8"))
-    del server_type["spec"]["firewall"]
-    server_type_path.write_text(yaml.safe_dump(server_type), encoding="utf-8")
+    baseline_path = project / "baselines" / "debian-application.yaml"
+    baseline = yaml.safe_load(baseline_path.read_text(encoding="utf-8"))
+    del baseline["spec"]["firewall"]
+    baseline_path.write_text(yaml.safe_dump(baseline), encoding="utf-8")
 
     assert _refusal(project).issue.code == "service_remote_access_unfirewalled"
 
@@ -262,12 +262,12 @@ def test_s006_11_remote_access_refuses_a_port_already_open(tmp_path: Path) -> No
     project = _standalone_project(
         tmp_path, _owned_service([_billing()], remote_access=REMOTE_ACCESS)
     )
-    server_type_path = project / "server-types" / "debian-application.yaml"
-    server_type = yaml.safe_load(server_type_path.read_text(encoding="utf-8"))
-    server_type["spec"]["firewall"]["allowedInbound"].append(
+    baseline_path = project / "baselines" / "debian-application.yaml"
+    baseline = yaml.safe_load(baseline_path.read_text(encoding="utf-8"))
+    baseline["spec"]["firewall"]["allowedInbound"].append(
         {"port": 5432, "protocol": "tcp", "description": "postgresql"}
     )
-    server_type_path.write_text(yaml.safe_dump(server_type), encoding="utf-8")
+    baseline_path.write_text(yaml.safe_dump(baseline), encoding="utf-8")
 
     assert _refusal(project).issue.code == "service_remote_access_port_open"
 

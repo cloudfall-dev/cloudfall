@@ -1,7 +1,7 @@
 """Collect read-only observations of the fleet the inventory describes.
 
 The inspect role needs two things Ansible does not know: which hosts
-Cloudfall observes, and the server type each one is held to. In a brownfield
+Cloudfall observes, and the baseline each one is held to. In a brownfield
 repository neither belongs in the team's files, because both are derived
 from what they already declare.
 
@@ -41,7 +41,7 @@ INSPECT_PLAYBOOK = "inspect.yml"
 """Engine playbook that collects one snapshot per host."""
 
 _SERVER_ID_VARIABLE = "cloudfall_server_id"
-_SERVER_TYPE_VARIABLE = "cloudfall_server_type"
+_BASELINE_VARIABLE = "cloudfall_baseline"
 _OUTPUT_DIRECTORY_VARIABLE = "cloudfall_inspect_output_directory"
 _ANSIBLE_CONFIG_FILE = "ansible.cfg"
 _SNAPSHOT_SUFFIX = ".json"
@@ -156,14 +156,14 @@ def overlay_document(inventory: PlatformInventory) -> dict[str, object]:
     Only the group and the two derived variables: every connection setting
     stays in the team's inventory, where it already is.
     """
-    server_types = {
-        server_type.resource_id: server_type
-        for server_type in inventory.server_types
+    baselines = {
+        baseline.resource_id: baseline
+        for baseline in inventory.baselines
     }
     hosts = {
         server.resource_id.value: {
             _SERVER_ID_VARIABLE: server.resource_id.value,
-            _SERVER_TYPE_VARIABLE: server_types[server.server_type_id].as_dict(),
+            _BASELINE_VARIABLE: baselines[server.baseline_id].as_dict(),
         }
         for server in inventory.servers
     }

@@ -34,7 +34,7 @@ Render and Cloudfall describe the same things with different words:
 | Managed PostgreSQL (`databases:`) | `Service` of kind PostgreSQL: localhost-only bind, application-owned databases, peer authentication, no database passwords |
 | Custom domain | `Domain` resource: Nginx virtual host plus Let's Encrypt TLS |
 | Environment variables and env groups | Environment files under the project's `tmp/`, never in a resource; the config never contains secret values |
-| Instance type / plan | Your server (VPS or bare metal) plus its server type (`ServerType`) |
+| Instance type / plan | Your server (VPS or bare metal) plus its baseline (`Baseline`) |
 | Deploy from GitHub | `cloudfall deploy`: artifact built from a git ref, health-check gate, symlink switch, automatic rollback |
 | Render dashboard | Local read-only operations dashboard (`task dashboard`), rendered from receipts and observations; it shows the record, it does not act |
 | Deploy log | Receipts: every deploy, data migration, backup and operator decision writes a schema-validated record of what it saw, did and verified |
@@ -107,7 +107,7 @@ Treat the required-actions list as your migration checklist.
 
 Move the emitted fragment into your project's kind directories and declare
 what the blueprint cannot know about: your SSH key and the server, whose
-`ServerType` is created from the bundled Debian 13 baseline. Then validate:
+`Baseline` is created from the bundled Debian 13 baseline. Then validate:
 
 ```console
 uv run cloudfall add ssh-key ~/.ssh/id_ed25519.pub --owner roman

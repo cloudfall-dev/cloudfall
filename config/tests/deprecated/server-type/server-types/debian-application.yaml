@@ -1,6 +1,7 @@
 ---
+# A project written before 0.8.0: the Baseline kind under its old name.
 apiVersion: cloudfall/v1
-kind: ServerType
+kind: ServerType  # deprecated, read until 0.9.0
 metadata:
   id: debian-application
 spec:

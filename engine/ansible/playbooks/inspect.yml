@@ -8,7 +8,7 @@
   roles:
     - role: cloudfall_inspect
       cloudfall_inspect_server_id: "{{ cloudfall_server_id }}"
-      cloudfall_inspect_server_type: "{{ cloudfall_server_type }}"
+      cloudfall_inspect_baseline: "{{ cloudfall_baseline }}"
       cloudfall_inspect_logging_backend: >-
         {{ cloudfall_logging_backend | default({}) }}
       cloudfall_inspect_components: >-

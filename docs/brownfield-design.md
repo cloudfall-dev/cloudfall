@@ -290,7 +290,7 @@ the team's own `group_vars` and `host_vars`:
 # host_vars/web-3.yml
 cloudfall:
   environment: production
-  server_type: web
+  baseline: web
   owns: [firewall, nginx]
   components: [ledgrai-backend]
 ```
@@ -378,7 +378,7 @@ Every mutating verb runs the same pipeline:
 `unset`: `add host` refuses a host that already exists in the merged
 inventory or a group that does not, and writes both the inventory entry and
 an empty `cloudfall` block. `set` and `unset` on the `cloudfall` key are
-what `cloudfall add server-type` and the other declaration commands become.
+what `cloudfall add baseline` and the other declaration commands become.
 
 Limits, stated to the user rather than worked around:
 
@@ -430,8 +430,8 @@ so that greenfield and brownfield share one code path.
   is set to `merge`, which is deprecated and fleet-wide. A `cloudfall`
   block in `group_vars/production.yml` is therefore lost on any host that
   also has one in `host_vars`. Found on the fleet-ansible reference repo
-  on 2026-09-17, where the server-type catalog had to become a separate
-  `cloudfall_server_types` variable. Options: one flat key per concern
+  on 2026-09-17, where the baseline catalog had to become a separate
+  `cloudfall_baselines` variable. Options: one flat key per concern
   (`cloudfall_environment`, `cloudfall_owns`, ...) so each merges by
   precedence on its own; or a `cloudfall` block at host level only with
   group-level defaults read by Cloudfall itself, not by Ansible. The

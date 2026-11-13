@@ -38,7 +38,7 @@
         "environment": {
           "$ref": "common.schema.json#/$defs/resourceId"
         },
-        "serverType": {
+        "baseline": {
           "$ref": "common.schema.json#/$defs/resourceId"
         },
         "provider": {
@@ -129,7 +129,7 @@
         "hostname",
         "address",
         "environment",
-        "serverType",
+        "baseline",
         "lifecycle",
         "ssh"
       ],

@@ -23,7 +23,7 @@ class ObservedServerSnapshot:
     """One schema-validated observation of a managed server."""
 
     server_id: ResourceId
-    server_type_id: ResourceId
+    baseline_id: ResourceId
     content: Mapping[str, object]
     source: Path
 
@@ -103,7 +103,7 @@ def load_observations(
 
         snapshot = ObservedServerSnapshot(
             server_id=server_id,
-            server_type_id=ResourceId.from_boundary(spec.get("serverType")),
+            baseline_id=ResourceId.from_boundary(spec.get("baseline")),
             content=content,
             source=path,
         )

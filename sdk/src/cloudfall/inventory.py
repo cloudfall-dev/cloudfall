@@ -148,7 +148,7 @@ class ServerInventory:
     hostname: Hostname
     address: ConnectionAddress
     environment: ResourceId
-    server_type_id: ResourceId
+    baseline_id: ResourceId
     lifecycle: ServerLifecycle
     ssh_user: LinuxUser
     ssh_port: TcpPort
@@ -163,7 +163,7 @@ class ServerInventory:
             "hostname": self.hostname.value,
             "address": self.address.value,
             "environment": self.environment.value,
-            "serverType": self.server_type_id.value,
+            "baseline": self.baseline_id.value,
             "lifecycle": self.lifecycle.value,
             "ssh": {
                 "user": self.ssh_user.value,
@@ -180,7 +180,7 @@ class ServerInventory:
 
 @dataclass(frozen=True, slots=True)
 class OperatingSystemRequirement:
-    """Desired operating-system contract for a server type."""
+    """Desired operating-system contract for a baseline."""
 
     distribution: OperatingSystemDistribution
     versions: tuple[OperatingSystemMajorVersion, ...]
@@ -298,7 +298,7 @@ class ConfigurationFileRequirement:
 
 
 @dataclass(frozen=True, slots=True)
-class ServerTypeInventory:
+class BaselineInventory:
     """Reusable desired host contract."""
 
     resource_id: ResourceId
@@ -312,7 +312,7 @@ class ServerTypeInventory:
     configuration_files: tuple[ConfigurationFileRequirement, ...]
 
     def as_dict(self) -> dict[str, object]:
-        """Serialize the server_type for inspection and audit consumers."""
+        """Serialize the baseline for inspection and audit consumers."""
         required_packages: list[dict[str, object]] = []
         for package in self.required_packages:
             item: dict[str, object] = {"name": package.name.value}
@@ -1450,7 +1450,7 @@ class PlatformInventory:
     """Typed inventory of validated servers, applications, and components."""
 
     servers: tuple[ServerInventory, ...]
-    server_types: tuple[ServerTypeInventory, ...]
+    baselines: tuple[BaselineInventory, ...]
     applications: tuple[ApplicationInventory, ...]
     components: tuple[ComponentInventory, ...]
     domains: tuple[DomainInventory, ...]
@@ -1467,9 +1467,9 @@ class PlatformInventory:
             _server_inventory(document)
             for document in state.resources(ResourceKind.SERVER)
         )
-        server_types = tuple(
-            _server_type_inventory(document)
-            for document in state.resources(ResourceKind.HOST_PROFILE)
+        baselines = tuple(
+            _baseline_inventory(document)
+            for document in state.resources(ResourceKind.BASELINE)
         )
         applications = tuple(
             _application_inventory(document)
@@ -1508,7 +1508,7 @@ class PlatformInventory:
         )
         return cls(
             servers=servers,
-            server_types=server_types,
+            baselines=baselines,
             applications=applications,
             components=components,
             domains=domains,
@@ -1519,20 +1519,20 @@ class PlatformInventory:
             operator_policies=operator_policies,
         )
 
-    def server_type(self, server_type_id: ResourceId) -> ServerTypeInventory:
-        """Return an existing desired server type."""
-        server_type = next(
+    def baseline(self, baseline_id: ResourceId) -> BaselineInventory:
+        """Return an existing desired baseline."""
+        baseline = next(
             (
                 candidate
-                for candidate in self.server_types
-                if candidate.resource_id == server_type_id
+                for candidate in self.baselines
+                if candidate.resource_id == baseline_id
             ),
             None,
         )
-        if server_type is None:
-            message = f"server type does not exist: {server_type_id}"
+        if baseline is None:
+            message = f"baseline does not exist: {baseline_id}"
             raise KeyError(message)
-        return server_type
+        return baseline
 
     def components_on_server(
         self, server_id: ResourceId
@@ -1571,8 +1571,8 @@ class PlatformInventory:
         """Serialize the complete non-secret platform inventory."""
         return {
             "servers": [server.as_dict() for server in self.servers],
-            "serverTypes": [
-                server_type.as_dict() for server_type in self.server_types
+            "baselines": [
+                baseline.as_dict() for baseline in self.baselines
             ],
             "applications": [
                 application.as_dict() for application in self.applications
@@ -1598,7 +1598,7 @@ def _server_inventory(document: ResourceDocument) -> ServerInventory:
         hostname=Hostname.from_boundary(spec.get("hostname")),
         address=ConnectionAddress.from_boundary(spec.get("address")),
         environment=ResourceId.from_boundary(spec.get("environment")),
-        server_type_id=ResourceId.from_boundary(spec.get("serverType")),
+        baseline_id=ResourceId.from_boundary(spec.get("baseline")),
         lifecycle=ServerLifecycle.from_boundary(spec.get("lifecycle")),
         ssh_user=LinuxUser.from_boundary(ssh.get("user")),
         ssh_port=TcpPort.from_boundary(ssh.get("port")),
@@ -1636,7 +1636,7 @@ def _server_network(value: object) -> ServerNetwork | None:
     )
 
 
-def _server_type_inventory(document: ResourceDocument) -> ServerTypeInventory:
+def _baseline_inventory(document: ResourceDocument) -> BaselineInventory:
     spec = _mapping(document.content, "spec")
     os_requirement = _mapping(spec, "os")
     storage = _mapping(spec, "storage")
@@ -1645,7 +1645,7 @@ def _server_type_inventory(document: ResourceDocument) -> ServerTypeInventory:
     packages = _mapping(spec, "packages")
     services = _mapping(spec, "services")
     configuration = _mapping(spec, "configuration")
-    return ServerTypeInventory(
+    return BaselineInventory(
         resource_id=document.key.resource_id,
         os=OperatingSystemRequirement(
             distribution=OperatingSystemDistribution.from_boundary(
@@ -2396,7 +2396,7 @@ def _service_requirement(content: Mapping[str, object]) -> ServiceRequirement:
 def _firewall_requirement(value: object) -> FirewallRequirement | None:
     if value is None:
         return None
-    firewall = _boundary_mapping(value, "server type firewall")
+    firewall = _boundary_mapping(value, "baseline firewall")
     return FirewallRequirement(
         policy=FirewallPolicy.from_boundary(firewall.get("policy")),
         allowed_inbound=tuple(

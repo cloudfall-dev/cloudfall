@@ -166,7 +166,7 @@ def test_inventory_renders_ansible_host_variables() -> None:
                 {"port": 443, "protocol": "tcp", "description": "https"},
             ],
         },
-        "cloudfall_server_type": {
+        "cloudfall_baseline": {
             "configuration": {
                 "files": [
                     {

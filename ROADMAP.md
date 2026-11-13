@@ -206,7 +206,7 @@ routine and widen what it can carry, in rough priority order:
   per resource kind, README, `.gitignore`, and a `pyproject.toml` pinning
   Cloudfall to the running commit); only kind directories are read as
   resources, so a project carries its own playbooks, secrets, and docs.
-  `cloudfall add ssh-key|server-type|server` declares the fleet without
+  `cloudfall add ssh-key|baseline|server` declares the fleet without
   hand-writing YAML, creating the Debian 13 baseline type on first use
 - **Backup and restore as first-class operations** ✔ — `cloudfall
   backup run|verify` and the confirm-gated `backup_service` /
