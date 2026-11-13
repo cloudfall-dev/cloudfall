@@ -155,6 +155,7 @@ def test_s015_7_a_wired_host_audits_compliant(tmp_path: Path) -> None:
         {"mdadmProgram": None},
         {"mdadmProgram": "PROGRAM /usr/share/mdadm/other"},
         {"smartdScan": "DEVICESCAN -d removable -n standby -m root"},
+        {"smartdScan": f"DEVICESCAN -m root -M exec {SENDER}-old"},
     ],
 )
 def test_s015_7_missing_pieces_are_drift(

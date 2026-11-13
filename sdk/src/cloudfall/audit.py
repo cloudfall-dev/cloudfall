@@ -616,8 +616,10 @@ def _audit_alert_channel(
     mdadm_ok = not evidence.get("mdadmConfigured") or (
         isinstance(program, str) and program.split()[1:] == [sender]
     )
-    smartd_ok = not evidence.get("smartdConfigured") or (
-        isinstance(scan, str) and f"-M exec {sender}" in scan
+    words = scan.split() if isinstance(scan, str) else []
+    smartd_ok = not evidence.get("smartdConfigured") or any(
+        words[index : index + 3] == ["-M", "exec", sender]
+        for index in range(len(words))
     )
     matches = (
         evidence.get("senderInstalled") is True
