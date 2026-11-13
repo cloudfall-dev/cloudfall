@@ -1,6 +1,7 @@
 # S-011: Host requirements, satisfied by Cloudfall
 
 status: approved
+serves: G-1, G-3
 
 ## Problem
 
@@ -105,15 +106,6 @@ requirement type is a new provider, not new code in every role. v1 ships these b
   prepared needs: the `LoggingStack` resource, a storage pool in the server type, and the
   inputs Cloudfall cannot generate
 
-## Out of scope
-
-- Declaring storage pools, VGs and PVs in `ServerType`: cloudfall-dev/cloudfall#201. This spec
-  consumes that declaration
-- Third-party providers loaded from outside the package. v1 keeps the provider interface
-  internal and documented; loading external ones is a later spec
-- High availability of the logging backend
-- Requirements of `Component` (application code): same mechanism, a later spec
-
 ## Acceptance criteria
 
 - S-011-1: A project with one `Server` whose type declares a storage pool, and a
@@ -141,18 +133,36 @@ requirement type is a new provider, not new code in every role. v1 ships these b
 - S-011-10: A `LoggingStack` whose files were provided by hand before this change converges
   with every such requirement `met` and no file rewritten
 
-## Build
+## Out of scope
 
-- `migration.mode: none` (cloudfall-dev/cloudfall#203)
+- Declaring storage pools, VGs and PVs in `ServerType`: cloudfall-dev/cloudfall#201. This spec
+  consumes that declaration
+- Third-party providers loaded from outside the package. v1 keeps the provider interface
+  internal and documented; loading external ones is a later spec
+- High availability of the logging backend
+- Requirements of `Component` (application code): same mechanism, a later spec
+
+## Decisions relied on
+
+- none
+
+## Issues
+
+## Verification
+
+No criterion is verified yet. Landed so far, each checked by unit tests on the controller and
+none against a live Debian host:
+
+- `migration.mode: none` (cloudfall-dev/cloudfall#203), part of S-011-1
 - `cloudfall requirements show`: the requirements every declared `LoggingStack` places on its
-  servers, by server, read from the project only (cloudfall-dev/cloudfall#204)
-- Secrets provider, project side: each secret requirement names a key in
-  `secrets/<environment>/logging-stacks/<stack>.env`. `requirements show` gives secrets their
-  state (`met`, `will-create`, `needs-input`) from key names, which sops keeps in clear, and
-  lists in `data.missing` what a person must supply; other types say `unchecked` until their
-  provider lands. `cloudfall secrets generate` writes every missing `generate` secret;
+  servers, by server, read from the project only (cloudfall-dev/cloudfall#204), the listing
+  half of S-011-2
+- Secrets provider, project side (cloudfall-dev/cloudfall#205): each secret requirement names a
+  key in `secrets/<environment>/logging-stacks/<stack>.env`. `requirements show` gives secrets
+  their state (`met`, `will-create`, `needs-input`) from key names, which sops keeps in clear,
+  and lists in `data.missing` what a person must supply; other types say `unchecked` until
+  their provider lands. `cloudfall secrets generate` writes every missing `generate` secret;
   `cloudfall secrets input <name> --owner <id>` takes one `input` secret at a terminal with echo
   off, or through `--value-from-file` / `--value-from-env`, and off a terminal without either
-  exits 4 with `INPUT_REQUIRED`. A stored key is never overwritten (exit 6, `CONFLICT`).
-  Delivering the stored values to the host files is the next step: until then the role still
-  requires those files on the host
+  exits 4 with `INPUT_REQUIRED`. A stored key is never overwritten (exit 6, `CONFLICT`). Part of
+  S-011-2 and S-011-9; delivering the stored values to the host is the next step
