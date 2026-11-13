@@ -186,6 +186,7 @@
           "additionalProperties": false
         },
         "status": {
+          "description": "running: approved and its run started, with no outcome recorded yet; found so after the run's process ended, the run was interrupted, and it is not approved again.",
           "enum": [
             "proposed",
             "approved",
@@ -194,7 +195,8 @@
             "verified",
             "failed",
             "ran",
-            "superseded"
+            "superseded",
+            "running"
           ]
         },
         "ranExitCode": {
@@ -407,6 +409,20 @@
           "then": {
             "required": [
               "supersededBy"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "running"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "approval"
             ]
           }
         }

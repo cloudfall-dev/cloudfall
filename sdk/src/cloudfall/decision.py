@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, cast
 
 from jsonschema.exceptions import ValidationError
 
+from cloudfall import record_files
 from cloudfall.ansible_api import callback_plugin_path
 from cloudfall.ansible_data import as_ansible_data
 from cloudfall.catalog import RiskLevel, TargetScope
@@ -80,6 +81,7 @@ _ERROR_DECISION_EXISTS = "decision_exists"
 ERROR_DECISION_MISSING = "decision_missing"
 _ERROR_NOT_PROPOSED = "decision_not_proposed"
 ERROR_DECISION_REPLAYED = "decision_replayed"
+ERROR_DECISION_INTERRUPTED = "decision_run_interrupted"
 _ERROR_APPROVER_UNKNOWN = "decision_approver_unknown"
 _ERROR_CHANNEL_UNKNOWN = "decision_approval_channel_unknown"
 ERROR_RECORD_INVALID = "decision_record_invalid"
@@ -130,6 +132,14 @@ class DecisionStatus(StrEnum):
 
     SUPERSEDED = "superseded"
     """A newer proposal of the same operation, targets and inputs replaced it."""
+
+    RUNNING = "running"
+    """Approved, and its run started; no outcome is recorded yet.
+
+    Recorded before the first playbook starts, so a run whose process ended
+    before it recorded an outcome stays ``running``: it was interrupted, and
+    it is never approved again.
+    """
 
 
 def gate(risk: RiskLevel) -> tuple[Requirement, str]:
@@ -479,18 +489,32 @@ class DecisionStore:
     def save(self, decision: Decision) -> Path:
         """Persist a new decision, refusing to overwrite an existing one."""
         path = self._path(decision.decision_id)
-        if path.exists():
-            message = f"decision already exists: {path}"
-            raise DecisionError(_ERROR_DECISION_EXISTS, message)
-        return self._write(path, decision)
+        content = self._content(decision)
+        with record_files.locked(self.directory):
+            try:
+                record_files.create(path, content)
+            except FileExistsError as error:
+                message = f"decision already exists: {path}"
+                raise DecisionError(_ERROR_DECISION_EXISTS, message) from error
+        return path
 
     def update(self, decision: Decision) -> Path:
         """Persist a state change of an existing decision."""
-        path = self._path(decision.decision_id)
-        if not path.exists():
-            message = f"decision does not exist: {path}"
-            raise DecisionError(ERROR_DECISION_MISSING, message)
-        return self._write(path, decision)
+        with record_files.locked(self.directory):
+            return self._replace(decision)
+
+    def start(self, running: Decision) -> Path:
+        """Record an approved run as started, if its record is still approvable.
+
+        The record on disk is read again under the store's lock: a second
+        approval of the same decision, in this process or another, finds it
+        ``running`` and is refused before anything runs.
+        """
+        with record_files.locked(self.directory):
+            current = self.load(running.decision_id)
+            refuse_replayed(current)
+            refuse_unapprovable(current)
+            return self._replace(running)
 
     def load(self, decision_id: ResourceId) -> Decision:
         """Load and re-validate one decision record."""
@@ -529,14 +553,20 @@ class DecisionStore:
     def _path(self, decision_id: ResourceId) -> Path:
         return self.directory / f"{decision_id.value}.json"
 
-    def _write(self, path: Path, decision: Decision) -> Path:
+    def _replace(self, decision: Decision) -> Path:
+        """Replace one existing record; the caller holds the store's lock."""
+        path = self._path(decision.decision_id)
+        content = self._content(decision)
+        if not path.exists():
+            message = f"decision does not exist: {path}"
+            raise DecisionError(ERROR_DECISION_MISSING, message)
+        record_files.replace(path, content)
+        return path
+
+    def _content(self, decision: Decision) -> str:
         document = decision.as_document()
         self.catalog.validate_named(DECISION_SCHEMA, document)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            f"{json.dumps(document, indent=2, sort_keys=True)}\n", encoding="utf-8"
-        )
-        return path
+        return f"{json.dumps(document, indent=2, sort_keys=True)}\n"
 
 
 @dataclass(frozen=True, slots=True)
@@ -705,6 +735,20 @@ def approve(
     clock = now or _utc_now
     stage = _Stage(request=request, store=store, runner=run or _run_check)
     moment = clock()
+    # Nothing has run yet, so a missing Ansible leaves the decision open.
+    _ansible_playbook()
+    # The approval and the started run are on record before the first
+    # playbook starts: a run killed midway stays running, never approvable.
+    running = replace(
+        decision,
+        approval=Approval(
+            approver=request.approver.strip(),
+            approved_at=_timestamp(moment),
+            via=request.via,
+        ),
+        status=DecisionStatus.RUNNING,
+    )
+    store.start(running)
     execution = _run_stage(stage, decision.playbook, "execution", moment)
     verification = (
         _run_stage(stage, decision.verify_playbook, "verify", clock())
@@ -713,12 +757,7 @@ def approve(
     )
     status, verdict = _outcome(execution, verification, decision.verify_playbook)
     approved = replace(
-        decision,
-        approval=Approval(
-            approver=request.approver.strip(),
-            approved_at=_timestamp(moment),
-            via=request.via,
-        ),
+        running,
         execution=execution,
         verification=verification,
         status=status,
@@ -754,6 +793,19 @@ def refuse_unapprovable(decision: Decision) -> None:
             f"decision {decision.decision_id} is a read operation that ran when "
             "it was proposed, so there is nothing to approve"
         )
+    elif decision.status is DecisionStatus.RUNNING:
+        approved = (
+            f" at {decision.approval.approved_at}"
+            if decision.approval is not None
+            else ""
+        )
+        message = (
+            f"decision {decision.decision_id} was approved{approved} and its "
+            "run started, but no outcome is recorded: it is still running "
+            "or it was interrupted. It is not approved again; check the hosts, "
+            "then propose it again"
+        )
+        raise DecisionError(ERROR_DECISION_INTERRUPTED, message)
     else:
         message = (
             f"decision {decision.decision_id} is {decision.status.value}, so "
@@ -863,11 +915,8 @@ def run_command(
     leaves each host's recap counts, put ahead of the callback directories
     their configuration already names rather than in place of them.
     """
-    binary = shutil.which("ansible-playbook")
-    if binary is None:
-        message = "ansible-playbook is not installed on this controller"
-        raise DecisionError(_ERROR_ANSIBLE_MISSING, message)
-    argv = [binary, "--check", "--diff"] if check else [binary, "--diff"]
+    binary = _ansible_playbook()
+    argv =[binary, "--check", "--diff"] if check else [binary, "--diff"]
     if invocation.pattern is not None:
         argv.extend(("--limit", invocation.pattern))
     if invocation.inputs:
@@ -887,6 +936,15 @@ def run_command(
     if team is not None:
         environment["ANSIBLE_CONFIG"] = str(team.resolve())
     return tuple(argv), environment
+
+
+def _ansible_playbook() -> str:
+    """Return the ``ansible-playbook`` binary, or refuse when it is missing."""
+    binary = shutil.which("ansible-playbook")
+    if binary is None:
+        message = "ansible-playbook is not installed on this controller"
+        raise DecisionError(_ERROR_ANSIBLE_MISSING, message)
+    return binary
 
 
 def repository_relative(path: Path, repository: Path) -> Path:
