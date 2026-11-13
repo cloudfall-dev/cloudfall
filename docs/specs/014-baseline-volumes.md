@@ -1,6 +1,6 @@
 # S-014: Data volumes in a Baseline's storage pools
 
-status: draft
+status: approved
 serves: G-1, G-3
 
 ## Problem
