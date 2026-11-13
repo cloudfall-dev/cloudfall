@@ -108,7 +108,9 @@ def test_a_domain_without_upstream_stops_the_run_before_any_server(
     assert "render them;" in refusal
     assert "site-" not in refusal
     assert "UNREACHABLE" not in output
-    assert "Gathering Facts" not in output
+    # The serial play gathers facts in its own pre_task now (#254), so check
+    # that the play never started rather than for "Gathering Facts".
+    assert "PLAY [Deploy declared Cloudfall public domain routes]" not in output
 
 
 def test_domains_that_render_pass_the_check_and_reach_their_servers(

@@ -125,6 +125,7 @@ def test_s014_3_requirements_show_names_pool_lv_and_type(
     assert volumes["loki"]["physical_volumes"] == ["/dev/nvme0n1p5"]
 
 
+# proves: S-014-6
 def test_a_mirrored_volume_spans_both_physical_volumes() -> None:
     pool = StoragePool(
         ResourceId("data"),
@@ -148,6 +149,7 @@ def test_a_mirrored_volume_spans_both_physical_volumes() -> None:
     ]
 
 
+# proves: S-014-7
 def test_a_mirrored_volume_needs_a_secondary() -> None:
     pool = StoragePool(
         ResourceId("data"),

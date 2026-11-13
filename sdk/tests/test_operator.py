@@ -6,6 +6,7 @@ import io
 import itertools
 import json
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -1093,6 +1094,159 @@ def test_autonomy_enforces_the_rate_limit(tmp_path: Path) -> None:
     assert len(first.executed) == 1
     assert second.executed == ()
     assert "rate limit reached" in second.withheld[0][1]
+
+
+def _dies_midway(_proposal: object) -> None:
+    message = "killed while the playbook ran"
+    raise _KilledError(message)
+
+
+def _kill_an_autonomous_run(
+    store: ProposalStore, inventory: PlatformInventory, now: datetime
+) -> ResourceId:
+    """Run one autonomous pass whose execution dies, and return its proposal."""
+    from cloudfall.operator import autonomous_pass  # noqa: PLC0415
+
+    with pytest.raises(_KilledError):
+        autonomous_pass(
+            store,
+            inventory,
+            _dies_midway,
+            lambda _proposal: lambda _p: True,
+            _FAST_APPROVE,
+            now=now,
+        )
+    (running,) = (
+        proposal
+        for proposal in store.list()
+        if proposal.status is ProposalStatus.RUNNING
+    )
+    assert running.approval is not None
+    assert running.approval.mode == "autonomous"
+    return running.resource_id
+
+
+def test_autonomy_suspends_after_an_interrupted_autonomous_run(
+    tmp_path: Path,
+) -> None:
+    """What a killed run changed is unknown: it suspends autonomy (#258)."""
+    from cloudfall.operator import autonomous_pass  # noqa: PLC0415
+
+    store = _store(tmp_path)
+    _seed_verified_drift(store, "packages.required[git]")
+    _seed_verified_drift(store, "packages.required[rsync]")
+    drift_pass(
+        lambda: _audit_report(("packages.required[curl]", AuditStatus.DRIFT)),
+        store,
+        now="2026-09-10T11:00:00+00:00",
+    )
+    killed = _kill_an_autonomous_run(
+        store, _policied_inventory(), datetime(2026, 9, 10, 11, 0, tzinfo=UTC)
+    )
+    mark_proposal_interrupted(
+        store, killed, "alice", lambda: "2026-09-10T11:30:00+00:00"
+    )
+    drift_pass(
+        lambda: _audit_report(("packages.required[curl]", AuditStatus.DRIFT)),
+        store,
+        now="2026-09-10T11:45:00+00:00",
+    )
+    executed: list[str] = []
+
+    report = autonomous_pass(
+        store,
+        _policied_inventory(),
+        lambda proposal: executed.append(proposal.resource_id.value),
+        lambda _proposal: lambda _p: True,
+        _FAST_APPROVE,
+        now=datetime(2026, 9, 10, 14, 0, tzinfo=UTC),
+    )
+
+    assert executed == []
+    assert report.executed == ()
+    assert len(report.withheld) == 1
+    assert "receipt was interrupted" in report.withheld[0][1]
+    assert "autonomy suspended" in report.withheld[0][1]
+
+
+def test_an_interrupted_autonomous_run_counts_toward_the_rate_limit(
+    tmp_path: Path,
+) -> None:
+    """A killed autonomous run used its slot in the hour (#258)."""
+    from dataclasses import replace as dc_replace  # noqa: PLC0415
+
+    from cloudfall.domain import PositiveCount  # noqa: PLC0415
+    from cloudfall.inventory import AutonomyGrant  # noqa: PLC0415
+    from cloudfall.operator import (  # noqa: PLC0415 - test-local.
+        OperationKind,
+        autonomous_pass,
+        propose_for_drift,
+    )
+
+    inventory = _policied_inventory()
+    policy = dc_replace(
+        inventory.operator_policies[0],
+        grants=(
+            AutonomyGrant(
+                operation_kind="converge-baseline",
+                required_verified_runs=PositiveCount.from_boundary(1),
+            ),
+        ),
+        max_autonomous_per_hour=PositiveCount.from_boundary(1),
+        quiet_hours=None,
+    )
+    inventory = dc_replace(inventory, operator_policies=(policy,))
+    store = _store(tmp_path)
+    _seed_verified_drift(store, "packages.required[git]")
+    drift_pass(
+        lambda: _audit_report(("packages.required[curl]", AuditStatus.DRIFT)),
+        store,
+        now="2026-09-10T11:00:00+00:00",
+    )
+    killed = _kill_an_autonomous_run(
+        store, inventory, datetime(2026, 9, 10, 11, 0, tzinfo=UTC)
+    )
+    mark_proposal_interrupted(
+        store, killed, "alice", lambda: "2026-09-10T11:30:00+00:00"
+    )
+    # A person's verified run lifts the suspension the interruption caused,
+    # so only the rate limit can withhold the next one.
+    human = propose_for_drift(
+        ResourceId.from_boundary("h1"),
+        ("packages.required[acl]",),
+        OperationKind.CONVERGE_BASELINE,
+        "2026-09-10T11:35:00+00:00",
+    )
+    store.save(human)
+    approve(
+        store,
+        human.resource_id,
+        lambda _proposal: None,
+        lambda _proposal: True,
+        _FAST_APPROVE,
+        via=TERMINAL,
+    )
+    drift_pass(
+        lambda: _audit_report(("packages.required[unzip]", AuditStatus.DRIFT)),
+        store,
+        now="2026-09-10T11:40:00+00:00",
+    )
+
+    within = autonomous_pass(
+        store,
+        inventory,
+        lambda _proposal: None,
+        lambda _proposal: lambda _p: True,
+        _FAST_APPROVE,
+        now=datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
+    )
+
+    assert within.executed == ()
+    assert within.withheld
+    assert all(
+        "rate limit reached: 1 autonomous executions" in reason
+        for _proposal_id, reason in within.withheld
+    )
 
 
 def _drift_proposal(tmp_path: Path) -> ResourceId:

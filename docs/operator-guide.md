@@ -202,11 +202,12 @@ Autonomy is earned, bounded, and revocable:
   `requiredVerifiedRuns` verified receipts for that kind exist in the
   proposal store — human-approved runs build the trust history
 - **Suspended on failure**: if the most recent receipt for a kind failed,
-  autonomy for that kind is withheld until a human-approved run verifies
-  again
+  or was closed as `interrupted` because its run died midway, autonomy for
+  that kind is withheld until a human-approved run verifies again
 - **Rate-limited and time-bounded**: at most `maxAutonomousPerHour`
-  autonomous executions, and none during declared quiet hours; withheld
-  proposals stay open for normal human approval
+  autonomous executions, and none during declared quiet hours; an
+  autonomous run closed as `interrupted` counts from when it was confirmed
+  dead. Withheld proposals stay open for normal human approval
 - **Structurally confined**: the policy schema can only grant the
   convergence operations. DNS cutover, data deletion, and database
   promotion are not grantable — confirm forever, by construction
