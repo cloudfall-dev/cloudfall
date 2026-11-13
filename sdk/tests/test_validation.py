@@ -210,6 +210,40 @@ def test_service_rejects_duplicate_database_names(tmp_path: Path) -> None:
     assert error.value.issue.code == "service_database_duplicate"
 
 
+@pytest.mark.parametrize(
+    ("database", "scratch"),
+    [
+        ("crm", "crm_restore_check"),
+        # PostgreSQL cuts names at 63 bytes; the drill keeps the first 49.
+        ("c" * 63, "c" * 49 + "_restore_check"),
+    ],
+)
+def test_service_rejects_a_database_named_as_a_restore_drill_scratch(
+    tmp_path: Path, database: str, scratch: str
+) -> None:
+    project_directory = tmp_path / "config"
+    shutil.copytree(ROOT / "config" / "examples", project_directory)
+    service_path = project_directory / "services" / "postgresql-main.yaml"
+    colliding = service_path.read_text(encoding="utf-8").replace(
+        "      - name: crm\n        application: crm",
+        f"      - name: {database}\n        application: crm\n"
+        f"      - name: {scratch}\n        application: crm",
+    )
+    service_path.write_text(colliding, encoding="utf-8")
+
+    with pytest.raises(ConfigValidationError) as error:
+        validate_config(project_directory, SCHEMAS)
+
+    assert error.value.issue.code == "service_database_restore_check_name"
+    assert error.value.issue.field_path == (
+        "spec",
+        "postgresql",
+        "databases",
+        1,
+        "name",
+    )
+
+
 def test_second_service_of_one_kind_per_server_is_rejected(
     tmp_path: Path,
 ) -> None:
