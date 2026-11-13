@@ -1,0 +1,76 @@
+{
+  "apiVersion": "cloudfall/v1",
+  "kind": "OperationDecision",
+  "metadata": {
+    "id": "deploy-20260921150000"
+  },
+  "spec": {
+    "approval": {
+      "approvedAt": "2026-09-21T15:05:00Z",
+      "approver": "roman"
+    },
+    "basis": {
+      "observations": "tmp/observed",
+      "observedAt": {
+        "web-1": "2026-09-21T09:55:24Z"
+      }
+    },
+    "check": {
+      "changed": [
+        "web-1"
+      ],
+      "diff": {
+        "bytes": 22,
+        "path": "decisions/deploy-20260921150000.diff",
+        "sha256": "3f9a3a0bb5b0b0e1f9c2c97b2a0c7f6a4e4d1b0c9a8f7e6d5c4b3a2918070605"
+      },
+      "exitCode": 0,
+      "unchanged": []
+    },
+    "execution": {
+      "changed": [
+        "web-1"
+      ],
+      "exitCode": 0,
+      "log": {
+        "bytes": 1204,
+        "path": "decisions/deploy-20260921150000-execution.log",
+        "sha256": "8c1f0e2d3b4a59687766554433221100ffeeddccbbaa99887766554433221100"
+      },
+      "ranAt": "2026-09-21T15:05:00Z",
+      "unchanged": []
+    },
+    "gate": {
+      "reason": "a mutating operation runs in check mode first and waits for an approval of the recorded diff",
+      "requirement": "check-then-approve"
+    },
+    "inputs": {
+      "version": "1.4.0"
+    },
+    "operation": {
+      "id": "deploy",
+      "playbook": "playbooks/deploy.yml",
+      "risk": "mutating",
+      "verifyPlaybook": "playbooks/health.yml"
+    },
+    "proposedAt": "2026-09-21T15:00:00Z",
+    "status": "verified",
+    "targets": {
+      "pattern": "web-1",
+      "scope": "host"
+    },
+    "verify": {
+      "changed": [],
+      "exitCode": 0,
+      "log": {
+        "bytes": 640,
+        "path": "decisions/deploy-20260921150000-verify.log",
+        "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      },
+      "ranAt": "2026-09-21T15:05:40Z",
+      "unchanged": [
+        "web-1"
+      ]
+    }
+  }
+}

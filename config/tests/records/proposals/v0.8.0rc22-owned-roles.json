@@ -1,0 +1,66 @@
+{
+  "apiVersion": "cloudfall/v1",
+  "kind": "OperatorProposal",
+  "metadata": {
+    "id": "op-20261110080000-5566778899aabbcc",
+    "description": "Declared alert postgresql-down is firing: service postgresql-main on server h1 stopped satisfying its rule; converging declared services restores the declared state"
+  },
+  "spec": {
+    "createdAt": "2026-11-10T08:00:00+00:00",
+    "status": "verified",
+    "trigger": {
+      "kind": "alert",
+      "fingerprint": "5566778899aabbcc",
+      "alert": {
+        "name": "postgresql_down",
+        "cloudfallRule": "postgresql-down",
+        "severity": "critical",
+        "environment": "production",
+        "server": "h1",
+        "service": "postgresql-main",
+        "activeAt": "2026-11-10T07:58:00Z"
+      }
+    },
+    "diagnosis": {
+      "summary": "Declared alert postgresql-down is firing: service postgresql-main on server h1 stopped satisfying its rule; converging declared services restores the declared state",
+      "evidence": [
+        "alert postgresql_down firing since 2026-11-10T07:58:00Z",
+        "labels: severity=critical environment=production server=h1 service=postgresql-main",
+        "fingerprint 5566778899aabbcc"
+      ]
+    },
+    "operation": {
+      "kind": "converge-services",
+      "server": "h1",
+      "command": [
+        "cloudfall-engine",
+        "playbook",
+        "services.yml"
+      ],
+      "service": "postgresql-main"
+    },
+    "approval": {
+      "mode": "human",
+      "via": "terminal"
+    },
+    "outcome": {
+      "executedAt": "2026-11-10T08:01:00+00:00",
+      "verifiedAt": "2026-11-10T08:01:40+00:00",
+      "result": "verified",
+      "detail": "trigger evidence resolved after convergence; observed outcome matches the declared state",
+      "ownedRoles": [
+        {
+          "service": "postgresql-main",
+          "owner": "crm_owner",
+          "passwordRef": {
+            "environment": "production",
+            "path": "/postgresql/crm",
+            "key": "CRM_OWNER_PASSWORD"
+          },
+          "key": "CRM_OWNER_PASSWORD",
+          "sha256": "b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c"
+        }
+      ]
+    }
+  }
+}
