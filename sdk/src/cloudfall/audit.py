@@ -6,14 +6,20 @@ import json
 import re
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from ipaddress import ip_network
 from typing import TYPE_CHECKING, cast
 
+from cryptography import x509
+
 from cloudfall.inventory import (
     firewall_rules_for_server,
+    logging_gateway_rules_for_server,
     remote_access_rules_for_server,
 )
+from cloudfall.pki import RENEW_BEFORE, certificate_names
+from cloudfall.requirements import CertificateRequirement, requirements_of
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -30,6 +36,7 @@ if TYPE_CHECKING:
         RaidRequirement,
         ServerInventory,
         ServiceInventory,
+        SourceRestrictedFirewallRule,
     )
     from cloudfall.observation import ObservationSet, ObservedServerSnapshot
 
@@ -137,6 +144,14 @@ def audit_inventory(
 ) -> AuditReport:
     """Audit every desired server against its validated observation."""
     receipts = environment_receipts if environment_receipts is not None else {}
+    certificates = {
+        server.server_id.value: tuple(
+            requirement.spec
+            for requirement in server.requirements
+            if isinstance(requirement.spec, CertificateRequirement)
+        )
+        for server in requirements_of(inventory)
+    }
     stacks_by_backend = {
         stack.backend.server_id: stack for stack in inventory.logging_stacks
     }
@@ -157,6 +172,8 @@ def audit_inventory(
             ),
             receipts,
             observations.for_server(server.resource_id),
+            _gateway_rules(server, inventory),
+            certificates.get(server.resource_id.value, ()),
         )
         for server in inventory.servers
     )
@@ -183,6 +200,8 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
     components: tuple[ComponentInventory, ...],
     environment_receipts: Mapping[str, str],
     snapshot: ObservedServerSnapshot | None,
+    gateway_rules: tuple[SourceRestrictedFirewallRule, ...] = (),
+    certificates: tuple[CertificateRequirement, ...] = (),
 ) -> ServerAudit:
     if snapshot is None:
         check = AuditCheck(
@@ -218,8 +237,11 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
     checks.extend(_audit_services(baseline, snapshot))
     if baseline.firewall is not None:
         checks.extend(
-            _audit_firewall(server, baseline.firewall, services, snapshot)
+            _audit_firewall(
+                server, baseline.firewall, services, gateway_rules, snapshot
+            )
         )
+    checks.extend(_audit_certificates(certificates, snapshot))
     checks.extend(_audit_service_binds(services, snapshot))
     checks.extend(_audit_alert_rules(alert_rules, snapshot))
     checks.extend(
@@ -448,6 +470,7 @@ def _audit_firewall(
     server: ServerInventory,
     firewall: FirewallRequirement,
     services: tuple[ServiceInventory, ...],
+    gateway_rules: tuple[SourceRestrictedFirewallRule, ...],
     snapshot: ObservedServerSnapshot,
 ) -> tuple[AuditCheck, ...]:
     evidence = _mapping(snapshot.spec, "firewall")
@@ -465,7 +488,10 @@ def _audit_firewall(
         ]
         + [
             (rule.protocol.value, rule.port.value, source.value)
-            for rule in remote_access_rules_for_server(server, services)
+            for rule in (
+                *remote_access_rules_for_server(server, services),
+                *gateway_rules,
+            )
             for source in rule.sources
         ]
     )
@@ -496,6 +522,94 @@ def _audit_firewall(
             ),
             matches=observed_rules == expected_rules,
         ),
+    )
+
+
+def _gateway_rules(
+    server: ServerInventory, inventory: PlatformInventory
+) -> tuple[SourceRestrictedFirewallRule, ...]:
+    """Return the logging gateway rules the engine renders for ``server`` (S-011)."""
+    baseline = inventory.baseline(server.baseline_id)
+    if baseline.firewall is None:
+        return ()
+    open_ports = frozenset(
+        (rule.port.value, rule.protocol)
+        for rule in firewall_rules_for_server(baseline.firewall, server.ssh_port)
+    )
+    return logging_gateway_rules_for_server(
+        server, inventory.servers, inventory.logging_stacks, open_ports
+    )
+
+
+def _audit_certificates(
+    certificates: tuple[CertificateRequirement, ...],
+    snapshot: ObservedServerSnapshot,
+) -> tuple[AuditCheck, ...]:
+    """Check each required certificate is there, for its names, and not due (S-011).
+
+    Expiry is judged at the observation's own time, so the same snapshot
+    always audits the same way.
+    """
+    if not certificates:
+        return ()
+    observed_at = datetime.fromisoformat(_string(snapshot.spec, "observedAt"))
+    raw = snapshot.spec.get("certificates")
+    evidence = {
+        str(item["name"]): item
+        for item in (raw if isinstance(raw, list) else [])
+        if isinstance(item, dict)
+    }
+    return tuple(
+        _audit_certificate(
+            requirement, evidence.get(requirement.name.value), observed_at
+        )
+        for requirement in certificates
+    )
+
+
+def _audit_certificate(
+    requirement: CertificateRequirement,
+    evidence: Mapping[str, object] | None,
+    observed_at: datetime,
+) -> AuditCheck:
+    names = sorted(
+        name.value.removesuffix(".").lower() for name in requirement.subject_names
+    )
+    desired = {
+        "path": requirement.certificate_path.value,
+        "names": names,
+        "validForMoreThanDays": RENEW_BEFORE.days,
+    }
+    check = f"certificate.{requirement.name.value}"
+    if evidence is None:
+        return AuditCheck(
+            check=check,
+            status=AuditStatus.UNKNOWN,
+            desired=desired,
+            observed=None,
+            message="the observation carries no evidence for this certificate",
+        )
+    pem = evidence.get("certificate")
+    if not isinstance(pem, str):
+        return _comparison(check, desired, {"present": False}, matches=False)
+    try:
+        held = x509.load_pem_x509_certificate(pem.encode())
+    except ValueError:
+        unreadable = {"present": True, "readable": False}
+        return _comparison(check, desired, unreadable, matches=False)
+    held_names = sorted(certificate_names(held))
+    remaining = held.not_valid_after_utc - observed_at
+    observed = {
+        "present": True,
+        "names": held_names,
+        "notAfter": held.not_valid_after_utc.isoformat(),
+        "issuer": held.issuer.rfc4514_string(),
+    }
+    return _comparison(
+        check,
+        desired,
+        observed,
+        matches=held_names == names and remaining > RENEW_BEFORE,
     )
 
 

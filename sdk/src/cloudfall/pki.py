@@ -170,7 +170,7 @@ class ProjectCa:
         }
         current = (
             held.not_valid_after_utc - now > RENEW_BEFORE
-            and _names(held) == names
+            and certificate_names(held) == names
             and _usage(held) is requirement.usage
         )
         return CertificateState.MET if current else CertificateState.WILL_RENEW
@@ -295,7 +295,8 @@ def _general_name(name: str) -> x509.GeneralName:
         return x509.DNSName(name)
 
 
-def _names(certificate: x509.Certificate) -> set[str]:
+def certificate_names(certificate: x509.Certificate) -> set[str]:
+    """Return a certificate's DNS and IP subject alternative names, lowercased."""
     try:
         extension = certificate.extensions.get_extension_for_class(
             x509.SubjectAlternativeName

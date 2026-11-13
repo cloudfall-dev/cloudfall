@@ -12,6 +12,7 @@ from cloudfall.inventory import (
     logging_gateway_rules_for_server,
     remote_access_rules_for_server,
 )
+from cloudfall.requirements import CertificateRequirement, requirements_of
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -113,6 +114,7 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
     components_by_id = {
         component.resource_id: component for component in inventory.components
     }
+    certificates = _certificates_by_server(inventory)
     return {
         server.resource_id.value: {
             "ansible_host": server.address.value,
@@ -141,6 +143,11 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
                 inventory.servers,
                 inventory.logging_stacks,
                 inventory.alert_rules,
+            ),
+            **(
+                {"cloudfall_certificates": certificates[server.resource_id.value]}
+                if server.resource_id.value in certificates
+                else {}
             ),
             "cloudfall_baseline": baselines_by_id[server.baseline_id].as_dict(),
             # Deprecated name of cloudfall_baseline, the same value, kept so a
@@ -173,6 +180,30 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
             ],
         }
         for server in inventory.servers
+    }
+
+
+def _certificates_by_server(
+    inventory: PlatformInventory,
+) -> dict[str, list[dict[str, str]]]:
+    """Return, by server, the certificates its host requirements name (S-011).
+
+    ``inspect`` reads them, so ``audit`` can see each one's names and expiry.
+    """
+    return {
+        server.server_id.value: [
+            {
+                "name": requirement.spec.name.value,
+                "path": requirement.spec.certificate_path.value,
+            }
+            for requirement in server.requirements
+            if isinstance(requirement.spec, CertificateRequirement)
+        ]
+        for server in requirements_of(inventory)
+        if any(
+            isinstance(requirement.spec, CertificateRequirement)
+            for requirement in server.requirements
+        )
     }
 
 

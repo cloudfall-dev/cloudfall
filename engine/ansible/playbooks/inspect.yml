@@ -13,3 +13,5 @@
         {{ cloudfall_logging_backend | default({}) }}
       cloudfall_inspect_components: >-
         {{ cloudfall_components | default([]) }}
+      cloudfall_inspect_certificates: >-
+        {{ cloudfall_certificates | default([]) }}

@@ -625,6 +625,10 @@
       }}
   when: cloudfall_inspect_logging_backend | length > 0
 
+- name: Collect certificate evidence
+  ansible.builtin.include_tasks: certificates.yml
+  when: cloudfall_inspect_certificates | length > 0
+
 - name: Create controller observation directory
   ansible.builtin.file:
     path: "{{ cloudfall_inspect_output_directory }}"

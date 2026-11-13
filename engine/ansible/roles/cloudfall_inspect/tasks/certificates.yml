@@ -1,0 +1,44 @@
+---
+# Certificates the server's host requirements name (S-011): read, never keys
+- name: Inspect the certificates the host's requirements name
+  ansible.builtin.stat:
+    path: "{{ cloudfall_inspect_certificate_item.path }}"
+  loop: "{{ cloudfall_inspect_certificates }}"
+  loop_control:
+    loop_var: cloudfall_inspect_certificate_item
+    label: "{{ cloudfall_inspect_certificate_item.path }}"
+  register: cloudfall_inspect_certificate_files
+
+- name: Read the certificates in place
+  ansible.builtin.slurp:
+    src: "{{ cloudfall_inspect_certificate_file.stat.path }}"
+  loop: "{{ cloudfall_inspect_certificate_files.results | default([]) }}"
+  loop_control:
+    loop_var: cloudfall_inspect_certificate_file
+    label: "{{ cloudfall_inspect_certificate_file.cloudfall_inspect_certificate_item.path }}"
+  when: cloudfall_inspect_certificate_file.stat.exists
+  register: cloudfall_inspect_certificate_contents
+
+- name: Attach certificate evidence
+  ansible.builtin.set_fact:
+    cloudfall_inspect_snapshot: >-
+      {{
+        cloudfall_inspect_snapshot | combine(
+          {'spec': {'certificates': cloudfall_inspect_certificate_evidence}},
+          recursive=true
+        )
+      }}
+  vars:
+    cloudfall_inspect_certificate_evidence: >-
+      {%- set evidence = [] -%}
+      {%- for read in cloudfall_inspect_certificate_contents.results | default([]) -%}
+      {%- set item = read.cloudfall_inspect_certificate_file
+                       .cloudfall_inspect_certificate_item -%}
+      {%- set _ = evidence.append({
+            'name': item.name,
+            'path': item.path,
+            'exists': read.content is defined,
+            'certificate': (read.content | b64decode) if read.content is defined
+                           else none}) -%}
+      {%- endfor -%}
+      {{ evidence }}
