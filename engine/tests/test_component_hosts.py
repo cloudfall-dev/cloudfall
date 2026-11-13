@@ -1,16 +1,19 @@
-"""Deploy, rollback, restart and backup contact only the servers they act on.
+"""Deploy, rollback, restart, health and backup contact only their servers.
 
 Each playbook runs for real under ``ansible-playbook`` against two declared
 servers: ``h2`` runs locally, and ``h1`` points at a closed local SSH port,
 so contacting it makes it unreachable. ``h1`` comes first in inventory order,
 so a play over every server would fail on it before it reached ``h2``. The
 deploy role is replaced, through ``--roles``, by one that records each host.
+When the component is on both servers, an unreachable one must stop the
+rollout before the next server, which ``any_errors_fatal`` alone does not do.
 """
 
 from __future__ import annotations
 
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -47,17 +50,32 @@ EXTRA_VARS: dict[str, dict[str, str]] = {
         "cloudfall_deploy_release": RELEASE,
     },
     "restart": {"cloudfall_deploy_component_id": "crm-backend"},
+    "health": {"cloudfall_deploy_component_id": "crm-backend"},
 }
+COMPONENT_PLAYBOOKS = list(EXTRA_VARS)
+ROLLOUT_PLAYBOOKS = ["deploy", "rollback", "restart"]
 
 
-def _project(tmp_path: Path, *, release: bool) -> Path:
-    """Copy the examples with crm-backend and postgresql-main on h2 only."""
+@dataclass(frozen=True)
+class Fleet:
+    """Where crm-backend runs, and which declared servers cannot be reached."""
+
+    servers: tuple[str, ...] = ("h2",)
+    unreachable: tuple[str, ...] = ("h1",)
+    release: bool = False
+
+
+DEFAULT_FLEET = Fleet()
+
+
+def _project(tmp_path: Path, fleet: Fleet) -> Path:
+    """Copy the examples with crm-backend on its servers, postgresql-main on h2."""
     project = tmp_path / "project"
     copy_examples(project)
     component = project / "components" / "crm-backend.yaml"
     document = yaml.safe_load(component.read_text(encoding="utf-8"))
-    document["spec"]["deployment"]["servers"] = ["h2"]
-    if release:
+    document["spec"]["deployment"]["servers"] = list(fleet.servers)
+    if fleet.release:
         document["spec"]["release"] = {"command": ["bin/migrate"]}
     component.write_text(yaml.safe_dump(document), encoding="utf-8")
     service = project / "services" / "postgresql-main.yaml"
@@ -72,25 +90,28 @@ def _project(tmp_path: Path, *, release: bool) -> Path:
     return project
 
 
-def _inventory(tmp_path: Path, *, release: bool) -> Path:
-    state = validate_config(_project(tmp_path, release=release), SCHEMAS)
+def _inventory(tmp_path: Path, fleet: Fleet) -> Path:
+    state = validate_config(_project(tmp_path, fleet), SCHEMAS)
     rendered = render_ansible_inventory(PlatformInventory.from_state(state))
     hosts = rendered["all"]["children"]["cloudfall_servers"]["hosts"]  # type: ignore[index]
     assert list(hosts) == ["h1", "h2"]
-    hosts["h1"].update(
-        {
-            "ansible_connection": "ssh",
-            "ansible_host": "127.0.0.1",
-            "ansible_port": 1,
-            "ansible_ssh_common_args": "-o ConnectTimeout=5",
-        }
-    )
-    hosts["h2"].update(
-        {
-            "ansible_connection": "local",
-            "ansible_python_interpreter": sys.executable,
-        }
-    )
+    for host, variables in hosts.items():
+        if host in fleet.unreachable:
+            variables.update(
+                {
+                    "ansible_connection": "ssh",
+                    "ansible_host": "127.0.0.1",
+                    "ansible_port": 1,
+                    "ansible_ssh_common_args": "-o ConnectTimeout=5",
+                }
+            )
+        else:
+            variables.update(
+                {
+                    "ansible_connection": "local",
+                    "ansible_python_interpreter": sys.executable,
+                }
+            )
     inventory = tmp_path / "inventory.json"
     inventory.write_text(json.dumps(rendered), encoding="utf-8")
     return inventory
@@ -100,7 +121,7 @@ def _roles(tmp_path: Path) -> Path:
     roles = tmp_path / "roles"
     tasks = roles / "cloudfall_deploy" / "tasks"
     tasks.mkdir(parents=True)
-    for name in ("main.yml", "rollback.yml", "restart.yml"):
+    for name in ("main.yml", "rollback.yml", "restart.yml", "health.yml"):
         (tasks / name).write_text(STUB_TASKS, encoding="utf-8")
     return roles
 
@@ -109,14 +130,14 @@ def _run(
     tmp_path: Path,
     playbook: str,
     extra_vars: dict[str, str],
-    *,
-    release: bool = False,
+    fleet: Fleet = DEFAULT_FLEET,
 ) -> int:
+    inventory = _inventory(tmp_path, fleet)
     return main(
         [
             *("playbook", "run", playbook),
             *("--engine", str(ENGINE)),
-            *("--inventory", str(_inventory(tmp_path, release=release))),
+            *("--inventory", str(inventory)),
             *("--roles", str(_roles(tmp_path))),
             "--extra-vars",
             json.dumps({**extra_vars, "ansible_become": False}),
@@ -124,7 +145,7 @@ def _run(
     )
 
 
-@pytest.mark.parametrize("playbook", ["deploy", "rollback", "restart"])
+@pytest.mark.parametrize("playbook", COMPONENT_PLAYBOOKS)
 def test_an_unreachable_server_without_the_component_does_not_fail_it(
     playbook: str, tmp_path: Path
 ) -> None:
@@ -138,6 +159,72 @@ def test_an_unreachable_server_without_the_component_does_not_fail_it(
     assert log.read_text(encoding="utf-8").splitlines() == ["h2"]
 
 
+@pytest.mark.parametrize("playbook", ROLLOUT_PLAYBOOKS)
+def test_an_unreachable_server_of_the_component_stops_the_rollout(
+    playbook: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """h1 comes first and is unreachable, so h2 must never be touched."""
+    log = tmp_path / "hosts.log"
+
+    exit_code = _run(
+        tmp_path,
+        playbook,
+        {**EXTRA_VARS[playbook], "stub_log": str(log)},
+        Fleet(servers=("h1", "h2")),
+    )
+
+    output = capsys.readouterr().err
+    assert exit_code == 82
+    assert "UNREACHABLE!" in output
+    assert "Stopped before h2: the run did not finish on h1" in output
+    assert not log.exists()
+
+
+@pytest.mark.parametrize("playbook", ROLLOUT_PLAYBOOKS)
+def test_every_reached_server_of_the_component_rolls_out_in_order(
+    playbook: str, tmp_path: Path
+) -> None:
+    log = tmp_path / "hosts.log"
+
+    exit_code = _run(
+        tmp_path,
+        playbook,
+        {**EXTRA_VARS[playbook], "stub_log": str(log)},
+        Fleet(servers=("h1", "h2"), unreachable=()),
+    )
+
+    assert exit_code == 0
+    assert log.read_text(encoding="utf-8").splitlines() == ["h1", "h2"]
+
+
+@pytest.mark.parametrize(("release_server", "other"), [("h1", "h2"), ("h2", "h1")])
+def test_an_unreachable_release_server_stops_the_rollout(
+    release_server: str,
+    other: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The release server deploys in its own play; missing it stops the rest."""
+    log = tmp_path / "hosts.log"
+
+    exit_code = _run(
+        tmp_path,
+        "deploy",
+        {**EXTRA_VARS["deploy"], "stub_log": str(log)},
+        Fleet(
+            servers=(release_server, other),
+            unreachable=(release_server,),
+            release=True,
+        ),
+    )
+
+    output = capsys.readouterr().err
+    stopped = f"Stopped before {other}: the run did not finish on {release_server}"
+    assert exit_code == 82
+    assert stopped in output
+    assert not log.exists()
+
+
 def test_a_release_server_deploys_once_without_the_unrelated_server(
     tmp_path: Path,
 ) -> None:
@@ -148,14 +235,14 @@ def test_a_release_server_deploys_once_without_the_unrelated_server(
         tmp_path,
         "deploy",
         {**EXTRA_VARS["deploy"], "stub_log": str(log)},
-        release=True,
+        Fleet(release=True),
     )
 
     assert exit_code == 0
     assert log.read_text(encoding="utf-8").splitlines() == ["h2"]
 
 
-@pytest.mark.parametrize("playbook", ["deploy", "rollback", "restart"])
+@pytest.mark.parametrize("playbook", COMPONENT_PLAYBOOKS)
 def test_a_component_without_a_group_fails_before_any_host(
     playbook: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -173,7 +260,7 @@ def test_a_component_without_a_group_fails_before_any_host(
     assert not log.exists()
 
 
-@pytest.mark.parametrize("playbook", ["deploy", "rollback", "restart"])
+@pytest.mark.parametrize("playbook", COMPONENT_PLAYBOOKS)
 def test_a_run_without_a_component_id_fails_before_any_host(
     playbook: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
