@@ -574,12 +574,14 @@ def _deploy(
     rendered = render_ansible_inventory(PlatformInventory.from_state(state))
     hosts = rendered["all"]["children"]["cloudfall_servers"]["hosts"]  # type: ignore[index]
     assert list(hosts) == ["h1", "h2"]
-    for host in hosts.values():
+    for name, host in hosts.items():
         host.update(
             {
                 "ansible_connection": "local",
                 "ansible_python_interpreter": sys.executable,
                 "ansible_become": False,
+                # Each stand-in keeps its component locks apart (#221).
+                "cloudfall_component_lock_directory": str(tmp_path / f"{name}-locks"),
             }
         )
     inventory = tmp_path / "inventory.json"

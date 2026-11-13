@@ -94,9 +94,9 @@ KEY_TYPES: dict[str, str] = {
             "added", "answers", "components", "decisions", "declaredKeys",
             "domains", "environmentFiles", "executed", "files", "gaps", "keys",
             "missing", "next", "observations", "observed", "operations",
-            "proposals", "proposed", "references", "requested", "servers",
-            "services", "skipped", "steps", "unmatchedObservations", "upgraded",
-            "withheld", "written",
+            "proposals", "proposed", "references", "requested", "serverLocks",
+            "servers", "services", "skipped", "steps", "unmatchedObservations",
+            "unreadServers", "upgraded", "withheld", "written",
         ),
         "array",
     ),
@@ -615,18 +615,26 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
     CommandContract(
         "cloudfall",
         "lock clear",
-        CommandEffect.PROJECT,
-        "remove the lock under `tmp/locks/` that a deploy, rollback, restart or "
-        "build of one component left behind; a person types the component id "
-        "at a terminal, which no flag answers (`--yes` included), and a lock "
+        CommandEffect.SERVERS,
+        "remove the locks a deploy, rollback, restart or build of one component "
+        "left behind, under `tmp/locks/` and on each of its servers; a lock "
         "whose process still runs on this host is never removed",
+        gate=(
+            "a person types the component id at a terminal, which no flag "
+            "answers (`--yes` included); only the locks it showed are removed"
+        ),
         output=(
             _shape(
                 "status",
                 "component",
                 "lock",
+                "serverLocks",
+                "unreadServers",
                 "cleared",
-                when="`lock` is `{}` and `cleared` false when no run held the lock",
+                when=(
+                    "`lock` is `{}` and `serverLocks` empty when no run held it; "
+                    "`cleared` is false then"
+                ),
             ),
         ),
     ),

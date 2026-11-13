@@ -15,7 +15,9 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 import yaml
@@ -24,6 +26,9 @@ from cloudfall.validation import validate_config
 from cloudfall_engine.ansible_inventory import render_ansible_inventory
 from cloudfall_engine.cli import main
 from examples_project import copy_examples
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -41,6 +46,26 @@ STUB_TASKS = """---
     create: true
     mode: "0644"
   delegate_to: localhost
+
+- name: See whether the component's lock is held while the role runs
+  ansible.builtin.stat:
+    path: "{{ cloudfall_component_lock_directory }}/crm-backend.json"
+  register: stub_lock
+  when: stub_lock_log is defined
+
+- name: Record whether it was
+  ansible.builtin.lineinfile:
+    path: "{{ stub_lock_log }}"
+    line: "{{ cloudfall_server_id }}:{{ stub_lock.stat.exists }}"
+    create: true
+    mode: "0644"
+  delegate_to: localhost
+  when: stub_lock_log is defined
+
+- name: Fail as a broken role would
+  ansible.builtin.fail:
+    msg: the stub role failed
+  when: stub_fail | default(false) | bool
 """
 EXTRA_VARS: dict[str, dict[str, str]] = {
     "deploy": {
@@ -137,6 +162,8 @@ def _inventory(tmp_path: Path, fleet: Fleet) -> Path:
     hosts = rendered["all"]["children"]["cloudfall_servers"]["hosts"]  # type: ignore[index]
     assert list(hosts) == ["h1", "h2"]
     for host, variables in hosts.items():
+        # Both stand-ins share this machine, so each keeps its locks apart.
+        variables["cloudfall_component_lock_directory"] = str(_locks(tmp_path, host))
         if host in fleet.unreachable:
             variables.update(
                 {
@@ -158,6 +185,11 @@ def _inventory(tmp_path: Path, fleet: Fleet) -> Path:
     return inventory
 
 
+def _locks(tmp_path: Path, server: str) -> Path:
+    """Where the stand-in server keeps its component locks."""
+    return tmp_path / f"{server}-locks"
+
+
 def _roles(tmp_path: Path) -> Path:
     roles = tmp_path / "roles"
     tasks = roles / "cloudfall_deploy" / "tasks"
@@ -174,7 +206,7 @@ def _roles(tmp_path: Path) -> Path:
 def _run(
     tmp_path: Path,
     playbook: str,
-    extra_vars: dict[str, str],
+    extra_vars: Mapping[str, object],
     fleet: Fleet = DEFAULT_FLEET,
 ) -> int:
     inventory = _inventory(tmp_path, fleet)
@@ -418,3 +450,127 @@ def test_backup_of_a_service_on_no_server_fails_before_any_host(
     assert exit_code == 82
     assert "absent-service" in output
     assert "UNREACHABLE!" not in output
+
+
+# The component's lock on each server (#221). These runs go through
+# cloudfall-engine, as an engine run or an approval's run would, so they hold
+# the lock without the CLI's lock on the management host.
+
+HELD_TOKEN = "f" * 32
+
+
+def _leave_server_lock(tmp_path: Path, server: str, *, hours_ago: int) -> Path:
+    """Write the record another run's deploy holds on ``server``."""
+    since = datetime.now(UTC).replace(microsecond=0) - timedelta(hours=hours_ago)
+    record = {
+        "component": "crm-backend",
+        "action": "deploy",
+        "user": "someone",
+        "host": "elsewhere.invalid",
+        "since": since.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "token": HELD_TOKEN,
+    }
+    lock = _locks(tmp_path, server) / "crm-backend.json"
+    lock.parent.mkdir(parents=True)
+    lock.write_text(json.dumps(record), encoding="utf-8")
+    return lock
+
+
+def _held_locks(tmp_path: Path) -> list[Path]:
+    """Every component lock, or staged record, left on either stand-in."""
+    return sorted(
+        path
+        for server in ("h1", "h2")
+        if _locks(tmp_path, server).is_dir()
+        for path in _locks(tmp_path, server).iterdir()
+    )
+
+
+@pytest.mark.parametrize("playbook", ROLLOUT_PLAYBOOKS)
+def test_a_lock_another_run_holds_stops_the_run_on_that_server(
+    playbook: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The race: before the lock both runs moved current and the unit at once."""
+    log = tmp_path / "hosts.log"
+    lock = _leave_server_lock(tmp_path, "h2", hours_ago=2)
+
+    exit_code = _run(
+        tmp_path, playbook, {**EXTRA_VARS[playbook], "stub_log": str(log)}
+    )
+
+    output = " ".join(capsys.readouterr().err.split())
+    assert exit_code == 82
+    assert (
+        "Component crm-backend is locked on server h2 by a deploy that someone "
+        "started on elsewhere.invalid at"
+    ) in output
+    assert "2 hours ago; nothing changed on this server" in output
+    assert "`cloudfall lock clear crm-backend`" in output
+    assert not log.exists(), "the role ran under another run's lock"
+    assert json.loads(lock.read_text(encoding="utf-8"))["token"] == HELD_TOKEN
+    assert _held_locks(tmp_path) == [lock]
+
+
+def test_a_lock_on_the_release_server_stops_the_deploy_before_its_command(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The release server deploys in its own play, and takes the lock there."""
+    log = tmp_path / "hosts.log"
+    _leave_server_lock(tmp_path, "h2", hours_ago=0)
+
+    exit_code = _run(
+        tmp_path,
+        "deploy",
+        {**EXTRA_VARS["deploy"], "stub_log": str(log)},
+        Fleet(release=True),
+    )
+
+    output = " ".join(capsys.readouterr().err.split())
+    assert exit_code == 82
+    assert "Component crm-backend is locked on server h2 by a deploy" in output
+    assert "seconds ago" in output
+    assert not log.exists()
+
+
+@pytest.mark.parametrize("playbook", ROLLOUT_PLAYBOOKS)
+@pytest.mark.parametrize("fails", [False, True], ids=["passed", "failed"])
+def test_each_server_holds_the_lock_while_its_role_runs_and_releases_it(
+    playbook: str, fails: bool, tmp_path: Path  # noqa: FBT001 - a pytest parameter
+) -> None:
+    log = tmp_path / "hosts.log"
+    lock_log = tmp_path / "locks.log"
+
+    exit_code = _run(
+        tmp_path,
+        playbook,
+        {
+            **EXTRA_VARS[playbook],
+            "stub_log": str(log),
+            "stub_lock_log": str(lock_log),
+            "stub_fail": fails,
+        },
+        Fleet(servers=("h1", "h2"), unreachable=()),
+    )
+
+    assert exit_code == (82 if fails else 0)
+    held = lock_log.read_text(encoding="utf-8").splitlines()
+    assert held == (["h1:True"] if fails else ["h1:True", "h2:True"])
+    assert _held_locks(tmp_path) == []
+
+
+def test_an_unreachable_server_leaves_no_other_server_locked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log = tmp_path / "hosts.log"
+
+    exit_code = _run(
+        tmp_path,
+        "restart",
+        {**EXTRA_VARS["restart"], "stub_log": str(log)},
+        Fleet(servers=("h1", "h2"), unreachable=("h2",)),
+    )
+
+    assert exit_code == 82
+    assert "UNREACHABLE!" in capsys.readouterr().err
+    assert log.read_text(encoding="utf-8").splitlines() == ["h1"]
+    assert _held_locks(tmp_path) == []

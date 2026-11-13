@@ -43,18 +43,31 @@
     - name: Stop at a server whose earlier servers did not finish
       ansible.builtin.import_tasks: tasks/rollout-start.yml
   tasks:
-    - name: Restart the selected component on its declared servers
-      ansible.builtin.include_role:
-        name: cloudfall_deploy
-        tasks_from: restart
-      vars:
-        cloudfall_deploy_component: "{{ cloudfall_component_item }}"
-      loop: >-
-        {{
-          cloudfall_components | default([])
-          | selectattr('id', 'equalto', cloudfall_deploy_component_id)
-          | list
-        }}
-      loop_control:
-        loop_var: cloudfall_component_item
-        label: "{{ cloudfall_component_item.id }}"
+    # A dry run (--check) changes nothing, so it takes no lock.
+    - name: Hold the component's lock on the server for the restart
+      block:
+        - name: Take the component's lock
+          ansible.builtin.import_tasks: tasks/component-lock-take.yml
+          vars:
+            cloudfall_component_lock_action: restart
+          when: not ansible_check_mode
+
+        - name: Restart the selected component on its declared servers
+          ansible.builtin.include_role:
+            name: cloudfall_deploy
+            tasks_from: restart
+          vars:
+            cloudfall_deploy_component: "{{ cloudfall_component_item }}"
+          loop: >-
+            {{
+              cloudfall_components | default([])
+              | selectattr('id', 'equalto', cloudfall_deploy_component_id)
+              | list
+            }}
+          loop_control:
+            loop_var: cloudfall_component_item
+            label: "{{ cloudfall_component_item.id }}"
+      always:
+        - name: Release the component's lock
+          ansible.builtin.import_tasks: tasks/component-lock-release.yml
+          when: not ansible_check_mode

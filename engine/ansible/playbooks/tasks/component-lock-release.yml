@@ -1,0 +1,23 @@
+---
+# Release the component's lock this run took with component-lock-take.yml
+# (#221). Import it in the `always` of the block that took it. A lock this run
+# did not take (another run's, or one a person cleared and a new run took) is
+# left as it is.
+- name: Read the component's lock before releasing it
+  ansible.builtin.slurp:
+    src: "{{ cloudfall_component_lock_path }}"
+  register: cloudfall_component_lock_current
+  failed_when: false
+  when:
+    - cloudfall_component_lock_take is defined
+    - cloudfall_component_lock_take.rc | default(1) == 0
+
+- name: Release the component's lock this run took
+  ansible.builtin.file:
+    path: "{{ cloudfall_component_lock_path }}"
+    state: absent
+  when:
+    - cloudfall_component_lock_current.content is defined
+    - >-
+      (cloudfall_component_lock_current.content | b64decode | from_json).token
+      == cloudfall_component_lock_holder.token

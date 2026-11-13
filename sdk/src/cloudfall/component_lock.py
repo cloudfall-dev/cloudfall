@@ -45,7 +45,8 @@ ERROR_LOCK_IN_USE = "component_lock_in_use"
 LOCK_DIRECTORY = f"{RUNTIME_DIRECTORY}/locks"
 """Where each component's lock lives, relative to the project."""
 
-_TIMESTAMP = "%Y-%m-%dT%H:%M:%SZ"
+TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+"""How a lock record writes its start time, in UTC."""
 _FIELDS = ("component", "action", "user", "host", "pid", "since", "token")
 _MINUTE = 60
 _HOUR = 60 * _MINUTE
@@ -96,9 +97,11 @@ class LockHolder:
             raise _invalid(path, "every field but pid must be a non-empty string")
         strings = cast("dict[str, str]", texts)
         try:
-            since = datetime.strptime(strings["since"], _TIMESTAMP).replace(tzinfo=UTC)
+            since = datetime.strptime(strings["since"], TIMESTAMP_FORMAT).replace(
+                tzinfo=UTC
+            )
         except ValueError as error:
-            raise _invalid(path, f"since must read like {_TIMESTAMP}") from error
+            raise _invalid(path, f"since must read like {TIMESTAMP_FORMAT}") from error
         return cls(
             component=strings["component"],
             action=strings["action"],
@@ -117,7 +120,7 @@ class LockHolder:
             "user": self.user,
             "host": self.host,
             "pid": self.pid,
-            "since": self.since.strftime(_TIMESTAMP),
+            "since": self.since.strftime(TIMESTAMP_FORMAT),
             "token": self.token,
         }
 
@@ -161,8 +164,8 @@ class HeldLock:
         return (
             f"component {holder.component} is locked by a {holder.action} that "
             f"{holder.user} started on {holder.host} (process {holder.pid}) at "
-            f"{holder.since.strftime(_TIMESTAMP)}, {_age(self.age_seconds)} ago; "
-            f"{state}"
+            f"{holder.since.strftime(TIMESTAMP_FORMAT)}, "
+            f"{age_text(self.age_seconds)} ago; {state}"
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -278,7 +281,8 @@ def _invalid(path: Path, reason: str) -> LifecycleError:
     return LifecycleError(ERROR_LOCK_RECORD_INVALID, detail)
 
 
-def _age(seconds: int) -> str:
+def age_text(seconds: int) -> str:
+    """Say an age in its largest whole unit, as ``3 hours``."""
     for unit, size in (("day", _DAY), ("hour", _HOUR), ("minute", _MINUTE)):
         if seconds >= size:
             count = seconds // size

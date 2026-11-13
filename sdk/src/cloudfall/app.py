@@ -329,6 +329,7 @@ from cloudfall.secrets import (
     load_environment_receipts,
     render_environment,
 )
+from cloudfall.server_locks import clear_server_locks, read_server_locks
 from cloudfall.service_evidence import (
     DeploymentReceiptSet,
     DomainObservationSet,
@@ -4758,11 +4759,12 @@ lock_group = app.group(
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class LockClearArgs(ProjectArgs):
+class LockClearArgs(EngineArgs):
     """Arguments of ``lock clear``."""
 
     # Not checked against the config: a component removed since its run
-    # died must still be clearable.
+    # died must still be clearable (on the management host; its servers are
+    # known only from the config).
     component: ResourceId = Arg(description="Component whose lock is cleared")
 
 
@@ -4781,9 +4783,10 @@ class LockClearPayload(Payload):
     mcp=False,
     requires_person=True,
     description=(
-        "Show one component's lock, who took it and how long ago, and remove "
-        "it once a person types the component id at a terminal; a lock whose "
-        "process still runs on this host is never removed"
+        "Show one component's lock on this host and on each of its servers, "
+        "who took it and how long ago, and remove them once a person types the "
+        "component id at a terminal; a lock whose process still runs on this "
+        "host is never removed"
     ),
     danger_level="mutating",
     exit_codes=[
@@ -4791,55 +4794,62 @@ class LockClearPayload(Payload):
         "CONFIG_INVALID",
         "CONFLICT",
         "RECORD_INVALID",
+        "ENGINE_STEP_FAILED",
     ],
     supports_raw_payload=True,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0"},
     examples=[
         (
-            "Clear the lock a killed deploy left, typing the component id",
+            "Clear the locks a killed deploy left, typing the component id",
             "cloudfall lock clear crm-backend",
         ),
     ],
 )
 def lock_clear(args: LockClearArgs, ctx: Ctx, fleet: Fleet) -> LockClearPayload:
-    """Remove the component's lock once a person typed its id."""
+    """Remove the component's locks once a person typed its id."""
+    context = args.context(fleet, ctx)
     try:
         held = find_lock(fleet.directory, args.component)
-        if held is None:
-            return LockClearPayload(
-                {
-                    "status": "ok",
-                    "component": args.component.value,
-                    "lock": {},
-                    "cleared": False,
-                    "effect": "noop",
-                }
-            )
-        if held.stale is False:
-            # Refused before the prompt: the process is visibly running.
+        if held is not None and held.stale is False:
+            # Refused before any server is read: the process visibly runs.
             clear_lock(held)
-        # Off a terminal this ends with PERSON_REQUIRED, and a mistyped id
-        # with ATTESTATION_MISMATCH, before the lock is touched.
-        ctx.attest(
-            f"{held.describe()}. Clearing it lets the next deploy, rollback, "
-            f"restart or build of {args.component} start. Type the component "
-            "id to clear the lock",
-            expected=args.component.value,
-        )
-        clear_lock(held)
-    except LifecycleError as error:
-        context = {**error.context, "code": error.code}
-        if error.code == ERROR_LOCK_RECORD_INVALID:
-            raise Exit.RECORD_INVALID(error.detail, context=context) from error
-        raise Exit.CONFLICT(error.detail, context=context) from error
-    return LockClearPayload(
-        {
+        servers = read_server_locks(context, args.component)
+        answer: dict[str, object] = {
             "status": "ok",
             "component": args.component.value,
-            "lock": held.as_dict(),
-            "cleared": True,
-            "effect": "deleted",
+            "lock": {} if held is None else held.as_dict(),
+            "serverLocks": [lock.as_dict() for lock in servers.held],
+            "unreadServers": [server.value for server in servers.unread],
         }
-    )
+        if held is None and not servers.held:
+            return LockClearPayload({**answer, "cleared": False, "effect": "noop"})
+        found = [] if held is None else [held.describe()]
+        if servers.held or servers.unread:
+            found.append(servers.describe())
+        # Off a terminal this ends with PERSON_REQUIRED, and a mistyped id
+        # with ATTESTATION_MISMATCH, before any lock is touched.
+        ctx.attest(
+            f"{'. '.join(found)}. Clearing the locks lets the next deploy, "
+            f"rollback, restart or build of {args.component} start. Type the "
+            "component id to clear them",
+            expected=args.component.value,
+        )
+        # The servers first: one not cleared fails the command before the
+        # lock here goes, so a second look shows both again.
+        clear_server_locks(context, args.component, servers)
+        if held is not None:
+            clear_lock(held)
+    except LifecycleError as error:
+        context_fields = {**error.context, "code": error.code}
+        if error.code == ERROR_LOCK_RECORD_INVALID:
+            raise Exit.RECORD_INVALID(error.detail, context=context_fields) from error
+        if error.code == ERROR_EXECUTION_FAILED:
+            raise Exit.ENGINE_STEP_FAILED(
+                error.detail, context=context_fields
+            ) from error
+        raise Exit.CONFLICT(error.detail, context=context_fields) from error
+    return LockClearPayload({**answer, "cleared": True, "effect": "deleted"})
 
 
 # logging deploy (S-011)
