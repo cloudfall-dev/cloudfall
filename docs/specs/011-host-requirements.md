@@ -165,4 +165,11 @@ none against a live Debian host:
   `cloudfall secrets input <name> --owner <id>` takes one `input` secret at a terminal with echo
   off, or through `--value-from-file` / `--value-from-env`, and off a terminal without either
   exits 4 with `INPUT_REQUIRED`. A stored key is never overwritten (exit 6, `CONFLICT`). Part of
-  S-011-2 and S-011-9; delivering the stored values to the host is the next step
+  S-011-2 and S-011-9
+- `cloudfall logging deploy`: without `--yes` the plan, with each requirement's state; with
+  `--yes` it generates the missing generated secrets, stops with exit 4 and
+  `error.context.code` `INPUT_REQUIRED` while an input secret is missing (S-011-3), then runs
+  `logging.yml` with each stored value staged in a `0600` file on the controller; the backend
+  role copies it to its host path and keeps a file already there (S-011-10 for secrets). The
+  role's delivery tasks ran for real on the controller; the full stack has not run against a
+  Debian host

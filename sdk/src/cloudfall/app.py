@@ -200,6 +200,14 @@ from cloudfall.lifecycle import (
     run_engine_playbook,
     verify_backup,
 )
+from cloudfall.logging_deploy import (
+    PLAYBOOK,
+    InputMissingError,
+    LoggingDeployError,
+    prepare_secrets,
+    preview_logging_deploy,
+    staged_secret_files,
+)
 from cloudfall.migrate import MigrateError, MigrateOptions, execute_migration
 from cloudfall.observation import load_observations
 from cloudfall.observe import (
@@ -4456,6 +4464,120 @@ def restart_command(args: ComponentArgs, ctx: Ctx, fleet: Fleet) -> RestartPaylo
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error
     return RestartPayload({**result.as_dict(), "effect": "updated"})
+
+
+# logging deploy (S-011)
+
+
+logging_group = app.group(
+    "logging", description="Deploy the declared LoggingStack"
+)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LoggingDeployArgs(EngineArgs):
+    """Arguments of ``logging deploy``."""
+
+    secrets_dir: Path = Flag(
+        default=Path("secrets"),
+        description="sops-encrypted secrets directory (default: secrets)",
+        secret=False,
+    )
+    yes: bool = Flag(
+        default=False,
+        confirm=True,
+        description=(
+            "Change the servers; without it the command resolves every "
+            "requirement and only shows what it would do"
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        """Keep relative paths inside the project."""
+        EngineArgs.__post_init__(self)
+        _inside_project(self.secrets_dir, "secrets-dir")
+
+
+class LoggingDeployPayload(Payload):
+    """``logging deploy``: the plan, or what was generated and delivered."""
+
+    command = "logging deploy"
+    writes = True
+
+
+@logging_group.command(
+    "deploy",
+    description=(
+        "Deploy the declared LoggingStack with logging.yml after meeting its "
+        "secret requirements: missing generated secrets are written to the "
+        "store, and each stored secret is copied to its host path, keeping a "
+        "file already there. A secret only a person can supply that is "
+        "missing exits 4, error.context.code INPUT_REQUIRED, before any server "
+        "is touched. "
+        "Without --yes it shows the plan"
+    ),
+    danger_level="mutating",
+    exit_codes=_LIFECYCLE_EXIT_CODES,
+    timeout=None,
+    subprocess=Subprocess("ansible-playbook"),
+    required_tools={"ansible-playbook": "2.21.0"},
+    supports_raw_payload=True,
+    examples=[
+        ("Show the plan", "cloudfall logging deploy"),
+        ("Deploy it", "cloudfall logging deploy --yes"),
+    ],
+)
+def logging_deploy_command(
+    args: LoggingDeployArgs, ctx: Ctx, fleet: Fleet
+) -> LoggingDeployPayload:
+    """Deploy the logging stack, or show the plan."""
+    store = SecretStore(
+        fleet.path(args.secrets_dir),
+        decrypt=_sops_decrypt(ctx),
+        encrypt=_sops_encrypt(ctx),
+    )
+    inventory = fleet.inventory
+    try:
+        if not args.yes:
+            return LoggingDeployPayload(
+                {
+                    **preview_logging_deploy(inventory, store),
+                    "instruction": _PLAN_INSTRUCTION,
+                    "effect": "would_update",
+                }
+            )
+        generated, servers = prepare_secrets(inventory, store)
+        with staged_secret_files(servers, store) as (extra_vars, delivered):
+            run_engine_playbook(args.context(fleet, ctx), PLAYBOOK, extra_vars)
+    except InputMissingError as error:
+        # Exit 4 like the framework's INPUT_REQUIRED; agents branch on the code
+        raise Exit.PRECONDITION(
+            str(error),
+            context={
+                "code": "INPUT_REQUIRED",
+                "missing": [str(item["name"]) for item in error.missing],
+            },
+            suggestion=(
+                "a person runs `cloudfall secrets input <name> --owner <stack>` "
+                "for each missing secret"
+            ),
+        ) from error
+    except LoggingDeployError as error:
+        raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
+    except SecretsError as error:
+        raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
+    except LifecycleError as error:
+        raise _lifecycle_failed(error) from error
+    return LoggingDeployPayload(
+        {
+            "status": "ok",
+            "action": "logging-deploy",
+            "playbook": PLAYBOOK,
+            "generated": [item.as_dict() for item in generated],
+            "delivered": [item.as_dict() for item in delivered],
+            "effect": "updated",
+        }
+    )
 
 
 # release approve: a person's record that one release may be deployed (S-008)
