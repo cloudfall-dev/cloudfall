@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from cloudfall.audit import audit_inventory
@@ -17,6 +18,9 @@ from cloudfall.domain import ResourceId, ResourceKind
 from cloudfall.inventory import PlatformInventory
 from cloudfall.observation import load_observations
 from cloudfall.validation import ConfigValidationError, validate_config
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -182,6 +186,88 @@ def test_config_upgrade_keeps_a_quoted_kind_quoted(tmp_path: Path) -> None:
 
     assert exit_code == 0
     assert 'kind: "Baseline"  #' in (project / NEW_BASELINE).read_text(encoding="utf-8")
+
+
+def test_config_upgrade_keeps_crlf_line_endings(tmp_path: Path) -> None:
+    project = _copy(tmp_path)
+    path = project / SERVER
+    path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    before = path.read_bytes()
+
+    exit_code = main(
+        ["config", "upgrade", "--project", str(project), "--schemas", str(SCHEMAS)]
+    )
+
+    assert exit_code == 0
+    assert path.read_bytes() == before.replace(b"serverType:", b"baseline:")
+
+
+def _link_server(project: Path, outside: Path) -> None:
+    shutil.move(project / SERVER, outside / "h1.yaml")
+    (project / SERVER).symlink_to(outside / "h1.yaml")
+
+
+def _link_old_folder(project: Path, outside: Path) -> None:
+    shutil.move(project / "server-types", outside / "server-types")
+    (project / "server-types").symlink_to(outside / "server-types")
+
+
+def _link_new_folder(project: Path, outside: Path) -> None:
+    (outside / "baselines").mkdir()
+    (project / "baselines").symlink_to(outside / "baselines")
+
+
+@pytest.mark.parametrize("link", [_link_server, _link_old_folder, _link_new_folder])
+def test_config_upgrade_never_follows_a_symlink_out_of_the_project(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    link: Callable[[Path, Path], None],
+) -> None:
+    project = _copy(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link(project, outside)
+    before = _contents(tmp_path)
+
+    exit_code, payload = _run(capsys, "config", "upgrade", "--project", str(project))
+
+    assert exit_code == 6
+    error_body = payload["error"]
+    assert isinstance(error_body, dict)
+    assert error_body["context"]["code"] == "upgrade_symlink"
+    assert _contents(tmp_path) == before
+
+
+def _contents(directory: Path) -> dict[Path, bytes]:
+    return {
+        path: path.read_bytes()
+        for path in sorted(directory.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_config_upgrade_refuses_to_overwrite_a_baseline(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    project = _copy(tmp_path)
+    (project / "baselines").mkdir()
+    (project / NEW_BASELINE).write_text(
+        (project / OLD_BASELINE)
+        .read_text(encoding="utf-8")
+        .replace("ServerType", "Baseline")
+        .replace("id: debian-application", "id: other-baseline"),
+        encoding="utf-8",
+    )
+    before = (project / NEW_BASELINE).read_bytes()
+
+    exit_code, payload = _run(capsys, "config", "upgrade", "--project", str(project))
+
+    assert exit_code == 6
+    error_body = payload["error"]
+    assert isinstance(error_body, dict)
+    assert error_body["context"]["code"] == "upgrade_target_exists"
+    assert (project / NEW_BASELINE).read_bytes() == before
+    assert (project / OLD_BASELINE).exists()
 
 
 def test_config_upgrade_refuses_a_project_that_does_not_validate(

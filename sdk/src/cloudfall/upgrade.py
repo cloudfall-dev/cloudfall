@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 ERROR_UPGRADE_TARGET_EXISTS = "upgrade_target_exists"
+ERROR_UPGRADE_SYMLINK = "upgrade_symlink"
 
 _YAML_SUFFIXES = frozenset({".yaml", ".yml"})
 _QUOTED_STYLES = frozenset({"'", '"'})
@@ -96,10 +97,13 @@ def upgrade_project(project: Path) -> UpgradeResult:
     """Rewrite every deprecated name in the project's resource files.
 
     The whole plan is made before the first write, so a move that would
-    overwrite an existing file fails with nothing changed.
+    overwrite an existing file, or a file or folder reached through a
+    symlink, fails with nothing changed.
     """
     planned = tuple(_plan(project))
     for step in planned:
+        _refuse_symlink(project, step.source)
+        _refuse_symlink(project, step.target)
         if step.target != step.source and step.target.exists():
             message = (
                 f"cannot move {step.source.relative_to(project).as_posix()}: "
@@ -108,7 +112,7 @@ def upgrade_project(project: Path) -> UpgradeResult:
             raise UpgradeError(ERROR_UPGRADE_TARGET_EXISTS, message)
     for step in planned:
         if step.text is not None:
-            step.source.write_text(step.text, encoding="utf-8")
+            step.source.write_text(step.text, encoding="utf-8", newline="")
         if step.target != step.source:
             step.target.parent.mkdir(parents=True, exist_ok=True)
             step.source.rename(step.target)
@@ -140,7 +144,8 @@ def _plan(project: Path) -> Iterator[_Planned]:
         for path in sorted(directory.rglob("*")):
             if not path.is_file() or path.suffix.lower() not in _YAML_SUFFIXES:
                 continue
-            text = path.read_text(encoding="utf-8")
+            # newline="" keeps a file's own line endings through the rewrite.
+            text = path.read_text(encoding="utf-8", newline="")
             rewritten, renamed = _rewritten(text)
             target = (
                 project / ResourceKind.BASELINE.directory / path.relative_to(legacy)
@@ -213,9 +218,26 @@ def _replacement(node: yaml.ScalarNode, value: str) -> tuple[int, int, str]:
     return node.start_mark.index, node.end_mark.index, f"{quote}{value}{quote}"
 
 
+def _refuse_symlink(project: Path, path: Path) -> None:
+    """Refuse a path that is, or passes through, a symlink inside the project.
+
+    Writing or moving through a link could change a file outside the
+    project, so the upgrade leaves linked files for a person to rewrite.
+    """
+    current = project
+    for part in path.relative_to(project).parts:
+        current /= part
+        if current.is_symlink():
+            message = (
+                f"{current.relative_to(project).as_posix()} is a symlink; "
+                "the upgrade does not follow links, rewrite its target by hand"
+            )
+            raise UpgradeError(ERROR_UPGRADE_SYMLINK, message)
+
+
 def _remove_empty(directory: Path) -> None:
     """Remove the deprecated folder once the upgrade emptied it."""
-    if not directory.is_dir():
+    if directory.is_symlink() or not directory.is_dir():
         return
     for child in sorted(directory.rglob("*"), reverse=True):
         if child.is_dir() and not any(child.iterdir()):

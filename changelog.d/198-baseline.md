@@ -1,11 +1,11 @@
 ### Added
 
-- `cloudfall config upgrade`: rewrites a project from the deprecated `ServerType` names to `Baseline` (moves `server-types/` to `baselines/`, rewrites `kind` and `spec.serverType`), keeping comments and formatting; a second run changes nothing (#198)
+- `cloudfall config upgrade`: rewrites a project from the deprecated `ServerType` names to `Baseline` (moves `server-types/` to `baselines/`, rewrites `kind` and `spec.serverType`), keeping comments, formatting and line endings; a second run changes nothing, and it refuses, changing nothing, a move onto an existing file or a file or folder reached through a symlink (`upgrade_symlink`) (#198)
 
 ### Changed
 
 - The resource every server runs is now `kind: Baseline`, stored under `baselines/`, referenced as `Server.spec.baseline` and checked by `baseline.schema.json` (was `ServerType`, `server-types/`, `spec.serverType`, `server-type.schema.json`); `cloudfall add baseline` declares one and `cloudfall add server --baseline` names it (#198)
-- Outputs carry the new names: `inventory show` writes `baselines` and each server's `baseline`, `config validate` counts `Baseline` in `by_kind`, `audit` writes each server's `baseline` and checks `baseline.id` (was `server_type.id`, renamed without an alias because proposals and their verifiers match on the check id), the inspect role records `baseline` in observed server snapshots, the rendered Ansible inventory has the host variable `cloudfall_baseline`, the brownfield catalog variable is `cloudfall_baselines`, and the error code `server_type_entry_duplicate` is `baseline_entry_duplicate` (#198)
+- Outputs carry the new names: `inventory show` writes `baselines` and each server's `baseline`, `config validate` counts `Baseline` in `by_kind`, `audit` writes each server's `baseline` and checks `baseline.id` (was `server_type.id`; until 0.9.0 an operator proposal recorded with `server_type.id` verifies once `baseline.id` is compliant, and blocks a new proposal for the same drift), the inspect role records `baseline` in observed server snapshots, the rendered Ansible inventory has the host variable `cloudfall_baseline`, the brownfield catalog variable is `cloudfall_baselines`, and the error code `server_type_entry_duplicate` is `baseline_entry_duplicate` (#198)
 
 ### Deprecated
 
