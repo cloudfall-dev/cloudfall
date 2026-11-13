@@ -10,6 +10,11 @@ spec:
   environment: production
   baseline: debian-application
   lifecycle: active
+  # Its IPv4 is what collectors on other servers reach the logging gateway at (S-011)
+  network:
+    ipv4: 203.0.113.11
+    ipv6Cidr: 2001:db8:11::/64
+    reverseDns: h1.example.internal
   ssh:
     user: cloudfall
     port: 22

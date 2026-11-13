@@ -18,6 +18,10 @@
 - name: Deliver the files Cloudfall provides for the stack
   ansible.builtin.include_tasks: deliver.yml
 
+- name: Resolve the gateway name to the backend
+  ansible.builtin.include_tasks: gateway_name.yml
+  when: cloudfall_logging_gateway_address is defined
+
 - name: Inspect pre-provisioned collector TLS files
   ansible.builtin.stat:
     path: "{{ item }}"

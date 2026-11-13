@@ -1,0 +1,14 @@
+---
+# The gateway name resolves to the backend on every collector without DNS
+# (S-011): the backend's IPv4, or loopback on the backend itself. The
+# certificate is for that name, so mTLS holds whatever the network's DNS says.
+- name: Pin the gateway name to the backend's address
+  ansible.builtin.lineinfile:
+    path: "{{ cloudfall_logging_collector_hosts_file }}"
+    regexp: >-
+      \s{{ cloudfall_logging_collector_stack.gateway.serverName
+      | regex_escape }}(\s|$)
+    line: >-
+      {{ cloudfall_logging_gateway_address }}
+      {{ cloudfall_logging_collector_stack.gateway.serverName }}
+      # cloudfall logging gateway

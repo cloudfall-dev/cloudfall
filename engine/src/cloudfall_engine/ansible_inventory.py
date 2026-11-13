@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, cast
 from cloudfall.inventory import (
     DomainStaticRoute,
     firewall_rules_for_server,
+    logging_gateway_address,
     logging_gateway_rules_for_server,
     remote_access_rules_for_server,
 )
@@ -135,7 +136,12 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
                 baselines_by_id[server.baseline_id],
                 inventory,
             ),
-            **_host_logging(server, inventory.logging_stacks, inventory.alert_rules),
+            **_host_logging(
+                server,
+                inventory.servers,
+                inventory.logging_stacks,
+                inventory.alert_rules,
+            ),
             "cloudfall_baseline": baselines_by_id[server.baseline_id].as_dict(),
             # Deprecated name of cloudfall_baseline, the same value, kept so a
             # fleet's own playbooks keep running; it goes in 0.9.0 (D-11).
@@ -214,6 +220,7 @@ def _host_firewall(
 
 def _host_logging(
     server: ServerInventory,
+    servers: tuple[ServerInventory, ...],
     logging_stacks: tuple[LoggingStackInventory, ...],
     alert_rules: tuple[AlertRuleInventory, ...],
 ) -> dict[str, object]:
@@ -245,6 +252,9 @@ def _host_logging(
         ]
     if collector is not None:
         variables["cloudfall_logging_collector"] = collector.as_dict()
+        address = logging_gateway_address(collector, server.resource_id, servers)
+        if address is not None:
+            variables["cloudfall_logging_gateway_address"] = address
     return variables
 
 

@@ -9,3 +9,5 @@ cloudfall_logging_collector_grafana_repository_url: https://apt.grafana.com
 # Alloy its own read access, as for files provided by hand
 cloudfall_logging_collector_file_owner: root
 cloudfall_logging_collector_file_group: root
+# Where the gateway name is pinned to the backend's address (S-011)
+cloudfall_logging_collector_hosts_file: /etc/hosts
