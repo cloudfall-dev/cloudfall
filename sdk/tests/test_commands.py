@@ -68,6 +68,7 @@ def test_every_yes_gated_command_is_classified_as_changing_servers() -> None:
         "migrate",
         "logging deploy",
         "baseline converge",
+        "alerts test",
     }
     assert gated <= changing
     for command in commands_with_effect(CommandEffect.SERVERS):

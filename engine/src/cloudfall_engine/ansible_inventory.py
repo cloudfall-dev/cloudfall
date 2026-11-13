@@ -152,6 +152,11 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
             ),
             **_host_alert_channels(server, inventory),
             **(
+                {"cloudfall_alert_channel": channel.value}
+                if (channel := baselines_by_id[server.baseline_id].alert_channel)
+                else {}
+            ),
+            **(
                 {"cloudfall_certificates": certificates[server.resource_id.value]}
                 if server.resource_id.value in certificates
                 else {}

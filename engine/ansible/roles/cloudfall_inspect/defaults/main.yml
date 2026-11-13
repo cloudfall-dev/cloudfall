@@ -8,3 +8,9 @@ cloudfall_inspect_server_id: ""
 cloudfall_inspect_certificates: []
 # The volumes the server's host requirements name (S-014): [{name, path}]
 cloudfall_inspect_volumes: []
+# The AlertChannel the server's baseline names (S-015), or empty
+cloudfall_inspect_alert_channel: ""
+cloudfall_inspect_alerting_root: /etc/cloudfall/alerting
+cloudfall_inspect_alerting_sender: /usr/local/sbin/cloudfall-alert
+cloudfall_inspect_mdadm_conf: /etc/mdadm/mdadm.conf
+cloudfall_inspect_smartd_conf: /etc/smartd.conf

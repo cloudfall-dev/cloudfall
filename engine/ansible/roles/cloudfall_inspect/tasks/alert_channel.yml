@@ -1,0 +1,64 @@
+---
+# The host's alert channel (S-015): which files exist, never the token itself,
+# and the lines that point mdadm and smartd at the sender
+- name: Look for the sender, the token and the chat id
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  loop:
+    - "{{ cloudfall_inspect_alerting_sender }}"
+    - "{{ cloudfall_inspect_alerting_root }}/{{ cloudfall_inspect_alert_channel }}/bot-token"
+    - "{{ cloudfall_inspect_alerting_root }}/{{ cloudfall_inspect_alert_channel }}/chat-id"
+    - "{{ cloudfall_inspect_mdadm_conf }}"
+    - "{{ cloudfall_inspect_smartd_conf }}"
+  register: cloudfall_inspect_channel_files
+
+- name: Read mdadm's monitor program
+  ansible.builtin.command:
+    argv:
+      - grep
+      - --max-count=1
+      - -E
+      - "^PROGRAM[[:space:]]"
+      - "{{ cloudfall_inspect_mdadm_conf }}"
+  register: cloudfall_inspect_mdadm_program
+  changed_when: false
+  failed_when: cloudfall_inspect_mdadm_program.rc > 1
+  when: cloudfall_inspect_channel_files.results[3].stat.exists
+
+- name: Read smartd's scan line
+  ansible.builtin.command:
+    argv:
+      - grep
+      - --max-count=1
+      - -E
+      - "^DEVICESCAN([[:space:]]|$)"
+      - "{{ cloudfall_inspect_smartd_conf }}"
+  register: cloudfall_inspect_smartd_scan
+  changed_when: false
+  failed_when: cloudfall_inspect_smartd_scan.rc > 1
+  when: cloudfall_inspect_channel_files.results[4].stat.exists
+
+- name: Attach alert channel evidence
+  ansible.builtin.set_fact:
+    cloudfall_inspect_snapshot: >-
+      {{
+        cloudfall_inspect_snapshot | combine(
+          {'spec': {'alertChannel': {
+            'channel': cloudfall_inspect_alert_channel,
+            'sender': cloudfall_inspect_alerting_sender,
+            'senderInstalled': cloudfall_inspect_channel_files.results[0].stat.exists,
+            'tokenPresent': cloudfall_inspect_channel_files.results[1].stat.exists,
+            'chatIdPresent': cloudfall_inspect_channel_files.results[2].stat.exists,
+            'mdadmProgram': (
+              cloudfall_inspect_mdadm_program.stdout | trim
+              if cloudfall_inspect_mdadm_program.rc | default(1) == 0 else none),
+            'mdadmConfigured': cloudfall_inspect_channel_files.results[3].stat.exists,
+            'smartdScan': (
+              cloudfall_inspect_smartd_scan.stdout | trim
+              if cloudfall_inspect_smartd_scan.rc | default(1) == 0 else none),
+            'smartdConfigured': cloudfall_inspect_channel_files.results[4].stat.exists,
+          }}},
+          recursive=true
+        )
+      }}

@@ -258,6 +258,8 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
         )
     checks.extend(_audit_certificates(certificates, snapshot))
     checks.extend(_audit_volumes(volumes, snapshot))
+    if baseline.alert_channel is not None:
+        checks.append(_audit_alert_channel(baseline.alert_channel, snapshot))
     checks.extend(_audit_service_binds(services, snapshot))
     checks.extend(_audit_alert_rules(alert_rules, snapshot))
     checks.extend(
@@ -581,6 +583,52 @@ def _audit_certificates(
         )
         for requirement in certificates
     )
+
+
+def _audit_alert_channel(
+    channel: ResourceId, snapshot: ObservedServerSnapshot
+) -> AuditCheck:
+    """Check the host can send its events to its channel (S-015-7).
+
+    Compliant when the sender, the token and the chat id are there, and mdadm
+    and smartd, when installed, point at the sender.
+    """
+    desired = {
+        "channel": channel.value,
+        "senderInstalled": True,
+        "tokenPresent": True,
+        "chatIdPresent": True,
+        "mdadmProgram": "the sender, when mdadm is installed",
+        "smartdScan": "-M exec the sender, when smartd is installed",
+    }
+    evidence = snapshot.spec.get("alertChannel")
+    if not isinstance(evidence, dict) or evidence.get("channel") != channel.value:
+        return AuditCheck(
+            check="alerting.channel",
+            status=AuditStatus.UNKNOWN,
+            desired=desired,
+            observed=evidence if isinstance(evidence, dict) else None,
+            message="the observation carries no evidence for this channel",
+        )
+    sender = str(evidence.get("sender"))
+    program = evidence.get("mdadmProgram")
+    scan = evidence.get("smartdScan")
+    mdadm_ok = not evidence.get("mdadmConfigured") or (
+        isinstance(program, str) and program.split()[1:] == [sender]
+    )
+    words = scan.split() if isinstance(scan, str) else []
+    smartd_ok = not evidence.get("smartdConfigured") or any(
+        words[index : index + 3] == ["-M", "exec", sender]
+        for index in range(len(words))
+    )
+    matches = (
+        evidence.get("senderInstalled") is True
+        and evidence.get("tokenPresent") is True
+        and evidence.get("chatIdPresent") is True
+        and mdadm_ok
+        and smartd_ok
+    )
+    return _comparison("alerting.channel", desired, dict(evidence), matches=matches)
 
 
 def _audit_volumes(

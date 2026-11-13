@@ -528,6 +528,66 @@
             "additionalProperties": false
           }
         },
+        "alertChannel": {
+          "type": "object",
+          "properties": {
+            "channel": {
+              "$ref": "common.schema.json#/$defs/resourceId"
+            },
+            "sender": {
+              "$ref": "common.schema.json#/$defs/absolutePath"
+            },
+            "senderInstalled": {
+              "type": "boolean"
+            },
+            "tokenPresent": {
+              "type": "boolean"
+            },
+            "chatIdPresent": {
+              "type": "boolean"
+            },
+            "mdadmProgram": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 4096
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "mdadmConfigured": {
+              "type": "boolean"
+            },
+            "smartdScan": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 4096
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "smartdConfigured": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "channel",
+            "sender",
+            "senderInstalled",
+            "tokenPresent",
+            "chatIdPresent",
+            "mdadmProgram",
+            "mdadmConfigured",
+            "smartdScan",
+            "smartdConfigured"
+          ],
+          "additionalProperties": false
+        },
         "volumes": {
           "type": "object",
           "properties": {
