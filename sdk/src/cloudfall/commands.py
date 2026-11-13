@@ -578,6 +578,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
                 "playbook:string",
                 "generated:array",
                 "caCreated:boolean",
+                "volumes:array",
                 "certificates:array",
                 "delivered:array",
                 when="with `--yes`",
