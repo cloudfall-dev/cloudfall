@@ -10,7 +10,6 @@ deploy role is replaced, through ``--roles``, by one that records each host.
 from __future__ import annotations
 
 import json
-import shutil
 import sys
 from pathlib import Path
 
@@ -20,6 +19,7 @@ from cloudfall.inventory import PlatformInventory
 from cloudfall.validation import validate_config
 from cloudfall_engine.ansible_inventory import render_ansible_inventory
 from cloudfall_engine.cli import main
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -53,7 +53,7 @@ EXTRA_VARS: dict[str, dict[str, str]] = {
 def _project(tmp_path: Path, *, release: bool) -> Path:
     """Copy the examples with crm-backend and postgresql-main on h2 only."""
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     component = project / "components" / "crm-backend.yaml"
     document = yaml.safe_load(component.read_text(encoding="utf-8"))
     document["spec"]["deployment"]["servers"] = ["h2"]

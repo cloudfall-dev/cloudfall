@@ -28,6 +28,7 @@ from cloudfall.domain import ARTIFACT_CLONE_TIMEOUT_SECONDS
 from cloudfall.inventory import PlatformInventory
 from cloudfall.validation import SchemaCatalog, validate_config
 from cloudfall_engine.cli import BuildBudget, main
+from examples_project import copy_examples
 from treaty import Timeout
 
 ROOT = Path(__file__).parents[2]
@@ -236,7 +237,7 @@ def _fixture(  # noqa: PLR0913 - one knob per criterion.
     (repository / "web" / "package.json").write_text("{}\n", encoding="utf-8")
     fixture.commit("<h1>v1</h1>\n")
 
-    shutil.copytree(EXAMPLES, fixture.project)
+    copy_examples(fixture.project)
     path = fixture.project / "components" / "crm-backend.yaml"
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
     spec = document["spec"]

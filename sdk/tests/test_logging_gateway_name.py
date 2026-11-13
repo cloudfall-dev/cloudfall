@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 from cloudfall.inventory import PlatformInventory, logging_gateway_address
 from cloudfall.validation import validate_config
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -33,7 +33,7 @@ def test_collectors_reach_the_gateway_on_loopback_or_the_backend_ipv4() -> None:
 
 def test_a_backend_known_only_by_name_leaves_the_name_to_dns(tmp_path: Path) -> None:
     project = tmp_path / "config"
-    shutil.copytree(EXAMPLES, project, ignore=shutil.ignore_patterns("tmp"))
+    copy_examples(project)
     h1 = project / "servers" / "h1.yaml"
     text = h1.read_text(encoding="utf-8")
     start = text.index("  network:\n")

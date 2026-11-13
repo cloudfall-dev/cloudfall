@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +15,7 @@ from cloudfall.inventory import (
     PlatformInventory,
 )
 from cloudfall.validation import validate_config
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -37,7 +37,7 @@ _SPA_ROUTES = """\
 def _project(tmp_path: Path, routes: str, *, keep_upstream: bool = False) -> Path:
     """Copy the examples and give their Domain ``routes`` in place of its upstream."""
     project = tmp_path / "config"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     path = project / "domains" / "crm-site.yaml"
     text = path.read_text(encoding="utf-8")
     assert _UPSTREAM in text

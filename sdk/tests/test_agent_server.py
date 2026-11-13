@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import shutil
 import subprocess
 import sys
 import tarfile
@@ -14,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from examples_project import copy_examples
 from mcp import ClientSession, StdioServerParameters, stdio_client
 from mcp.types import TextContent
 
@@ -347,7 +347,7 @@ def test_a_project_call_cannot_approve_a_release(tmp_path: Path) -> None:
 def _project_with_artifact(tmp_path: Path, release: str) -> Path:
     """Copy the examples (crm declares approval: manual) and build one release."""
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     directory = project / "tmp" / "artifacts" / "crm-backend"
     directory.mkdir(parents=True)
     archive = directory / f"{release}.tar.gz"

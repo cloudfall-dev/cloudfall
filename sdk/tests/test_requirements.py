@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 import pytest
@@ -30,6 +29,7 @@ from cloudfall.requirements import (
     requirements_of,
 )
 from cloudfall.validation import validate_config
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -53,7 +53,7 @@ def _by_name(
 
 def _single_host_project(tmp_path: Path) -> Path:
     project = tmp_path / "config"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     stack = project / "logging-stacks" / "operations.yaml"
     original = stack.read_text(encoding="utf-8")
     lines = original.splitlines(keepends=True)
@@ -127,7 +127,7 @@ def test_a_receiver_with_the_longest_valid_id_yields_its_smtp_password(
 ) -> None:
     receiver = "r" * 63
     project = tmp_path / "config"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     stack = project / "logging-stacks" / "operations.yaml"
     original = stack.read_text(encoding="utf-8")
     stack.write_text(

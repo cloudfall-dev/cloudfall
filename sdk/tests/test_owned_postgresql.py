@@ -13,6 +13,7 @@ from cloudfall.cli import main
 from cloudfall.domain import ResourceId
 from cloudfall.inventory import OwnedPostgresDatabase, PlatformInventory
 from cloudfall.validation import ConfigValidationError, validate_config
+from examples_project import copy_examples
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -193,7 +194,7 @@ def test_s006_4_owner_refuses_an_application_user_on_the_service(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     service_path = project / "services" / "postgresql-main.yaml"
     service = yaml.safe_load(service_path.read_text(encoding="utf-8"))
     service["spec"]["postgresql"]["databases"].append(_billing(owner="crm"))
@@ -209,7 +210,7 @@ def test_owner_may_share_a_name_with_an_application_elsewhere(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     service = _owned_service([_billing(owner="crm")])
     service["spec"]["server"] = "h2"  # type: ignore[index]
     _write_service(project, service)
@@ -238,7 +239,7 @@ def test_remote_access_with_an_owner_validates_and_renders(tmp_path: Path) -> No
 
 def test_s006_11_remote_access_needs_an_owner_database(tmp_path: Path) -> None:
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     service_path = project / "services" / "postgresql-main.yaml"
     service = yaml.safe_load(service_path.read_text(encoding="utf-8"))
     service["spec"]["postgresql"]["remoteAccess"] = REMOTE_ACCESS

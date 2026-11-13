@@ -29,6 +29,7 @@ from cloudfall.inventory import (
     PlatformInventory,
 )
 from cloudfall.validation import validate_config
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -57,7 +58,7 @@ COMMAND_CHECK: dict[str, object] = {
 def _project(tmp_path: Path, health_check: object) -> Path:
     """Copy the examples with crm-backend's ``healthCheck`` replaced."""
     project = tmp_path / "config"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     path = project / "components" / "crm-backend.yaml"
     text = path.read_text(encoding="utf-8")
     assert DECLARED_HTTP_CHECK in text

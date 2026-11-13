@@ -13,6 +13,7 @@ from cloudfall.cli import main
 from cloudfall.inventory import PlatformInventory
 from cloudfall.observation import load_observations
 from cloudfall.validation import ConfigValidationError, validate_config
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -399,7 +400,7 @@ REMOTE_LISTENER = "tcp   LISTEN 0 244    10.0.0.2:5432  0.0.0.0:*"
 def _remote_access_project(tmp_path: Path) -> Path:
     """Copy the examples and open postgresql-main to declared sources."""
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     path = project / "services" / "postgresql-main.yaml"
     service = yaml.safe_load(path.read_text(encoding="utf-8"))
     postgresql = service["spec"]["postgresql"]
@@ -789,7 +790,7 @@ def test_audit_reads_the_snapshots_observe_writes_by_default(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     shutil.copytree(COMPLIANT, project / "tmp" / "observed")
 
     code = main(["audit", "--project", str(project)])

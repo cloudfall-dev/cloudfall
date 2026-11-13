@@ -81,6 +81,8 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["sdk/tests", "engine/tests"]
+# Engine tests import the shared test helpers in sdk/tests (examples_project).
+pythonpath = ["sdk/tests"]
 
 [tool.ruff]
 line-length = 88
