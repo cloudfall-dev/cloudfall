@@ -164,8 +164,9 @@ file sources outside component placement, secret paths outside
 ## 5. Check and deploy
 
 Without `--yes` the command is the plan: every requirement with its state,
-the secrets it would generate, and `data.missing`, the secrets a person must
-supply first. With `--yes` it generates the missing generated secrets, stops
+the secrets it would generate, `data.channels`, whether each receiver channel's
+bot token is stored (never its value), and `data.missing`, the secrets a person
+must supply first, an unstored channel token among them. With `--yes` it generates the missing generated secrets, stops
 with exit 4 and `error.context.code` `INPUT_REQUIRED` while an input secret is
 missing, then runs `logging.yml` with each stored secret staged in a `0600`
 file on the controller. A secret file already on the host is kept, so one
