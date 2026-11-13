@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://cloudfall.internal/schemas/v1/server-type.schema.json",
-  "title": "Cloudfall server type",
-  "x-cloudfall-kind": "ServerType",
+  "$id": "https://cloudfall.internal/schemas/v1/baseline.schema.json",
+  "title": "Cloudfall baseline",
+  "x-cloudfall-kind": "Baseline",
   "type": "object",
   "properties": {
     "apiVersion": {
       "$ref": "common.schema.json#/$defs/apiVersion"
     },
     "kind": {
-      "const": "ServerType"
+      "const": "Baseline"
     },
     "metadata": {
       "$ref": "common.schema.json#/$defs/metadata"

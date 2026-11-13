@@ -1,7 +1,7 @@
 """Create Cloudfall projects.
 
 A project is one directory holding everything Cloudfall needs to run one
-user's stack: the fleet (servers, server types, SSH public keys), the
+user's stack: the fleet (servers, baselines, SSH public keys), the
 applications (applications, components, services, domains), the operating
 declarations (alert rules, operator policies, logging stacks), and the
 ``pyproject.toml`` that pins the released Cloudfall the project runs with.
@@ -575,8 +575,8 @@ uv run cloudfall config validate
 ```
 
 Validation fails until the project declares its first resources. Declare
-your SSH key and your first server; the server's type is created from the
-bundled Debian 13 baseline when it does not exist yet:
+your SSH key and your first server; the server's `Baseline` is created from
+the bundled Debian 13 baseline when it does not exist yet:
 
 ```console
 uv run cloudfall add ssh-key ~/.ssh/id_ed25519.pub --owner <you>

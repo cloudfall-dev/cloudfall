@@ -7,7 +7,7 @@
   },
   "spec": {
     "server": "h1",
-    "serverType": "debian-application",
+    "baseline": "debian-application",
     "observedAt": "2026-07-15T10:00:00Z",
     "collectorVersion": "0.4.0",
     "os": {

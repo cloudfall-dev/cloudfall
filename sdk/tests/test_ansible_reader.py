@@ -41,7 +41,7 @@ all:
 GROUP_VARS = """\
 ---
 ansible_user: ansible
-cloudfall_server_types:
+cloudfall_baselines:
   web:
     description: Debian web baseline
     os:
@@ -75,7 +75,7 @@ WEB_1 = """\
 cloudfall:
   description: First web host
   environment: production
-  server_type: web
+  baseline: web
   lifecycle: active
   provider:
     name: hetzner
@@ -92,7 +92,7 @@ WEB_2 = """\
 ---
 cloudfall:
   environment: production
-  server_type: web
+  baseline: web
   lifecycle: active
 """
 
@@ -170,6 +170,7 @@ def test_the_reader_builds_servers_from_ansible_and_the_declaration(
         "hostname": "web-1",
         "address": "10.0.0.1",
         "environment": "production",
+        "baseline": "web",
         "serverType": "web",
         "lifecycle": "active",
         "ssh": {"user": "ansible", "port": 22},
@@ -190,10 +191,10 @@ def test_the_reader_rewrites_ansible_case_into_the_schemas_case(
     read = read_fleet(read_inventory(_inventory(tmp_path)), SCHEMAS)
 
     inventory = PlatformInventory.from_state(read.config)
-    server_type = inventory.server_types[0]
-    assert server_type.resource_id.value == "web"
-    assert server_type.os.service_manager.value == "systemd"
-    assert server_type.mounts[0].minimum_bytes.value == 20000000000
+    baseline = inventory.baselines[0]
+    assert baseline.resource_id.value == "web"
+    assert baseline.os.service_manager.value == "systemd"
+    assert baseline.mounts[0].minimum_bytes.value == 20000000000
 
 
 def test_the_declaration_beats_the_group_defaults(tmp_path: Path) -> None:
@@ -206,7 +207,7 @@ def test_the_declaration_beats_the_group_defaults(tmp_path: Path) -> None:
         ---
         cloudfall:
           environment: production
-          server_type: web
+          baseline: web
         """)
 
     read = read_fleet(
@@ -248,7 +249,7 @@ def test_a_declaration_that_is_not_a_mapping_is_refused(tmp_path: Path) -> None:
 
 def test_two_hosts_may_not_see_different_catalogs(tmp_path: Path) -> None:
     conflicting = WEB_2 + textwrap.dedent("""\
-        cloudfall_server_types:
+        cloudfall_baselines:
           web:
             description: A different web
         """)
@@ -260,13 +261,31 @@ def test_two_hosts_may_not_see_different_catalogs(tmp_path: Path) -> None:
     assert error.value.code == "ansible_catalog_conflict"
 
 
+def test_the_deprecated_server_type_names_still_read_as_a_baseline(
+    tmp_path: Path,
+) -> None:
+    """`cloudfall_server_types` and `server_type` are read until 0.9.0 (D-11)."""
+    group_vars = GROUP_VARS.replace("cloudfall_baselines:", "cloudfall_server_types:")
+    web_1 = WEB_1.replace("  baseline: web", "  server_type: web")
+    source = _inventory(tmp_path, group_vars=group_vars, web_1=web_1)
+
+    read = read_fleet(read_inventory(source), SCHEMAS)
+
+    inventory = PlatformInventory.from_state(read.config)
+    assert [baseline.resource_id.value for baseline in inventory.baselines] == ["web"]
+    assert [server.baseline_id.value for server in inventory.servers] == ["web", "web"]
+    assert [(use.old, use.new) for use in read.config.deprecations] == [
+        ("spec.serverType", "spec.baseline")
+    ]
+
+
 def test_a_bad_declaration_reports_the_host_vars_file(tmp_path: Path) -> None:
     """The error must name the file the team has to edit."""
     broken = textwrap.dedent("""\
         ---
         cloudfall:
           environment: production
-          server_type: web
+          baseline: web
           lifecycle: sleeping
         """)
     source = _inventory(tmp_path, web_1=broken)
@@ -280,9 +299,9 @@ def test_a_bad_declaration_reports_the_host_vars_file(tmp_path: Path) -> None:
     assert issue.source.path.name == "web-1.yml"
 
 
-def test_an_unknown_server_type_fails_the_reference_check(tmp_path: Path) -> None:
+def test_an_unknown_baseline_fails_the_reference_check(tmp_path: Path) -> None:
     """The same cross-resource check a project directory gets."""
-    unknown = WEB_1.replace("server_type: web", "server_type: absent")
+    unknown = WEB_1.replace("baseline: web", "baseline: absent")
     source = _inventory(tmp_path, web_1=unknown, web_2=None)
 
     with pytest.raises(ConfigValidationError) as error:

@@ -326,7 +326,7 @@ remote host. It reads Ansible facts, the Debian package database through
 `inet cloudfall` nftables table as JSON, listening TCP/UDP sockets from
 `ss -tulnH`, `lsblk`, `findmnt`, `/proc/mdstat`,
 `mdadm --detail --scan`, read-only NVMe reports from `smartctl`, and `stat` data for the
-configuration paths allowlisted by the server's `ServerType`.
+configuration paths allowlisted by the server's `Baseline`.
 
 Configuration capture is deliberately bounded to metadata and optional SHA-256
 hashes; the role does not fetch file contents. The only persistent writes are

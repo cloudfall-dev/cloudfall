@@ -46,6 +46,8 @@ def test_inventory_renders_ansible_host_variables() -> None:
     ssh_public_keys = h1["cloudfall_ssh_public_keys"]
     origin_domains = h1["cloudfall_origin_domains"]
     alert_rules = h1["cloudfall_alert_rules"]
+    # The deprecated name carries the same baseline until 0.9.0 (D-11).
+    assert h1.pop("cloudfall_server_type") == h1["cloudfall_baseline"]
     del h1["cloudfall_logging_backend"]
     del h1["cloudfall_logging_collector"]
     del h1["cloudfall_ssh_public_keys"]
@@ -166,7 +168,7 @@ def test_inventory_renders_ansible_host_variables() -> None:
                 {"port": 443, "protocol": "tcp", "description": "https"},
             ],
         },
-        "cloudfall_server_type": {
+        "cloudfall_baseline": {
             "configuration": {
                 "files": [
                     {

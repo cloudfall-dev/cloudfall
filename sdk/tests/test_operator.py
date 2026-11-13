@@ -349,7 +349,7 @@ def _audit_report(*checks: tuple[str, AuditStatus]) -> AuditReport:
     )
     server = ServerAudit(
         server_id="h1",
-        server_type_id="debian-application",
+        baseline_id="debian-application",
         status=status,
         observation="synthetic",
         observed_at="2026-09-10T15:00:00Z",
@@ -1133,3 +1133,96 @@ def test_a_new_operator_approval_names_how_it_arrived(tmp_path: Path) -> None:
 
     assert caught.value.code == "operator_approval_channel_unknown"
     _still_proposed(tmp_path, proposal_id)
+
+
+_PRE_BASELINE_CHECKS = ("server_type.id", "packages.required[curl]")
+"""Drifted checks of a proposal recorded before the Baseline rename (D-11)."""
+
+
+def _record_pre_baseline_proposal(tmp_path: Path) -> ResourceId:
+    """Write a drift proposal as 0.7 recorded it, naming ``server_type.id``."""
+    fingerprint = fingerprint_of(
+        {
+            "server": "h1",
+            "operation": "converge-baseline",
+            "checks": ",".join(sorted(_PRE_BASELINE_CHECKS)),
+        }
+    )
+    proposal_id = f"op-20261101100000-{fingerprint}"
+    document = {
+        "apiVersion": "cloudfall/v1",
+        "kind": "OperatorProposal",
+        "metadata": {"id": proposal_id, "description": "Audit reports drift on h1"},
+        "spec": {
+            "createdAt": "2026-11-01T10:00:00+00:00",
+            "status": "proposed",
+            "trigger": {
+                "kind": "drift",
+                "fingerprint": fingerprint,
+                "drift": {"server": "h1", "checks": list(_PRE_BASELINE_CHECKS)},
+            },
+            "diagnosis": {
+                "summary": "Audit reports drift on h1",
+                "evidence": [
+                    f"audit check drifted: {check}" for check in _PRE_BASELINE_CHECKS
+                ],
+            },
+            "operation": {
+                "kind": "converge-baseline",
+                "server": "h1",
+                "command": ["cloudfall-engine", "playbook", "baseline.yml"],
+            },
+        },
+    }
+    directory = tmp_path / "proposals"
+    directory.mkdir()
+    (directory / f"{proposal_id}.json").write_text(
+        json.dumps(document), encoding="utf-8"
+    )
+    return ResourceId.from_boundary(proposal_id)
+
+
+@pytest.mark.parametrize(
+    ("baseline_status", "expected"),
+    [
+        (AuditStatus.DRIFT, ProposalStatus.FAILED),
+        (AuditStatus.COMPLIANT, ProposalStatus.VERIFIED),
+    ],
+)
+def test_a_proposal_naming_server_type_id_verifies_on_baseline_id(
+    tmp_path: Path, baseline_status: AuditStatus, expected: ProposalStatus
+) -> None:
+    """`server_type.id` became `baseline.id`; an old proposal waits on it (D-11)."""
+    proposal_id = _record_pre_baseline_proposal(tmp_path)
+    auditor = lambda: _audit_report(  # noqa: E731
+        ("baseline.id", baseline_status),
+        ("packages.required[curl]", AuditStatus.COMPLIANT),
+    )
+
+    result = approve(
+        _store(tmp_path),
+        proposal_id,
+        lambda _proposal: None,
+        drift_resolution_verifier(auditor),
+        _FAST_APPROVE,
+        via=TERMINAL,
+    )
+
+    assert result.status is expected
+
+
+def test_a_proposal_naming_server_type_id_blocks_its_baseline_id_twin(
+    tmp_path: Path,
+) -> None:
+    """The drift pass proposes nothing new for drift an old proposal covers."""
+    _record_pre_baseline_proposal(tmp_path)
+
+    report = drift_pass(
+        lambda: _audit_report(
+            ("baseline.id", AuditStatus.DRIFT),
+            ("packages.required[curl]", AuditStatus.DRIFT),
+        ),
+        _store(tmp_path),
+    )
+
+    assert report.proposed == ()

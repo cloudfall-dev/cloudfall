@@ -24,7 +24,7 @@ def test_example_state_validates_and_builds_typed_index() -> None:
         "OperatorPolicy": 1,
         "Component": 1,
         "Domain": 1,
-        "ServerType": 1,
+        "Baseline": 1,
         "LoggingStack": 1,
         "Application": 1,
         "Server": 2,
@@ -120,21 +120,21 @@ def test_s002_14_reserved_runtimes_are_refused_as_config_invalid(
     assert f"runtime.{field}" in context["message"]
 
 
-def test_server_type_rejects_duplicate_configuration_paths(
+def test_baseline_rejects_duplicate_configuration_paths(
     tmp_path: Path,
 ) -> None:
     project_directory = tmp_path / "config"
     shutil.copytree(ROOT / "config" / "examples", project_directory)
-    server_type_path = project_directory / "server-types" / "debian-application.yaml"
-    duplicated = server_type_path.read_text(encoding="utf-8") + (
+    baseline_path = project_directory / "baselines" / "debian-application.yaml"
+    duplicated = baseline_path.read_text(encoding="utf-8") + (
         "      - path: /etc/ssh/sshd_config\n        capture: metadata\n"
     )
-    server_type_path.write_text(duplicated, encoding="utf-8")
+    baseline_path.write_text(duplicated, encoding="utf-8")
 
     with pytest.raises(ConfigValidationError) as error:
         validate_config(project_directory, SCHEMAS)
 
-    assert error.value.issue.code == "server_type_entry_duplicate"
+    assert error.value.issue.code == "baseline_entry_duplicate"
 
 
 def test_ssh_public_key_algorithm_must_match_wire_payload(
@@ -157,17 +157,17 @@ def test_ssh_public_key_algorithm_must_match_wire_payload(
     assert error.value.issue.code == "ssh_public_key_invalid"
 
 
-def test_server_type_rejects_duplicate_firewall_rules(
+def test_baseline_rejects_duplicate_firewall_rules(
     tmp_path: Path,
 ) -> None:
     project_directory = tmp_path / "config"
     shutil.copytree(ROOT / "config" / "examples", project_directory)
-    server_type_path = project_directory / "server-types" / "debian-application.yaml"
-    duplicated = server_type_path.read_text(encoding="utf-8").replace(
+    baseline_path = project_directory / "baselines" / "debian-application.yaml"
+    duplicated = baseline_path.read_text(encoding="utf-8").replace(
         "      - port: 443\n        protocol: tcp\n        description: https",
         "      - port: 80\n        protocol: tcp\n        description: duplicate",
     )
-    server_type_path.write_text(duplicated, encoding="utf-8")
+    baseline_path.write_text(duplicated, encoding="utf-8")
 
     with pytest.raises(ConfigValidationError) as error:
         validate_config(project_directory, SCHEMAS)
@@ -329,6 +329,8 @@ def test_cli_emits_structured_success(
             "OperatorPolicy": 1,
             "Component": 1,
             "Domain": 1,
+            "Baseline": 1,
+            # The deprecated name repeats the Baseline count until 0.9.0.
             "ServerType": 1,
             "LoggingStack": 1,
             "Application": 1,

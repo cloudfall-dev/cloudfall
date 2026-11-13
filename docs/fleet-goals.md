@@ -104,7 +104,7 @@ acceptable if the following hold:
 
 | # | Requirement | Mechanism | Status |
 | --- | --- | --- | --- |
-| 1 | Fixed node cost | Node as purchase unit, `ServerType` | In place |
+| 1 | Fixed node cost | Node as purchase unit, `Baseline` | In place |
 | 2 | Enforced sharing | Requirement 8 | Missing |
 | 3 | Horizontal growth | All-fit-all model, movable components | Designed, proven at one node |
 | 4 | Movable applications | Multi-server assignment + convergence | Partial: components move; data and routing move manually |

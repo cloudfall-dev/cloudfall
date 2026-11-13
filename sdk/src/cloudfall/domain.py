@@ -77,7 +77,7 @@ class ResourceKind(StrEnum):
     """Resource kinds supported by the v1 state contract."""
 
     SERVER = "Server"
-    HOST_PROFILE = "ServerType"
+    BASELINE = "Baseline"
     APPLICATION = "Application"
     COMPONENT = "Component"
     DOMAIN = "Domain"
@@ -103,7 +103,7 @@ class ResourceKind(StrEnum):
 
 _RESOURCE_DIRECTORIES: Mapping[ResourceKind, str] = {
     ResourceKind.SSH_PUBLIC_KEY: "ssh-public-keys",
-    ResourceKind.HOST_PROFILE: "server-types",
+    ResourceKind.BASELINE: "baselines",
     ResourceKind.SERVER: "servers",
     ResourceKind.APPLICATION: "applications",
     ResourceKind.COMPONENT: "components",

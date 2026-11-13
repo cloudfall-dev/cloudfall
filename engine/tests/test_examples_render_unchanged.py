@@ -8,6 +8,7 @@ owned database renders shows up here as a diff.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -41,7 +42,7 @@ def _environment(role: str) -> Environment:
     )
 
 
-def render_examples(output: Path) -> dict[str, str]:
+def render_examples(output: Path, project: Path = EXAMPLES) -> dict[str, str]:
     """Render the example inventory and the files S-006-12 names, by name."""
     inventory_path = output / "ansible-inventory.json"
     exit_code = main(
@@ -49,7 +50,7 @@ def render_examples(output: Path) -> dict[str, str]:
             "inventory",
             "render",
             "--project",
-            str(EXAMPLES),
+            str(project),
             "--schemas",
             str(SCHEMAS),
             "--output",
@@ -106,3 +107,30 @@ def test_s006_12_examples_render_byte_identical(
     assert {"h1/nftables.conf", "h1/postgresql-main/cloudfall.conf"} <= set(golden)
     for name, text in rendered.items():
         assert text == golden[name], name
+
+
+def test_examples_under_the_deprecated_server_type_names_render_the_same(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A project still on ServerType converges exactly as it would on Baseline."""
+    project = tmp_path / "project"
+    shutil.copytree(EXAMPLES, project)
+    (project / "baselines").rename(project / "server-types")
+    for path in (project / "server-types").glob("*.yaml"):
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            text.replace("kind: Baseline", "kind: ServerType"), encoding="utf-8"
+        )
+    for path in (project / "servers").glob("*.yaml"):
+        text = path.read_text(encoding="utf-8")
+        assert "  baseline: " in text
+        path.write_text(
+            text.replace("  baseline: ", "  serverType: "), encoding="utf-8"
+        )
+    output = tmp_path / "output"
+    output.mkdir()
+
+    rendered = render_examples(output, project)
+    capsys.readouterr()
+
+    assert rendered == _golden()

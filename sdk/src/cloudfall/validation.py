@@ -35,7 +35,7 @@ from cloudfall.domain import (
 
 _SCHEMA_FILES: Mapping[ResourceKind, str] = {
     ResourceKind.SERVER: "server.schema.json",
-    ResourceKind.HOST_PROFILE: "server-type.schema.json",
+    ResourceKind.BASELINE: "baseline.schema.json",
     ResourceKind.APPLICATION: "application.schema.json",
     ResourceKind.COMPONENT: "component.schema.json",
     ResourceKind.DOMAIN: "domain.schema.json",
@@ -46,6 +46,33 @@ _SCHEMA_FILES: Mapping[ResourceKind, str] = {
     ResourceKind.OPERATOR_POLICY: "operator-policy.schema.json",
 }
 _YAML_SUFFIXES = frozenset({".yaml", ".yml"})
+
+# A Baseline was a ServerType before 0.8.0 (D-11). The old kind, folder and
+# Server field are read for one minor release, each use recorded as a
+# DeprecatedName, and `cloudfall config upgrade` rewrites them.
+LEGACY_BASELINE_KIND = "ServerType"
+"""Deprecated spelling of the ``Baseline`` kind."""
+LEGACY_BASELINE_DIRECTORY = "server-types"
+"""Deprecated folder of ``Baseline`` resources."""
+LEGACY_BASELINE_FIELD = "serverType"
+"""Deprecated name of ``Server.spec.baseline``."""
+BASELINE_FIELD = "baseline"
+"""The ``Server`` spec field naming the server's ``Baseline``."""
+UPGRADE_COMMAND = "cloudfall config upgrade"
+"""The command that rewrites a project's deprecated names."""
+ERROR_BASELINE_CONFLICT = "server_baseline_conflict"
+_LEGACY_DIRECTORIES: Mapping[str, ResourceKind] = {
+    LEGACY_BASELINE_DIRECTORY: ResourceKind.BASELINE,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class DeprecatedName:
+    """One deprecated name a resource file still uses, and its replacement."""
+
+    path: Path
+    old: str
+    new: str
 # The schema enums keep node, pm2, npm, pnpm and yarn as reserved values; the
 # deploy role runs only these (S-002-14).
 _DEPLOYABLE_RUNTIME: Mapping[str, str] = {
@@ -101,6 +128,8 @@ class ValidatedConfig:
 
     documents: tuple[ResourceDocument, ...]
     _index: Mapping[ResourceKey, ResourceDocument]
+    deprecations: tuple[DeprecatedName, ...] = ()
+    """Deprecated names the documents were read under, in reading order."""
 
     @classmethod
     def empty(cls) -> ValidatedConfig:
@@ -119,6 +148,17 @@ class ValidatedConfig:
     def counts_by_kind(self) -> dict[str, int]:
         """Return deterministic resource counts grouped by kind."""
         counts = Counter(document.key.kind.value for document in self.documents)
+        return dict(sorted(counts.items()))
+
+    def reported_counts_by_kind(self) -> dict[str, int]:
+        """Return the counts a command answers with, deprecated kinds included.
+
+        ``ServerType`` repeats the ``Baseline`` count until 0.9.0 (D-11), so
+        a caller reading ``by_kind.ServerType`` keeps working.
+        """
+        counts = self.counts_by_kind()
+        if ResourceKind.BASELINE.value in counts:
+            counts[LEGACY_BASELINE_KIND] = counts[ResourceKind.BASELINE.value]
         return dict(sorted(counts.items()))
 
     def get(self, kind: ResourceKind, resource_id: ResourceId) -> ResourceDocument:
@@ -144,7 +184,7 @@ class ValidatedConfig:
         return {
             "status": "ok",
             "resources": self.resource_count,
-            "byKind": self.counts_by_kind(),
+            "byKind": self.reported_counts_by_kind(),
         }
 
 
@@ -247,20 +287,74 @@ class SchemaCatalog:
         validator.validate(content)
 
 
-def _resource_files(project_directory: Path) -> Iterable[tuple[ResourceKind, Path]]:
+def _resource_files(
+    project_directory: Path,
+) -> Iterable[tuple[ResourceKind, str, Path]]:
     """Yield each kind directory's YAML files in deterministic order.
 
     Resources live in their kind's directory (``servers/``, ``components/``,
-    ...). Nothing else in a project is read as a resource: not ``tmp/``, not
-    playbooks, not secrets, not tooling files.
+    ...), or in a kind's deprecated directory (``server-types/``). Nothing
+    else in a project is read as a resource: not ``tmp/``, not playbooks,
+    not secrets, not tooling files.
     """
-    for kind in ResourceKind:
-        kind_directory = project_directory / kind.directory
+    directories = [(kind, kind.directory) for kind in ResourceKind]
+    directories += [(kind, name) for name, kind in _LEGACY_DIRECTORIES.items()]
+    for kind, name in directories:
+        kind_directory = project_directory / name
         if not kind_directory.is_dir():
             continue
         for path in sorted(kind_directory.rglob("*")):
             if path.is_file() and path.suffix.lower() in _YAML_SUFFIXES:
-                yield kind, path
+                yield kind, name, path
+
+
+def _current_names(
+    content: Mapping[str, object],
+    source: SourceLocation,
+    deprecations: list[DeprecatedName],
+) -> Mapping[str, object]:
+    """Return ``content`` under the current names, recording each old one."""
+    if content.get("kind") != LEGACY_BASELINE_KIND and not (
+        content.get("kind") == ResourceKind.SERVER.value
+        and isinstance(content.get("spec"), dict)
+        and LEGACY_BASELINE_FIELD in cast("Mapping[str, object]", content["spec"])
+    ):
+        return content
+    current = dict(content)
+    if current.get("kind") == LEGACY_BASELINE_KIND:
+        current["kind"] = ResourceKind.BASELINE.value
+        deprecations.append(
+            DeprecatedName(
+                source.path,
+                f"kind: {LEGACY_BASELINE_KIND}",
+                f"kind: {ResourceKind.BASELINE.value}",
+            )
+        )
+        return current
+    spec = cast("Mapping[str, object]", current["spec"])
+    if BASELINE_FIELD in spec:
+        issue = ValidationIssue(
+            code=ERROR_BASELINE_CONFLICT,
+            message=(
+                f"spec sets both {BASELINE_FIELD} and {LEGACY_BASELINE_FIELD}, "
+                f"its deprecated name; keep {BASELINE_FIELD} only"
+            ),
+            source=source,
+            field_path=("spec", LEGACY_BASELINE_FIELD),
+        )
+        raise ConfigValidationError(issue)
+    current["spec"] = {
+        (BASELINE_FIELD if key == LEGACY_BASELINE_FIELD else key): value
+        for key, value in spec.items()
+    }
+    deprecations.append(
+        DeprecatedName(
+            source.path,
+            f"spec.{LEGACY_BASELINE_FIELD}",
+            f"spec.{BASELINE_FIELD}",
+        )
+    )
+    return current
 
 
 class StateValidator:
@@ -289,15 +383,20 @@ class StateValidator:
 
         documents: list[ResourceDocument] = []
         index: dict[ResourceKey, ResourceDocument] = {}
-        for kind, path in paths:
-            for document in self._load_file(path):
+        deprecations: list[DeprecatedName] = []
+        for kind, directory, path in paths:
+            if directory != kind.directory:
+                deprecations.append(
+                    DeprecatedName(path, f"{directory}/", f"{kind.directory}/")
+                )
+            for document in self._load_file(path, deprecations):
                 if document.key.kind is not kind:
                     issue = ValidationIssue(
                         code="resource_misplaced",
                         message=(
                             f"{document.key.kind.value}/{document.key.resource_id} "
                             f"belongs in {document.key.kind.directory}/, "
-                            f"not {kind.directory}/"
+                            f"not {directory}/"
                         ),
                         source=document.source,
                     )
@@ -317,7 +416,11 @@ class StateValidator:
                 documents.append(document)
 
         self._validate_references(documents, index)
-        return ValidatedConfig(documents=tuple(documents), _index=index)
+        return ValidatedConfig(
+            documents=tuple(documents),
+            _index=index,
+            deprecations=tuple(deprecations),
+        )
 
     def validate_documents(
         self, raw_documents: Iterable[RawDocument]
@@ -330,8 +433,9 @@ class StateValidator:
         """
         documents: list[ResourceDocument] = []
         index: dict[ResourceKey, ResourceDocument] = {}
+        deprecations: list[DeprecatedName] = []
         for raw in raw_documents:
-            document = self._validate_document(raw.content, raw.source)
+            document = self._validate_document(raw.content, raw.source, deprecations)
             if document.key in index:
                 first = index[document.key]
                 issue = ValidationIssue(
@@ -347,9 +451,15 @@ class StateValidator:
             documents.append(document)
 
         self._validate_references(documents, index)
-        return ValidatedConfig(documents=tuple(documents), _index=index)
+        return ValidatedConfig(
+            documents=tuple(documents),
+            _index=index,
+            deprecations=tuple(deprecations),
+        )
 
-    def _load_file(self, path: Path) -> Iterable[ResourceDocument]:
+    def _load_file(
+        self, path: Path, deprecations: list[DeprecatedName]
+    ) -> Iterable[ResourceDocument]:
         try:
             with path.open(encoding="utf-8") as stream:
                 raw_documents = tuple(
@@ -382,11 +492,15 @@ class StateValidator:
                 )
                 raise ConfigValidationError(issue)
             content = cast("Mapping[str, object]", raw)
-            yield self._validate_document(content, source)
+            yield self._validate_document(content, source, deprecations)
 
     def _validate_document(
-        self, content: Mapping[str, object], source: SourceLocation
+        self,
+        content: Mapping[str, object],
+        source: SourceLocation,
+        deprecations: list[DeprecatedName],
     ) -> ResourceDocument:
+        content = _current_names(content, source, deprecations)
         kind = self._resource_kind(content, source)
         try:
             self._schemas.validate(kind, content)
@@ -453,23 +567,23 @@ def _validate_server_references(
     spec: Mapping[str, object],
     index: Mapping[ResourceKey, ResourceDocument],
 ) -> None:
-    server_type_id = _resource_id_value(spec, "serverType", document.source)
+    baseline_id = _resource_id_value(spec, "baseline", document.source)
     _require_resource(
         index,
-        ResourceKind.HOST_PROFILE,
-        server_type_id,
+        ResourceKind.BASELINE,
+        baseline_id,
         document.source,
-        ("spec", "serverType"),
+        ("spec", "baseline"),
     )
     _validate_server_network(spec, document.source)
 
 
-def _validate_server_type_references(
+def _validate_baseline_references(
     document: ResourceDocument,
     spec: Mapping[str, object],
     _index: Mapping[ResourceKey, ResourceDocument],
 ) -> None:
-    _validate_server_type(spec, document.source)
+    _validate_baseline(spec, document.source)
 
 
 def _validate_application_references(
@@ -939,22 +1053,22 @@ def _validate_service_remote_access(  # noqa: PLR0913
         raise ConfigValidationError(issue)
     _validate_remote_access_listen_address(document, remote_access, field_path)
     server_spec = _required_mapping(server.content, "spec", server.source)
-    server_type_id = _resource_id_value(server_spec, "serverType", server.source)
-    server_type = _require_resource(
+    baseline_id = _resource_id_value(server_spec, "baseline", server.source)
+    baseline = _require_resource(
         index,
-        ResourceKind.HOST_PROFILE,
-        server_type_id,
+        ResourceKind.BASELINE,
+        baseline_id,
         server.source,
-        ("spec", "serverType"),
+        ("spec", "baseline"),
     )
-    server_type_spec = _required_mapping(
-        server_type.content, "spec", server_type.source
+    baseline_spec = _required_mapping(
+        baseline.content, "spec", baseline.source
     )
-    if "firewall" not in server_type_spec:
+    if "firewall" not in baseline_spec:
         issue = ValidationIssue(
             code="service_remote_access_unfirewalled",
             message=(
-                f"ServerType/{server_type_id} of Server/{server.key.resource_id} "
+                f"Baseline/{baseline_id} of Server/{server.key.resource_id} "
                 "declares no firewall to restrict remoteAccess to its sources"
             ),
             source=document.source,
@@ -963,7 +1077,7 @@ def _validate_service_remote_access(  # noqa: PLR0913
         raise ConfigValidationError(issue)
     bind = _required_mapping(spec, "bind", document.source)
     port = bind.get("port")
-    firewall = _required_mapping(server_type_spec, "firewall", server_type.source)
+    firewall = _required_mapping(baseline_spec, "firewall", baseline.source)
     raw_rules = firewall.get("allowedInbound")
     rules = raw_rules if isinstance(raw_rules, list) else []
     for rule in rules:
@@ -975,7 +1089,7 @@ def _validate_service_remote_access(  # noqa: PLR0913
             issue = ValidationIssue(
                 code="service_remote_access_port_open",
                 message=(
-                    f"ServerType/{server_type_id} already opens tcp port {port} "
+                    f"Baseline/{baseline_id} already opens tcp port {port} "
                     "to every address; remoteAccess would not restrict it"
                 ),
                 source=document.source,
@@ -1382,7 +1496,7 @@ def _validate_logging_uniqueness(
             seen[identity] = document
 
 
-def _validate_server_type(spec: Mapping[str, object], source: SourceLocation) -> None:
+def _validate_baseline(spec: Mapping[str, object], source: SourceLocation) -> None:
     storage = _required_mapping(spec, "storage", source)
     packages = _required_mapping(spec, "packages", source)
     services = _required_mapping(spec, "services", source)
@@ -1424,10 +1538,10 @@ def _validate_server_type(spec: Mapping[str, object], source: SourceLocation) ->
                 field_path=("spec", "configuration", "files", index),
             )
             raise ConfigValidationError(issue)
-    _validate_server_type_firewall(spec, source)
+    _validate_baseline_firewall(spec, source)
 
 
-def _validate_server_type_firewall(
+def _validate_baseline_firewall(
     spec: Mapping[str, object], source: SourceLocation
 ) -> None:
     if spec.get("firewall") is None:
@@ -1541,8 +1655,8 @@ def _validate_unique_entry_keys(
         identity = item.get(entry_key)
         if identity in seen:
             issue = ValidationIssue(
-                code="server_type_entry_duplicate",
-                message=f"duplicate {entry_key} in server type: {identity}",
+                code="baseline_entry_duplicate",
+                message=f"duplicate {entry_key} in baseline: {identity}",
                 source=source,
                 field_path=(*field_path, index, entry_key),
             )
@@ -1817,7 +1931,7 @@ _REFERENCE_VALIDATORS: Mapping[
     ],
 ] = {
     ResourceKind.SERVER: _validate_server_references,
-    ResourceKind.HOST_PROFILE: _validate_server_type_references,
+    ResourceKind.BASELINE: _validate_baseline_references,
     ResourceKind.APPLICATION: _validate_application_references,
     ResourceKind.COMPONENT: _validate_component_references,
     ResourceKind.DOMAIN: _validate_domain_references,

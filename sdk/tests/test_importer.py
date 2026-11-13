@@ -92,7 +92,7 @@ def _import(tmp_path: Path) -> tuple[ImportTargets, RenderImportResult]:
 def test_imported_state_merges_into_a_valid_directory(tmp_path: Path) -> None:
     targets, result = _import(tmp_path)
 
-    for base in ("servers", "server-types", "ssh-public-keys"):
+    for base in ("servers", "baselines", "ssh-public-keys"):
         shutil.copytree(
             EXAMPLES / base, targets.project_directory / base
         )

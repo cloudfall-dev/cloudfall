@@ -2,7 +2,7 @@
 
 ``cloudfall add`` turns the first minutes after ``cloudfall init`` into three
 commands instead of three hand-written files: an SSH public key read from
-disk, a server type from the bundled Debian baseline, and a server that
+disk, the bundled Debian 13 baseline, and a server that
 references it. Every document is schema-validated before it is written, the
 whole project is validated afterwards, and a failed validation removes what
 was written so the project never holds a resource it would reject.
@@ -25,7 +25,12 @@ from cloudfall.domain import (
     ResourceKind,
     TcpPort,
 )
-from cloudfall.validation import ConfigValidationError, SchemaCatalog, validate_config
+from cloudfall.validation import (
+    LEGACY_BASELINE_DIRECTORY,
+    ConfigValidationError,
+    SchemaCatalog,
+    validate_config,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -44,7 +49,7 @@ BASELINE_PACKAGES: tuple[str, ...] = (
 """Packages the Cloudfall baseline installs on every managed host."""
 
 BASELINE_ROOT_MINIMUM_BYTES = 20_000_000_000
-"""Smallest root filesystem the baseline server type accepts (20 GB)."""
+"""Smallest root filesystem the bundled baseline accepts (20 GB)."""
 
 ERROR_KEY_FILE_MISSING = "ssh_key_file_missing"
 ERROR_KEY_FILE_INVALID = "ssh_key_file_invalid"
@@ -110,8 +115,8 @@ class SshKeyOptions:
 
 
 @dataclass(frozen=True, slots=True)
-class ServerTypeOptions:
-    """Inputs for ``cloudfall add server-type``."""
+class BaselineOptions:
+    """Inputs for ``cloudfall add baseline``."""
 
     resource_id: ResourceId
     description: str | None = None
@@ -123,7 +128,7 @@ class ServerOptions:
 
     resource_id: ResourceId
     address: ConnectionAddress
-    server_type: ResourceId
+    baseline: ResourceId
     environment: ResourceId
     ssh_user: LinuxUser
     ssh_port: TcpPort
@@ -170,14 +175,14 @@ def ssh_key_document(
     }
 
 
-def baseline_server_type_document(options: ServerTypeOptions) -> dict[str, object]:
+def baseline_document(options: BaselineOptions) -> dict[str, object]:
     """Build the bundled baseline: a plain Debian 13 host without software RAID."""
     description = options.description or (
         "Debian 13 host with the Cloudfall baseline and no software RAID"
     )
     return {
         "apiVersion": API_VERSION,
-        "kind": ResourceKind.HOST_PROFILE.value,
+        "kind": ResourceKind.BASELINE.value,
         "metadata": {"id": str(options.resource_id), "description": description},
         "spec": {
             "os": {
@@ -258,7 +263,7 @@ def server_document(options: ServerOptions) -> dict[str, object]:
             "hostname": hostname,
             "address": options.address.value,
             "environment": str(options.environment),
-            "serverType": str(options.server_type),
+            "baseline": str(options.baseline),
             "lifecycle": "active",
             "ssh": {"user": options.ssh_user.value, "port": options.ssh_port.value},
         },
@@ -274,32 +279,38 @@ def add_ssh_key(
     return _commit(project, schema_directory, [(ResourceKind.SSH_PUBLIC_KEY, document)])
 
 
-def add_server_type(
-    project: Path, options: ServerTypeOptions, schema_directory: Path
+def add_baseline(
+    project: Path, options: BaselineOptions, schema_directory: Path
 ) -> AddResult:
-    """Write one baseline ``ServerType``."""
-    document = baseline_server_type_document(options)
-    return _commit(project, schema_directory, [(ResourceKind.HOST_PROFILE, document)])
+    """Write one ``Baseline`` from the bundled Debian 13 baseline."""
+    document = baseline_document(options)
+    return _commit(project, schema_directory, [(ResourceKind.BASELINE, document)])
 
 
 def add_server(
     project: Path, options: ServerOptions, schema_directory: Path
 ) -> AddResult:
-    """Write one ``Server``, and its ``ServerType`` when the project lacks it."""
+    """Write one ``Server``, and its ``Baseline`` when the project lacks it."""
     documents: list[tuple[ResourceKind, dict[str, object]]] = []
-    if not _resource_path(
-        project, ResourceKind.HOST_PROFILE, options.server_type
-    ).exists():
-        server_type = ServerTypeOptions(resource_id=options.server_type)
-        documents.append(
-            (ResourceKind.HOST_PROFILE, baseline_server_type_document(server_type))
-        )
+    if _existing_path(project, ResourceKind.BASELINE, options.baseline) is None:
+        baseline = BaselineOptions(resource_id=options.baseline)
+        documents.append((ResourceKind.BASELINE, baseline_document(baseline)))
     documents.append((ResourceKind.SERVER, server_document(options)))
     return _commit(project, schema_directory, documents)
 
 
 def _resource_path(project: Path, kind: ResourceKind, resource_id: ResourceId) -> Path:
     return project / kind.directory / f"{resource_id}.yaml"
+
+
+def _existing_path(
+    project: Path, kind: ResourceKind, resource_id: ResourceId
+) -> Path | None:
+    """Return the file already declaring the resource, deprecated folder included."""
+    candidates = [_resource_path(project, kind, resource_id)]
+    if kind is ResourceKind.BASELINE:
+        candidates.append(project / LEGACY_BASELINE_DIRECTORY / f"{resource_id}.yaml")
+    return next((path for path in candidates if path.exists()), None)
 
 
 def _commit(
@@ -315,8 +326,9 @@ def _commit(
         assert isinstance(metadata, dict)  # noqa: S101 - built above, schema-checked
         resource_id = ResourceId.from_boundary(metadata["id"])
         path = _resource_path(project, kind, resource_id)
-        if path.exists():
-            message = f"{kind.value}/{resource_id} already exists: {path}"
+        existing = _existing_path(project, kind, resource_id)
+        if existing is not None:
+            message = f"{kind.value}/{resource_id} already exists: {existing}"
             raise AuthoringError(ERROR_RESOURCE_EXISTS, message)
         planned.append((kind, resource_id, path, document))
 

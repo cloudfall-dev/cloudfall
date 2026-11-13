@@ -2,5 +2,5 @@
 cloudfall_inspect_collector_version: "0.4.0"
 cloudfall_inspect_logging_backend: {}
 cloudfall_inspect_components: []
-cloudfall_inspect_server_type: {}
+cloudfall_inspect_baseline: {}
 cloudfall_inspect_server_id: ""

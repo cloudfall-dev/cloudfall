@@ -34,8 +34,8 @@ and fail when a command is missing from the catalog or a `--yes`-gated
 command is not classed as changing servers, so `AGENTS.md` names every
 server-changing command and no other.
 
-`cloudfall add ssh-key|server-type|server` writes fleet resources into the
-project: an `SshPublicKey` read from a key file, a `ServerType` from the
+`cloudfall add ssh-key|baseline|server` writes fleet resources into the
+project: an `SshPublicKey` read from a key file, a `Baseline` from the
 bundled Debian 13 baseline (no software RAID, the six baseline packages,
 default-deny firewall with 22/80/443), and a `Server` that creates its type
 on first use. Each document is schema-validated before it is written, the
@@ -116,7 +116,7 @@ command of their own: `build_artifact`, and `converge_baseline`,
 `converge_services` and `converge_domains`, which are destructive and run
 only with `confirm_destructive: true`.
 
-The fleet-declaring tools `add_ssh-key`, `add_server-type` and `add_server`
+The fleet-declaring tools `add_ssh-key`, `add_baseline` and `add_server`
 are `cloudfall add`: they write schema-validated resource files into the
 project and never overwrite an existing resource. `cloudfall init`,
 `decisions approve`, `operator approve`, `operator run` and
@@ -152,7 +152,7 @@ audit and healthy routes before declaring success. Without confirmation it
 returns the plan preview; interrupted or paused runs resume at the first
 incomplete step.
 
-The SDK validates v1 Server, ServerType, Application, and Component resources and
+The SDK validates v1 Server, Baseline, Application, and Component resources and
 builds a read-only typed index. The `cloudfall config validate` command is its first
 system boundary.
 
@@ -166,7 +166,7 @@ component records. It supports component-to-server placement queries and omits
 secret references from serialized output.
 
 `cloudfall audit` first validates normalized `ObservedServer` JSON snapshots, then
-compares every server with its referenced `ServerType`. Checks cover OS and
+compares every server with its referenced `Baseline`. Checks cover OS and
 service manager, RAID level/health/capacity, mounted filesystems, required and
 forbidden packages, service state, and allowlisted configuration evidence.
 

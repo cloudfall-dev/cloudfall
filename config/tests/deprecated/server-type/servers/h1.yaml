@@ -1,0 +1,15 @@
+---
+apiVersion: cloudfall/v1
+kind: Server
+metadata:
+  id: h1
+spec:
+  hostname: h1.example.internal
+  address: h1.example.internal
+  environment: production
+  # The field's old name: spec.baseline since 0.8.0.
+  serverType: debian-application
+  lifecycle: active
+  ssh:
+    user: cloudfall
+    port: 22

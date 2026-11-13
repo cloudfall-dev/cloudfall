@@ -1,7 +1,7 @@
 # State
 
 This module is the declarative source of truth for Cloudfall: versioned JSON
-Schemas and the YAML resources they validate — servers, server types,
+Schemas and the YAML resources they validate — servers, baselines,
 applications, components, services, domains, logging stacks, and SSH public keys.
 
 It must not contain credentials or execution logic. Secret values live in
@@ -14,7 +14,7 @@ Schemas live in `schemas/v1/` and use JSON Schema Draft 2020-12. Every resource
 has an `apiVersion`, `kind`, strict `metadata.id`, and kind-specific `spec`.
 Unknown properties are rejected.
 
-The current contract includes `Server`, `ServerType`, `Application`, `Component`,
+The current contract includes `Server`, `Baseline`, `Application`, `Component`,
 `Domain`, `Service`, `SshPublicKey`, and `LoggingStack` desired-state
 resources. A `Service` declares one infrastructure service (v1: PostgreSQL)
 with a loopback-only bind, application-owned databases resolved to peer-auth
@@ -25,11 +25,19 @@ metrics backend), mTLS paths, retention, and explicit journal/file sources;
 collectors push host metrics through the same gateway. A `Domain` pins the proxy
 and origin servers, public names, edge mode, TLS policy, configuration evidence
 path, and end-to-end health contract. Public keys are non-secret and are
-scoped to an environment; private keys never belong in state. A server profile
-captures the required Debian/systemd baseline, software RAID level and
+scoped to an environment; private keys never belong in state. A `Baseline`,
+what every server on it runs, captures the required Debian/systemd release, software RAID level and
 capacity, mounts, packages, required service and timer units, an optional
 default-deny inbound firewall contract, and an explicit allowlist of
 configuration files whose metadata or hash may be inspected.
+
+Before 0.8.0 a `Baseline` was a `ServerType` under `server-types/`, named
+from a `Server` as `spec.serverType`. Until 0.9.0 those names still
+validate and converge, and `cloudfall config validate` warns about each file
+that uses one; `cloudfall config upgrade` rewrites a project to the current
+names, keeping comments, and a second run changes nothing. A server that sets
+both `spec.serverType` and `spec.baseline` is refused with
+`server_baseline_conflict`.
 
 `observed-server.schema.json` defines the normalized, read-only evidence emitted
 by the engine. Observations are runtime evidence, not desired state, and belong
@@ -50,8 +58,9 @@ and timeout under `healthCheck`, never its output). Together with server observa
 ready-to-deploy, deployed, configured, and healthy service states.
 
 `examples/` contains a complete valid desired-state set. `tests/invalid/`
-contains deliberately invalid desired state, while
-`tests/observed/compliant/` contains validated audit fixtures.
+contains deliberately invalid desired state, `tests/deprecated/` a project
+still on the pre-0.8.0 names, and `tests/observed/compliant/` validated audit
+fixtures.
 
 Real servers and applications belong in a project of their own (created
 with `cloudfall init`), kept private. A project holds one directory per

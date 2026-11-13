@@ -36,12 +36,12 @@ PASSWORD_REF = {
 def _inventory(tmp_path: Path) -> Path:
     """Render the owned service of S-006-1, its host reached locally."""
     project = tmp_path / "project"
-    for kind in ("servers", "server-types", "services"):
+    for kind in ("servers", "baselines", "services"):
         (project / kind).mkdir(parents=True)
     shutil.copy(EXAMPLES / "servers" / "h1.yaml", project / "servers" / "h1.yaml")
     shutil.copy(
-        EXAMPLES / "server-types" / "debian-application.yaml",
-        project / "server-types" / "debian-application.yaml",
+        EXAMPLES / "baselines" / "debian-application.yaml",
+        project / "baselines" / "debian-application.yaml",
     )
     service = {
         "apiVersion": "cloudfall/v1",

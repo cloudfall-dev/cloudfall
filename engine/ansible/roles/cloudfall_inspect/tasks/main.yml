@@ -5,9 +5,9 @@
       - ansible_facts["distribution"] == "Debian"
       - ansible_facts["service_mgr"] == "systemd"
       - cloudfall_inspect_server_id | length > 0
-      - cloudfall_inspect_server_type.id | length > 0
+      - cloudfall_inspect_baseline.id | length > 0
       - cloudfall_inspect_output_directory.startswith('/')
-    fail_msg: Cloudfall inspection requires a Debian systemd host and a server type
+    fail_msg: Cloudfall inspection requires a Debian systemd host and a baseline
 
 - name: Collect installed Debian packages
   ansible.builtin.command:
@@ -338,7 +338,7 @@
     path: "{{ item.path }}"
     checksum_algorithm: sha256
     get_checksum: "{{ item.capture == 'hash' }}"
-  loop: "{{ cloudfall_inspect_server_type.configuration.files }}"
+  loop: "{{ cloudfall_inspect_baseline.configuration.files }}"
   loop_control:
     label: "{{ item.path }}"
   register: cloudfall_inspect_configuration_stats
@@ -473,7 +473,7 @@
         description: Read-only server evidence collected by Cloudfall
       spec:
         server: "{{ cloudfall_inspect_server_id }}"
-        serverType: "{{ cloudfall_inspect_server_type.id }}"
+        baseline: "{{ cloudfall_inspect_baseline.id }}"
         observedAt: "{{ ansible_facts['date_time']['iso8601'] }}"
         collectorVersion: "{{ cloudfall_inspect_collector_version }}"
         os:

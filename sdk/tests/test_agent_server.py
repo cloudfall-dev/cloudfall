@@ -34,7 +34,7 @@ all:
 GROUP_VARS = """\
 ---
 ansible_user: ansible
-cloudfall_server_types:
+cloudfall_baselines:
   web:
     os:
       distribution: Debian
@@ -66,7 +66,7 @@ WEB_1 = """\
 ---
 cloudfall:
   environment: production
-  server_type: web
+  baseline: web
   lifecycle: active
 """
 

@@ -95,8 +95,8 @@ KEY_TYPES: dict[str, str] = {
             "domains", "environmentFiles", "executed", "files", "gaps", "keys",
             "missing", "next", "observations", "observed", "operations",
             "proposals", "proposed", "references", "requested", "servers",
-            "services", "skipped", "steps", "unmatchedObservations", "withheld",
-            "written",
+            "services", "skipped", "steps", "unmatchedObservations", "upgraded",
+            "withheld", "written",
         ),
         "array",
     ),
@@ -231,16 +231,23 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
     ),
     CommandContract(
         "cloudfall",
+        "add baseline",
+        CommandEffect.PROJECT,
+        "declare a `Baseline` from the bundled Debian 13 baseline",
+        output=_ADDED,
+    ),
+    CommandContract(
+        "cloudfall",
         "add server-type",
         CommandEffect.PROJECT,
-        "declare a `ServerType` from the bundled Debian 13 baseline",
+        "deprecated name of `add baseline`, removed in 0.9.0",
         output=_ADDED,
     ),
     CommandContract(
         "cloudfall",
         "add server",
         CommandEffect.PROJECT,
-        "declare a `Server`, creating its type on first use",
+        "declare a `Server`, creating its baseline on first use",
         output=_ADDED,
     ),
     CommandContract(
@@ -249,6 +256,14 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.READ,
         "validate every resource against the schemas and cross-references",
         output=(_shape("status", "resources", "byKind"),),
+    ),
+    CommandContract(
+        "cloudfall",
+        "config upgrade",
+        CommandEffect.PROJECT,
+        "rewrite the project's deprecated names (`ServerType`, `server-types/`, "
+        "`serverType`) to the current ones",
+        output=(_shape("status", "project", "upgraded"),),
     ),
     CommandContract(
         "cloudfall",

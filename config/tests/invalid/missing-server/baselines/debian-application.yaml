@@ -1,0 +1,25 @@
+---
+apiVersion: cloudfall/v1
+kind: Baseline
+metadata:
+  id: debian-application
+spec:
+  os:
+    distribution: Debian
+    versions:
+      - "12"
+      - "13"
+    serviceManager: systemd
+  storage:
+    softwareRaid:
+      level: raid1
+      minimumActiveDevices: 2
+      minimumUsableBytes: 1
+    mounts: []
+  packages:
+    required: []
+    forbidden: []
+  services:
+    required: []
+  configuration:
+    files: []

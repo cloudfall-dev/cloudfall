@@ -800,7 +800,7 @@ def _write_report(targets: ImportTargets, state: _ImportState) -> Path:
         "# Render import report",
         "",
         "Imported resources are declarative state only. Merge this",
-        "directory with your servers and server types, then run",
+        "directory with your servers and baselines, then run",
         "`cloudfall config validate` before deploying anything.",
         "",
     ]

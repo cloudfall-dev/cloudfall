@@ -47,7 +47,7 @@ storage and included in capacity monitoring and backup policy.
 ## 1. Prepare placement and names
 
 Add the dedicated logging host as a `Server` and give it an accurate
-`ServerType`. Do not use the capacity-constrained public proxy or a host with
+`Baseline`. Do not use the capacity-constrained public proxy or a host with
 an unresolved storage finding.
 
 Choose an internal gateway name, such as `logs.internal.example`, whose A/AAAA

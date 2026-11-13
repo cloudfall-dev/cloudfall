@@ -451,7 +451,7 @@ other, and every later change to it goes through a gated operation with a
 receipt.
 
 Add the new `Server` only after the operating system and SSH access are stable.
-Create a dedicated hybrid-storage `ServerType`; do not reuse
+Create a dedicated hybrid-storage `Baseline`; do not reuse
 `debian-application` if its full-disk RAID and root thresholds do not match this
 layout.
 
@@ -461,7 +461,7 @@ packages, services, ownership, and capacity thresholds to the actual server:
 ```yaml
 ---
 apiVersion: cloudfall/v1
-kind: ServerType
+kind: Baseline
 metadata:
   id: debian-hybrid-storage
   description: Two-drive RAID1 system with independent replicated-data tails
@@ -534,7 +534,7 @@ storage contract holds, and Cloudfall does not report what it cannot prove.
 
 Under the [brownfield design](brownfield-design.md), where the team's own
 Ansible inventory is the config, this step becomes adding the host to their
-inventory with a `cloudfall` block naming its server type; the observation
+inventory with a `cloudfall` block naming its baseline; the observation
 and audit are the same. Not built yet.
 
 ## 12. Run the new-server failure acceptance test

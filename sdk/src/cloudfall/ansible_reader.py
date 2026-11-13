@@ -4,7 +4,7 @@ Cloudfall declares no servers in a brownfield repository. The inventory is
 the config: hosts, groups and connection settings come from Ansible, and
 everything Ansible does not model comes from a ``cloudfall`` block in the
 team's own ``host_vars``, with shared defaults in ``cloudfall_defaults``
-and the server-type catalog in ``cloudfall_server_types``.
+and the baseline catalog in ``cloudfall_baselines``.
 
 Ansible replaces rather than merges a variable of the same name, so a
 ``cloudfall`` block in ``group_vars`` would silently lose to one in
@@ -43,8 +43,13 @@ DECLARATION_VARIABLE = "cloudfall"
 DEFAULTS_VARIABLE = "cloudfall_defaults"
 """Group variable holding declaration defaults a host may override."""
 
-CATALOG_VARIABLE = "cloudfall_server_types"
-"""Group variable holding the server-type catalog the hosts point into."""
+CATALOG_VARIABLE = "cloudfall_baselines"
+"""Group variable holding the baseline catalog the hosts point into."""
+
+LEGACY_CATALOG_VARIABLE = "cloudfall_server_types"
+"""Deprecated name of ``cloudfall_baselines``, read until 0.9.0 (D-11).
+
+A baseline both variables hold must be defined the same way in each."""
 
 _ADDRESS_VARIABLE = "ansible_host"
 _SSH_USER_VARIABLE = "ansible_user"
@@ -87,7 +92,7 @@ class FleetRead:
             "inProcess": self.in_process,
             "managed": list(self.managed),
             "unmanaged": list(self.unmanaged),
-            "byKind": self.config.counts_by_kind(),
+            "byKind": self.config.reported_counts_by_kind(),
             "resources": self.config.resource_count,
         }
 
@@ -108,7 +113,7 @@ def read_fleet(inventory: AnsibleInventory, schema_directory: Path) -> FleetRead
         raise AnsibleReadError(_ERROR_NO_DECLARATIONS, message)
 
     documents = [
-        *_server_type_documents(managed, inventory.source.value),
+        *_baseline_documents(managed, inventory.source.value),
         *(_server_document(host, inventory.source.value) for host in managed),
     ]
     validator = StateValidator(SchemaCatalog(schema_directory))
@@ -147,47 +152,54 @@ def _server_document(host: AnsibleHost, source: Path) -> RawDocument:
     return RawDocument(content=content, source=_host_source(host, source))
 
 
-def _server_type_documents(
+def _baseline_documents(
     hosts: tuple[AnsibleHost, ...], source: Path
 ) -> tuple[RawDocument, ...]:
     catalog: dict[str, Mapping[str, object]] = {}
     for host in hosts:
-        raw = host.variable(CATALOG_VARIABLE)
-        if raw is None:
-            continue
-        if not isinstance(raw, dict):
-            message = (
-                f"`{CATALOG_VARIABLE}` on host {host.name} must be a mapping of "
-                f"server type name to definition, got {type(raw).__name__}"
-            )
-            raise AnsibleReadError(_ERROR_CATALOG_INVALID, message)
-        for name, definition in raw.items():
-            if not isinstance(definition, dict):
-                message = (
-                    f"`{CATALOG_VARIABLE}.{name}` must be a mapping, got "
-                    f"{type(definition).__name__}"
-                )
-                raise AnsibleReadError(_ERROR_CATALOG_INVALID, message)
-            identifier = str(name)
-            existing = catalog.get(identifier)
-            if existing is not None and existing != definition:
-                message = (
-                    f"server type {identifier} is defined differently for "
-                    f"host {host.name} than for an earlier host; one catalog "
-                    "must describe the fleet"
-                )
-                raise AnsibleReadError(_ERROR_CATALOG_CONFLICT, message)
-            catalog[identifier] = definition
+        for variable in (CATALOG_VARIABLE, LEGACY_CATALOG_VARIABLE):
+            _read_catalog(host, variable, catalog)
     return tuple(
         RawDocument(
-            content=_server_type_content(identifier, catalog[identifier]),
+            content=_baseline_content(identifier, catalog[identifier]),
             source=SourceLocation(path=source, document_number=0),
         )
         for identifier in sorted(catalog)
     )
 
 
-def _server_type_content(
+def _read_catalog(
+    host: AnsibleHost, variable: str, catalog: dict[str, Mapping[str, object]]
+) -> None:
+    raw = host.variable(variable)
+    if raw is None:
+        return
+    if not isinstance(raw, dict):
+        message = (
+            f"`{variable}` on host {host.name} must be a mapping of "
+            f"baseline name to definition, got {type(raw).__name__}"
+        )
+        raise AnsibleReadError(_ERROR_CATALOG_INVALID, message)
+    for name, definition in raw.items():
+        if not isinstance(definition, dict):
+            message = (
+                f"`{variable}.{name}` must be a mapping, got "
+                f"{type(definition).__name__}"
+            )
+            raise AnsibleReadError(_ERROR_CATALOG_INVALID, message)
+        identifier = str(name)
+        existing = catalog.get(identifier)
+        if existing is not None and existing != definition:
+            message = (
+                f"baseline {identifier} is defined differently for "
+                f"host {host.name} than for an earlier host or catalog "
+                "variable; one catalog must describe the fleet"
+            )
+            raise AnsibleReadError(_ERROR_CATALOG_CONFLICT, message)
+        catalog[identifier] = definition
+
+
+def _baseline_content(
     identifier: str, definition: Mapping[str, object]
 ) -> Mapping[str, object]:
     declared = _camelized(definition)
@@ -200,7 +212,7 @@ def _server_type_content(
         metadata[_DESCRIPTION_FIELD] = description
     return {
         "apiVersion": API_VERSION,
-        "kind": ResourceKind.HOST_PROFILE.value,
+        "kind": ResourceKind.BASELINE.value,
         "metadata": metadata,
         "spec": spec,
     }

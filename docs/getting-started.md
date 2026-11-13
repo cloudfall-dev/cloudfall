@@ -20,7 +20,7 @@ uv sync
 ```
 
 The project holds one directory per resource kind (`servers/`,
-`server-types/`, `ssh-public-keys/`, `applications/`, `components/`,
+`baselines/`, `ssh-public-keys/`, `applications/`, `components/`,
 `services/`, `domains/`, `alert-rules/`, `operator-policies/`,
 `logging-stacks/`), a `secrets/` directory with a `.sops.yaml` template for
 its encrypted fragments, a README with the next steps (pass `--description`
@@ -50,8 +50,8 @@ Only the kind directories are read as resources, so playbooks, roles, docs,
 and tooling files may live anywhere else in the project. Commands find the
 project on their own: the current directory when it is one, else
 `--project`, else `CLOUDFALL_PROJECT`. Declare your SSH key and your first
-server with `cloudfall add`; the server's type is created from the bundled
-Debian 13 baseline when it does not exist yet, and every written file is
+server with `cloudfall add`; the server's `Baseline` is created from the
+bundled Debian 13 baseline when it does not exist yet, and every written file is
 plain YAML you can edit (the reference set under `config/examples/` shows
 every kind). Then validate, render, inspect, and audit from inside the
 project:
@@ -92,7 +92,7 @@ command cannot ship unclassified.
 
 ## Inspect servers and audit drift
 
-Each `Server` references a reusable `ServerType`
+Each `Server` references a reusable `Baseline`
 describing its required Debian version, software RAID, filesystem capacity,
 packages, systemd services, and allowlisted configuration evidence.
 

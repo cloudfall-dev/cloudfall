@@ -97,7 +97,7 @@ def test_output_field_names_are_snake_case_and_data_keys_keep_their_spelling() -
             "openProposals": 1,
             "byKind": {"AlertRule": 1},
             "environment": {"DATABASE_URL": "x"},
-            "servers": [{"serverType": "web", "crm-backend": True}],
+            "servers": [{"baseline": "web", "crm-backend": True}],
             "decision": record,
         }
     )
@@ -106,7 +106,7 @@ def test_output_field_names_are_snake_case_and_data_keys_keep_their_spelling() -
         "open_proposals": 1,
         "by_kind": {"AlertRule": 1},
         "environment": {"DATABASE_URL": "x"},
-        "servers": [{"server_type": "web", "crm-backend": True}],
+        "servers": [{"baseline": "web", "crm-backend": True}],
         "decision": record,
     }
     assert snake_case("unmatchedObservations") == "unmatched_observations"

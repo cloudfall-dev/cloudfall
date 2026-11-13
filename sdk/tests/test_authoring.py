@@ -63,7 +63,7 @@ def _server_options(
     return ServerOptions(
         resource_id=ResourceId(resource_id),
         address=ConnectionAddress(address),
-        server_type=ResourceId("debian-application"),
+        baseline=ResourceId("debian-application"),
         environment=ResourceId("production"),
         ssh_user=LinuxUser("root"),
         ssh_port=TcpPort(22),
@@ -123,7 +123,7 @@ def test_add_server_creates_the_baseline_type_once(tmp_path: Path) -> None:
     second = add_server(project, _server_options("h2", "h2.example.internal"), SCHEMAS)
 
     assert [added.path for added in first.added] == [
-        "server-types/debian-application.yaml",
+        "baselines/debian-application.yaml",
         "servers/h1.yaml",
     ]
     assert [added.path for added in second.added] == ["servers/h2.yaml"]
@@ -133,10 +133,10 @@ def test_add_server_creates_the_baseline_type_once(tmp_path: Path) -> None:
     assert h1["hostname"] == "h1"
     assert h1["address"] == "203.0.113.10"
     assert h2["hostname"] == "h2.example.internal"
-    server_type = _spec(project, "server-types/debian-application.yaml")
-    assert server_type["os"]["versions"] == ["13"]
-    assert "softwareRaid" not in server_type["storage"]
-    assert {rule["port"] for rule in server_type["firewall"]["allowedInbound"]} == {
+    baseline = _spec(project, "baselines/debian-application.yaml")
+    assert baseline["os"]["versions"] == ["13"]
+    assert "softwareRaid" not in baseline["storage"]
+    assert {rule["port"] for rule in baseline["firewall"]["allowedInbound"]} == {
         22,
         80,
         443,
@@ -187,7 +187,7 @@ def test_cli_add_flow_from_init_to_a_valid_project(
     assert main(["add", "server", "h1", "--address", "203.0.113.10", *common]) == 0
     server_payload = json.loads(capsys.readouterr().out)
     assert [added["kind"] for added in server_payload["data"]["added"]] == [
-        "ServerType",
+        "Baseline",
         "Server",
     ]
 
@@ -242,7 +242,7 @@ def test_cli_add_into_a_read_only_project_changes_nothing(
 def test_add_removes_what_it_wrote_when_a_later_file_fails(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A new server type is written first; if the server fails, it goes too."""
+    """A new baseline is written first; if the server fails, it goes too."""
     project = _project(tmp_path)
     servers = project / "servers"
     servers.mkdir(exist_ok=True)

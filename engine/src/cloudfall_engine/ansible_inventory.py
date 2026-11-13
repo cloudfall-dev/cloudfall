@@ -18,12 +18,12 @@ if TYPE_CHECKING:
     from cloudfall.inventory import (
         AlertRuleInventory,
         ApplicationInventory,
+        BaselineInventory,
         ComponentInventory,
         DomainInventory,
         LoggingStackInventory,
         PlatformInventory,
         ServerInventory,
-        ServerTypeInventory,
         ServiceInventory,
     )
 
@@ -106,8 +106,8 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
     applications_by_id = {
         application.resource_id: application for application in inventory.applications
     }
-    server_types_by_id = {
-        server_type.resource_id: server_type for server_type in inventory.server_types
+    baselines_by_id = {
+        baseline.resource_id: baseline for baseline in inventory.baselines
     }
     components_by_id = {
         component.resource_id: component for component in inventory.components
@@ -132,13 +132,14 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
             **_host_infrastructure(server),
             **_host_firewall(
                 server,
-                server_types_by_id[server.server_type_id],
+                baselines_by_id[server.baseline_id],
                 inventory.services,
             ),
             **_host_logging(server, inventory.logging_stacks, inventory.alert_rules),
-            "cloudfall_server_type": server_types_by_id[
-                server.server_type_id
-            ].as_dict(),
+            "cloudfall_baseline": baselines_by_id[server.baseline_id].as_dict(),
+            # Deprecated name of cloudfall_baseline, the same value, kept so a
+            # fleet's own playbooks keep running; it goes in 0.9.0 (D-11).
+            "cloudfall_server_type": baselines_by_id[server.baseline_id].as_dict(),
             "cloudfall_applications": [
                 _host_application(application)
                 for application in inventory.applications
@@ -180,11 +181,11 @@ def _host_infrastructure(server: ServerInventory) -> dict[str, object]:
 
 def _host_firewall(
     server: ServerInventory,
-    server_type: ServerTypeInventory,
+    baseline: BaselineInventory,
     services: tuple[ServiceInventory, ...],
 ) -> dict[str, object]:
     remote_access = remote_access_rules_for_server(server, services)
-    if server_type.firewall is None:
+    if baseline.firewall is None:
         if remote_access:
             message = (
                 "PostgreSQL remoteAccess needs a firewall on its server: "
@@ -192,10 +193,10 @@ def _host_firewall(
             )
             raise ValueError(message)
         return {}
-    rules = firewall_rules_for_server(server_type.firewall, server.ssh_port)
+    rules = firewall_rules_for_server(baseline.firewall, server.ssh_port)
     return {
         "cloudfall_firewall": {
-            "policy": server_type.firewall.policy.value,
+            "policy": baseline.firewall.policy.value,
             "allowedInbound": [
                 *(rule.as_dict() for rule in rules),
                 *(rule.as_dict() for rule in remote_access),

@@ -7,7 +7,7 @@ spec:
   hostname: h1.example.internal
   address: h1.example.internal
   environment: production
-  serverType: debian-application
+  baseline: debian-application
   lifecycle: active
   ssh:
     user: cloudfall

@@ -39,6 +39,7 @@ from treaty import (
     Arg,
     CliExit,
     Ctx,
+    Deprecated,
     Excludes,
     Exit,
     Flag,
@@ -79,11 +80,11 @@ from cloudfall.authoring import (
     ERROR_RESOURCE_EXISTS,
     AddResult,
     AuthoringError,
+    BaselineOptions,
     ServerOptions,
-    ServerTypeOptions,
     SshKeyOptions,
+    add_baseline,
     add_server,
-    add_server_type,
     add_ssh_key,
 )
 from cloudfall.catalog import (
@@ -317,8 +318,11 @@ from cloudfall.service_evidence import (
     load_deployment_receipts,
     load_domain_observations,
 )
+from cloudfall.upgrade import UpgradeError, upgrade_project
 from cloudfall.validation import (
+    UPGRADE_COMMAND,
     ConfigValidationError,
+    DeprecatedName,
     SchemaCatalog,
     ValidatedConfig,
     validate_config,
@@ -710,9 +714,71 @@ class ValidatedPayload(Payload):
     exit_codes=["PROJECT_INVALID", "CONFIG_INVALID"],
     examples=[("Validate the project in this directory", "cloudfall config validate")],
 )
-def config_validate(_args: ProjectArgs, _ctx: Ctx, fleet: Fleet) -> ValidatedPayload:
-    """Answer the validation summary of the resolved project."""
+def config_validate(_args: ProjectArgs, ctx: Ctx, fleet: Fleet) -> ValidatedPayload:
+    """Answer the validation summary of the resolved project.
+
+    A file read under a deprecated name still validates; each such file
+    gets one ``DEPRECATED_NAME`` warning naming its old names and the
+    command that rewrites them.
+    """
+    _warn_deprecated_names(ctx, fleet)
     return ValidatedPayload(fleet.state.as_dict())
+
+
+def _warn_deprecated_names(ctx: Ctx, fleet: Fleet) -> None:
+    by_file: dict[Path, list[DeprecatedName]] = {}
+    for use in fleet.state.deprecations:
+        by_file.setdefault(use.path, []).append(use)
+    for path, uses in by_file.items():
+        shown = (
+            path.relative_to(fleet.directory)
+            if path.is_relative_to(fleet.directory)
+            else path
+        )
+        names = ", ".join(f"{use.old} (now {use.new})" for use in uses)
+        ctx.warn(
+            "DEPRECATED_NAME",
+            f"{shown.as_posix()} uses deprecated names: {names}; "
+            f"`{UPGRADE_COMMAND}` rewrites them",
+            path=shown.as_posix(),
+            names=[{"old": use.old, "new": use.new} for use in uses],
+            fix=UPGRADE_COMMAND,
+        )
+
+
+class UpgradedPayload(Payload):
+    """``config upgrade``: the files rewritten to the current names."""
+
+    command = "config upgrade"
+    writes = True
+
+
+@config.command(
+    "upgrade",
+    description=(
+        "Rewrite the project's files from deprecated names to current ones: "
+        "server-types/ to baselines/, kind ServerType to Baseline, "
+        "spec.serverType to spec.baseline; comments and formatting are kept, "
+        "and a second run changes nothing"
+    ),
+    danger_level="mutating",
+    timeout=60,
+    idempotent=True,
+    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "CONFLICT"],
+    examples=[("Rewrite the project in this directory", "cloudfall config upgrade")],
+)
+def config_upgrade(args: ProjectArgs, _ctx: Ctx, fleet: Fleet) -> UpgradedPayload:
+    """Rewrite a validated project's deprecated names, then validate it again."""
+    try:
+        result = upgrade_project(fleet.directory)
+    except UpgradeError as error:
+        raise Exit.CONFLICT(error.detail, context={"code": error.code}) from error
+    try:
+        validate_config(fleet.directory, args.schemas)
+    except ConfigValidationError as error:
+        raise _config_invalid(error) from error
+    effect = "updated" if result.files else "noop"
+    return UpgradedPayload({**result.as_dict(), "effect": effect})
 
 
 class InventoryPayload(Payload):
@@ -1402,7 +1468,7 @@ def init(args: InitArgs, ctx: Ctx) -> Scaffolded:
     )
 
 
-# add ssh-key, server-type, server
+# add ssh-key, baseline, server
 
 
 add = app.group("add", description="Write a fleet resource into the project")
@@ -1453,9 +1519,20 @@ class AddSshKeyArgs(AddArgs):
     )
 
 
+DEFAULT_BASELINE = ResourceId.from_boundary("debian-application")
+"""The baseline ``add server`` declares a server on when none is named."""
+# ServerType became Baseline in 0.8.0 (D-11); the old names go in 0.9.0.
+_RENAMED_TO_BASELINE = Deprecated(
+    since="0.8.0", replacement="add.baseline", removed_in="0.9.0"
+)
+_RENAMED_TO_BASELINE_FLAG = Deprecated(
+    since="0.8.0", replacement="baseline", removed_in="0.9.0"
+)
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
-class AddServerTypeArgs(AddArgs):
-    """Arguments of ``add server-type``."""
+class AddBaselineArgs(AddArgs):
+    """Arguments of ``add baseline``."""
 
     id: ResourceId = Arg(
         description="Resource id, such as debian-application"
@@ -1470,11 +1547,16 @@ class AddServerArgs(AddArgs):
         description="Resource id, such as h1"
     )
     address: str = Flag(description="IP address or hostname to connect to")
-    type: ResourceId = Flag(
-        default=ResourceId.from_boundary("debian-application"),
+    baseline: ResourceId | None = Flag(
+        default=None,
         description=(
-            "Server type id; created when missing (default: debian-application)"
+            "Baseline id; created when missing (default: debian-application)"
         ),
+    )
+    type: ResourceId | None = Flag(
+        default=None,
+        description="Deprecated name of --baseline",
+        deprecated=_RENAMED_TO_BASELINE_FLAG,
     )
     environment: ResourceId = Flag(
         default=ResourceId.from_boundary("production"),
@@ -1498,10 +1580,13 @@ class AddServerArgs(AddArgs):
 
     def options(self) -> ServerOptions:
         """Return the server to declare, as typed values."""
+        if self.baseline is not None and self.type is not None:
+            message = "pass --baseline only; --type is its deprecated name"
+            raise ValueError(message)
         return ServerOptions(
             resource_id=self.id,
             address=ConnectionAddress.from_boundary(self.address),
-            server_type=self.type,
+            baseline=self.baseline or self.type or DEFAULT_BASELINE,
             environment=self.environment,
             ssh_user=LinuxUser.from_boundary(self.ssh_user),
             ssh_port=TcpPort.from_boundary(self.ssh_port),
@@ -1589,23 +1674,26 @@ def add_ssh_key_command(
 
 
 @add.command(
-    "server-type",
-    description="Declare a server type from the bundled Debian 13 baseline",
+    "baseline",
+    description=(
+        "Declare a baseline, what every server on it runs, from the bundled "
+        "Debian 13 baseline"
+    ),
     danger_level="mutating",
     timeout=30,
     supports_raw_payload=True,
     exit_codes=_ADD_EXIT_CODES,
     examples=[
-        ("Declare the baseline type", "cloudfall add server-type debian-application"),
+        ("Declare the bundled baseline", "cloudfall add baseline debian-application"),
     ],
 )
-def add_server_type_command(
-    args: AddServerTypeArgs, _ctx: Ctx, project: ProjectDirectory
+def add_baseline_command(
+    args: AddBaselineArgs, _ctx: Ctx, project: ProjectDirectory
 ) -> Added:
-    """Write one ServerType resource into the project."""
-    options = ServerTypeOptions(resource_id=args.id, description=args.description)
+    """Write one Baseline resource into the project."""
+    options = BaselineOptions(resource_id=args.id, description=args.description)
     try:
-        return _added(add_server_type(project.path, options, args.schemas))
+        return _added(add_baseline(project.path, options, args.schemas))
     except AuthoringError as error:
         raise _authoring_failed(error) from error
     except ConfigValidationError as error:
@@ -1613,8 +1701,25 @@ def add_server_type_command(
 
 
 @add.command(
+    "server-type",
+    description="Deprecated name of `add baseline`; writes a Baseline",
+    danger_level="mutating",
+    timeout=30,
+    supports_raw_payload=True,
+    exit_codes=_ADD_EXIT_CODES,
+    deprecated=_RENAMED_TO_BASELINE,
+    mcp=False,
+)
+def add_server_type_command(
+    args: AddBaselineArgs, ctx: Ctx, project: ProjectDirectory
+) -> Added:
+    """Write one Baseline resource, as ``add baseline`` does."""
+    return add_baseline_command(args, ctx, project)
+
+
+@add.command(
     "server",
-    description="Declare a server; creates its server type when missing",
+    description="Declare a server; creates its baseline when missing",
     danger_level="mutating",
     timeout=30,
     supports_raw_payload=True,
@@ -1626,7 +1731,7 @@ def add_server_type_command(
 def add_server_command(
     args: AddServerArgs, _ctx: Ctx, project: ProjectDirectory
 ) -> Added:
-    """Write one Server resource, and its ServerType when the project lacks it."""
+    """Write one Server resource, and its Baseline when the project lacks it."""
     try:
         return _added(add_server(project.path, args.options(), args.schemas))
     except AuthoringError as error:

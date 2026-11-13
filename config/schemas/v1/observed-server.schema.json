@@ -208,7 +208,7 @@
         "server": {
           "$ref": "common.schema.json#/$defs/resourceId"
         },
-        "serverType": {
+        "baseline": {
           "$ref": "common.schema.json#/$defs/resourceId"
         },
         "observedAt": {
@@ -601,7 +601,7 @@
       },
       "required": [
         "server",
-        "serverType",
+        "baseline",
         "observedAt",
         "collectorVersion",
         "os",

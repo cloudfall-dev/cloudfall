@@ -285,6 +285,7 @@ def operation_tool_description(operation: Operation) -> str:
 PROJECT_COMMANDS = frozenset(
     {
         "config.validate",
+        "config.upgrade",
         "inventory.show",
         "audit",
         "services.status",
@@ -292,7 +293,7 @@ PROJECT_COMMANDS = frozenset(
         "health",
         "observe",
         "add.ssh-key",
-        "add.server-type",
+        "add.baseline",
         "add.server",
         "import.render",
         "import.render-api",
@@ -434,10 +435,12 @@ tools converge every declared server and are destructive: they run only with
 confirm_destructive: true. Every change writes receipts; nothing reports
 success it cannot prove.
 
-add_ssh-key, add_server-type and add_server declare the fleet: they write
+add_ssh-key, add_baseline and add_server declare the fleet: they write
 schema-validated resource files into the project, never onto a server, and
-never overwrite an existing resource. The project itself is laid out with
-`cloudfall init` on the CLI, and the operator's watch loop runs there too.
+never overwrite an existing resource. config_upgrade rewrites the deprecated
+names config_validate warns about, in the project's files only. The project
+itself is laid out with `cloudfall init` on the CLI, and the operator's
+watch loop runs there too.
 operator_list and operator_show read the proposals that loop records.
 Approving one is `cloudfall operator approve`, a command a person runs
 from a shell; no tool here can do it, whatever reason is given for asking.
