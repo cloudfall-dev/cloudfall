@@ -23,6 +23,7 @@ from cloudfall.operator import (
     GatewayAlertFeed,
     OperatorAlert,
     OperatorError,
+    OperatorProposal,
     PassKind,
     ProposalStatus,
     ProposalStore,
@@ -38,6 +39,7 @@ from cloudfall.operator import (
     run_once,
     watch,
 )
+from cloudfall.operator import mark_interrupted as mark_proposal_interrupted
 from cloudfall.validation import SchemaCatalog, validate_config
 from jsonschema.exceptions import ValidationError
 from test_decision import _Terminal
@@ -375,6 +377,156 @@ def test_an_execution_killed_midway_is_never_approved_again(tmp_path: Path) -> N
     assert interrupted.approval is not None
     assert interrupted.outcome is None
     assert store.blocking_fingerprints() == {interrupted.fingerprint}
+    assert (
+        f"cloudfall operator mark-interrupted {proposal_id.value} --confirm-dead"
+        in caught.value.message
+    )
+
+
+def _killed(store: ProposalStore, proposal_id: ResourceId) -> OperatorProposal:
+    """Approve one proposal whose execution dies midway; it stays running."""
+
+    def _dies(_proposal: object) -> None:
+        message = "killed while the playbook ran"
+        raise _KilledError(message)
+
+    with pytest.raises(_KilledError):
+        approve(
+            store,
+            proposal_id,
+            _dies,
+            lambda _proposal: True,
+            _FAST_APPROVE,
+            via=TERMINAL,
+        )
+    return store.load(proposal_id)
+
+
+def test_a_proposal_confirmed_dead_is_closed_and_proposed_again(
+    tmp_path: Path,
+) -> None:
+    """A running receipt has a way out, and it stops blocking its trigger (#244)."""
+    store = _store(tmp_path)
+    feed = FakeFeed(payloads=[_alerts_payload()])
+    report = run_once(feed, _inventory(), store)
+    proposal_id = ResourceId.from_boundary(report.proposed[0])
+    running = _killed(store, proposal_id)
+
+    closed = mark_proposal_interrupted(
+        store, proposal_id, "alice", lambda: "2026-09-10T16:00:00+00:00"
+    )
+    again = run_once(feed, _inventory(), store, now="2026-09-10T16:05:00+00:00")
+
+    assert closed.status is ProposalStatus.INTERRUPTED
+    assert closed.interruption is not None
+    assert closed.interruption.confirmed_by == "alice"
+    assert closed.interruption.confirmed_at == "2026-09-10T16:00:00+00:00"
+    assert closed.approval == running.approval
+    assert store.load(proposal_id) == closed
+    assert len(again.proposed) == 1
+    assert again.proposed[0] != proposal_id.value
+    assert store.load(ResourceId.from_boundary(again.proposed[0])).fingerprint == (
+        running.fingerprint
+    )
+
+
+def test_a_drift_proposal_confirmed_dead_is_proposed_again(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    auditor = lambda: _audit_report(  # noqa: E731
+        ("packages.required[curl]", AuditStatus.DRIFT)
+    )
+    first = drift_pass(auditor, store, now="2026-09-10T15:00:00+00:00")
+    proposal_id = ResourceId.from_boundary(first.proposed[0])
+    _killed(store, proposal_id)
+    blocked = drift_pass(auditor, store, now="2026-09-10T15:30:00+00:00")
+
+    mark_proposal_interrupted(store, proposal_id, "alice")
+    again = drift_pass(auditor, store, now="2026-09-10T16:00:00+00:00")
+
+    assert blocked.proposed == ()
+    assert len(again.proposed) == 1
+
+
+@pytest.mark.parametrize("status", ["proposed", "interrupted"])
+def test_only_a_running_proposal_is_closed_as_interrupted(
+    tmp_path: Path, status: str
+) -> None:
+    store = _store(tmp_path)
+    proposal_id = _drift_proposal(tmp_path)
+    if status == "interrupted":
+        _killed(store, proposal_id)
+        mark_proposal_interrupted(store, proposal_id, "alice")
+    recorded = store.load(proposal_id)
+
+    with pytest.raises(OperatorError) as caught:
+        mark_proposal_interrupted(store, proposal_id, "bob")
+
+    assert caught.value.code == "operator_proposal_not_running"
+    assert store.load(proposal_id) == recorded
+
+
+def _operator_mark_interrupted(
+    tmp_path: Path, proposal: str, *flags: str
+) -> list[str]:
+    return [
+        *("operator", "mark-interrupted", proposal),
+        *("--project", str(EXAMPLES), "--schemas", str(SCHEMAS)),
+        *("--proposals", str(tmp_path / "proposals")),
+        *flags,
+    ]
+
+
+def test_cli_operator_mark_interrupted_closes_only_once_confirmed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store = _store(tmp_path)
+    proposal_id = _drift_proposal(tmp_path)
+    _killed(store, proposal_id)
+
+    unconfirmed = main(
+        _operator_mark_interrupted(tmp_path, proposal_id.value, "--by", "alice")
+    )
+    refused = json.loads(capsys.readouterr().out)
+    still = store.load(proposal_id).status
+    confirmed = main(
+        _operator_mark_interrupted(
+            tmp_path, proposal_id.value, "--by", "alice", "--confirm-dead"
+        )
+    )
+    closed = json.loads(capsys.readouterr().out)
+
+    assert unconfirmed == 2, refused
+    assert "--confirm-dead" in refused["error"]["message"]
+    assert still is ProposalStatus.RUNNING
+    assert confirmed == 0, closed
+    spec = closed["data"]["proposal"]["spec"]
+    assert spec["status"] == "interrupted"
+    assert spec["interruption"]["confirmedBy"] == "alice"
+    assert store.load(proposal_id).status is ProposalStatus.INTERRUPTED
+
+
+def test_cli_operator_mark_interrupted_refuses_an_open_proposal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    proposal_id = _drift_proposal(tmp_path)
+
+    exit_code = main(
+        _operator_mark_interrupted(
+            tmp_path, proposal_id.value, "--by", "alice", "--confirm-dead"
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 4
+    assert payload["error"]["code"] == "PRECONDITION"
+    assert payload["error"]["context"]["code"] == "operator_proposal_not_running"
+    _still_proposed(tmp_path, proposal_id)
+
+
+def test_closing_a_proposal_as_interrupted_is_never_a_tool() -> None:
+    command = app.commands[CommandPath("operator.mark-interrupted")]
+
+    assert command.mcp is False
 
 
 def _audit_report(*checks: tuple[str, AuditStatus]) -> AuditReport:

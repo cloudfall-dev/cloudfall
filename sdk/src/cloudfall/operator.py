@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from cloudfall import record_files
 from cloudfall.audit import AuditStatus, audit_inventory
-from cloudfall.decision import ApprovalChannel
+from cloudfall.decision import ApprovalChannel, Interruption
 from cloudfall.domain import AlertSeverity, ResourceId
 from cloudfall.lifecycle import (
     LifecycleError,
@@ -56,6 +56,8 @@ ERROR_PROPOSAL_MISSING = "operator_proposal_missing"
 _ERROR_PROPOSAL_NOT_OPEN = "operator_proposal_not_open"
 ERROR_PROPOSAL_INTERRUPTED = "operator_proposal_run_interrupted"
 """Code of the refusal of a proposal whose run started and recorded no outcome."""
+ERROR_PROPOSAL_NOT_RUNNING = "operator_proposal_not_running"
+"""Code of the refusal to close a proposal as interrupted that is not running."""
 _NOT_OPEN_CODES = frozenset({_ERROR_PROPOSAL_NOT_OPEN, ERROR_PROPOSAL_INTERRUPTED})
 _ERROR_CHANNEL_UNKNOWN = "operator_approval_channel_unknown"
 _ERROR_OPERATION_UNSUPPORTED = "operator_operation_unsupported"
@@ -95,6 +97,12 @@ class ProposalStatus(StrEnum):
     Recorded before the executor runs, so an execution whose process ended
     before it recorded an outcome stays ``running``: it was interrupted, and
     it is never approved again.
+    """
+
+    INTERRUPTED = "interrupted"
+    """A ``running`` receipt a person closed once they confirmed it is dead.
+
+    It no longer blocks a new proposal for the same trigger.
     """
 
 
@@ -265,6 +273,8 @@ class OperatorProposal:
     command: tuple[str, ...]
     approval: ApprovalRecord | None
     outcome: ProposalOutcome | None
+    interruption: Interruption | None = None
+    """Who closed its ``running`` receipt as interrupted, and when."""
 
     def __post_init__(self) -> None:
         """Reject proposals whose trigger payload contradicts its kind."""
@@ -310,6 +320,8 @@ class OperatorProposal:
             spec["approval"] = self.approval.as_dict()
         if self.outcome is not None:
             spec["outcome"] = self.outcome.as_dict()
+        if self.interruption is not None:
+            spec["interruption"] = self.interruption.as_dict()
         return {
             "apiVersion": "cloudfall/v1",
             "kind": "OperatorProposal",
@@ -568,6 +580,29 @@ class ProposalStore:
             refuse_not_open(self.load(running.resource_id))
             return self._replace(running)
 
+    def interrupt(
+        self, proposal_id: ResourceId, interruption: Interruption
+    ) -> OperatorProposal:
+        """Close a ``running`` receipt as interrupted, if it is still running.
+
+        The receipt on disk is read again under the store's lock: an
+        execution that recorded its outcome since keeps that outcome.
+        """
+        with record_files.locked(self.directory):
+            current = self.load(proposal_id)
+            if current.status is not ProposalStatus.RUNNING:
+                message = (
+                    f"proposal {proposal_id.value} is {current.status.value}, not "
+                    "running, so there is no started execution to close as "
+                    "interrupted"
+                )
+                raise OperatorError(ERROR_PROPOSAL_NOT_RUNNING, message)
+            closed = replace(
+                current, status=ProposalStatus.INTERRUPTED, interruption=interruption
+            )
+            self._replace(closed)
+            return closed
+
     def load(self, proposal_id: ResourceId) -> OperatorProposal:
         """Load and re-validate one proposal receipt."""
         path = self._path(proposal_id)
@@ -712,6 +747,7 @@ def _proposal_from_document(document: Mapping[str, object]) -> OperatorProposal:
         command=tuple(cast("list[str]", operation["command"])),
         approval=approval,
         outcome=outcome,
+        interruption=Interruption.from_record(spec.get("interruption")),
     )
 
 
@@ -959,8 +995,11 @@ def refuse_not_open(proposal: OperatorProposal) -> None:
         message = (
             f"proposal {proposal.resource_id.value} was approved and its "
             "execution started, but no outcome is recorded: it is still running "
-            "or it was interrupted. It is not approved again; check the server, "
-            "then let the operator propose it again"
+            "or it was interrupted. It is not approved again, and it blocks a "
+            "new proposal for the same trigger; check the server, and once its "
+            "execution is dead, close it with `cloudfall operator "
+            f"mark-interrupted {proposal.resource_id.value} --confirm-dead`, "
+            "so the operator can propose it again"
         )
         raise OperatorError(ERROR_PROPOSAL_INTERRUPTED, message)
     message = (
@@ -968,6 +1007,25 @@ def refuse_not_open(proposal: OperatorProposal) -> None:
         "only proposed proposals can be approved"
     )
     raise OperatorError(_ERROR_PROPOSAL_NOT_OPEN, message)
+
+
+def mark_interrupted(
+    store: ProposalStore,
+    proposal_id: ResourceId,
+    confirmed_by: str,
+    now: Callable[[], str] | None = None,
+) -> OperatorProposal:
+    """Close a ``running`` proposal as interrupted, once a person confirmed it.
+
+    Only the person can tell the execution's process is gone. Nothing on
+    the server changes; the receipt says who confirmed it and when, and it
+    no longer blocks a new proposal for the same trigger.
+    """
+    interruption = Interruption(
+        confirmed_by=confirmed_by.strip(),
+        confirmed_at=(now or _utc_now)(),
+    )
+    return store.interrupt(proposal_id, interruption)
 
 
 def _execution_failure_detail(error: OperatorError | LifecycleError) -> str:
