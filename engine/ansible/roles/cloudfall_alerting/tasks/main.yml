@@ -57,6 +57,10 @@
     - "{{ cloudfall_alerting_smartd_conf }}"
   register: cloudfall_alerting_sources
 
+- name: Collect service facts
+  ansible.builtin.service_facts:
+  when: cloudfall_alerting_sources.results | map(attribute='stat.exists') | select | list | length > 0
+
 - name: Point mdadm's monitor at the sender
   ansible.builtin.lineinfile:
     path: "{{ cloudfall_alerting_mdadm_conf }}"
@@ -65,10 +69,23 @@
   when: cloudfall_alerting_sources.results[0].stat.exists
   notify: Reload mdadm monitor
 
+- name: Read smartd's configuration
+  ansible.builtin.slurp:
+    src: "{{ cloudfall_alerting_smartd_conf }}"
+  register: cloudfall_alerting_smartd_text
+  when: cloudfall_alerting_sources.results[1].stat.exists
+
+# Keep the host's own DEVICESCAN options (-s, -W, ...): only -M exec is
+# replaced, and a line without -m gets -m root (see filter_plugins).
 - name: Point smartd's warnings at the sender
   ansible.builtin.lineinfile:
     path: "{{ cloudfall_alerting_smartd_conf }}"
-    regexp: '^DEVICESCAN\b'
-    line: "DEVICESCAN -d removable -n standby -m root -M exec {{ cloudfall_alerting_sender }}"
+    regexp: '^DEVICESCAN(\s|$)'
+    line: >-
+      {{
+        cloudfall_alerting_smartd_text.content
+        | b64decode
+        | cloudfall_smartd_scan(cloudfall_alerting_sender)
+      }}
   when: cloudfall_alerting_sources.results[1].stat.exists
   notify: Reload smartd

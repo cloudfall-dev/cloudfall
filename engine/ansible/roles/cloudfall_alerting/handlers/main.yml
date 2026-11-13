@@ -1,12 +1,15 @@
 ---
+# A failed restart fails the run: a daemon left on its old configuration sends
+# no alerts. Only a unit the host does not have is skipped (service_facts
+# lists none on a host without a service manager it reads).
 - name: Reload mdadm monitor
   ansible.builtin.systemd_service:
-    name: mdmonitor.service
+    name: "{{ cloudfall_alerting_mdadm_unit }}"
     state: restarted
-  failed_when: false
+  when: cloudfall_alerting_mdadm_unit in ansible_facts.services | default({})
 
 - name: Reload smartd
   ansible.builtin.systemd_service:
-    name: smartmontools.service
+    name: "{{ cloudfall_alerting_smartd_unit }}"
     state: restarted
-  failed_when: false
+  when: cloudfall_alerting_smartd_unit in ansible_facts.services | default({})
