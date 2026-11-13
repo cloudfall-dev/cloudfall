@@ -152,7 +152,9 @@ journal, and S-015-3 on the repair in #281. Per criterion:
   group chat id validate; other characters, a trailing newline, and a `Baseline` or receiver
   naming an undeclared channel are refused
 - S-015-2: unit tests, `test_s015_2_*` in `sdk/tests/test_s015_channels.py`: the token on
-  every server of the baseline, on the backend for a receiver alone, once per server
+  every server of the baseline, on the backend for a receiver alone, once per server;
+  `test_s015_2_after_secrets_input_the_token_is_met` in `sdk/tests/test_s015_whole_spec.py`:
+  `met` on every server once the token is stored
 - S-015-3: `test_s015_3_a_missing_token_stops_before_any_server` and
   `test_s015_3_the_token_reaches_each_host_in_a_private_file` (the CLI stops with exit 4 and
   `INPUT_REQUIRED` before any playbook, and stages a `0600` file); the role run for real

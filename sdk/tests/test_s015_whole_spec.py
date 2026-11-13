@@ -111,6 +111,41 @@ def _answer(project: Path, environment: dict[str, str], *argv: str) -> tuple[int
     return done.returncode, done.stdout + done.stderr
 
 
+def _token_states(project: Path, environment: dict[str, str]) -> dict[str, set[str]]:
+    code, answer = _answer(project, environment, "requirements", "show")
+    assert code == 0, answer
+    return {
+        server["server"]: {
+            item["state"]
+            for item in server["requirements"]
+            if item["name"] == "telegram-bot-token"
+        }
+        for server in json.loads(answer)["data"]["servers"]
+    }
+
+
+def test_s015_2_after_secrets_input_the_token_is_met(tmp_path: Path) -> None:
+    project, environment = _channel_project(tmp_path)
+    assert _token_states(project, environment) == {
+        "h1": {"needs-input"},
+        "h2": {"needs-input"},
+    }
+    code, answer = _answer(
+        project,
+        environment,
+        "secrets",
+        "input",
+        "telegram-bot-token",
+        "--owner",
+        "operations",
+        "--value-from-env",
+        "CLOUDFALL_TEST_TOKEN",
+    )
+    assert code == 0, answer
+
+    assert _token_states(project, environment) == {"h1": {"met"}, "h2": {"met"}}
+
+
 def test_s015_6_the_token_reaches_no_argv_inventory_answer_or_record(
     tmp_path: Path,
 ) -> None:
