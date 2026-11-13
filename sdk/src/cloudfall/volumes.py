@@ -131,21 +131,16 @@ def normalize_report(raw: dict[str, object]) -> dict[str, object]:
         }
         for row in _rows(raw, "pvs", "pv")
     }
-    rows = {str(row["lv_name"]): row for row in _rows(raw, "lvs", "lv")}
     filesystems = raw.get("filesystems")
-    logical: dict[str, object] = {}
-    for name, row in rows.items():
-        if name.startswith("["):
-            continue
-        logical[name] = {
-            "type": str(row["segtype"]),
-            "sizeBytes": int(str(row["lv_size"])),
-            "devices": sorted(_devices(name, rows)),
-            "mapper": str(row.get("lv_dm_path", "")) or None,
+    logical: dict[str, object] = {
+        name: {
+            **facts,
             "filesystem": (
                 filesystems.get(name) if isinstance(filesystems, dict) else None
             ),
         }
+        for name, facts in parse_logical_volumes(_text(raw, "lvs")).items()
+    }
     paths = raw.get("paths")
     return {
         "volumeGroups": groups,
@@ -153,6 +148,38 @@ def normalize_report(raw: dict[str, object]) -> dict[str, object]:
         "logicalVolumes": logical,
         "paths": paths if isinstance(paths, dict) else {},
     }
+
+
+def parse_logical_volumes(text: str) -> dict[str, dict[str, object]]:
+    """Return each visible LV of ``lvs -a --reportformat json``: type, size, PVs.
+
+    A raid1 volume's physical volumes come from its hidden images; health is
+    ``lv_health_status``, empty when the volume is healthy or not reported.
+    """
+    rows = {
+        str(row["lv_name"]): row
+        for section in json.loads(text)["report"]
+        for row in section.get("lv", [])
+    }
+    return {
+        name: {
+            "type": str(row["segtype"]),
+            "sizeBytes": int(str(row["lv_size"])),
+            "devices": sorted(_devices(name, rows)),
+            "mapper": str(row.get("lv_dm_path", "")) or None,
+            "health": str(row.get("lv_health_status", "")),
+        }
+        for name, row in rows.items()
+        if not name.startswith("[")
+    }
+
+
+def _text(raw: dict[str, object], key: str) -> str:
+    text = raw.get(key)
+    if not isinstance(text, str):
+        message = f"volume report has no {key} output"
+        raise TypeError(message)
+    return text
 
 
 def _rows(raw: dict[str, object], key: str, kind: str) -> list[dict[str, object]]:

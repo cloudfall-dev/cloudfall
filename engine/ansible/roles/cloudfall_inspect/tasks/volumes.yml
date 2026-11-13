@@ -1,0 +1,56 @@
+---
+# Volumes the server's host requirements name (S-014): LVM's report and what
+# is mounted at each path, read only
+- name: Read LVM's report of logical volumes
+  ansible.builtin.command:
+    argv:
+      - lvs
+      - -a
+      - --reportformat
+      - json
+      - --units
+      - b
+      - --nosuffix
+      - -o
+      - lv_name,vg_name,segtype,lv_size,devices,lv_dm_path,lv_health_status
+  register: cloudfall_inspect_lvs
+  changed_when: false
+  failed_when: false
+
+- name: Read what is mounted at each volume's path
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --noheadings
+      - --output
+      - SOURCE
+      - --mountpoint
+      - "{{ cloudfall_inspect_volume_item.path }}"
+  loop: "{{ cloudfall_inspect_volumes }}"
+  loop_control:
+    loop_var: cloudfall_inspect_volume_item
+    label: "{{ cloudfall_inspect_volume_item.path }}"
+  register: cloudfall_inspect_volume_mounts
+  changed_when: false
+  failed_when: cloudfall_inspect_volume_mounts.rc not in [0, 1]
+
+- name: Attach volume evidence
+  ansible.builtin.set_fact:
+    cloudfall_inspect_snapshot: >-
+      {{
+        cloudfall_inspect_snapshot | combine(
+          {'spec': {'volumes': {
+            'lvsJson': (cloudfall_inspect_lvs.stdout
+                        if cloudfall_inspect_lvs.rc == 0 else none),
+            'mounts': cloudfall_inspect_volume_mount_evidence}}},
+          recursive=true
+        )
+      }}
+  vars:
+    cloudfall_inspect_volume_mount_evidence: >-
+      {%- set found = {} -%}
+      {%- for read in cloudfall_inspect_volume_mounts.results -%}
+      {%- set _ = found.update({read.cloudfall_inspect_volume_item.path:
+            (read.stdout | trim) if read.rc == 0 else none}) -%}
+      {%- endfor -%}
+      {{ found }}

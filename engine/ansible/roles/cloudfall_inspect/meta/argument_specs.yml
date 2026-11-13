@@ -26,3 +26,7 @@ argument_specs:
         type: list
         elements: dict
         default: []
+      cloudfall_inspect_volumes:
+        type: list
+        elements: dict
+        default: []

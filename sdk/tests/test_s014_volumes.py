@@ -225,3 +225,65 @@ def test_s014_7_a_path_mounted_from_another_device_is_refused() -> None:
         }
     )
     assert "already mounted from /dev/sdz1" in _refusal(raw)
+
+
+COMPLIANT = ROOT / "config" / "tests" / "observed" / "compliant"
+
+
+def _volume_check(tmp_path: Path, edit: object) -> tuple[str, object]:
+    import shutil  # noqa: PLC0415 - only these audit tests copy fixtures
+
+    from cloudfall.audit import audit_inventory  # noqa: PLC0415
+    from cloudfall.observation import load_observations  # noqa: PLC0415
+
+    observations = tmp_path / "observed"
+    shutil.copytree(COMPLIANT, observations)
+    h1 = observations / "h1.json"
+    document = json.loads(h1.read_text(encoding="utf-8"))
+    edit(document["spec"]["volumes"])  # type: ignore[operator]
+    h1.write_text(json.dumps(document), encoding="utf-8")
+    inventory = PlatformInventory.from_state(validate_config(EXAMPLES, SCHEMAS))
+    report = audit_inventory(inventory, load_observations(observations, SCHEMAS))
+    server = next(item for item in report.servers if item.server_id == "h1")
+    check = next(item for item in server.checks if item.check == "volume.loki")
+    return check.status.value, check.observed
+
+
+def _lvs(evidence: dict[str, object], **changes: str) -> None:
+    report = json.loads(str(evidence["lvsJson"]))
+    for row in report["report"][0]["lv"]:
+        if row["lv_name"] == "lv_loki":
+            row.update(changes)
+    evidence["lvsJson"] = json.dumps(report)
+
+
+def test_s014_8_the_compliant_fixture_audits_both_volumes_clean(
+    tmp_path: Path,
+) -> None:
+    assert _volume_check(tmp_path, lambda _evidence: None)[0] == "compliant"
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda evidence: evidence["mounts"].update({LOKI: None}),
+        lambda evidence: _lvs(evidence, lv_size=str(GIB)),
+        lambda evidence: _lvs(evidence, segtype="raid1"),
+        lambda evidence: _lvs(evidence, lv_health_status="partial"),
+        lambda evidence: _lvs(evidence, devices=f"{SECONDARY}(0)"),
+    ],
+    ids=["unmounted", "too-small", "wrong-type", "degraded", "other-disk"],
+)
+def test_s014_8_volume_drift(tmp_path: Path, edit: object) -> None:
+    assert _volume_check(tmp_path, edit)[0] == "drift"
+
+
+def test_s014_8_a_missing_volume_is_drift(tmp_path: Path) -> None:
+    def remove(evidence: dict[str, object]) -> None:
+        report = json.loads(str(evidence["lvsJson"]))
+        report["report"][0]["lv"] = [
+            row for row in report["report"][0]["lv"] if row["lv_name"] != "lv_loki"
+        ]
+        evidence["lvsJson"] = json.dumps(report)
+
+    assert _volume_check(tmp_path, remove) == ("drift", {"present": False})
