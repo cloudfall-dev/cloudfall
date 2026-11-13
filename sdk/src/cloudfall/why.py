@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         RunRecord,
         Staleness,
     )
+    from cloudfall.record_files import UnreadableRecord
     from cloudfall.validation import SchemaCatalog
 
 _ERROR_INSTANT_INVALID = "why_instant_invalid"
@@ -308,6 +309,8 @@ class WhyAnswer:
     query: WhyQuery
     directory: str
     explanations: tuple[Explanation, ...]
+    unreadable: tuple[UnreadableRecord, ...] = ()
+    """Records that could not be read, so the answer could not draw on them."""
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the answer for system boundaries."""
@@ -332,7 +335,8 @@ def answer(
     one, nothing is, so a ``stale`` question matches nothing.
     """
     matched: list[tuple[Decision, Staleness | None]] = []
-    for decision in store.list():
+    listing = store.list()
+    for decision in listing.records:
         staleness = clock.staleness(decision) if clock is not None else None
         if query.matches(decision, staleness):
             matched.append((decision, staleness))
@@ -345,6 +349,7 @@ def answer(
             explain(decision, proposers.get(decision.decision_id.value), staleness)
             for decision, staleness in matched
         ),
+        unreadable=listing.unreadable,
     )
 
 

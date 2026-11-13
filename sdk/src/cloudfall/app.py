@@ -111,7 +111,6 @@ from cloudfall.decision import (
     CHECK_TIMEOUT_SECONDS,
     DECISION_DIRECTORY,
     ERROR_DECISION_MISSING,
-    ERROR_RECORD_INVALID,
     ApprovalChannel,
     ApprovalRequest,
     CheckRunner,
@@ -352,6 +351,7 @@ if TYPE_CHECKING:
     from cloudfall.audit import AuditReport
     from cloudfall.catalog import Operation
     from cloudfall.operator import OperatorProposal
+    from cloudfall.record_files import UnreadableRecord
 
 def _serve_setup(args: McpServeArgs, _ctx: Ctx) -> None:
     """Check the served fleet before ``mcp serve`` accepts a client."""
@@ -1091,13 +1091,19 @@ def operations_show(args: ShowOperationArgs, _ctx: Ctx) -> OperationPayload:
         ),
     ],
 )
-def decisions_list(args: ListDecisionsArgs, _ctx: Ctx) -> DecisionsPayload:
-    """Answer every decision record: the record outlives the catalog."""
+def decisions_list(args: ListDecisionsArgs, ctx: Ctx) -> DecisionsPayload:
+    """Answer every decision record: the record outlives the catalog.
+
+    A record that cannot be read is skipped with a ``RECORD_UNREADABLE``
+    warning naming it, so one corrupt file hides nothing else.
+    """
     store = args.store()
     clock = args.clock()
+    listing = store.list()
+    _warn_unreadable(ctx, listing.unreadable)
     try:
         documents: list[dict[str, object]] = []
-        for decision in store.list():
+        for decision in listing.records:
             if args.status and decision.status not in args.status:
                 continue
             staleness = clock.staleness(decision)
@@ -1109,6 +1115,21 @@ def decisions_list(args: ListDecisionsArgs, _ctx: Ctx) -> DecisionsPayload:
     return DecisionsPayload(
         {"status": "ok", "directory": str(store.directory), "decisions": documents}
     )
+
+
+RECORD_UNREADABLE = "RECORD_UNREADABLE"
+"""The warning a command gives for each record it skipped as unreadable."""
+
+
+def _warn_unreadable(ctx: Ctx, unreadable: Sequence[UnreadableRecord]) -> None:
+    """Name each record a command skipped because it cannot be read."""
+    for record in unreadable:
+        ctx.warn(
+            RECORD_UNREADABLE,
+            f"skipped a record that cannot be read: {record.reason}",
+            path=str(record.path),
+            reason=record.reason,
+        )
 
 
 @decisions.command(
@@ -1187,12 +1208,18 @@ class ProposalPayload(Payload):
     exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "RECORD_INVALID", "NOT_FOUND"],
     examples=[("List the operator's proposals", "cloudfall operator list")],
 )
-def operator_list(args: ProposalArgs, _ctx: Ctx, fleet: Fleet) -> ProposalsPayload:
-    """Answer every proposal receipt the operator wrote."""
+def operator_list(args: ProposalArgs, ctx: Ctx, fleet: Fleet) -> ProposalsPayload:
+    """Answer every proposal receipt the operator wrote.
+
+    A receipt that cannot be read is skipped with a ``RECORD_UNREADABLE``
+    warning naming it.
+    """
     try:
-        proposals = [proposal.as_document() for proposal in args.store(fleet).list()]
+        listing = args.store(fleet).list()
     except OperatorError as error:
         raise _proposal_failed(error) from error
+    _warn_unreadable(ctx, listing.unreadable)
+    proposals = [proposal.as_document() for proposal in listing.records]
     return ProposalsPayload({"status": "ok", "proposals": proposals})
 
 
@@ -2364,16 +2391,17 @@ def _stale_warning(decision: Decision, staleness: Staleness | None) -> str:
 )
 def operations_propose(args: ProposeArgs, ctx: Ctx) -> Decided:
     """Record a proposal with the diff check mode produced."""
-    return _propose(args, _check_runner(ctx, args.root))
+    return _propose(args, _check_runner(ctx, args.root), ctx)
 
 
 def _propose(
-    args: ProposeArgs, run: CheckRunner, replay: Path | None = None
+    args: ProposeArgs, run: CheckRunner, ctx: Ctx, replay: Path | None = None
 ) -> Decided:
     """Propose one operation, running check mode through ``run``.
 
     ``replay`` names the recording ``run`` plays back, so the record says
-    its check output never came from the hosts.
+    its check output never came from the hosts. A record that cannot be
+    read is skipped with a ``RECORD_UNREADABLE`` warning on ``ctx``.
     """
     catalog = args.catalog()
     try:
@@ -2396,12 +2424,15 @@ def _propose(
         directory=args.root / args.decisions, catalog=SchemaCatalog(args.schemas)
     )
     try:
-        decision = propose(request, store, run=run)
+        # A new proposal reads the open ones it may supersede; one that
+        # cannot be read is named and left alone, never in the way.
+        decision = propose(
+            request,
+            store,
+            run=run,
+            skipped=lambda record: _warn_unreadable(ctx, (record,)),
+        )
     except DecisionError as error:
-        # A new proposal reads the open ones it may supersede, so a broken
-        # record stops it the way it stops every other reader of the record.
-        if error.code == ERROR_RECORD_INVALID:
-            raise _record_invalid(error) from error
         raise _decision_failed(error) from error
     output = (
         (args.root / decision.check.diff.path).read_text(encoding="utf-8")
@@ -2726,7 +2757,9 @@ def agent_investigate(
     except RecordingError as error:
         raise Exit.PRECONDITION(error.detail, context={"code": error.code}) from error
     run = _check_runner(ctx, args.root) if replay is None else replay.runner(args.root)
-    tools = [_agent_tool(args, operation, run) for operation in catalog.operations]
+    tools = [
+        _agent_tool(args, operation, run, ctx) for operation in catalog.operations
+    ]
     store = InvestigationStore(
         directory=args.root / args.investigations,
         catalog=SchemaCatalog(args.schemas),
@@ -2832,7 +2865,7 @@ def _save_investigation(
 
 
 def _agent_tool(
-    args: InvestigateArgs, operation: Operation, run: CheckRunner
+    args: InvestigateArgs, operation: Operation, run: CheckRunner, ctx: Ctx
 ) -> AgentTool:
     """One declared operation as a tool of the investigating model."""
 
@@ -2850,7 +2883,7 @@ def _agent_tool(
             decisions=args.decisions,
         )
         try:
-            return _tool_result(_propose(proposal, run, args.replay), ok=True)
+            return _tool_result(_propose(proposal, run, ctx, args.replay), ok=True)
         except CliExit as error:
             if isinstance(error.data, Decided):
                 failed = _tool_result(error.data, ok=False, repository=args.root)
@@ -3667,8 +3700,12 @@ class WhyPayload(Payload):
         ("One page for a person", "cloudfall why --since 2026-10-01 --format html"),
     ],
 )
-def why(args: WhyArgs, _ctx: Ctx) -> WhyPayload:
-    """Answer from the record alone: no catalog, no fleet."""
+def why(args: WhyArgs, ctx: Ctx) -> WhyPayload:
+    """Answer from the record alone: no catalog, no fleet.
+
+    A decision record that cannot be read is skipped with a
+    ``RECORD_UNREADABLE`` warning naming it.
+    """
     catalog = SchemaCatalog(args.schemas)
     store = DecisionStore(directory=args.root / args.decisions, catalog=catalog)
     try:
@@ -3676,6 +3713,7 @@ def why(args: WhyArgs, _ctx: Ctx) -> WhyPayload:
         result = answer(store, args.query(), investigations, args.clock())
     except (DecisionError, WhyError) as error:
         raise Exit.RECORD_INVALID(error.detail, context={"code": error.code}) from error
+    _warn_unreadable(ctx, result.unreadable)
     return WhyPayload(result.as_dict())
 
 

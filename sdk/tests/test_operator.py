@@ -6,6 +6,7 @@ import io
 import itertools
 import json
 from dataclasses import dataclass, field
+from importlib import metadata
 from pathlib import Path
 
 import pytest
@@ -172,7 +173,7 @@ def test_run_once_does_not_duplicate_open_proposals(tmp_path: Path) -> None:
 
     assert len(first.proposed) == 1
     assert second.proposed == ()
-    assert len(store.list()) == 1
+    assert len(store.list().records) == 1
 
 
 def test_run_once_skips_undeclared_services(tmp_path: Path) -> None:
@@ -199,7 +200,7 @@ def test_run_once_skips_undeclared_services(tmp_path: Path) -> None:
     assert len(report.skipped) == 1
     assert isinstance(report.skipped[0], SkippedAlert)
     assert "not declared" in report.skipped[0].reason
-    assert store.list() == ()
+    assert store.list().records == ()
 
 
 def test_approve_executes_and_verifies_resolution(tmp_path: Path) -> None:
@@ -377,6 +378,58 @@ def test_an_execution_killed_midway_is_never_approved_again(tmp_path: Path) -> N
     assert store.blocking_fingerprints() == {interrupted.fingerprint}
 
 
+def test_a_pass_goes_on_past_an_unreadable_receipt_and_names_it(
+    tmp_path: Path,
+) -> None:
+    """One truncated receipt no longer stops the operator (#218)."""
+    store = _store(tmp_path)
+    run_once(FakeFeed(payloads=[_alerts_payload()]), _inventory(), store)
+    broken = tmp_path / "proposals" / "op-20260101000000-0000000000000000.json"
+    broken.write_text('{"apiVersion": "cloudfall/v1", "ki', encoding="utf-8")
+
+    report = run_once(FakeFeed(payloads=[_alerts_payload()]), _inventory(), store)
+    listing = store.list()
+
+    assert report.proposed == ()
+    assert report.open_proposals == 1
+    assert [record.path for record in report.unreadable] == [broken]
+    assert report.as_dict()["unreadable"] == [
+        {"path": str(broken), "reason": report.unreadable[0].reason}
+    ]
+    assert "not valid JSON" in report.unreadable[0].reason
+    assert len(listing.records) == 1
+    assert [record.path for record in listing.unreadable] == [broken]
+
+
+def test_a_receipt_of_an_unknown_api_version_is_named_not_fatal(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    report = run_once(FakeFeed(payloads=[_alerts_payload()]), _inventory(), store)
+    path = tmp_path / "proposals" / f"{report.proposed[0]}.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["apiVersion"] = "cloudfall/v2"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    listing = store.list()
+
+    assert listing.records == ()
+    [unreadable] = listing.unreadable
+    assert "'cloudfall/v2' is not one this Cloudfall reads" in unreadable.reason
+
+
+def test_a_new_receipt_names_the_cloudfall_version_that_wrote_it(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    report = run_once(FakeFeed(payloads=[_alerts_payload()]), _inventory(), store)
+    path = tmp_path / "proposals" / f"{report.proposed[0]}.json"
+
+    document = json.loads(path.read_text(encoding="utf-8"))
+
+    assert document["spec"]["writerVersion"] == metadata.version("cloudfall")
+
+
 def _audit_report(*checks: tuple[str, AuditStatus]) -> AuditReport:
     server_checks = tuple(
         AuditCheck(
@@ -421,7 +474,7 @@ def test_drift_pass_splits_service_and_baseline_proposals(
     )
 
     assert len(report.proposed) == 2
-    proposals = store.list()
+    proposals = store.list().records
     kinds = {
         proposal.operation_kind.value: proposal for proposal in proposals
     }
@@ -763,6 +816,40 @@ def test_autonomy_executes_once_history_is_earned(tmp_path: Path) -> None:
     assert receipt.approval.policy.value == "production-operator"
 
 
+def test_autonomy_is_withheld_while_a_receipt_cannot_be_read(tmp_path: Path) -> None:
+    """The unreadable receipt could be the failure that suspends autonomy (#218)."""
+    from datetime import UTC, datetime  # noqa: PLC0415 - test-local.
+
+    from cloudfall.operator import autonomous_pass  # noqa: PLC0415
+
+    store = _store(tmp_path)
+    _seed_verified_drift(store, "packages.required[git]")
+    _seed_verified_drift(store, "packages.required[rsync]")
+    drift_pass(
+        lambda: _audit_report(("packages.required[curl]", AuditStatus.DRIFT)),
+        store,
+    )
+    broken = tmp_path / "proposals" / "op-20260910110000-0000000000000000.json"
+    broken.write_text("{", encoding="utf-8")
+    executed: list[str] = []
+
+    report = autonomous_pass(
+        store,
+        _policied_inventory(),
+        lambda proposal: executed.append(proposal.operation_kind.value),
+        lambda _proposal: lambda _p: True,
+        _FAST_APPROVE,
+        now=datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
+    )
+
+    assert executed == []
+    assert report.executed == ()
+    [(_proposal, reason)] = report.withheld
+    assert "cannot be read" in reason
+    assert str(broken) in reason
+    assert [record.path for record in report.unreadable] == [broken]
+
+
 def _autonomous_receipt(tmp_path: Path) -> tuple[ProposalStore, Path]:
     from datetime import UTC, datetime  # noqa: PLC0415 - test-local.
 
@@ -1084,7 +1171,7 @@ def test_cli_operator_approve_keeps_its_gateway_flags(
 ) -> None:
     """An alert proposal still names the gateway flags it needs, and takes them."""
     run_once(FakeFeed(payloads=[_alerts_payload()]), _inventory(), _store(tmp_path))
-    (proposal,) = _store(tmp_path).list()
+    (proposal,) = _store(tmp_path).list().records
     material = tmp_path / "material.pem"
     material.write_text("not a certificate\n", encoding="utf-8")
 

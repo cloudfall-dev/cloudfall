@@ -366,6 +366,12 @@
           "minLength": 1,
           "maxLength": 300
         },
+        "writerVersion": {
+          "type": "string",
+          "description": "The Cloudfall version that last wrote this record. A record written before this field names none.",
+          "minLength": 1,
+          "maxLength": 64
+        },
         "replay": {
           "type": "string",
           "description": "The recording this decision's check output was played back from, as agent investigate --replay named it. Such a decision cannot be approved. A record without it was checked live.",
