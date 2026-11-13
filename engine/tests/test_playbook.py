@@ -121,14 +121,18 @@ def test_cli_lists_bundled_playbooks(capsys: pytest.CaptureFixture[str]) -> None
     assert "inspect" in data["playbooks"]
 
 
+@pytest.mark.parametrize(
+    "playbook", ["inspect", "deploy", "rollback", "restart", "backup"]
+)
 def test_cli_syntax_checks_a_bundled_playbook(
-    inventory_file: Path, capsys: pytest.CaptureFixture[str]
+    playbook: str, inventory_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """CI syntax-checks each playbook with no extra variables."""
     exit_code = main(
         [
             "playbook",
             "run",
-            "inspect",
+            playbook,
             "--engine",
             str(ENGINE),
             "--inventory",

@@ -28,10 +28,12 @@
           component_{{ cloudfall_deploy_component_id | replace('-', '_') }}
 
 - name: Restart one Cloudfall component behind its health check
-  # The intersection keeps cloudfall_servers' inventory order.
+  # The intersection keeps cloudfall_servers' inventory order. Without the
+  # component id (a syntax check) the pattern names no group; a run never gets
+  # here without it, since the first play refuses that.
   hosts: >-
     cloudfall_servers:&component_{{
-    cloudfall_deploy_component_id | replace('-', '_') }}
+    cloudfall_deploy_component_id | default('') | replace('-', '_') }}
   become: true
   gather_facts: true
   any_errors_fatal: true

@@ -173,6 +173,21 @@ def test_a_component_without_a_group_fails_before_any_host(
     assert not log.exists()
 
 
+@pytest.mark.parametrize("playbook", ["deploy", "rollback", "restart"])
+def test_a_run_without_a_component_id_fails_before_any_host(
+    playbook: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log = tmp_path / "hosts.log"
+    extra_vars = {**EXTRA_VARS[playbook], "stub_log": str(log)}
+    del extra_vars["cloudfall_deploy_component_id"]
+
+    exit_code = _run(tmp_path, playbook, extra_vars)
+
+    assert exit_code == 82
+    assert "cloudfall_deploy_component_id" in capsys.readouterr().err
+    assert not log.exists()
+
+
 def test_backup_contacts_only_the_services_server(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
