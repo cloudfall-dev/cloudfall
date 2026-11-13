@@ -107,6 +107,8 @@ extend-immutable-calls = ["treaty.Arg", "treaty.Flag", "treaty.Out"]
 "**/tests/**" = ["D103", "INP001", "PLR2004", "S101"]
 # Evaluation scripts run standalone, never imported as a package.
 "evaluations/**" = ["INP001"]
+# Ansible loads a role's plugins by path, never as a package.
+"engine/ansible/**" = ["INP001"]
 
 [tool.mypy]
 python_version = "3.14"

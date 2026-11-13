@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import grp
+import importlib.util
 import json
 import os
 import pwd
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+import yaml
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 ROOT = Path(__file__).parents[2]
 ANSIBLE_PLAYBOOK = Path(sys.executable).with_name("ansible-playbook")
@@ -35,17 +41,21 @@ echo host
 """
 
 
-def _play(tmp_path: Path, *, token: bool = True) -> tuple[Path, dict[str, str]]:
+DEBIAN_SMARTD = (
+    "# default\nDEVICESCAN -d removable -n standby -m root "
+    "-M exec /usr/share/smartmontools/smartd-runner\n"
+)
+
+
+def _play(
+    tmp_path: Path, *, token: bool = True, smartd_conf: str = DEBIAN_SMARTD
+) -> tuple[Path, dict[str, str]]:
     root = tmp_path / "host"
     (root / "etc").mkdir(parents=True)
     mdadm = root / "etc" / "mdadm.conf"
     mdadm.write_text("ARRAY /dev/md0 metadata=1.2\nMAILADDR root\n", encoding="utf-8")
     smartd = root / "etc" / "smartd.conf"
-    smartd.write_text(
-        "# default\nDEVICESCAN -d removable -n standby -m root "
-        "-M exec /usr/share/smartmontools/smartd-runner\n",
-        encoding="utf-8",
-    )
+    smartd.write_text(smartd_conf, encoding="utf-8")
     source = tmp_path / "staged-token"
     source.write_text(TOKEN, encoding="utf-8")
     source.chmod(0o600)
@@ -56,6 +66,10 @@ def _play(tmp_path: Path, *, token: bool = True) -> tuple[Path, dict[str, str]]:
         "cloudfall_alerting_smartd_conf": str(smartd),
         "cloudfall_alerting_owner": pwd.getpwuid(os.getuid()).pw_name,
         "cloudfall_alerting_group": grp.getgrgid(os.getgid()).gr_name,
+        # Units no test host has: the handlers skip them rather than restart
+        # the runner's own mdmonitor or smartd.
+        "cloudfall_alerting_mdadm_unit": "cloudfall-test-absent-mdmonitor.service",
+        "cloudfall_alerting_smartd_unit": "cloudfall-test-absent-smartd.service",
     }
     channel: dict[str, str] = {"id": "operations", "chatId": "145629422"}
     if token:
@@ -131,6 +145,87 @@ def test_s015_3_without_a_token_the_role_stops(tmp_path: Path) -> None:
     assert done.returncode != 0
     assert "converge through cloudfall" in done.stdout
     assert not Path(paths["cloudfall_alerting_sender"]).exists()
+
+
+@pytest.mark.parametrize(
+    ("scan", "expected"),
+    [
+        (
+            "DEVICESCAN -a -s (S/../.././02|L/../../6/03) -W 4,45,55 -m root "
+            "-M exec /usr/share/smartmontools/smartd-runner",
+            "DEVICESCAN -a -s (S/../.././02|L/../../6/03) -W 4,45,55 -m root "
+            "-M exec {sender}",
+        ),
+        (
+            "DEVICESCAN -a -M exec /opt/elsewhere/notify -M daily -m ops@example.com",
+            "DEVICESCAN -a -M daily -m ops@example.com -M exec {sender}",
+        ),
+        (
+            "DEVICESCAN -a -s L/../../7/04 -W 0,0,60",
+            "DEVICESCAN -a -s L/../../7/04 -W 0,0,60 -m root -M exec {sender}",
+        ),
+        (
+            "",
+            "DEVICESCAN -d removable -n standby -m root -M exec {sender}",
+        ),
+    ],
+    ids=["keeps-s-and-W", "replaces-foreign-exec", "adds-m-root", "no-scan-line"],
+)
+def test_s015_3_the_role_keeps_the_hosts_smartd_options(
+    tmp_path: Path, scan: str, expected: str
+) -> None:
+    conf = f"# host's own\n{scan}\n" if scan else "# host's own\n"
+    playbook, paths = _play(tmp_path, smartd_conf=conf)
+
+    _run(playbook)
+    second = _run(playbook)
+
+    smartd = Path(paths["cloudfall_alerting_smartd_conf"]).read_text(encoding="utf-8")
+    sender = paths["cloudfall_alerting_sender"]
+    assert smartd == f"# host's own\n{expected.format(sender=sender)}\n"
+    assert "changed=0" in second.stdout
+
+
+def _smartd_scan() -> Callable[[str, str], str]:
+    path = ROLE / "filter_plugins" / "smartd_scan.py"
+    spec = importlib.util.spec_from_file_location("smartd_scan", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    scan: Callable[[str, str], str] = module.smartd_scan
+    return scan
+
+
+def test_s015_3_the_scan_line_keeps_a_trailing_comment() -> None:
+    line = _smartd_scan()("DEVICESCAN -a -m root # weekly tests\n", "/s")
+
+    assert line == "DEVICESCAN -a -m root -M exec /s # weekly tests"
+    assert _smartd_scan()(f"{line}\n", "/s") == line
+
+
+@pytest.mark.parametrize(
+    ("conf", "message"),
+    [
+        ("DEVICESCAN -a\nDEVICESCAN -m root\n", "more than one DEVICESCAN"),
+        ("DEVICESCAN -a \\\n  -m root\n", "continued"),
+        ("DEVICESCAN -a -M exec\n", "-M exec without a program"),
+    ],
+)
+def test_s015_3_a_scan_line_the_role_cannot_read_stops_it(
+    conf: str, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _smartd_scan()(conf, "/s")
+
+
+def test_s015_3_a_failed_restart_fails_the_run() -> None:
+    handlers = yaml.safe_load((ROLE / "handlers" / "main.yml").read_text("utf-8"))
+
+    for handler in handlers:
+        assert "failed_when" not in handler
+        assert "ignore_errors" not in handler
+        assert "in ansible_facts.services" in handler["when"]
 
 
 @pytest.mark.parametrize(

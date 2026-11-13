@@ -3,5 +3,7 @@ cloudfall_alerting_root: /etc/cloudfall/alerting
 cloudfall_alerting_sender: /usr/local/sbin/cloudfall-alert
 cloudfall_alerting_mdadm_conf: /etc/mdadm/mdadm.conf
 cloudfall_alerting_smartd_conf: /etc/smartd.conf
+cloudfall_alerting_mdadm_unit: mdmonitor.service
+cloudfall_alerting_smartd_unit: smartmontools.service
 cloudfall_alerting_owner: root
 cloudfall_alerting_group: root
