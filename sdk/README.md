@@ -74,6 +74,16 @@ record that counts, `deploy --yes` exits `PRECONDITION` with
 `restart` ship no new code and need no approval. An application that
 declares `approval: automatic` deploys without a record.
 
+One component runs one of `deploy`, `rollback`, `restart` or an artifact
+build at a time on this controller: each holds the component's lock under
+`tmp/locks/` until it ends, passed, failed or interrupted, and a second run
+exits `CONFLICT` with `component_locked` before any server is contacted,
+naming who holds the lock, since when, and whether that process still runs.
+A lock a killed run left stays until a person clears it:
+`cloudfall lock clear crm-backend` shows it and its age and removes it once
+they type the component id at a terminal; it never removes a lock whose
+process still runs here.
+
 `domains apply <domain>` runs `domains.yml` on the Domain's proxy server
 alone and renders only that Domain, so no baseline, firewall or service task
 runs; it is safe on a server whose baseline another project owns. With

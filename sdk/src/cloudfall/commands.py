@@ -88,7 +88,7 @@ KEY_TYPES: dict[str, str] = {
         ("completed", "count", "exitCode", "openProposals", "resources", "tasks"),
         "integer",
     ),
-    **dict.fromkeys(("healthy", "releaseCommandSkipped"), "boolean"),
+    **dict.fromkeys(("cleared", "healthy", "releaseCommandSkipped"), "boolean"),
     **dict.fromkeys(
         (
             "added", "answers", "components", "decisions", "declaredKeys",
@@ -103,7 +103,7 @@ KEY_TYPES: dict[str, str] = {
     **dict.fromkeys(
         (
             "ansible", "approval", "byKind", "byRisk", "certbotTimer", "certificate",
-            "dashboard", "decision", "error", "inventory", "operation",
+            "dashboard", "decision", "error", "inventory", "lock", "operation",
             "proposal", "query", "releaseCommand", "summary", "vhost",
         ),
         "object",
@@ -592,6 +592,24 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "`decisions/releases/`; a person types the release id at a terminal, "
         "which no flag answers (`--yes` included), and nothing is deployed",
         output=(_shape("status", "path", "approval:object"),),
+    ),
+    CommandContract(
+        "cloudfall",
+        "lock clear",
+        CommandEffect.PROJECT,
+        "remove the lock under `tmp/locks/` that a deploy, rollback, restart or "
+        "build of one component left behind; a person types the component id "
+        "at a terminal, which no flag answers (`--yes` included), and a lock "
+        "whose process still runs on this host is never removed",
+        output=(
+            _shape(
+                "status",
+                "component",
+                "lock",
+                "cleared",
+                when="`lock` is `{}` and `cleared` false when no run held the lock",
+            ),
+        ),
     ),
     CommandContract(
         "cloudfall",
