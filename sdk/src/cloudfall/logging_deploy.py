@@ -222,9 +222,21 @@ def preview_logging_deploy(
             {"channel": channel.value, "tokenStored": store.holds(spec.reference)}
             for channel, spec in receivers
         ],
-        "missing": needs_input(answered) + missing_channel_tokens(receivers, store),
+        "missing": missing_inputs(answered, receivers, store),
         "wouldRun": effect,
     }
+
+
+def missing_inputs(
+    answered: list[dict[str, object]],
+    receivers: list[tuple[ResourceId, SecretRequirement]],
+    store: SecretStore,
+) -> list[dict[str, object]]:
+    """Name every input only a person can supply: stack secrets, then channel tokens.
+
+    The plan's ``missing`` and the deploy's refusal are this one list (#289).
+    """
+    return needs_input(answered) + missing_channel_tokens(receivers, store)
 
 
 def prepare_secrets(
@@ -232,12 +244,16 @@ def prepare_secrets(
 ) -> tuple[tuple[StoredSecret, ...], tuple[ServerRequirements, ...]]:
     """Meet the secret requirements the controller can meet, before any server.
 
-    Raises ``InputMissingError`` when a secret only a person can supply is not
-    stored; nothing is generated then, so a refused run changes nothing.
+    Raises ``InputMissingError`` naming every input only a person can supply
+    that is not stored, a stack secret or a receiver channel's token: the
+    same list as the plan's ``missing``. Nothing is generated then, so a
+    refused run changes nothing.
     """
     stack = declared_stack(inventory)
     servers = stack_requirements(inventory, stack)
-    missing = needs_input(requirement_states(servers, store))
+    missing = missing_inputs(
+        requirement_states(servers, store), channel_receivers(inventory), store
+    )
     if missing:
         raise InputMissingError(tuple(missing))
     generated = tuple(
