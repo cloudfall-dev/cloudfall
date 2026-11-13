@@ -137,6 +137,20 @@ def test_s015_5_the_token_is_staged_for_alertmanager_or_the_deploy_stops(
     ]
 
 
+def test_s015_5_the_token_group_exists_before_the_token_is_delivered() -> None:
+    # copy with a group not there yet fails after writing the file 0644: a
+    # first deploy would leave the bot token world-readable
+    tasks = yaml.safe_load((ROLE / "tasks" / "main.yml").read_text(encoding="utf-8"))
+    names = [task["name"] for task in tasks]
+
+    group = next(
+        index
+        for index, task in enumerate(tasks)
+        if task.get("ansible.builtin.group", {}).get("name") == "prometheus"
+    )
+    assert group < names.index("Deliver the files Cloudfall provides for the stack")
+
+
 @pytest.mark.parametrize(
     ("candidate", "pinned", "passes"),
     [

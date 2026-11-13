@@ -19,6 +19,14 @@
       Logging deployment requires its declared Debian backend and the declared
       migration guard (parallel with legacy agents preserved, or none)
 
+# Before delivery: a channel token is delivered with group prometheus, and a
+# copy to a group not there yet fails after writing the file world-readable.
+- name: Create Prometheus service group before package configuration
+  ansible.builtin.group:
+    name: prometheus
+    system: true
+    state: present
+
 - name: Deliver the files Cloudfall provides for the stack
   ansible.builtin.include_tasks: deliver.yml
 
@@ -187,12 +195,6 @@
     group: root
     mode: "0644"
   notify: Restart Loki
-
-- name: Create Prometheus service group before package configuration
-  ansible.builtin.group:
-    name: prometheus
-    system: true
-    state: present
 
 - name: Create Prometheus service account before package configuration
   ansible.builtin.user:
