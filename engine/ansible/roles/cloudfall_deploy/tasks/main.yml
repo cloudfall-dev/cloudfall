@@ -14,11 +14,38 @@
       The first deploy slice supports Debian x86_64 hosts and Python
       components managed by uv under systemd
 
+- name: Inspect the currently active release
+  ansible.builtin.stat:
+    path: "{{ cloudfall_deploy_component.install_root }}/current"
+    follow: false
+    get_checksum: false
+  register: cloudfall_deploy_current
+
+- name: Record the rollback candidate
+  ansible.builtin.set_fact:
+    cloudfall_deploy_previous_directory: >-
+      {{
+        cloudfall_deploy_current.stat.lnk_source
+        if cloudfall_deploy_current.stat.exists
+        and cloudfall_deploy_current.stat.islnk
+        else ""
+      }}
+
+# A release unpacks into releases/<release>, except when current already runs
+# that release: then it unpacks into a fresh releases/<release>.redeploy-<UTC
+# time>, so nothing is written into the live directory and a failed gate can
+# still roll back to it. The release id is the directory name up to its first
+# dot; release ids have none.
 - name: Compute release paths
   ansible.builtin.set_fact:
     cloudfall_deploy_release_directory: >-
       {{ cloudfall_deploy_component.install_root }}/releases/{{
         cloudfall_deploy_release
+      }}{{
+        '.redeploy-' ~ now(utc=true, fmt='%Y%m%dT%H%M%SZ')
+        if (cloudfall_deploy_previous_directory | basename).split('.') | first
+        == cloudfall_deploy_release
+        else ''
       }}
     cloudfall_deploy_current_link: >-
       {{ cloudfall_deploy_component.install_root }}/current
@@ -29,6 +56,7 @@
         cloudfall_deploy_release
       }}.tar.gz
 
+# A read, so a dry run (--check) sees the installed version too.
 - name: Check the installed uv version
   ansible.builtin.command:
     argv:
@@ -37,11 +65,25 @@
   register: cloudfall_deploy_uv_installed
   changed_when: false
   failed_when: false
+  check_mode: false
+
+- name: Report the uv release a deploy would install
+  ansible.builtin.debug:
+    msg: >-
+      A deploy installs uv {{ cloudfall_deploy_uv_version }} at
+      /usr/local/bin/uv
+  when:
+    - ansible_check_mode
+    - >-
+      cloudfall_deploy_uv_installed.rc != 0
+      or cloudfall_deploy_uv_version not in cloudfall_deploy_uv_installed.stdout
 
 - name: Install the pinned uv release
-  when: >-
-    cloudfall_deploy_uv_installed.rc != 0
-    or cloudfall_deploy_uv_version not in cloudfall_deploy_uv_installed.stdout
+  when:
+    - not ansible_check_mode
+    - >-
+      cloudfall_deploy_uv_installed.rc != 0
+      or cloudfall_deploy_uv_version not in cloudfall_deploy_uv_installed.stdout
   block:
     - name: Download the pinned uv archive
       ansible.builtin.get_url:
@@ -87,11 +129,14 @@
     group: root
     mode: "0644"
 
+# A dry run transfers nothing, so it has no staged archive to verify or
+# unpack.
 - name: Verify the transferred artifact digest
   ansible.builtin.stat:
     path: "{{ cloudfall_deploy_staging_archive }}"
     checksum_algorithm: sha256
   register: cloudfall_deploy_staged
+  when: not ansible_check_mode
 
 - name: Refuse a release whose digest does not match its metadata
   ansible.builtin.assert:
@@ -101,6 +146,7 @@
     fail_msg: >-
       Transferred artifact digest does not match the declared
       artifact metadata
+  when: not ansible_check_mode
 
 - name: Unpack the verified release
   ansible.builtin.unarchive:
@@ -109,6 +155,7 @@
     remote_src: true
     owner: "{{ cloudfall_deploy_component.application_user }}"
     group: "{{ cloudfall_deploy_component.application_user }}"
+  when: not ansible_check_mode
 
 - name: Remove the staged archive
   ansible.builtin.file:
@@ -142,6 +189,8 @@
     UV_CACHE_DIR: "{{ cloudfall_deploy_shared_directory }}/uv/cache"
     UV_PYTHON_INSTALL_DIR: "{{ cloudfall_deploy_shared_directory }}/uv/python"
   changed_when: true
+  # A dry run unpacks nothing, so the release directory may not exist yet.
+  when: not ansible_check_mode
 
 - name: Run the release command on the release server
   ansible.builtin.include_tasks: release_command.yml
@@ -170,23 +219,6 @@
     - not ansible_check_mode
     - cloudfall_deploy_component.release is defined
 
-- name: Inspect the currently active release
-  ansible.builtin.stat:
-    path: "{{ cloudfall_deploy_current_link }}"
-    follow: false
-    get_checksum: false
-  register: cloudfall_deploy_current
-
-- name: Record the rollback candidate
-  ansible.builtin.set_fact:
-    cloudfall_deploy_previous_directory: >-
-      {{
-        cloudfall_deploy_current.stat.lnk_source
-        if cloudfall_deploy_current.stat.exists
-        and cloudfall_deploy_current.stat.islnk
-        else ""
-      }}
-
 - name: Compute service unit paths
   ansible.builtin.set_fact:
     cloudfall_deploy_unit_path: >-
@@ -209,12 +241,21 @@
   register: cloudfall_deploy_unit_existing_content
   when: cloudfall_deploy_unit_existing.stat.isreg | default(false)
 
+# A managed unit found here is the previous release's: the rescue writes its
+# content, read above, back when the gate fails.
 - name: Recognize a hand-made service unit
   ansible.builtin.set_fact:
     cloudfall_deploy_unit_hand_made: >-
       {{
         (cloudfall_deploy_unit_existing.stat.isreg | default(false))
         and not (
+          cloudfall_deploy_unit_existing_content.content | b64decode
+        ).startswith('# Managed by Cloudfall')
+      }}
+    cloudfall_deploy_unit_managed_before: >-
+      {{
+        (cloudfall_deploy_unit_existing.stat.isreg | default(false))
+        and (
           cloudfall_deploy_unit_existing_content.content | b64decode
         ).startswith('# Managed by Cloudfall')
       }}
@@ -418,6 +459,13 @@
         - not ansible_check_mode
         - cloudfall_deploy_component.healthCheck.type == "none"
   rescue:
+    # Gating the restored release runs its command health check again, which
+    # overwrites cloudfall_deploy_command_health_result.
+    - name: Record the health check result of the failed release
+      ansible.builtin.set_fact:
+        cloudfall_deploy_failed_health_result: >-
+          {{ cloudfall_deploy_command_health_result | default(none) }}
+
     - name: Restore the previous release symlink
       ansible.builtin.file:
         src: "{{ cloudfall_deploy_previous_directory }}"
@@ -426,6 +474,18 @@
         force: true
         follow: false
       when: cloudfall_deploy_previous_directory | length > 0
+
+    - name: Restore the service unit of the previous release
+      ansible.builtin.copy:
+        content: "{{ cloudfall_deploy_unit_existing_content.content | b64decode }}"
+        dest: "{{ cloudfall_deploy_unit_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when:
+        - cloudfall_deploy_previous_directory | length > 0
+        - not ansible_check_mode
+        - cloudfall_deploy_unit_managed_before | bool
 
     - name: Restart the restored release
       ansible.builtin.systemd_service:
@@ -499,6 +559,25 @@
         - cloudfall_deploy_command_health_result.timedOut
           or cloudfall_deploy_command_health_result.exitCode != 0
 
+    - name: Gate the restored release on its health check
+      when:
+        - cloudfall_deploy_previous_directory | length > 0
+        - not ansible_check_mode
+      block:
+        - name: Run the health gate against the restored release
+          ansible.builtin.include_tasks: health_gate.yml
+      rescue:
+        - name: Fail the deployment whose rollback failed its health check
+          ansible.builtin.fail:
+            msg: >-
+              Release {{ cloudfall_deploy_release }} failed its health gate
+              on {{ cloudfall_server_id }} and was rolled back to {{
+                (cloudfall_deploy_previous_directory | basename).split('.')
+                | first
+              }}, but the restored release failed its health check too, so
+              {{ cloudfall_deploy_component.id }} has no healthy release
+              there: {{ ansible_failed_result.msg | default('no detail') }}
+
     - name: Fail the deployment after rolling back
       ansible.builtin.fail:
         msg: >-
@@ -509,22 +588,25 @@
               'timed out after '
               ~ cloudfall_deploy_component.healthCheck.timeoutSeconds
               ~ ' seconds'
-              if cloudfall_deploy_command_health_result.timedOut
+              if cloudfall_deploy_failed_health_result.timedOut
               else 'exit code '
-              ~ cloudfall_deploy_command_health_result.exitCode
+              ~ cloudfall_deploy_failed_health_result.exitCode
             )
             ~ (
               ' on its only attempt'
-              if cloudfall_deploy_command_health_result.attempts == 1
+              if cloudfall_deploy_failed_health_result.attempts == 1
               else ' on the last of '
-              ~ cloudfall_deploy_command_health_result.attempts ~ ' attempts'
+              ~ cloudfall_deploy_failed_health_result.attempts ~ ' attempts'
             )
             ~ ')'
-            if cloudfall_deploy_command_health_result is defined
+            if cloudfall_deploy_failed_health_result is not none
             else 'its health check'
           }} and was {{
             'rolled back to '
-            ~ (cloudfall_deploy_previous_directory | basename)
+            ~ (
+              (cloudfall_deploy_previous_directory | basename).split('.')
+              | first
+            )
             if cloudfall_deploy_previous_directory | length > 0
             else 'stopped because no previous release exists'
           }}{{
