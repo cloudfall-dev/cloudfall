@@ -128,7 +128,10 @@ not just create, or `wipefs`.
 
 ## Verification
 
-Not built yet. Landed so far, checked by unit tests on the controller:
+Proving run on a Debian 13 host with two block volumes, 2026-11-13
+(`docs/proving-runs/2026-11-13-hetzner-s011.md`): S-014-3, S-014-4 and S-014-8 held live, and
+S-014-5 for keeping a volume; growing, raid1 (S-014-6) and the refusals (S-014-7) rest on unit
+tests. Landed, slice by slice:
 
 - `storage.pools` on a `Baseline` (schema, the `StoragePool` model, unique `id` and
   `volumeGroup`), the `pool` and `storagePool` fields of `LoggingStack`, and the pool refusals

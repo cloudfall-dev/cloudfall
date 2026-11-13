@@ -150,8 +150,9 @@ requirement type is a new provider, not new code in every role. v1 ships these b
 
 ## Verification
 
-No criterion is verified yet. Landed so far, each checked by unit tests on the controller and
-none against a live Debian host:
+Proving run on two Debian 13 hosts, 2026-11-13 (`docs/proving-runs/2026-11-13-hetzner-s011.md`):
+S-011-1, S-011-2, S-011-4, S-011-5, S-011-6 and S-011-9 held live, and S-011-7 for volumes and
+certificates; S-011-3, S-011-8 and S-011-10 rest on unit tests. Landed, slice by slice:
 
 - `migration.mode: none` (cloudfall-dev/cloudfall#203), part of S-011-1
 - `cloudfall requirements show`: the requirements every declared `LoggingStack` places on its
