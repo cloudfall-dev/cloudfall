@@ -667,8 +667,11 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
                 "unreadServers",
                 "cleared",
                 when=(
-                    "`lock` is `{}` and `serverLocks` empty when no run held it; "
-                    "`cleared` is false then"
+                    "`lock` is `{}` and `serverLocks` empty when no run held it "
+                    "here or on any of its servers; `cleared` is false then. "
+                    "With no lock found and a server it could not reach, it "
+                    "exits `CONFLICT` with `component_lock_not_cleared` and "
+                    "`unreadServers`, since a lock there is not known"
                 ),
             ),
         ),

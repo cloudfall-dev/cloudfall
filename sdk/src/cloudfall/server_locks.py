@@ -200,6 +200,23 @@ def clear_server_locks(
         raise LifecycleError(ERROR_LOCK_NOT_CLEARED, detail)
 
 
+def unread_server_locks(
+    component_id: ResourceId, unread: tuple[ResourceId, ...]
+) -> LifecycleError:
+    """Say that no lock was found but the servers not reached may hold one."""
+    servers = ", ".join(server.value for server in unread)
+    detail = (
+        f"no lock of component {component_id} was found, but server {servers} "
+        "could not be reached, so whether a run holds it there is not known; "
+        "nothing was cleared, run the command again once it is reachable"
+    )
+    return LifecycleError(
+        ERROR_LOCK_NOT_CLEARED,
+        detail,
+        context={"unreadServers": [server.value for server in unread]},
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _Reading:
     lock: str | None

@@ -323,10 +323,12 @@ class _Terminal(io.StringIO):
         return True
 
 
-def _clear(fleet: _Fleet, typed: str | None) -> tuple[int, dict[str, Any]]:
+def _clear(
+    fleet: _Fleet, typed: str | None, component: str = COMPONENT.value
+) -> tuple[int, dict[str, Any]]:
     """Run ``lock clear`` at a terminal typing ``typed``; off one for ``None``."""
     argv = [
-        *("lock", "clear", "crm-backend"),
+        *("lock", "clear", component),
         *("--project", str(fleet.project), "--schemas", str(SCHEMAS)),
         *("--format", "json"),
     ]
@@ -388,16 +390,31 @@ def test_lock_clear_refuses_a_lock_whose_process_runs_here(fleet: _Fleet) -> Non
     assert fleet.lock().exists()
 
 
-def test_lock_clear_without_a_lock_changes_nothing(fleet: _Fleet) -> None:
-    exit_code, payload = _clear(fleet, None)
+def test_lock_clear_with_unread_servers_does_not_say_nothing_held_it(
+    fleet: _Fleet,
+) -> None:
+    # The example servers do not resolve, so whether a run holds the lock
+    # there is not known: no `noop`, which says no run held it (#271).
+    exit_code, payload = _clear(fleet, "crm-backend")
+
+    assert exit_code != 0
+    assert payload["error"]["code"] == "CONFLICT"
+    assert payload["error"]["context"]["code"] == "component_lock_not_cleared"
+    assert payload["error"]["context"]["unreadServers"] == ["h1", "h2"]
+    assert "server h1, h2 could not be reached" in payload["error"]["message"]
+    assert "not known" in payload["error"]["message"]
+
+
+def test_lock_clear_without_a_lock_anywhere_changes_nothing(fleet: _Fleet) -> None:
+    # A component the config no longer declares has no server to read.
+    exit_code, payload = _clear(fleet, None, component="retired-worker")
 
     assert exit_code == 0, payload
     assert payload["data"]["cleared"] is False
     assert payload["data"]["effect"] == "noop"
     assert payload["data"]["lock"] == {}
-    # The example servers do not resolve, so their locks are not known (#221).
     assert payload["data"]["server_locks"] == []
-    assert payload["data"]["unread_servers"] == ["h1", "h2"]
+    assert payload["data"]["unread_servers"] == []
 
 
 def test_lock_clear_is_a_persons_and_never_a_tool() -> None:

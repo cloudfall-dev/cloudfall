@@ -89,7 +89,12 @@ A lock a killed run left stays until a person clears it:
 `cloudfall lock clear crm-backend` shows it, and the component's lock on each
 of its servers, with their ages, and removes them once they type the
 component id at a terminal; it never removes a lock whose process still runs
-here, and it reports a server it could not reach.
+here, and it reports a server it could not reach. On a server, a lock is
+removed only if it still holds the token shown, compared and removed in one
+command there, so a lock a run took since is kept and the command exits
+`CONFLICT`. With no lock found and a server it could not reach, it exits
+`CONFLICT` with `component_lock_not_cleared` rather than saying no run held
+the lock.
 
 `domains apply <domain>` runs `domains.yml` on the Domain's proxy server
 alone and renders only that Domain, so no baseline, firewall or service task

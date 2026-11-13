@@ -337,7 +337,11 @@ from cloudfall.secrets import (
     load_environment_receipts,
     render_environment,
 )
-from cloudfall.server_locks import clear_server_locks, read_server_locks
+from cloudfall.server_locks import (
+    clear_server_locks,
+    read_server_locks,
+    unread_server_locks,
+)
 from cloudfall.service_evidence import (
     DeploymentReceiptSet,
     DomainObservationSet,
@@ -4831,6 +4835,10 @@ def lock_clear(args: LockClearArgs, ctx: Ctx, fleet: Fleet) -> LockClearPayload:
             "unreadServers": [server.value for server in servers.unread],
         }
         if held is None and not servers.held:
+            if servers.unread:
+                # No lock found is not no lock held: a server not reached may
+                # hold one (#271).
+                raise unread_server_locks(args.component, servers.unread)
             return LockClearPayload({**answer, "cleared": False, "effect": "noop"})
         found = [] if held is None else [held.describe()]
         if servers.held or servers.unread:
