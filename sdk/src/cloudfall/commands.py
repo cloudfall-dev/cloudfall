@@ -624,7 +624,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "deploy the declared LoggingStack after meeting its secret requirements",
         gate=_YES,
         output=(
-            _plan("loggingStack:string", "missing"),
+            _plan("loggingStack:string", "channels:array", "missing"),
             _shape(
                 "status",
                 "action",

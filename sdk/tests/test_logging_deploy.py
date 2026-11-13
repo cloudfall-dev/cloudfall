@@ -185,6 +185,7 @@ def test_the_plan_names_what_it_would_generate_and_what_is_missing(
     missing = data["missing"]
     assert isinstance(missing, list)
     assert [item["name"] for item in missing] == ["smtp-password-operations-email"]
+    assert data["channels"] == []
     assert not (project / "secrets" / "production" / "logging-stacks").exists()
     assert not (tmp_path / "record.json").exists()
 

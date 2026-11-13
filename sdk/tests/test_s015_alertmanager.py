@@ -10,7 +10,11 @@ from pathlib import Path
 import pytest
 import yaml
 from cloudfall.inventory import PlatformInventory
-from cloudfall.logging_deploy import InputMissingError, channel_token_files
+from cloudfall.logging_deploy import (
+    InputMissingError,
+    channel_token_files,
+    preview_logging_deploy,
+)
 from cloudfall.requirements import SecretRequirement, requirements_of
 from cloudfall.secret_store import SecretStore
 from cloudfall.validation import validate_config
@@ -135,6 +139,38 @@ def test_s015_5_the_token_is_staged_for_alertmanager_or_the_deploy_stops(
     assert [(item.path, item.mode, item.group, item.force) for item in files] == [
         (TOKEN_FILE, "0640", "prometheus", True)
     ]
+
+
+def test_s015_5_the_plan_names_the_channel_token_the_deploy_refuses_on(
+    tmp_path: Path,
+) -> None:
+    # 282: the plan said "missing": [] and --yes then refused on the token
+    inventory = _inventory(_project(tmp_path))
+    store = SecretStore(tmp_path / "secrets", decrypt=_decrypt, encrypt=_encrypt)
+    unstored = {"name": "telegram-bot-token of operations"}
+
+    plan = preview_logging_deploy(inventory, store)
+    with pytest.raises(InputMissingError) as refused:
+        channel_token_files(inventory, store)
+
+    assert plan["channels"] == [{"channel": "operations", "tokenStored": False}]
+    assert isinstance(plan["missing"], list)
+    assert unstored in plan["missing"]
+    assert list(refused.value.missing) == [unstored]
+
+    channel = next(
+        requirement.spec
+        for requirement in requirements_of(inventory)[0].requirements
+        if isinstance(requirement.spec, SecretRequirement)
+        and requirement.spec.name.value == "telegram-bot-token"
+    )
+    store.write(channel.reference, "123456:synthetic")
+    plan = preview_logging_deploy(inventory, store)
+
+    assert plan["channels"] == [{"channel": "operations", "tokenStored": True}]
+    assert isinstance(plan["missing"], list)
+    assert unstored not in plan["missing"]
+    assert "123456:synthetic" not in json.dumps(plan)
 
 
 def test_s015_5_the_token_group_exists_before_the_token_is_delivered() -> None:

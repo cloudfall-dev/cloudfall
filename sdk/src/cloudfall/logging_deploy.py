@@ -186,10 +186,15 @@ def stack_requirements(
 def preview_logging_deploy(
     inventory: PlatformInventory, store: SecretStore
 ) -> dict[str, object]:
-    """Return the plan: the stack, its servers, and each requirement's state."""
+    """Return the plan: the stack, its servers, and each requirement's state.
+
+    ``channels`` says whether each receiver channel's token is stored, never
+    its value; an unstored one is in ``missing`` as the deploy names it.
+    """
     stack = declared_stack(inventory)
     servers = stack_requirements(inventory, stack)
     answered = requirement_states(servers, store)
+    receivers = channel_receivers(inventory)
     to_generate = [
         spec.name.value
         for spec in _secrets(servers)
@@ -213,7 +218,11 @@ def preview_logging_deploy(
         "action": "logging-deploy",
         "loggingStack": stack.resource_id.value,
         "servers": answered,
-        "missing": needs_input(answered),
+        "channels": [
+            {"channel": channel.value, "tokenStored": store.holds(spec.reference)}
+            for channel, spec in receivers
+        ],
+        "missing": needs_input(answered) + missing_channel_tokens(receivers, store),
         "wouldRun": effect,
     }
 
@@ -295,6 +304,20 @@ def channel_receivers(
     return found
 
 
+def missing_channel_tokens(
+    receivers: list[tuple[ResourceId, SecretRequirement]], store: SecretStore
+) -> list[dict[str, object]]:
+    """Name each receiver channel token not in the store, as the deploy refuses it.
+
+    The plan's ``missing`` and the refusal's share these names (#282).
+    """
+    return [
+        {"name": f"telegram-bot-token of {channel.value}"}
+        for channel, spec in receivers
+        if not store.holds(spec.reference)
+    ]
+
+
 def channel_token_files(
     inventory: PlatformInventory, store: SecretStore
 ) -> list[StagedFile]:
@@ -304,11 +327,7 @@ def channel_token_files(
     """
     stack = declared_stack(inventory)
     receivers = channel_receivers(inventory)
-    missing: list[dict[str, object]] = [
-        {"name": f"telegram-bot-token of {channel.value}"}
-        for channel, spec in receivers
-        if not store.holds(spec.reference)
-    ]
+    missing = missing_channel_tokens(receivers, store)
     if missing:
         raise InputMissingError(tuple(missing))
     return [
