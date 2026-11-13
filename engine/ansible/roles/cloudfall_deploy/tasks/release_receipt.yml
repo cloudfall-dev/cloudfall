@@ -3,6 +3,8 @@
 # and from the gate's rescue after a failed command health check, with
 # cloudfall_deploy_receipt_passed saying which. A component with a command
 # health check records its result under healthCheck; http and none do not.
+# previousRelease is a release id: a same-release redeploy's directory,
+# <release>.redeploy-<time>, names its release before the first dot.
 - name: Ensure the controller receipt directory exists
   ansible.builtin.file:
     path: "{{ cloudfall_deploy_receipt_directory }}"
@@ -30,7 +32,8 @@
             'artifactSha256': cloudfall_deploy_artifact_sha256,
             'deployedAt': ansible_facts['date_time']['iso8601'],
             'previousRelease': (
-              (cloudfall_deploy_previous_directory | basename)
+              (cloudfall_deploy_previous_directory | basename).split('.')
+              | first
               if cloudfall_deploy_previous_directory | length > 0
               else none
             ),

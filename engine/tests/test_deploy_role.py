@@ -9,6 +9,7 @@ unit of the same name is kept and restored.
 from __future__ import annotations
 
 import base64
+import re
 from pathlib import Path
 
 import pytest
@@ -34,8 +35,13 @@ UNIT_GATE = [
     RESTARTS_AFTER,
     NO_RESTART,
 ]
+RECORD_FAILED = "Record the health check result of the failed release"
 RESTORE = "Restore the previous release symlink"
+RESTORE_MANAGED_UNIT = "Restore the service unit of the previous release"
 RESTART_RESTORED = "Restart the restored release"
+GATE_RESTORED = "Gate the restored release on its health check"
+RESTORED_GATE = "Run the health gate against the restored release"
+FAIL_ROLLBACK = "Fail the deployment whose rollback failed its health check"
 STOP_FIRST = "Stop the failed first release"
 FAIL = "Fail the deployment after rolling back"
 RESTORE_UNIT = "Restore the pre-Cloudfall service unit"
@@ -130,18 +136,22 @@ def _gate(health_check: dict[str, object], *, check_mode: bool) -> list[str]:
     ]
 
 
-def _rescue_variables(
+def _rescue_variables(  # noqa: PLR0913 - one knob per rescue condition.
     previous_directory: str,
     *,
     hand_made: bool = False,
+    managed_before: bool = False,
     was_active: bool = True,
     was_enabled: str = "enabled",
     check_mode: bool = False,
 ) -> dict[str, object]:
     return {
         "ansible_check_mode": check_mode,
+        "cloudfall_server_id": "h1",
         "cloudfall_deploy_previous_directory": previous_directory,
+        "cloudfall_deploy_failed_health_result": None,
         "cloudfall_deploy_unit_hand_made": hand_made,
+        "cloudfall_deploy_unit_managed_before": managed_before,
         "cloudfall_deploy_unit_was_active": {"rc": 0 if was_active else 3},
         "cloudfall_deploy_unit_was_enabled": {"stdout": was_enabled},
         "cloudfall_deploy_unit_path": "/etc/systemd/system/asrest.service",
@@ -149,7 +159,7 @@ def _rescue_variables(
             "/etc/systemd/system/asrest.service.pre-cloudfall"
         ),
         "cloudfall_deploy_release": "r2",
-        "cloudfall_deploy_component": {"service": {"name": "asrest"}},
+        "cloudfall_deploy_component": {"id": "asrest", "service": {"name": "asrest"}},
     }
 
 
@@ -157,6 +167,7 @@ def _rescue(
     previous_directory: str,
     *,
     hand_made: bool = False,
+    managed_before: bool = False,
     was_active: bool = True,
     check_mode: bool = False,
 ) -> set[str]:
@@ -164,6 +175,7 @@ def _rescue(
     variables = _rescue_variables(
         previous_directory,
         hand_made=hand_made,
+        managed_before=managed_before,
         was_active=was_active,
         check_mode=check_mode,
     )
@@ -255,13 +267,15 @@ def test_the_unit_settles_for_the_role_default_before_its_second_check() -> None
 
 
 def test_a_first_release_whose_unit_exits_is_stopped() -> None:
-    assert _rescue("") == {STOP_FIRST, FAIL}
+    assert _rescue("") == {RECORD_FAILED, STOP_FIRST, FAIL}
 
 
 def test_a_release_whose_unit_exits_rolls_back() -> None:
     assert _rescue("/srv/apps/crm/worker/releases/r1") == {
+        RECORD_FAILED,
         RESTORE,
         RESTART_RESTORED,
+        GATE_RESTORED,
         FAIL,
     }
 
@@ -386,6 +400,7 @@ def test_a_kept_copy_of_another_unit_refuses_the_deploy(
 
 def test_a_failed_first_release_over_a_hand_made_unit_restores_and_starts_it() -> None:
     assert _rescue("", hand_made=True) == {
+        RECORD_FAILED,
         STOP_FIRST,
         RESTORE_UNIT,
         RELOAD_UNIT,
@@ -401,6 +416,7 @@ def test_a_failed_first_release_over_a_hand_made_unit_restores_and_starts_it() -
 
 def test_a_restored_unit_that_was_stopped_stays_stopped() -> None:
     assert _rescue("", hand_made=True, was_active=False) == {
+        RECORD_FAILED,
         STOP_FIRST,
         RESTORE_UNIT,
         RELOAD_UNIT,
@@ -442,19 +458,25 @@ def test_the_restored_unit_gets_back_its_enabled_state(
 
 def test_a_rollback_to_a_previous_release_leaves_a_kept_unit_alone() -> None:
     assert _rescue("/srv/apps/asrest/releases/r1", hand_made=True) == {
+        RECORD_FAILED,
         RESTORE,
         RESTART_RESTORED,
+        GATE_RESTORED,
         FAIL,
     }
 
 
 def test_a_first_release_over_a_cloudfall_unit_does_not_resurrect_a_kept_copy() -> None:
     """``current`` removed by hand leaves no previous release, not a hand-made unit."""
-    assert _rescue("", hand_made=False) == {STOP_FIRST, FAIL}
+    assert _rescue("", hand_made=False) == {RECORD_FAILED, STOP_FIRST, FAIL}
 
 
 def test_check_mode_never_restores_a_unit() -> None:
-    assert _rescue("", hand_made=True, check_mode=True) == {STOP_FIRST, FAIL}
+    assert _rescue("", hand_made=True, check_mode=True) == {
+        RECORD_FAILED,
+        STOP_FIRST,
+        FAIL,
+    }
 
 
 def _failure(*, hand_made: bool, was_active: bool = True) -> str:
@@ -479,6 +501,243 @@ def test_the_failure_of_a_first_release_without_a_kept_unit_is_unchanged() -> No
     assert _failure(hand_made=False) == (
         "Release r2 failed its health check and was stopped because no previous"
         " release exists"
+    )
+
+
+# A same-release redeploy never writes into the live directory (#223).
+
+RELEASE = "20261028T000000Z-abcdef2"
+PREVIOUS = "20261027T000000Z-abcdef1"
+RELEASES = "/srv/apps/crm/backend/releases"
+COMPUTE = "Compute release paths"
+INSPECT_CURRENT = "Inspect the currently active release"
+CREATE = "Create release and shared directories"
+
+
+def _release_directory(previous_directory: str) -> str:
+    """Answer the directory a deploy unpacks into with this ``current`` target."""
+    paths = _task(COMPUTE, _main())["ansible.builtin.set_fact"]
+    assert isinstance(paths, dict)
+    variables: dict[str, object] = {
+        "cloudfall_deploy_release": RELEASE,
+        "cloudfall_deploy_previous_directory": previous_directory,
+        "cloudfall_deploy_component": {
+            "id": "crm-backend",
+            "install_root": "/srv/apps/crm/backend",
+        },
+    }
+    return str(
+        _templar(variables).template(
+            trust_as_template(paths["cloudfall_deploy_release_directory"])
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "previous_directory",
+    ["", f"{RELEASES}/{PREVIOUS}", f"{RELEASES}/{PREVIOUS}.redeploy-20261101T000000Z"],
+    ids=["first-release", "another-release", "a-redeployed-other-release"],
+)
+def test_a_new_release_unpacks_into_its_own_directory(previous_directory: str) -> None:
+    assert _release_directory(previous_directory) == f"{RELEASES}/{RELEASE}"
+
+
+@pytest.mark.parametrize(
+    "previous_directory",
+    [f"{RELEASES}/{RELEASE}", f"{RELEASES}/{RELEASE}.redeploy-20261101T000000Z"],
+    ids=["first-copy", "earlier-redeploy"],
+)
+def test_the_current_release_redeploys_into_a_fresh_directory(
+    previous_directory: str,
+) -> None:
+    directory = _release_directory(previous_directory)
+
+    assert re.fullmatch(
+        rf"{RELEASES}/{RELEASE}\.redeploy-[0-9]{{8}}T[0-9]{{6}}Z", directory
+    )
+    assert directory != previous_directory
+
+
+def test_the_release_directory_is_chosen_after_reading_current() -> None:
+    names = [str(task["name"]) for task in _main()]
+
+    assert names.index(INSPECT_CURRENT) < names.index(COMPUTE)
+    assert names.index(COMPUTE) < names.index(CREATE)
+
+
+def test_the_failure_names_the_release_a_redeploy_rolled_back_to() -> None:
+    fail = _task(FAIL, _section("rescue"))["ansible.builtin.fail"]
+    assert isinstance(fail, dict)
+    variables = _rescue_variables(
+        f"{RELEASES}/{RELEASE}.redeploy-20261101T000000Z"
+    )
+
+    message = str(_templar(variables).template(trust_as_template(fail["msg"])))
+
+    assert message == (
+        f"Release r2 failed its health check and was rolled back to {RELEASE}"
+    )
+
+
+# The previous release gets its own unit back, and its gate (#223).
+
+MANAGED_UNIT = """# Managed by Cloudfall. Local changes will be overwritten.
+[Unit]
+Description=Cloudfall component asrest
+
+[Service]
+ExecStart=/srv/apps/asrest/current/bin/asrest "previous"
+"""
+
+
+def _managed_before(content: str | None) -> object:
+    """Decide, as the role does, whether the unit found is a managed one."""
+    expression = _task(RECOGNIZE, _main())["ansible.builtin.set_fact"]
+    assert isinstance(expression, dict)
+    variables: dict[str, object] = (
+        {
+            "cloudfall_deploy_unit_existing": {"stat": {"exists": False}},
+            "cloudfall_deploy_unit_existing_content": {"skipped": True},
+        }
+        if content is None
+        else {
+            "cloudfall_deploy_unit_existing": {"stat": {"exists": True, "isreg": True}},
+            "cloudfall_deploy_unit_existing_content": {
+                "content": base64.b64encode(content.encode()).decode()
+            },
+        }
+    )
+    return _templar(variables).template(
+        trust_as_template(expression["cloudfall_deploy_unit_managed_before"])
+    )
+
+
+def test_a_unit_rendered_by_cloudfall_is_the_previous_releases_unit() -> None:
+    assert _managed_before(MANAGED_UNIT) is True
+    assert _managed_before(HAND_MADE_UNIT) is False
+    assert _managed_before(None) is False
+
+
+def test_a_failed_release_puts_back_the_unit_of_the_release_it_restores() -> None:
+    assert _rescue(f"{RELEASES}/{PREVIOUS}", managed_before=True) == {
+        RECORD_FAILED,
+        RESTORE,
+        RESTORE_MANAGED_UNIT,
+        RESTART_RESTORED,
+        GATE_RESTORED,
+        FAIL,
+    }
+    names = [str(task["name"]) for task in _section("rescue")]
+    assert names.index(RESTORE) < names.index(RESTORE_MANAGED_UNIT)
+    assert names.index(RESTORE_MANAGED_UNIT) < names.index(RESTART_RESTORED)
+    restart = _task(RESTART_RESTORED, _section("rescue"))
+    service = restart["ansible.builtin.systemd_service"]
+    assert isinstance(service, dict)
+    assert service["daemon_reload"] is True
+
+
+def test_the_unit_put_back_is_the_one_read_before_the_install() -> None:
+    copy = _task(RESTORE_MANAGED_UNIT, _section("rescue"))["ansible.builtin.copy"]
+    assert isinstance(copy, dict)
+    variables: dict[str, object] = {
+        **_rescue_variables(f"{RELEASES}/{PREVIOUS}", managed_before=True),
+        "cloudfall_deploy_unit_existing_content": {
+            "content": base64.b64encode(MANAGED_UNIT.encode()).decode()
+        },
+    }
+    names = [str(task["name"]) for task in _main()]
+
+    content = _templar(variables).template(trust_as_template(copy["content"]))
+
+    assert content == MANAGED_UNIT
+    assert copy["dest"] == "{{ cloudfall_deploy_unit_path }}"
+    assert (copy["owner"], copy["group"], copy["mode"]) == ("root", "root", "0644")
+    assert names.index(RECOGNIZE) < names.index(INSTALL)
+
+
+def test_check_mode_never_puts_a_unit_back() -> None:
+    restored = _rescue(f"{RELEASES}/{PREVIOUS}", managed_before=True, check_mode=True)
+
+    assert RESTORE_MANAGED_UNIT not in restored
+    assert GATE_RESTORED not in restored
+
+
+def test_the_restored_release_is_gated_after_its_restart_and_receipt() -> None:
+    gate = _task(GATE_RESTORED, _section("rescue"))
+    block = gate["block"]
+    assert isinstance(block, list)
+    names = [str(task["name"]) for task in _section("rescue")]
+
+    assert [task["ansible.builtin.include_tasks"] for task in block] == [
+        "health_gate.yml"
+    ]
+    assert names.index(RESTART_RESTORED) < names.index(GATE_RESTORED)
+    assert names.index(
+        "Receipt the release that failed its command health check"
+    ) < names.index(GATE_RESTORED)
+    assert names.index(GATE_RESTORED) < names.index(FAIL)
+
+
+def test_a_restored_release_that_fails_its_gate_is_its_own_failure() -> None:
+    rescue = _task(GATE_RESTORED, _section("rescue"))["rescue"]
+    assert isinstance(rescue, list)
+    fail = _task(FAIL_ROLLBACK, rescue)["ansible.builtin.fail"]
+    assert isinstance(fail, dict)
+    variables: dict[str, object] = {
+        **_rescue_variables(f"{RELEASES}/{PREVIOUS}.redeploy-20261101T000000Z"),
+        "ansible_failed_result": {"msg": "Status code was -1 and not [200]"},
+    }
+
+    message = str(_templar(variables).template(trust_as_template(fail["msg"])))
+
+    assert message == (
+        f"Release r2 failed its health gate on h1 and was rolled back to {PREVIOUS},"
+        " but the restored release failed its health check too, so asrest has no"
+        " healthy release there: Status code was -1 and not [200]"
+    )
+
+
+def test_the_failure_names_the_failed_release_not_the_restored_releases_check() -> None:
+    """The restored release's command check overwrites the shared result."""
+    fail = _task(FAIL, _section("rescue"))["ansible.builtin.fail"]
+    assert isinstance(fail, dict)
+    variables: dict[str, object] = {
+        **_rescue_variables(f"{RELEASES}/{PREVIOUS}"),
+        "cloudfall_deploy_failed_health_result": {
+            "attempts": 1,
+            "exitCode": 3,
+            "timedOut": False,
+        },
+        "cloudfall_deploy_command_health_result": {
+            "attempts": 1,
+            "exitCode": 0,
+            "timedOut": False,
+        },
+        "cloudfall_deploy_component": {
+            "id": "asrest",
+            "service": {"name": "asrest"},
+            "healthCheck": {"type": "command", "timeoutSeconds": 60},
+        },
+    }
+    record = _task(RECORD_FAILED, _section("rescue"))["ansible.builtin.set_fact"]
+    assert isinstance(record, dict)
+
+    message = str(_templar(variables).template(trust_as_template(fail["msg"])))
+
+    assert message == (
+        "Release r2 failed the command health check of asrest on h1 (exit code 3"
+        f" on its only attempt) and was rolled back to {PREVIOUS}"
+    )
+    assert _templar(
+        {"cloudfall_deploy_command_health_result": {"exitCode": 3}}
+    ).template(trust_as_template(record["cloudfall_deploy_failed_health_result"])) == {
+        "exitCode": 3
+    }
+    assert (
+        _templar({}).template(
+            trust_as_template(record["cloudfall_deploy_failed_health_result"])
+        )
+        is None
     )
 
 
