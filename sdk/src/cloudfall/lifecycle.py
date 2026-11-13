@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from jsonschema.exceptions import ValidationError
 
+from cloudfall.component_lock import component_lock
 from cloudfall.domain import (
     AbsolutePath,
     DnsMode,
@@ -35,6 +36,9 @@ from cloudfall.domain import (
     TlsMode,
 )
 from cloudfall.inventory import PlatformInventory
+from cloudfall.lifecycle_error import (
+    LifecycleError as LifecycleError,  # noqa: PLC0414 - re-exported for callers
+)
 from cloudfall.secrets import (
     SecretsError,
     owned_databases,
@@ -84,29 +88,6 @@ _ERROR_SOURCE_URL_MISSING = "lifecycle_source_url_missing"
 ERROR_DATA_COPY_SCHEMA_INVALID = "data_copy_schema_invalid"
 ERROR_DATA_COPY_PREFLIGHT_REFUSED = "data_copy_preflight_refused"
 _ERROR_PREFLIGHT_FINDINGS_INVALID = "data_copy_preflight_findings_invalid"
-
-
-class LifecycleError(RuntimeError):
-    """Fail-fast lifecycle error with a stable machine-readable code."""
-
-    def __init__(
-        self,
-        code: str,
-        message: str,
-        context: Mapping[str, object] | None = None,
-    ) -> None:
-        """Record the failure code, its detail, and what the answer names."""
-        self.code = code
-        self.detail = message
-        self.context: Mapping[str, object] = dict(context or {})
-        super().__init__(f"{code}: {message}")
-
-    def as_dict(self) -> dict[str, object]:
-        """Serialize the error envelope for system boundaries."""
-        return {
-            "status": "error",
-            "error": {**self.context, "code": self.code, "message": self.detail},
-        }
 
 
 STEP_TIMEOUT_SECONDS = 3600
@@ -1138,7 +1119,22 @@ def build_release_artifact(
     git_ref: str,
     artifact_directory: Path,
 ) -> dict[str, object]:
-    """Build one release artifact through the engine's CLI contract."""
+    """Build one release artifact through the engine's CLI contract.
+
+    The component's lock is held for the build, as for a deploy.
+    """
+    with component_lock(context.project_directory, component_id, "build"):
+        return _build_release_artifact(
+            context, component_id, git_ref, artifact_directory
+        )
+
+
+def _build_release_artifact(
+    context: EngineContext,
+    component_id: ResourceId,
+    git_ref: str,
+    artifact_directory: Path,
+) -> dict[str, object]:
     argv = (
         sys.executable,
         "-m",
@@ -1197,38 +1193,44 @@ def deploy(
     artifact_directory: Path,
     options: DeployOptions | None = None,
 ) -> LifecycleResult:
-    """Deploy one verified release behind the engine's health gate."""
+    """Deploy one verified release behind the engine's health gate.
+
+    The component's lock is held from before the artifact is verified until
+    the receipt is checked, so no other run of it starts meanwhile.
+    """
     resolved_options = options if options is not None else DeployOptions()
     component = _component(context, component_id)
-    artifact = verify_artifact(
-        artifact_directory, component_id, release, context.schema_directory
-    )
-    approved = resolved_options.approved_sha256
-    if approved is not None and artifact.sha256 != approved.value:
-        detail = (
-            f"artifact digest {artifact.sha256} is not the approved digest "
-            f"{approved.value}: the archive changed after the approval was checked"
+    with component_lock(context.project_directory, component_id, "deploy"):
+        artifact = verify_artifact(
+            artifact_directory, component_id, release, context.schema_directory
         )
-        raise LifecycleError(_ERROR_ARTIFACT_DIGEST, detail)
-    plan = plan_deploy(
-        context,
-        component_id,
-        release,
-        artifact,
-        resolved_options,
-    )
-    execute_plan(plan, context.run)
-    receipt = None
-    if resolved_options.receipt_directory is not None:
-        receipt = (
-            resolved_options.receipt_directory / f"{component_id.value}.json"
-        )
-        if not receipt.is_file():
+        approved = resolved_options.approved_sha256
+        if approved is not None and artifact.sha256 != approved.value:
             detail = (
-                "deployment reported success but wrote no release receipt: "
-                f"{receipt}"
+                f"artifact digest {artifact.sha256} is not the approved digest "
+                f"{approved.value}: the archive changed after the approval was "
+                "checked"
             )
-            raise LifecycleError(_ERROR_RECEIPT_MISSING, detail)
+            raise LifecycleError(_ERROR_ARTIFACT_DIGEST, detail)
+        plan = plan_deploy(
+            context,
+            component_id,
+            release,
+            artifact,
+            resolved_options,
+        )
+        execute_plan(plan, context.run)
+        receipt = None
+        if resolved_options.receipt_directory is not None:
+            receipt = (
+                resolved_options.receipt_directory / f"{component_id.value}.json"
+            )
+            if not receipt.is_file():
+                detail = (
+                    "deployment reported success but wrote no release receipt: "
+                    f"{receipt}"
+                )
+                raise LifecycleError(_ERROR_RECEIPT_MISSING, detail)
     return LifecycleResult(
         action="deploy",
         component_id=component_id,
@@ -1344,8 +1346,8 @@ def rollback(
 ) -> LifecycleResult:
     """Switch one component back to an existing release, health gated."""
     component = _component(context, component_id)
-    plan = plan_rollback(context, component_id, release)
-    execute_plan(plan, context.run)
+    with component_lock(context.project_directory, component_id, "rollback"):
+        execute_plan(plan_rollback(context, component_id, release), context.run)
     return LifecycleResult(
         action="rollback",
         component_id=component_id,
@@ -1362,8 +1364,8 @@ def restart(
 ) -> LifecycleResult:
     """Restart one component and require its declared health check."""
     component = _component(context, component_id)
-    plan = plan_restart(context, component_id)
-    execute_plan(plan, context.run)
+    with component_lock(context.project_directory, component_id, "restart"):
+        execute_plan(plan_restart(context, component_id), context.run)
     return LifecycleResult(
         action="restart",
         component_id=component_id,

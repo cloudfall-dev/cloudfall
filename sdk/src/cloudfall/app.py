@@ -100,6 +100,12 @@ from cloudfall.commands import (
     snake_case,
     snake_case_keys,
 )
+from cloudfall.component_lock import (
+    ERROR_COMPONENT_LOCKED,
+    ERROR_LOCK_RECORD_INVALID,
+    clear_lock,
+    find_lock,
+)
 from cloudfall.dashboard import RefreshInterval, build_dashboard
 from cloudfall.dashboard_server import (
     DashboardHTTPServer,
@@ -2079,6 +2085,10 @@ def _lifecycle_failed(error: LifecycleError) -> Exception:
     context = {**error.context, "code": error.code}
     if error.code == ERROR_EXECUTION_FAILED:
         return Exit.ENGINE_STEP_FAILED(error.detail, context=context)
+    if error.code == ERROR_COMPONENT_LOCKED:
+        return Exit.CONFLICT(error.detail, context=context)
+    if error.code == ERROR_LOCK_RECORD_INVALID:
+        return Exit.RECORD_INVALID(error.detail, context=context)
     return Exit.PRECONDITION(error.detail, context=context)
 
 
@@ -4569,6 +4579,8 @@ _LIFECYCLE_EXIT_CODES = [
     "PRECONDITION",
     "ENGINE_STEP_FAILED",
 ]
+_LOCKED_EXIT_CODES = ["CONFLICT", "RECORD_INVALID"]
+"""What a run that holds the component's lock adds: held elsewhere, or malformed."""
 
 
 def _deploy_approval(
@@ -4604,7 +4616,7 @@ def _deploy_approval(
         "cloudfall release approve"
     ),
     danger_level="mutating",
-    exit_codes=[*_LIFECYCLE_EXIT_CODES, "RECORD_INVALID"],
+    exit_codes=[*_LIFECYCLE_EXIT_CODES, *_LOCKED_EXIT_CODES],
     timeout=None,
     subprocess=Subprocess("ansible-playbook"),
     required_tools={"ansible-playbook": "2.21.0"},
@@ -4673,7 +4685,7 @@ def deploy_command(args: DeployArgs, ctx: Ctx, fleet: Fleet) -> DeployPayload:
         "shows the plan"
     ),
     danger_level="mutating",
-    exit_codes=_LIFECYCLE_EXIT_CODES,
+    exit_codes=[*_LIFECYCLE_EXIT_CODES, *_LOCKED_EXIT_CODES],
     timeout=None,
     subprocess=Subprocess("ansible-playbook"),
     required_tools={"ansible-playbook": "2.21.0"},
@@ -4711,7 +4723,7 @@ def rollback_command(args: RollbackArgs, ctx: Ctx, fleet: Fleet) -> RollbackPayl
         "the plan"
     ),
     danger_level="mutating",
-    exit_codes=_LIFECYCLE_EXIT_CODES,
+    exit_codes=[*_LIFECYCLE_EXIT_CODES, *_LOCKED_EXIT_CODES],
     timeout=None,
     supports_raw_payload=True,
     subprocess=Subprocess("ansible-playbook"),
@@ -4731,6 +4743,103 @@ def restart_command(args: ComponentArgs, ctx: Ctx, fleet: Fleet) -> RestartPaylo
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error
     return RestartPayload({**result.as_dict(), "effect": "updated"})
+
+
+# lock clear: a person removes the lock a run left behind (#221)
+
+
+lock_group = app.group(
+    "lock",
+    description=(
+        "Clear the lock a deploy, rollback, restart or build of one component "
+        "left behind"
+    ),
+)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LockClearArgs(ProjectArgs):
+    """Arguments of ``lock clear``."""
+
+    # Not checked against the config: a component removed since its run
+    # died must still be clearable.
+    component: ResourceId = Arg(description="Component whose lock is cleared")
+
+
+class LockClearPayload(Payload):
+    """``lock clear``: the lock that was cleared, or that there was none."""
+
+    command = "lock clear"
+    writes = True
+
+
+@lock_group.command(
+    "clear",
+    # A person decides that no run of the component is going on; no agent
+    # tool stands in for it. They type the component id at a terminal, which
+    # no flag answers. requires_person keeps it off MCP; mcp=False says so too.
+    mcp=False,
+    requires_person=True,
+    description=(
+        "Show one component's lock, who took it and how long ago, and remove "
+        "it once a person types the component id at a terminal; a lock whose "
+        "process still runs on this host is never removed"
+    ),
+    danger_level="mutating",
+    exit_codes=[
+        "PROJECT_INVALID",
+        "CONFIG_INVALID",
+        "CONFLICT",
+        "RECORD_INVALID",
+    ],
+    supports_raw_payload=True,
+    examples=[
+        (
+            "Clear the lock a killed deploy left, typing the component id",
+            "cloudfall lock clear crm-backend",
+        ),
+    ],
+)
+def lock_clear(args: LockClearArgs, ctx: Ctx, fleet: Fleet) -> LockClearPayload:
+    """Remove the component's lock once a person typed its id."""
+    try:
+        held = find_lock(fleet.directory, args.component)
+        if held is None:
+            return LockClearPayload(
+                {
+                    "status": "ok",
+                    "component": args.component.value,
+                    "lock": {},
+                    "cleared": False,
+                    "effect": "noop",
+                }
+            )
+        if held.stale is False:
+            # Refused before the prompt: the process is visibly running.
+            clear_lock(held)
+        # Off a terminal this ends with PERSON_REQUIRED, and a mistyped id
+        # with ATTESTATION_MISMATCH, before the lock is touched.
+        ctx.attest(
+            f"{held.describe()}. Clearing it lets the next deploy, rollback, "
+            f"restart or build of {args.component} start. Type the component "
+            "id to clear the lock",
+            expected=args.component.value,
+        )
+        clear_lock(held)
+    except LifecycleError as error:
+        context = {**error.context, "code": error.code}
+        if error.code == ERROR_LOCK_RECORD_INVALID:
+            raise Exit.RECORD_INVALID(error.detail, context=context) from error
+        raise Exit.CONFLICT(error.detail, context=context) from error
+    return LockClearPayload(
+        {
+            "status": "ok",
+            "component": args.component.value,
+            "lock": held.as_dict(),
+            "cleared": True,
+            "effect": "deleted",
+        }
+    )
 
 
 # logging deploy (S-011)
@@ -5567,7 +5676,7 @@ def _engine_tools(args: McpServeArgs, root: ServerRoot, ctx: Ctx) -> list[McpToo
             },
             handler=build_artifact,
             danger_level="mutating",
-            exit_codes=_ENGINE_EXIT_CODES,
+            exit_codes=(*_ENGINE_EXIT_CODES, *_LOCKED_EXIT_CODES),
         ),
         McpTool(
             name="converge_baseline",
