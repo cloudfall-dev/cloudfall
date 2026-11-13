@@ -1,0 +1,99 @@
+---
+# Read, or clear, one component's lock on each of its servers (#221), the
+# lock deploy, rollback and restart take there (tasks/component-lock-take.yml).
+# `cloudfall lock clear` runs it twice: first to show a person the locks, then,
+# once they typed the component id, to remove exactly the locks it showed.
+#
+# Each server's reading goes to <cloudfall_component_lock_reading>/<server>.json
+# on the management host. cloudfall_component_lock_clear maps a server to the
+# token of the lock to remove there; a lock taken again since (another token)
+# is left as it is and read back, so the caller sees it changed.
+- name: Check the lock selection
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+  tasks:
+    - name: Require an explicit component and a reading directory
+      ansible.builtin.assert:
+        that:
+          - cloudfall_deploy_component_id is defined
+          - cloudfall_component_lock_reading is defined
+        fail_msg: >-
+          Reading a component's locks requires the cloudfall_deploy_component_id
+          and cloudfall_component_lock_reading extra variables
+
+    - name: Require the component's group in the inventory
+      ansible.builtin.assert:
+        that:
+          - groups[cloudfall_deploy_component_group] | default([]) | length > 0
+        fail_msg: >-
+          The inventory has no servers in group
+          {{ cloudfall_deploy_component_group }}; declare
+          deployment.servers for component {{ cloudfall_deploy_component_id }}
+          and render the inventory again
+      vars:
+        cloudfall_deploy_component_group: >-
+          component_{{ cloudfall_deploy_component_id | replace('-', '_') }}
+
+- name: Read or clear one component's lock on its servers
+  # As in restart.yml: the component's own servers, in inventory order.
+  hosts: >-
+    cloudfall_servers:&component_{{
+    cloudfall_deploy_component_id | default('') | replace('-', '_') }}
+  become: true
+  gather_facts: false
+  # A server it cannot reach writes no reading, and the caller reports it;
+  # the others are still read.
+  ignore_unreachable: true
+  vars:
+    cloudfall_component_lock_path: >-
+      {{ cloudfall_component_lock_directory | default('/var/lib/cloudfall/locks')
+      }}/{{ cloudfall_deploy_component_id }}.json
+    cloudfall_component_lock_clear_token: >-
+      {{ (cloudfall_component_lock_clear | default({})).get(inventory_hostname, '') }}
+  tasks:
+    - name: Look for the component's lock
+      ansible.builtin.stat:
+        path: "{{ cloudfall_component_lock_path }}"
+        get_checksum: false
+      register: cloudfall_component_lock_stat
+
+    - name: Read the component's lock
+      ansible.builtin.slurp:
+        src: "{{ cloudfall_component_lock_path }}"
+      register: cloudfall_component_lock_read
+      when: cloudfall_component_lock_stat.stat.exists | default(false)
+
+    - name: Clear the lock a person was shown
+      ansible.builtin.file:
+        path: "{{ cloudfall_component_lock_path }}"
+        state: absent
+      register: cloudfall_component_lock_cleared
+      when:
+        - cloudfall_component_lock_clear_token | length > 0
+        - cloudfall_component_lock_read.content is defined
+        - >-
+          (cloudfall_component_lock_read.content | b64decode | from_json).token
+          == cloudfall_component_lock_clear_token
+
+    - name: Write the reading on the management host
+      ansible.builtin.copy:
+        content: >-
+          {{
+            {
+              'server': inventory_hostname,
+              'lock': (
+                cloudfall_component_lock_read.content | b64decode
+                if cloudfall_component_lock_read.content is defined
+                else none
+              ),
+              'cleared': cloudfall_component_lock_cleared is changed,
+            } | to_nice_json
+          }}
+        dest: "{{ cloudfall_component_lock_reading }}/{{ inventory_hostname }}.json"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      # Only for a server that was read: an unreachable one has no stat.
+      when: cloudfall_component_lock_stat.stat is defined

@@ -79,10 +79,17 @@ build at a time on this controller: each holds the component's lock under
 `tmp/locks/` until it ends, passed, failed or interrupted, and a second run
 exits `CONFLICT` with `component_locked` before any server is contacted,
 naming who holds the lock, since when, and whether that process still runs.
+On each server, `deploy.yml`, `rollback.yml` and `restart.yml` hold the
+component's lock at `/var/lib/cloudfall/locks/<component>.json` from before
+they change anything there until that server's turn ends, so runs from two
+controllers, `cloudfall-engine playbook run` and approved runs of those
+playbooks are serialized too: a second run fails on that server, naming the
+action, user, controller, start time and age of the lock.
 A lock a killed run left stays until a person clears it:
-`cloudfall lock clear crm-backend` shows it and its age and removes it once
-they type the component id at a terminal; it never removes a lock whose
-process still runs here.
+`cloudfall lock clear crm-backend` shows it, and the component's lock on each
+of its servers, with their ages, and removes them once they type the
+component id at a terminal; it never removes a lock whose process still runs
+here, and it reports a server it could not reach.
 
 `domains apply <domain>` runs `domains.yml` on the Domain's proxy server
 alone and renders only that Domain, so no baseline, firewall or service task

@@ -1,0 +1,101 @@
+---
+# Take one component's lock on this server before the run changes anything
+# on it (#221). Import it as the first task of a block whose `always` imports
+# component-lock-release.yml, so the lock goes however the run ends.
+#
+# Two runs of the component (deploy, rollback, restart, from any management
+# host, through the CLI, the engine or an approval) race on its `current`
+# symlink, its unit file and its release command's transient unit. The lock
+# is a holder record at <cloudfall_component_lock_directory>/<component>.json:
+# written to a private file first and hard-linked into place, which fails when
+# the lock is already held, so taking it is atomic and the record is whole as
+# soon as it exists. The directory belongs to root, outside the component's
+# install root, so the component's own user cannot touch it. A lock a dead run
+# left stays until a person clears it with `cloudfall lock clear`.
+#
+# Needs cloudfall_deploy_component_id and cloudfall_component_lock_action.
+- name: Describe this run as the holder of the component's lock
+  ansible.builtin.set_fact:
+    cloudfall_component_lock_path: >-
+      {{ cloudfall_component_lock_directory | default('/var/lib/cloudfall/locks')
+      }}/{{ cloudfall_deploy_component_id }}.json
+    cloudfall_component_lock_holder:
+      component: "{{ cloudfall_deploy_component_id }}"
+      action: "{{ cloudfall_component_lock_action }}"
+      user: "{{ lookup('ansible.builtin.pipe', 'id -un') }}"
+      host: "{{ lookup('ansible.builtin.pipe', 'hostname') }}"
+      since: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+      token: >-
+        {{ lookup('ansible.builtin.password', '/dev/null',
+        chars=['ascii_lowercase', 'digits'], length=32) }}
+
+- name: Create the directory of the component locks
+  ansible.builtin.file:
+    path: "{{ cloudfall_component_lock_path | dirname }}"
+    state: directory
+    mode: "0700"
+
+- name: Stage the lock record
+  ansible.builtin.copy:
+    content: "{{ cloudfall_component_lock_holder | to_nice_json }}\n"
+    dest: >-
+      {{ cloudfall_component_lock_path | dirname }}/.{{
+        cloudfall_component_lock_path | basename
+      }}.{{ cloudfall_component_lock_holder.token }}
+    mode: "0600"
+
+# ln without -f refuses an existing target, the atomic step.
+- name: Take the component's lock
+  ansible.builtin.command:
+    argv:
+      - ln
+      - >-
+        {{ cloudfall_component_lock_path | dirname }}/.{{
+          cloudfall_component_lock_path | basename
+        }}.{{ cloudfall_component_lock_holder.token }}
+      - "{{ cloudfall_component_lock_path }}"
+  register: cloudfall_component_lock_take
+  changed_when: cloudfall_component_lock_take.rc == 0
+  failed_when: false
+
+- name: Remove the staged lock record
+  ansible.builtin.file:
+    path: >-
+      {{ cloudfall_component_lock_path | dirname }}/.{{
+        cloudfall_component_lock_path | basename
+      }}.{{ cloudfall_component_lock_holder.token }}
+    state: absent
+
+# The holder may release it between the link and this read.
+- name: Read the lock another run holds
+  ansible.builtin.slurp:
+    src: "{{ cloudfall_component_lock_path }}"
+  register: cloudfall_component_lock_found
+  failed_when: false
+  when: cloudfall_component_lock_take.rc != 0
+
+- name: Refuse to run while another run holds the component's lock
+  ansible.builtin.fail:
+    msg: >-
+      {% if cloudfall_component_lock_found.content is defined -%}
+      {%- set held = cloudfall_component_lock_found.content | b64decode | from_json -%}
+      {%- set age = (
+        now(utc=true) - (held.since | to_datetime('%Y-%m-%dT%H:%M:%SZ'))
+      ).total_seconds() | int -%}
+      Component {{ cloudfall_deploy_component_id }} is locked on server
+      {{ cloudfall_server_id }} by a {{ held.action }} that {{ held.user }}
+      started on {{ held.host }} at {{ held.since }}, {{
+        (age // 86400) ~ ' days' if age >= 86400
+        else (age // 3600) ~ ' hours' if age >= 3600
+        else (age // 60) ~ ' minutes' if age >= 60
+        else age ~ ' seconds'
+      }} ago; nothing changed on this server. If no {{ held.action }} of it is
+      running, a person clears the lock with
+      `cloudfall lock clear {{ cloudfall_deploy_component_id }}`
+      {%- else -%}
+      Could not take the lock of component {{ cloudfall_deploy_component_id }}
+      at {{ cloudfall_component_lock_path }} on server {{ cloudfall_server_id }}:
+      {{ cloudfall_component_lock_take.stderr }}; nothing changed on this
+      server, run the command again
+      {%- endif %}
+  when: cloudfall_component_lock_take.rc != 0

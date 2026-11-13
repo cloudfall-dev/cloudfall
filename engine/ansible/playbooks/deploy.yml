@@ -71,20 +71,33 @@
       ansible.builtin.set_fact:
         cloudfall_rollout_finished: true
   tasks:
-    - name: Deploy the selected component and run its release command
-      ansible.builtin.include_role:
-        name: cloudfall_deploy
-      vars:
-        cloudfall_deploy_component: "{{ cloudfall_component_item }}"
-      loop: >-
-        {{
-          cloudfall_components | default([])
-          | selectattr('id', 'equalto', cloudfall_deploy_component_id)
-          | list
-        }}
-      loop_control:
-        loop_var: cloudfall_component_item
-        label: "{{ cloudfall_component_item.id }}"
+    # A dry run (--check) changes nothing, so it takes no lock.
+    - name: Hold the component's lock on the server for the deploy
+      block:
+        - name: Take the component's lock
+          ansible.builtin.import_tasks: tasks/component-lock-take.yml
+          vars:
+            cloudfall_component_lock_action: deploy
+          when: not ansible_check_mode
+
+        - name: Deploy the selected component and run its release command
+          ansible.builtin.include_role:
+            name: cloudfall_deploy
+          vars:
+            cloudfall_deploy_component: "{{ cloudfall_component_item }}"
+          loop: >-
+            {{
+              cloudfall_components | default([])
+              | selectattr('id', 'equalto', cloudfall_deploy_component_id)
+              | list
+            }}
+          loop_control:
+            loop_var: cloudfall_component_item
+            label: "{{ cloudfall_component_item.id }}"
+      always:
+        - name: Release the component's lock
+          ansible.builtin.import_tasks: tasks/component-lock-release.yml
+          when: not ansible_check_mode
 
 - name: Deploy one Cloudfall component release
   # The intersection keeps cloudfall_servers' inventory order. Without the
@@ -108,17 +121,29 @@
         cloudfall_rollout_earlier_servers: >-
           {{ groups['cloudfall_release_servers'] | default([]) }}
   tasks:
-    - name: Deploy the selected component on its declared servers
-      ansible.builtin.include_role:
-        name: cloudfall_deploy
-      vars:
-        cloudfall_deploy_component: "{{ cloudfall_component_item }}"
-      loop: >-
-        {{
-          cloudfall_components | default([])
-          | selectattr('id', 'equalto', cloudfall_deploy_component_id)
-          | list
-        }}
-      loop_control:
-        loop_var: cloudfall_component_item
-        label: "{{ cloudfall_component_item.id }}"
+    - name: Hold the component's lock on the server for the deploy
+      block:
+        - name: Take the component's lock
+          ansible.builtin.import_tasks: tasks/component-lock-take.yml
+          vars:
+            cloudfall_component_lock_action: deploy
+          when: not ansible_check_mode
+
+        - name: Deploy the selected component on its declared servers
+          ansible.builtin.include_role:
+            name: cloudfall_deploy
+          vars:
+            cloudfall_deploy_component: "{{ cloudfall_component_item }}"
+          loop: >-
+            {{
+              cloudfall_components | default([])
+              | selectattr('id', 'equalto', cloudfall_deploy_component_id)
+              | list
+            }}
+          loop_control:
+            loop_var: cloudfall_component_item
+            label: "{{ cloudfall_component_item.id }}"
+      always:
+        - name: Release the component's lock
+          ansible.builtin.import_tasks: tasks/component-lock-release.yml
+          when: not ansible_check_mode

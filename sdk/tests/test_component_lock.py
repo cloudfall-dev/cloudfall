@@ -395,6 +395,9 @@ def test_lock_clear_without_a_lock_changes_nothing(fleet: _Fleet) -> None:
     assert payload["data"]["cleared"] is False
     assert payload["data"]["effect"] == "noop"
     assert payload["data"]["lock"] == {}
+    # The example servers do not resolve, so their locks are not known (#221).
+    assert payload["data"]["server_locks"] == []
+    assert payload["data"]["unread_servers"] == ["h1", "h2"]
 
 
 def test_lock_clear_is_a_persons_and_never_a_tool() -> None:
