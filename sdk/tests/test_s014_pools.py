@@ -65,6 +65,9 @@ def test_s014_1_a_baseline_with_pools_validates() -> None:
         POOLS.replace("/dev/nvme1n1p5", "/srv/disk"),
         POOLS + "      - id: more\n        volumeGroup: vg_data\n"
         "        primary: /dev/sdb1\n",
+        POOLS.replace("/dev/nvme0n1p5", "/dev/../etc/passwd"),
+        POOLS.replace("vg_data", "'..'"),
+        POOLS.replace("/dev/nvme1n1p5", "/dev/nvme0n1p5"),
     ],
 )
 def test_s014_1_malformed_pools_are_refused(tmp_path: Path, pools: str) -> None:
@@ -72,6 +75,12 @@ def test_s014_1_malformed_pools_are_refused(tmp_path: Path, pools: str) -> None:
 
     with pytest.raises(ConfigValidationError):
         validate_config(project, SCHEMAS)
+
+
+@pytest.mark.parametrize("name", [".", ".."])
+def test_volume_group_names_refuse_dot_names(name: str) -> None:
+    with pytest.raises(ValueError, match="volume group"):
+        VolumeGroupName(name)
 
 
 def test_s014_2_a_backend_baseline_without_pools_is_refused(tmp_path: Path) -> None:
