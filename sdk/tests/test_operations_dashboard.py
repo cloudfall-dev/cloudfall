@@ -20,6 +20,7 @@ from cloudfall.operations import (
 )
 from cloudfall.service_evidence import DeploymentReceiptSet, DomainObservationSet
 from cloudfall.validation import validate_config
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -46,7 +47,7 @@ def _view(
 
 def _domainless_examples(tmp_path: Path) -> Path:
     project_directory = tmp_path / "config"
-    shutil.copytree(EXAMPLES, project_directory)
+    copy_examples(project_directory)
     shutil.rmtree(project_directory / "domains")
     return project_directory
 

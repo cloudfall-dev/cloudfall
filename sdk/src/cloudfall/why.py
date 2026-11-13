@@ -612,9 +612,22 @@ def _ran(subject: str, run: RunRecord, log: object) -> str:
     )
 
 
+_OPEN_ENDINGS: Mapping[DecisionStatus, str] = {
+    DecisionStatus.PROPOSED: (
+        "It is still proposed: nobody has approved or rejected it."
+    ),
+    DecisionStatus.RUNNING: (
+        "Its run started and no outcome is recorded: it is still running "
+        "or it was interrupted, and it cannot be approved again."
+    ),
+}
+"""How a record that has no outcome yet ends its story."""
+
+
 def _ended(decision: Decision) -> str:
-    if decision.status is DecisionStatus.PROPOSED:
-        return "It is still proposed: nobody has approved or rejected it."
+    open_ending = _OPEN_ENDINGS.get(decision.status)
+    if open_ending is not None:
+        return open_ending
     if decision.status is DecisionStatus.RAN and decision.replay is not None:
         return (
             f"Its played-back output exited {decision.ran_exit_code}: "

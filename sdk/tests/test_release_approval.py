@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import shutil
 import tarfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -27,6 +26,7 @@ from cloudfall.release_approval import (
     write_approval,
 )
 from cloudfall.validation import SchemaCatalog
+from examples_project import copy_examples
 from jsonschema import ValidationError
 from treaty import CommandPath
 
@@ -47,7 +47,7 @@ class _Terminal(io.StringIO):
 
 def _project(tmp_path: Path, approval: str = "manual") -> Path:
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     application = project / "applications" / "crm.yaml"
     text = application.read_text(encoding="utf-8")
     application.write_text(

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from cloudfall.cli import main
 from cloudfall.domain import ReleaseId, ResourceId
 from cloudfall.lifecycle import EngineContext, preview_deploy, preview_rollback
+from examples_project import copy_examples
 
 if TYPE_CHECKING:
     import pytest
@@ -35,7 +36,7 @@ ROLLBACK_RUN = (
 def _project(tmp_path: Path, release: str | None) -> Path:
     """Copy the examples, declaring ``release`` on crm-backend when given."""
     project = tmp_path / "config"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     if release is not None:
         path = project / "components" / "crm-backend.yaml"
         text = path.read_text(encoding="utf-8")

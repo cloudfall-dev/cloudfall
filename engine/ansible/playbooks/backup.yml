@@ -1,6 +1,42 @@
 ---
+# Only the service's own server is contacted, so another server cannot fail
+# its backup.
+- name: Select the server of the backed-up service
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+  tasks:
+    - name: Require an explicit service selection
+      ansible.builtin.assert:
+        that:
+          - cloudfall_backup_service is defined
+        fail_msg: Backup requires the cloudfall_backup_service extra variable
+
+    - name: Back up on the service's server only
+      ansible.builtin.add_host:
+        name: "{{ cloudfall_backup_server_item }}"
+        groups: cloudfall_backup_servers
+      loop: "{{ groups['cloudfall_servers'] | default([]) }}"
+      loop_control:
+        loop_var: cloudfall_backup_server_item
+      when: >-
+        hostvars[cloudfall_backup_server_item].cloudfall_services
+        | default([])
+        | selectattr('id', 'equalto', cloudfall_backup_service)
+        | list | length > 0
+
+    - name: Require the service's server in the inventory
+      ansible.builtin.assert:
+        that:
+          - groups['cloudfall_backup_servers'] | default([]) | length == 1
+        fail_msg: >-
+          Service {{ cloudfall_backup_service }} must be declared on exactly
+          one inventory server, found
+          {{ groups['cloudfall_backup_servers'] | default([]) }}
+
 - name: Run one declared backup operation with a controller receipt
-  hosts: cloudfall_servers
+  hosts: cloudfall_backup_servers
   become: true
   gather_facts: true
   any_errors_fatal: true

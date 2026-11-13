@@ -632,7 +632,9 @@ def _audit_volume(
 ) -> AuditCheck:
     desired = _volume_desired(volume)
     check = f"volume.{volume.name.value}"
-    held = logical.get(volume.logical_volume)
+    held = logical.get(
+        f"{volume.pool.volume_group.value}/{volume.logical_volume}"
+    )
     if held is None:
         return _comparison(check, desired, {"present": False}, matches=False)
     source = mounts.get(volume.path.value)

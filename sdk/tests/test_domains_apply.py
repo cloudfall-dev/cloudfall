@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -32,6 +31,7 @@ from cloudfall.lifecycle import (
     apply_domain,
     preview_domain_apply,
 )
+from examples_project import copy_examples
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -98,7 +98,7 @@ class _Recorder:
 def _project(tmp_path: Path, **spec: object) -> Path:
     """Copy the examples, with crm-site's spec keys replaced by ``spec``."""
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     path = project / "domains" / "crm-site.yaml"
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
     document["spec"].update(spec)

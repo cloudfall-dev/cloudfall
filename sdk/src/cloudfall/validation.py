@@ -922,6 +922,7 @@ def _validate_postgresql_service(
             raise ConfigValidationError(issue)
         seen_names.add(name)
         databases.append((position, database))
+    _validate_restore_check_names(document, databases)
     application_users: set[str] = set()
     for position, database in databases:
         if "application" not in database:
@@ -953,6 +954,42 @@ def _validate_postgresql_service(
             has_owner=bool(owners),
         )
         _validate_remote_access_names(document, databases)
+
+
+# PostgreSQL cuts a name at 63 bytes, so the restore drill keeps the first 49
+# of a database name before the 14 of its scratch suffix.
+_RESTORE_CHECK_SUFFIX = "_restore_check"
+_RESTORE_CHECK_PREFIX_LENGTH = 63 - len(_RESTORE_CHECK_SUFFIX)
+
+
+def _restore_check_scratch_name(database: str) -> str:
+    """Name the scratch database the restore drill restores ``database`` into."""
+    return database[:_RESTORE_CHECK_PREFIX_LENGTH] + _RESTORE_CHECK_SUFFIX
+
+
+def _validate_restore_check_names(
+    document: ResourceDocument,
+    databases: Sequence[tuple[int, Mapping[str, object]]],
+) -> None:
+    """Refuse a database the restore drill would drop as its scratch database."""
+    scratch_names = {
+        _restore_check_scratch_name(name): name
+        for _, database in databases
+        if isinstance(name := database.get("name"), str)
+    }
+    for position, database in databases:
+        name = database.get("name")
+        if isinstance(name, str) and name in scratch_names:
+            issue = ValidationIssue(
+                code="service_database_restore_check_name",
+                message=(
+                    f"database name {name!r} is the scratch database the "
+                    f"restore drill of {scratch_names[name]!r} drops"
+                ),
+                source=document.source,
+                field_path=("spec", "postgresql", "databases", position, "name"),
+            )
+            raise ConfigValidationError(issue)
 
 
 _RESERVED_POSTGRES_ROLES = frozenset({"postgres", "alloy"})
@@ -1687,10 +1724,24 @@ def _validate_baseline(spec: Mapping[str, object], source: SourceLocation) -> No
             )
             raise ConfigValidationError(issue)
     if "pools" in storage:
-        for entry_key in ("id", "volumeGroup"):
-            _validate_unique_entry_keys(
-                storage, "pools", entry_key, source, ("spec", "storage", "pools")
-            )
+        pools = _validate_unique_entry_keys(
+            storage, "pools", "id", source, ("spec", "storage", "pools")
+        )
+        _validate_unique_entry_keys(
+            storage, "pools", "volumeGroup", source, ("spec", "storage", "pools")
+        )
+        for index, pool in enumerate(pools):
+            if pool.get("secondary") == pool.get("primary"):
+                issue = ValidationIssue(
+                    code="storage_pool_same_physical_volume",
+                    message=(
+                        f"storage pool {pool.get('id')} names "
+                        f"{pool.get('primary')} as both primary and secondary"
+                    ),
+                    source=source,
+                    field_path=("spec", "storage", "pools", index, "secondary"),
+                )
+                raise ConfigValidationError(issue)
     _validate_baseline_firewall(spec, source)
 
 

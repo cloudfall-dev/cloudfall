@@ -9,11 +9,28 @@
     fail_msg: >-
       Rollback requires a Debian systemd host and an explicit release id
 
+# A release redeployed over itself also has releases/<release>.redeploy-<UTC
+# time> directories; the rollback takes the newest copy of the release.
+- name: Find the directories of the rollback target release
+  ansible.builtin.find:
+    paths: "{{ cloudfall_deploy_component.install_root }}/releases"
+    patterns:
+      - "{{ cloudfall_deploy_release }}"
+      - "{{ cloudfall_deploy_release }}.redeploy-*"
+    file_type: directory
+  register: cloudfall_deploy_rollback_copies
+
 - name: Compute rollback paths
   ansible.builtin.set_fact:
     cloudfall_deploy_release_directory: >-
-      {{ cloudfall_deploy_component.install_root }}/releases/{{
-        cloudfall_deploy_release
+      {{
+        cloudfall_deploy_rollback_copies.files
+        | map(attribute='path') | sort | last
+        | default(
+          cloudfall_deploy_component.install_root ~ '/releases/'
+          ~ cloudfall_deploy_release,
+          true
+        )
       }}
     cloudfall_deploy_current_link: >-
       {{ cloudfall_deploy_component.install_root }}/current

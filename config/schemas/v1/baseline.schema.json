@@ -111,15 +111,15 @@
                   },
                   "volumeGroup": {
                     "type": "string",
-                    "pattern": "^[A-Za-z0-9_+.][A-Za-z0-9_+.-]{0,126}$"
+                    "pattern": "^(?!\\.\\.?$)[A-Za-z0-9_+.][A-Za-z0-9_+.-]{0,126}$"
                   },
                   "primary": {
                     "type": "string",
-                    "pattern": "^/dev/[A-Za-z0-9_./:-]{1,250}$"
+                    "pattern": "^/dev/(?!.*\\.\\.)[A-Za-z0-9_./:-]{1,250}$"
                   },
                   "secondary": {
                     "type": "string",
-                    "pattern": "^/dev/[A-Za-z0-9_./:-]{1,250}$"
+                    "pattern": "^/dev/(?!.*\\.\\.)[A-Za-z0-9_./:-]{1,250}$"
                   }
                 },
                 "required": [

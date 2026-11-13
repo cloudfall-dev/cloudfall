@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 from importlib import metadata
 from pathlib import Path
@@ -26,6 +25,7 @@ from cloudfall.project import (
     resolve_project_directory,
 )
 from cloudfall.validation import ConfigValidationError, validate_config
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -291,7 +291,7 @@ def test_validation_rejects_a_resource_in_the_wrong_directory(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     misplaced = project / "servers" / "crm.yaml"
     (project / "applications" / "crm.yaml").rename(misplaced)
 
@@ -304,7 +304,7 @@ def test_validation_rejects_a_resource_in_the_wrong_directory(
 
 def test_validation_reads_only_kind_directories(tmp_path: Path) -> None:
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     (project / "tmp" / "import" / "config").mkdir(parents=True)
     (project / "tmp" / "import" / "config" / "junk.yaml").write_text(
         "kind: Nonsense\n", encoding="utf-8"
@@ -334,7 +334,7 @@ def test_project_directory_resolution_order(tmp_path: Path) -> None:
     current = tmp_path / "current"
     for directory in (explicit, from_environment):
         directory.mkdir()
-    shutil.copytree(EXAMPLES, current)
+    copy_examples(current)
     environment = {"CLOUDFALL_PROJECT": str(from_environment)}
 
     assert resolve_project_directory(explicit, environment, current) == explicit
@@ -359,7 +359,7 @@ def test_project_directory_resolution_fails_outside_a_project(
 
 def test_project_context_runs_inside_the_project_and_restores(tmp_path: Path) -> None:
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     before = Path.cwd()
 
     with project_context(project, {}) as directory:
@@ -373,7 +373,7 @@ def test_cli_finds_the_project_in_the_current_directory(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     before = Path.cwd()
     os.chdir(project)
     try:

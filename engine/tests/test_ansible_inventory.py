@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -11,6 +10,7 @@ from cloudfall.inventory import PlatformInventory
 from cloudfall.validation import validate_config
 from cloudfall_engine.ansible_inventory import render_ansible_inventory
 from cloudfall_engine.cli import main
+from examples_project import copy_examples
 
 if TYPE_CHECKING:
     import pytest
@@ -312,7 +312,7 @@ def test_inventory_renders_environment_application_and_component_groups() -> Non
 
 def test_s005_6_a_release_renders_with_its_release_server(tmp_path: Path) -> None:
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     path = project / "components" / "crm-backend.yaml"
     text = path.read_text(encoding="utf-8")
     text = text.replace("      - h1\n      - h2\n", "      - h2\n      - h1\n")
@@ -343,7 +343,7 @@ def test_s005_6_a_release_renders_with_its_release_server(tmp_path: Path) -> Non
 
 def test_s009_1_a_command_health_check_renders_as_declared(tmp_path: Path) -> None:
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     path = project / "components" / "crm-backend.yaml"
     text = path.read_text(encoding="utf-8")
     declared = text[text.index("  healthCheck:\n") : text.index("  secretRefs:\n")]
@@ -433,7 +433,7 @@ def test_engine_cli_writes_a_relative_output_inside_the_project(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     exit_code = main(
         [
             "inventory",

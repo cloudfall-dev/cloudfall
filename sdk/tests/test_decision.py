@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -996,6 +998,192 @@ def test_one_proposal_is_approved_once(tmp_path: Path) -> None:
         )
 
     assert error.value.code == "decision_not_proposed"
+
+
+class _KilledError(RuntimeError):
+    """Stands in for the process dying while a playbook runs."""
+
+
+class _DyingRunner:
+    """A runner whose playbook never returns: the process ends mid-run (#217)."""
+
+    def __init__(self, store: DecisionStore) -> None:
+        self.store = store
+        self.seen: list[DecisionStatus] = []
+
+    def __call__(self, *_invocation: object) -> int:
+        self.seen.extend(entry.status for entry in self.store.list())
+        message = "killed while the playbook ran"
+        raise _KilledError(message)
+
+
+def test_the_approval_is_recorded_before_the_first_playbook_starts(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    run = _DyingRunner(store)
+
+    with pytest.raises(_KilledError):
+        approve(
+            ApprovalRequest(
+                decision=proposed, approver="roman", repository=repository, via=TERMINAL
+            ),
+            store,
+            lambda: MOMENT,
+            run,
+        )
+
+    assert run.seen == [DecisionStatus.RUNNING]
+    interrupted = store.load(proposed.decision_id)
+    assert interrupted.status is DecisionStatus.RUNNING
+    assert interrupted.approval is not None
+    assert interrupted.approval.approver == "roman"
+    assert interrupted.execution is None
+
+
+def test_a_run_killed_midway_is_never_approved_again(tmp_path: Path) -> None:
+    """The record a killed run left is not an open proposal (#217)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    request = ApprovalRequest(
+        decision=proposed, approver="roman", repository=repository, via=TERMINAL
+    )
+    with pytest.raises(_KilledError):
+        approve(request, store, lambda: MOMENT, _DyingRunner(store))
+    run = _Runner()
+
+    # The caller still holds the proposal as it was read before the run.
+    with pytest.raises(DecisionError) as stale:
+        approve(request, store, lambda: LATER, run)
+    with pytest.raises(DecisionError) as reloaded:
+        approve(
+            replace(request, decision=store.load(proposed.decision_id)),
+            store,
+            lambda: LATER,
+            run,
+        )
+
+    assert stale.value.code == "decision_run_interrupted"
+    assert reloaded.value.code == "decision_run_interrupted"
+    assert run.recorded == []
+    assert store.load(proposed.decision_id).status is DecisionStatus.RUNNING
+
+
+def test_the_cli_refuses_an_interrupted_run_as_a_precondition(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    with pytest.raises(_KilledError):
+        approve(
+            ApprovalRequest(
+                decision=proposed, approver="roman", repository=repository, via=TERMINAL
+            ),
+            store,
+            lambda: MOMENT,
+            _DyingRunner(store),
+        )
+
+    exit_code = main(
+        [
+            *("decisions", "approve", proposed.decision_id.value),
+            *("--repository", str(repository), "--approver", "roman"),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 4
+    assert payload["error"]["code"] == "PRECONDITION"
+    assert payload["error"]["context"]["code"] == "decision_run_interrupted"
+    assert "interrupted" in payload["error"]["message"]
+
+
+def test_a_new_record_is_created_once_and_no_temporary_file_stays(
+    tmp_path: Path,
+) -> None:
+    """Two writers of one id: exactly one record, written whole (#217)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    decision = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    path = repository / DECISION_DIRECTORY / f"{decision.decision_id.value}.json"
+    written = path.read_text(encoding="utf-8")
+    rival = replace(decision, reason="another writer of the same id")
+
+    with pytest.raises(DecisionError) as error:
+        _store(repository).save(rival)
+
+    assert error.value.code == "decision_exists"
+    assert path.read_text(encoding="utf-8") == written
+    leftovers = [
+        entry.name for entry in path.parent.iterdir() if entry.name.startswith(".")
+    ]
+    assert leftovers == []
+
+
+def test_concurrent_writers_of_one_id_save_it_once(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    decision = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    fresh = replace(decision, decision_id=ResourceId.from_boundary("deploy-twin"))
+    start = threading.Barrier(8)
+
+    def _save(_index: int) -> str:
+        start.wait()
+        try:
+            _store(repository).save(fresh)
+        except DecisionError as error:
+            return error.code
+        return "saved"
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        outcomes = sorted(pool.map(_save, range(8)))
+
+    assert outcomes == ["decision_exists"] * 7 + ["saved"]
+    assert store.load(fresh.decision_id) == fresh
+
+
+def test_a_proposal_approved_during_a_newer_check_is_not_superseded(
+    tmp_path: Path,
+) -> None:
+    """An older proposal approved while a newer check runs keeps its run (#217).
+
+    The newer proposal reads the store before its check mode starts.
+    """
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    older = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    approvals: list[Decision] = []
+    check = _Runner()
+
+    def _check_while_approved(
+        argv: Sequence[str], environment: Mapping[str, str], diff_path: Path
+    ) -> int:
+        approvals.append(
+            approve(
+                ApprovalRequest(
+                    decision=older,
+                    approver="roman",
+                    repository=repository,
+                    via=TERMINAL,
+                ),
+                store,
+                lambda: MOMENT,
+                _Runner(),
+            )
+        )
+        return check(argv, environment, diff_path)
+
+    propose(_proposal(repository), store, lambda: LATER, _check_while_approved)
+
+    kept = store.load(older.decision_id)
+    assert kept.status is approvals[0].status
+    assert kept.approval is not None
+    assert kept.execution is not None
+    assert kept.superseded_by is None
 
 
 def test_a_replayed_decision_is_never_approved(tmp_path: Path) -> None:

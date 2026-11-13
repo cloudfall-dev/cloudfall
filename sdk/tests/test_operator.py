@@ -330,6 +330,53 @@ def test_approve_refuses_non_open_proposals(tmp_path: Path) -> None:
     assert caught.value.code == "operator_proposal_not_open"
 
 
+class _KilledError(RuntimeError):
+    """Stands in for the process dying while the executor runs."""
+
+
+def test_an_execution_killed_midway_is_never_approved_again(tmp_path: Path) -> None:
+    """The approval is on record before the executor runs (#217)."""
+    store = _store(tmp_path)
+    feed = FakeFeed(payloads=[_alerts_payload()])
+    report = run_once(feed, _inventory(), store)
+    proposal_id = ResourceId.from_boundary(report.proposed[0])
+    seen: list[ProposalStatus] = []
+
+    def _dies(_proposal: object) -> None:
+        seen.append(store.load(proposal_id).status)
+        message = "killed while the playbook ran"
+        raise _KilledError(message)
+
+    with pytest.raises(_KilledError):
+        approve(
+            store,
+            proposal_id,
+            _dies,
+            alert_resolution_verifier(feed),
+            _FAST_APPROVE,
+            via=TERMINAL,
+        )
+    executed: list[str] = []
+    with pytest.raises(OperatorError) as caught:
+        approve(
+            store,
+            proposal_id,
+            lambda proposal: executed.append(proposal.resource_id.value),
+            alert_resolution_verifier(feed),
+            _FAST_APPROVE,
+            via=TERMINAL,
+        )
+
+    assert seen == [ProposalStatus.RUNNING]
+    assert caught.value.code == "operator_proposal_run_interrupted"
+    assert executed == []
+    interrupted = store.load(proposal_id)
+    assert interrupted.status is ProposalStatus.RUNNING
+    assert interrupted.approval is not None
+    assert interrupted.outcome is None
+    assert store.blocking_fingerprints() == {interrupted.fingerprint}
+
+
 def _audit_report(*checks: tuple[str, AuditStatus]) -> AuditReport:
     server_checks = tuple(
         AuditCheck(

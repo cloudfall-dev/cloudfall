@@ -23,6 +23,7 @@ import yaml
 from cloudfall.inventory import PlatformInventory
 from cloudfall.validation import validate_config
 from cloudfall_engine.ansible_inventory import render_ansible_inventory
+from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
 EXAMPLES = ROOT / "config" / "examples"
@@ -109,7 +110,7 @@ def _upstream_only_domain() -> dict[str, object]:
 def _routed_domain(tmp_path: Path, routes: str) -> dict[str, object]:
     """Render the example Domain with ``routes`` through the engine inventory."""
     project = tmp_path / f"project-{abs(hash(routes))}"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     path = project / "domains" / "crm-site.yaml"
     text = path.read_text(encoding="utf-8")
     assert _UPSTREAM in text

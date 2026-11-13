@@ -24,6 +24,7 @@ from cloudfall.domain import IpNetworkCidr
 from cloudfall.inventory import PlatformInventory
 from cloudfall.validation import validate_config
 from cloudfall_engine.ansible_inventory import render_ansible_inventory
+from examples_project import copy_examples
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 ROOT = Path(__file__).parents[2]
@@ -69,7 +70,7 @@ def _project(
     """Copy the example project and give postgresql-main an owned database."""
     project = tmp_path / "project"
     if not project.exists():
-        shutil.copytree(EXAMPLES, project)
+        copy_examples(project)
     path = project / "services" / "postgresql-main.yaml"
     example = EXAMPLES / "services" / "postgresql-main.yaml"
     service = yaml.safe_load(example.read_text(encoding="utf-8"))
