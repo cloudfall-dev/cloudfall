@@ -1547,8 +1547,8 @@ class FilesystemName:
         return cls(_required_string(value, "filesystem name"))
 
 
-_VOLUME_GROUP_PATTERN = re.compile(r"^[A-Za-z0-9_+.][A-Za-z0-9_+.-]{0,126}$")
-_BLOCK_DEVICE_PATTERN = re.compile(r"^/dev/[A-Za-z0-9_./:-]{1,250}$")
+_VOLUME_GROUP_PATTERN = re.compile(r"^(?!\.\.?$)[A-Za-z0-9_+.][A-Za-z0-9_+.-]{0,126}$")
+_BLOCK_DEVICE_PATTERN = re.compile(r"^/dev/(?!.*\.\.)[A-Za-z0-9_./:-]{1,250}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1577,7 +1577,7 @@ class BlockDevicePath:
 
     def __post_init__(self) -> None:
         """Accept device paths only, never ``..``."""
-        if not _BLOCK_DEVICE_PATTERN.fullmatch(self.value) or ".." in self.value:
+        if not _BLOCK_DEVICE_PATTERN.fullmatch(self.value):
             message = f"invalid block device path: {self.value!r}"
             raise ValueError(message)
 
