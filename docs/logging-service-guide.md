@@ -50,6 +50,11 @@ Add the dedicated logging host as a `Server` and give it an accurate
 `Baseline`. Do not use the capacity-constrained public proxy or a host with
 an unresolved storage finding.
 
+The logging host's baseline declares a storage pool (`storage.pools`): an
+existing LVM volume group with its physical volumes. Loki's and Prometheus's
+data volumes go there (S-014); with more than one pool, name it in
+`backend.storage.pool` and `metrics.backend.storagePool`.
+
 Choose an internal gateway name, such as `logs.internal.example`. It needs no
 DNS record when the backend declares a `network` block or an IP `address`:
 each collector pins the name to the backend's IPv4 in `/etc/hosts`, and to

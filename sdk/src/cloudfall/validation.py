@@ -1238,6 +1238,7 @@ def _validate_logging_references(
     _validate_logging_gateway_sources(
         document, spec, backend_server, tuple(remote_collectors), index
     )
+    _validate_logging_volume_pools(document, spec, backend_server, index)
 
     raw_files = collectors.get("files")
     if not isinstance(raw_files, list):
@@ -1353,6 +1354,75 @@ def _validate_logging_gateway_sources(
             ),
             source=document.source,
             field_path=("spec", "collectors", "servers"),
+        )
+        raise ConfigValidationError(issue)
+
+
+def _validate_logging_volume_pools(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    backend_server: ResourceDocument,
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> None:
+    """Refuse a logging volume with no pool to live in (S-014-2).
+
+    Each volume names a pool of the backend's baseline, or leaves it out when
+    the baseline has exactly one.
+    """
+    server_spec = _required_mapping(
+        backend_server.content, "spec", backend_server.source
+    )
+    baseline_id = _resource_id_value(server_spec, "baseline", backend_server.source)
+    baseline = _require_resource(
+        index,
+        ResourceKind.BASELINE,
+        baseline_id,
+        backend_server.source,
+        ("spec", "baseline"),
+    )
+    baseline_spec = _required_mapping(baseline.content, "spec", baseline.source)
+    storage = _required_mapping(baseline_spec, "storage", baseline.source)
+    raw_pools = storage.get("pools")
+    pools = [
+        str(pool.get("id"))
+        for pool in (raw_pools if isinstance(raw_pools, list) else [])
+        if isinstance(pool, dict)
+    ]
+    backend = _required_mapping(spec, "backend", document.source)
+    metrics = _required_mapping(spec, "metrics", document.source)
+    volumes = (
+        (
+            "loki",
+            _required_mapping(backend, "storage", document.source).get("pool"),
+            ("spec", "backend", "storage", "pool"),
+        ),
+        (
+            "prometheus",
+            _required_mapping(metrics, "backend", document.source).get("storagePool"),
+            ("spec", "metrics", "backend", "storagePool"),
+        ),
+    )
+    for volume, named, field_path in volumes:
+        if named is None and len(pools) == 1:
+            continue
+        if named is not None and named in pools:
+            continue
+        if not pools:
+            code = "volume_requirement_pool_missing"
+            reason = f"Baseline/{baseline_id} declares no storage pool"
+        elif named is None:
+            code = "volume_requirement_pool_ambiguous"
+            reason = (
+                f"Baseline/{baseline_id} declares {len(pools)} pools; name one"
+            )
+        else:
+            code = "volume_requirement_pool_unknown"
+            reason = f"Baseline/{baseline_id} declares no pool {named}"
+        issue = ValidationIssue(
+            code=code,
+            message=f"the {volume} volume has nowhere to live: {reason}",
+            source=document.source,
+            field_path=field_path,
         )
         raise ConfigValidationError(issue)
 
@@ -1616,6 +1686,11 @@ def _validate_baseline(spec: Mapping[str, object], source: SourceLocation) -> No
                 field_path=("spec", "configuration", "files", index),
             )
             raise ConfigValidationError(issue)
+    if "pools" in storage:
+        for entry_key in ("id", "volumeGroup"):
+            _validate_unique_entry_keys(
+                storage, "pools", entry_key, source, ("spec", "storage", "pools")
+            )
     _validate_baseline_firewall(spec, source)
 
 
