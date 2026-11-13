@@ -31,6 +31,7 @@ from cloudfall.domain import (
     RuntimePackageManager,
     RuntimeType,
     SourceLocation,
+    TelegramChatId,
 )
 
 _SCHEMA_FILES: Mapping[ResourceKind, str] = {
@@ -2063,8 +2064,24 @@ def _validate_alert_channel_references(
     spec: Mapping[str, object],
     index: Mapping[ResourceKey, ResourceDocument],
 ) -> None:
-    """Accept every AlertChannel; the resources naming one are checked there."""
-    del document, spec, index
+    """Check the chat id as the inventory reads it; references are checked there.
+
+    The schema's ``$`` lets a trailing newline through, which the inventory's
+    ``TelegramChatId`` refuses.
+    """
+    del index
+    telegram = spec.get("telegram")
+    chat_id = telegram.get("chatId") if isinstance(telegram, dict) else None
+    try:
+        TelegramChatId.from_boundary(chat_id)
+    except (TypeError, ValueError) as error:
+        issue = ValidationIssue(
+            code="alert_channel_chat_id_invalid",
+            message=str(error),
+            source=document.source,
+            field_path=("spec", "telegram", "chatId"),
+        )
+        raise ConfigValidationError(issue) from error
 
 
 def _require_alert_channel(

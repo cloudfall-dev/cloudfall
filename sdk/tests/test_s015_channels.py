@@ -7,6 +7,9 @@ from pathlib import Path
 
 import pytest
 from cloudfall.cli import main
+from cloudfall.domain import ResourceKind
+from cloudfall.inventory import PlatformInventory
+from cloudfall.logging_deploy import declared_stack, stack_requirements
 from cloudfall.validation import ConfigValidationError, validate_config
 from examples_project import copy_examples
 
@@ -80,6 +83,13 @@ def test_s015_1_other_chat_ids_are_refused(tmp_path: Path, chat: str) -> None:
     assert _code(_project(tmp_path, chat=chat)) == "schema_validation_failed"
 
 
+def test_s015_1_a_chat_id_with_a_trailing_newline_is_refused(tmp_path: Path) -> None:
+    # The schema's `$` matches before a final newline in Python's `re`
+    project = _project(tmp_path, chat="145629422\\n")
+
+    assert _code(project) == "alert_channel_chat_id_invalid"
+
+
 def test_s015_1_a_baseline_naming_an_undeclared_channel_is_refused(
     tmp_path: Path,
 ) -> None:
@@ -136,3 +146,20 @@ def test_s015_2_a_receiver_alone_puts_the_token_on_the_backend(
 
     assert states["h1"] == [("AlertChannel", "operations", "needs-input")]
     assert states["h2"] == []
+
+
+def test_s015_2_a_channel_sharing_the_stack_id_is_not_the_stack(
+    tmp_path: Path,
+) -> None:
+    # The example stack is `operations` too; its deploy must not take the token
+    inventory = PlatformInventory.from_state(
+        validate_config(_project(tmp_path), SCHEMAS)
+    )
+
+    owners = {
+        requirement.owner.kind
+        for server in stack_requirements(inventory, declared_stack(inventory))
+        for requirement in server.requirements
+    }
+
+    assert owners == {ResourceKind.LOGGING_STACK}
