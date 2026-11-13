@@ -110,6 +110,27 @@ _BLOCKING_STATUSES = frozenset(
     {ProposalStatus.PROPOSED, ProposalStatus.EXECUTED, ProposalStatus.FAILED}
 )
 
+# The audit check ``server_type.id`` is ``baseline.id`` since 0.8.0 (D-11). A
+# proposal recorded before names the old id; until 0.9.0 its verifier and the
+# drift pass's duplicate check read it as the new one.
+_RENAMED_CHECKS: Mapping[str, str] = {"server_type.id": "baseline.id"}
+
+
+def _current_checks(checks: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(_RENAMED_CHECKS.get(check, check) for check in checks)
+
+
+def _drift_fingerprint(
+    server: ResourceId, checks: tuple[str, ...], operation_kind: OperationKind
+) -> str:
+    return fingerprint_of(
+        {
+            "server": server.value,
+            "operation": operation_kind.value,
+            "checks": ",".join(sorted(checks)),
+        }
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class OperatorAlert:
@@ -460,13 +481,7 @@ def propose_for_drift(
     now: str,
 ) -> OperatorProposal:
     """Map one server's audited drift onto a convergence proposal."""
-    fingerprint = fingerprint_of(
-        {
-            "server": server.value,
-            "operation": operation_kind.value,
-            "checks": ",".join(sorted(checks)),
-        }
-    )
+    fingerprint = _drift_fingerprint(server, checks, operation_kind)
     playbook = _OPERATION_PLAYBOOKS[operation_kind]
     summary = (
         f"Audit reports drift on server {server.value}: "
@@ -548,12 +563,26 @@ class ProposalStore:
         return tuple(proposals)
 
     def blocking_fingerprints(self) -> frozenset[str]:
-        """Fingerprints already covered by an open or failed proposal."""
-        return frozenset(
-            proposal.fingerprint
-            for proposal in self.list()
-            if proposal.status in _BLOCKING_STATUSES
-        )
+        """Fingerprints already covered by an open or failed proposal.
+
+        A drift proposal naming a renamed check also covers the fingerprint
+        the same drift has under the check's current id.
+        """
+        fingerprints: set[str] = set()
+        for proposal in self.list():
+            if proposal.status not in _BLOCKING_STATUSES:
+                continue
+            fingerprints.add(proposal.fingerprint)
+            drift = proposal.drift
+            if drift is not None and _current_checks(drift.checks) != drift.checks:
+                fingerprints.add(
+                    _drift_fingerprint(
+                        drift.server,
+                        _current_checks(drift.checks),
+                        proposal.operation_kind,
+                    )
+                )
+        return frozenset(fingerprints)
 
     def _path(self, proposal_id: ResourceId) -> Path:
         return self.directory / f"{proposal_id.value}.json"
@@ -842,7 +871,7 @@ def drift_resolution_verifier(
             for check in server_audit.checks
             if check.status is AuditStatus.DRIFT
         }
-        return not (set(proposal.drift.checks) & still_drifting)
+        return not (set(_current_checks(proposal.drift.checks)) & still_drifting)
 
     return _verify
 
