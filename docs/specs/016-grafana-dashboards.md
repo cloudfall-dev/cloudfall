@@ -1,6 +1,6 @@
 # S-016: Bundled Grafana dashboards and `logging open`
 
-status: approved
+status: built
 serves: G-1, G-3
 
 ## Problem
@@ -101,3 +101,31 @@ the ones the installed Cloudfall release bundles; drift names a missing, extra o
 ## Issues
 
 ## Verification
+
+Built in #305 (dashboards), #306 (`logging open`) and #307 (`logging.dashboards`), released in
+0.8.0rc34, and run on a Debian 13 backend on 2026-11-14 (Grafana 13.2.6). Per criterion:
+
+- S-016-1: `test_s016_1_the_role_bundles_exactly_the_four_dashboards`. Live: after
+  `logging deploy --yes`, `/api/search?folderUIDs=cloudfall` listed exactly the four uids;
+  a second deploy changed no file and restarted no unit
+- S-016-2: live: every panel's targets, posted to `/api/ds/query` with the variables filled
+  in, answered with no error (28 panels); Fleet, Server and Logs returned data, Services
+  returned none on a host with no PostgreSQL or Redis, and "Firing alerts" none with nothing
+  firing
+- S-016-3: `test_s016_3_*` in `engine/tests/test_s016_dashboards.py`: the `environment`
+  variable first, data sources by uid only, and labels limited to the collector's and the
+  exporters' own, with a check that catches a foreign label
+- S-016-4: `test_s016_4_the_provider_keeps_bundled_dashboards_as_shipped`. Live: saving over
+  `cloudfall-fleet` was refused ("Cannot save provisioned dashboard"); a copy saved in
+  General survived a redeploy
+- S-016-5: `test_s016_5_*` in `sdk/tests/test_s016_logging_open.py`, including the CLI
+  holding a fake ssh's forward and stopping it. Live: `--print-command` built the forward
+  from the declared address and SSH port, `logging open` came up and `/api/health` answered
+  through it, a port in use exited 4, and stopping the command closed ssh
+- S-016-6: `test_s016_6_*` in `sdk/tests/test_s016_audit.py`, with the inspect tasks run by
+  `ansible-playbook`. Live: `audit` compliant, 34 of 34, `logging.dashboards` compliant; with
+  one dashboard file moved aside it reported drift "missing: cloudfall-logs.json", and
+  compliant again once it was back
+- S-016-7: `test_s016_7_the_role_installs_prunes_and_provisions_the_dashboards`. Live: a stack
+  deployed on 0.8.0rc28 gained the dashboards on its next `logging deploy`; the data sources
+  and Grafana's configuration were unchanged
