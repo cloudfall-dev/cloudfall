@@ -233,6 +233,16 @@ from cloudfall.logging_deploy import (
     secret_files,
     staged_files,
 )
+from cloudfall.logging_open import (
+    DEFAULT_LOCAL_PORT,
+    ERROR_FORWARD_FAILED,
+    ERROR_STACK_UNKNOWN,
+    LoggingOpenError,
+    chosen_stack,
+    grafana_forward,
+    require_free_port,
+    start_forward,
+)
 from cloudfall.migrate import MigrateError, MigrateOptions, execute_migration
 from cloudfall.observation import load_observations
 from cloudfall.observe import (
@@ -5149,6 +5159,97 @@ def _token_missing(error: TokenMissingError) -> Exception:
             "<channel>` for each missing channel"
         ),
     )
+
+
+# logging open (S-016)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LoggingOpenArgs(ProjectArgs):
+    """Arguments of ``logging open``."""
+
+    stack: ResourceId | None = Flag(
+        default=None,
+        description="LoggingStack to open (default: the only one declared)",
+    )
+    port: int = Flag(
+        default=DEFAULT_LOCAL_PORT,
+        description=f"Local port to forward (default: {DEFAULT_LOCAL_PORT})",
+    )
+    print_command: bool = Flag(
+        default=False,
+        description="Answer with the ssh command and the URL; run nothing",
+    )
+
+    def __post_init__(self) -> None:
+        """Keep the local port a real TCP port."""
+        TcpPort.from_boundary(self.port)
+
+
+class LoggingOpenPayload(Payload):
+    """``logging open``: the forward, its command and its URL."""
+
+    command = "logging open"
+
+
+def _logging_open_failed(error: LoggingOpenError) -> Exception:
+    context = {"code": error.code}
+    if error.code == ERROR_STACK_UNKNOWN:
+        return Exit.NOT_FOUND(error.message, context=context)
+    if error.code == ERROR_FORWARD_FAILED:
+        return Exit.UNAVAILABLE(error.message, context=context)
+    return Exit.PRECONDITION(error.message, context=context)
+
+
+@logging_group.command(
+    "open",
+    # Holds the forward until stopped; a tool call would never answer.
+    mcp=False,
+    description=(
+        "Open the LoggingStack's Grafana: forward a local port over ssh to "
+        "Grafana on the backend's loopback, built from the declared server, "
+        "and answer with the URL of the Cloudfall dashboards once it is up; "
+        "it holds the forward until stopped. The answer names where the admin "
+        "password is kept, never the password. --print-command answers with "
+        "the ssh command and runs nothing"
+    ),
+    danger_level="safe",
+    streaming=True,
+    timeout=None,
+    exit_codes=[
+        "PROJECT_INVALID",
+        "CONFIG_INVALID",
+        "PRECONDITION",
+        "NOT_FOUND",
+        "UNAVAILABLE",
+    ],
+    examples=[
+        ("Open Grafana on http://127.0.0.1:3000", "cloudfall logging open"),
+        ("Use another local port", "cloudfall logging open --port 3300"),
+        ("Show the ssh command only", "cloudfall logging open --print-command"),
+    ],
+)
+def logging_open_command(
+    args: LoggingOpenArgs, _ctx: Ctx, fleet: Fleet
+) -> Iterator[LoggingOpenPayload]:
+    """Build the forward; answer with it, or hold it open until stopped."""
+    try:
+        stack = chosen_stack(fleet.inventory, args.stack)
+        forward = grafana_forward(fleet.inventory, stack, args.port)
+        if args.print_command:
+            yield LoggingOpenPayload({"status": "ok", **forward.as_dict()})
+            return
+        require_free_port(args.port)
+        process = start_forward(forward)
+    except LoggingOpenError as error:
+        raise _logging_open_failed(error) from error
+    try:
+        yield LoggingOpenPayload({"status": "open", **forward.as_dict()})
+        process.wait()
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait()
 
 
 # alerts test (S-015)
