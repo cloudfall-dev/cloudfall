@@ -134,6 +134,24 @@
            else [])
       }}
 
+- name: Hold the pinned packages before they are installed
+  ansible.builtin.include_tasks: holds.yml
+  vars:
+    cloudfall_logging_backend_holds: >-
+      {{
+        [{'name': 'loki', 'version': cloudfall_logging_backend_stack.software.lokiPackageVersion},
+         {'name': 'grafana', 'version': cloudfall_logging_backend_stack.software.grafanaPackageVersion},
+         {'name': 'prometheus',
+          'version': cloudfall_logging_backend_stack.software.prometheusPackageVersion
+          if 'prometheusPackageVersion' in cloudfall_logging_backend_stack.software
+          else none},
+         {'name': 'prometheus-alertmanager',
+          'version': cloudfall_logging_backend_stack.alerting.alertmanager.packageVersion
+          if 'alerting' in cloudfall_logging_backend_stack
+          and 'packageVersion' in cloudfall_logging_backend_stack.alerting.alertmanager
+          else none}]
+      }}
+
 - name: Create Loki service group before package configuration
   ansible.builtin.group:
     name: loki

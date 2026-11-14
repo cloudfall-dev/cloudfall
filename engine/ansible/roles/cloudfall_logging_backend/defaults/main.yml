@@ -8,3 +8,5 @@ cloudfall_logging_backend_grafana_repository_url: https://apt.grafana.com
 # each service its own read access, as for files provided by hand
 cloudfall_logging_backend_file_owner: root
 cloudfall_logging_backend_file_group: root
+# Where the APT preferences that hold the pinned packages go (#294)
+cloudfall_logging_backend_apt_preferences_dir: /etc/apt/preferences.d

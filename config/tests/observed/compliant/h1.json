@@ -69,6 +69,12 @@
         "arch": "amd64"
       },
       {
+        "name": "alloy",
+        "version": "1.17.1-1",
+        "source": "apt",
+        "arch": "amd64"
+      },
+      {
         "name": "ca-certificates",
         "version": "20230311",
         "source": "apt",
@@ -83,6 +89,18 @@
       {
         "name": "git",
         "version": "2.39.5",
+        "source": "apt",
+        "arch": "amd64"
+      },
+      {
+        "name": "grafana",
+        "version": "13.1.0",
+        "source": "apt",
+        "arch": "amd64"
+      },
+      {
+        "name": "loki",
+        "version": "3.7.2",
         "source": "apt",
         "arch": "amd64"
       },
