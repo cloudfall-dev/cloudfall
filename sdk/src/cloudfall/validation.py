@@ -11,9 +11,11 @@ from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
+    from datetime import date
     from pathlib import Path
 
 import yaml
+from cryptography import x509
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import SchemaError, ValidationError
 from referencing import Registry, Resource
@@ -32,6 +34,17 @@ from cloudfall.domain import (
     RuntimeType,
     SourceLocation,
     TelegramChatId,
+)
+from cloudfall.elasticsearch import (
+    RESERVED_USER_NAMES,
+    SUPPORTED_LINES,
+    ElasticsearchIndexPattern,
+    ElasticsearchLine,
+    ElasticsearchSeedHost,
+    ElasticsearchVersion,
+    ProjectFilePath,
+    supported_line,
+    supported_lines_text,
 )
 
 _SCHEMA_FILES: Mapping[ResourceKind, str] = {
@@ -417,7 +430,7 @@ class StateValidator:
                 index[document.key] = document
                 documents.append(document)
 
-        self._validate_references(documents, index)
+        self._validate_references(documents, index, project_directory)
         return ValidatedConfig(
             documents=tuple(documents),
             _index=index,
@@ -452,7 +465,7 @@ class StateValidator:
             index[document.key] = document
             documents.append(document)
 
-        self._validate_references(documents, index)
+        self._validate_references(documents, index, None)
         return ValidatedConfig(
             documents=tuple(documents),
             _index=index,
@@ -556,12 +569,14 @@ class StateValidator:
     def _validate_references(
         documents: Sequence[ResourceDocument],
         index: Mapping[ResourceKey, ResourceDocument],
+        project_directory: Path | None,
     ) -> None:
         for document in documents:
             spec = _required_mapping(document.content, "spec", document.source)
             _REFERENCE_VALIDATORS[document.key.kind](document, spec, index)
         _validate_logging_uniqueness(documents)
         _validate_service_uniqueness(documents)
+        _validate_elasticsearch_files(documents, project_directory)
 
 
 def _validate_server_references(
@@ -889,6 +904,8 @@ def _validate_service_references(
 
     if spec.get("serviceKind") == "postgresql":
         _validate_postgresql_service(document, spec, server, index)
+    elif spec.get("serviceKind") == "elasticsearch":
+        _validate_elasticsearch_service(document, spec, index)
 
 
 def _validate_postgresql_service(
@@ -1098,6 +1115,20 @@ def _validate_service_remote_access(  # noqa: PLR0913
             field_path=field_path,
         )
         raise ConfigValidationError(issue)
+    _validate_remote_access_rules(
+        document, spec, remote_access, server, index, field_path
+    )
+
+
+def _validate_remote_access_rules(  # noqa: PLR0913
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    remote_access: Mapping[str, object],
+    server: ResourceDocument,
+    index: Mapping[ResourceKey, ResourceDocument],
+    field_path: tuple[str | int, ...],
+) -> None:
+    """Refuse a way in on ``server`` that its firewall cannot narrow (S-006)."""
     _validate_remote_access_listen_address(document, remote_access, field_path)
     server_spec = _required_mapping(server.content, "spec", server.source)
     baseline_id = _resource_id_value(server_spec, "baseline", server.source)
@@ -1200,9 +1231,281 @@ def _validate_remote_access_listen_address(
         raise ConfigValidationError(issue)
 
 
+ERROR_ELASTICSEARCH_VERSION = "service_elasticsearch_version"
+ERROR_ELASTICSEARCH_NODES = "service_elasticsearch_nodes"
+ERROR_ELASTICSEARCH_EXISTING_CLUSTER = "service_elasticsearch_existing_cluster"
+ERROR_ELASTICSEARCH_SERVER_SHARED = "service_elasticsearch_server_shared"
+ERROR_ELASTICSEARCH_SNAPSHOT_LOCAL = "service_elasticsearch_snapshot_repository_local"
+ERROR_ELASTICSEARCH_USER_RESERVED = "service_elasticsearch_user_reserved"
+ERROR_ELASTICSEARCH_USER_DUPLICATE = "service_elasticsearch_user_duplicate"
+ERROR_ELASTICSEARCH_PATTERN = "service_elasticsearch_pattern"
+_ELASTICSEARCH_PATH = ("spec", "elasticsearch")
+
+
+def _elasticsearch_refusal(
+    document: ResourceDocument,
+    code: str,
+    message: str,
+    *field: str | int,
+) -> ConfigValidationError:
+    return ConfigValidationError(
+        ValidationIssue(
+            code=code,
+            message=message,
+            source=document.source,
+            field_path=(*_ELASTICSEARCH_PATH, *field),
+        )
+    )
+
+
+def _elasticsearch_nodes(
+    document: ResourceDocument, spec: Mapping[str, object]
+) -> tuple[ResourceId, ...]:
+    """Return the declared nodes, or the service's server when none are."""
+    elasticsearch = _required_mapping(spec, "elasticsearch", document.source)
+    server_id = _resource_id_value(spec, "server", document.source)
+    if "nodes" not in elasticsearch:
+        return (server_id,)
+    raw_nodes = elasticsearch.get("nodes")
+    if not isinstance(raw_nodes, list):
+        issue = ValidationIssue(
+            code="internal_state_shape_invalid",
+            message="validated Elasticsearch nodes are not a list",
+            source=document.source,
+            field_path=(*_ELASTICSEARCH_PATH, "nodes"),
+        )
+        raise ConfigValidationError(issue)
+    return tuple(ResourceId.from_boundary(node) for node in raw_nodes)
+
+
+def _validate_elasticsearch_service(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> None:
+    """Apply the S-012 refusals that read one service and the servers it names."""
+    elasticsearch = _required_mapping(spec, "elasticsearch", document.source)
+    _validate_elasticsearch_version(document, elasticsearch)
+    nodes = _validate_elasticsearch_node_list(document, spec, index)
+    _validate_elasticsearch_users(document, elasticsearch)
+    if "existingCluster" in elasticsearch:
+        _validate_elasticsearch_existing_cluster(
+            document,
+            elasticsearch,
+            _required_mapping(elasticsearch, "existingCluster", document.source),
+            nodes,
+            index,
+        )
+    if "snapshotRepository" not in elasticsearch and (
+        len(nodes) > 1 or "existingCluster" in elasticsearch
+    ):
+        reason = (
+            "existingCluster" if "existingCluster" in elasticsearch else "two nodes"
+        )
+        raise _elasticsearch_refusal(
+            document,
+            ERROR_ELASTICSEARCH_SNAPSHOT_LOCAL,
+            f"a cluster with {reason} needs a snapshotRepository: a filesystem "
+            "repository would have to be one shared mount on every node, which "
+            "Cloudfall does not provide",
+        )
+    if "remoteAccess" in elasticsearch:
+        remote_access = _required_mapping(
+            elasticsearch, "remoteAccess", document.source
+        )
+        for node in nodes:
+            _validate_remote_access_rules(
+                document,
+                spec,
+                remote_access,
+                index[ResourceKey(kind=ResourceKind.SERVER, resource_id=node)],
+                index,
+                (*_ELASTICSEARCH_PATH, "remoteAccess"),
+            )
+
+
+def _validate_elasticsearch_version(
+    document: ResourceDocument, elasticsearch: Mapping[str, object]
+) -> None:
+    raw_version = elasticsearch.get("version")
+    try:
+        version = ElasticsearchVersion.from_boundary(raw_version)
+    except (TypeError, ValueError) as error:
+        raise _elasticsearch_refusal(
+            document,
+            ERROR_ELASTICSEARCH_VERSION,
+            f"{error}; Cloudfall installs an exact release of a supported line: "
+            f"{supported_lines_text()}",
+            "version",
+        ) from error
+    if supported_line(version) is None:
+        raise _elasticsearch_refusal(
+            document,
+            ERROR_ELASTICSEARCH_VERSION,
+            f"Elasticsearch {version.value} is not of a line Elastic still "
+            f"supports; the supported lines are {supported_lines_text()}",
+            "version",
+        )
+
+
+def _validate_elasticsearch_node_list(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> tuple[ResourceId, ...]:
+    nodes = _elasticsearch_nodes(document, spec)
+    server_id = _resource_id_value(spec, "server", document.source)
+    seen: set[ResourceId] = set()
+    for position, node in enumerate(nodes):
+        if node in seen:
+            raise _elasticsearch_refusal(
+                document,
+                ERROR_ELASTICSEARCH_NODES,
+                f"Server/{node} is listed twice in nodes",
+                "nodes",
+                position,
+            )
+        seen.add(node)
+        if ResourceKey(kind=ResourceKind.SERVER, resource_id=node) not in index:
+            raise _elasticsearch_refusal(
+                document,
+                ERROR_ELASTICSEARCH_NODES,
+                f"node Server/{node} is not declared",
+                "nodes",
+                position,
+            )
+    if server_id not in seen:
+        raise _elasticsearch_refusal(
+            document,
+            ERROR_ELASTICSEARCH_NODES,
+            f"nodes must contain the service's server, Server/{server_id}",
+            "nodes",
+        )
+    return nodes
+
+
+def _validate_elasticsearch_users(
+    document: ResourceDocument, elasticsearch: Mapping[str, object]
+) -> None:
+    raw_users = elasticsearch.get("users", [])
+    users = raw_users if isinstance(raw_users, list) else []
+    names: set[object] = set()
+    for position, raw_user in enumerate(users):
+        user = cast("Mapping[str, object]", raw_user)
+        name = user.get("name")
+        if name in RESERVED_USER_NAMES:
+            raise _elasticsearch_refusal(
+                document,
+                ERROR_ELASTICSEARCH_USER_RESERVED,
+                f"user name {name!r} is Cloudfall's own account or a built-in "
+                "Elasticsearch user or role",
+                "users",
+                position,
+                "name",
+            )
+        if name in names:
+            raise _elasticsearch_refusal(
+                document,
+                ERROR_ELASTICSEARCH_USER_DUPLICATE,
+                f"user {name!r} is declared twice",
+                "users",
+                position,
+                "name",
+            )
+        names.add(name)
+        _validate_elasticsearch_patterns(
+            document, user.get("indexPatterns"), ("users", position, "indexPatterns")
+        )
+    if "restoreCheckIndices" in elasticsearch:
+        _validate_elasticsearch_patterns(
+            document,
+            elasticsearch.get("restoreCheckIndices"),
+            ("restoreCheckIndices",),
+        )
+
+
+def _validate_elasticsearch_patterns(
+    document: ResourceDocument,
+    raw_patterns: object,
+    field: tuple[str | int, ...],
+) -> None:
+    patterns = raw_patterns if isinstance(raw_patterns, list) else []
+    for position, pattern in enumerate(patterns):
+        try:
+            ElasticsearchIndexPattern.from_boundary(pattern)
+        except (TypeError, ValueError) as error:
+            raise _elasticsearch_refusal(
+                document,
+                ERROR_ELASTICSEARCH_PATTERN,
+                f"{error}; name the application's own indices",
+                *field,
+                position,
+            ) from error
+
+
+def _server_names(server: ResourceDocument) -> frozenset[str]:
+    """Return the host names and addresses a server is reached at."""
+    server_spec = _required_mapping(server.content, "spec", server.source)
+    names = {
+        value
+        for value in (server_spec.get("hostname"), server_spec.get("address"))
+        if isinstance(value, str)
+    }
+    network = server_spec.get("network")
+    if isinstance(network, dict):
+        ipv4 = cast("Mapping[str, object]", network).get("ipv4")
+        if isinstance(ipv4, str):
+            names.add(ipv4)
+    return frozenset(name.lower().removesuffix(".") for name in names)
+
+
+def _validate_elasticsearch_existing_cluster(
+    document: ResourceDocument,
+    elasticsearch: Mapping[str, object],
+    existing: Mapping[str, object],
+    nodes: tuple[ResourceId, ...],
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> None:
+    if "clusterName" not in elasticsearch:
+        raise _elasticsearch_refusal(
+            document,
+            ERROR_ELASTICSEARCH_EXISTING_CLUSTER,
+            "existingCluster needs clusterName: the nodes join the cluster of "
+            "that name, and the converge refuses a seed host of another",
+            "existingCluster",
+        )
+    raw_seed_hosts = existing.get("seedHosts")
+    seed_hosts = raw_seed_hosts if isinstance(raw_seed_hosts, list) else []
+    for position, raw_seed_host in enumerate(seed_hosts):
+        try:
+            seed_host = ElasticsearchSeedHost.from_boundary(raw_seed_host)
+        except (TypeError, ValueError) as error:
+            raise _elasticsearch_refusal(
+                document,
+                ERROR_ELASTICSEARCH_EXISTING_CLUSTER,
+                str(error),
+                "existingCluster",
+                "seedHosts",
+                position,
+            ) from error
+        for node in nodes:
+            server = index[ResourceKey(kind=ResourceKind.SERVER, resource_id=node)]
+            if seed_host.host.lower() in _server_names(server):
+                raise _elasticsearch_refusal(
+                    document,
+                    ERROR_ELASTICSEARCH_EXISTING_CLUSTER,
+                    f"seed host {seed_host.value} is Server/{node}, a declared "
+                    "node; seed hosts are the existing cluster's own nodes",
+                    "existingCluster",
+                    "seedHosts",
+                    position,
+                )
+
+
 def _validate_service_uniqueness(documents: Sequence[ResourceDocument]) -> None:
     placements: dict[tuple[ResourceId, str], ResourceDocument] = {}
     ports: dict[tuple[ResourceId, int], ResourceDocument] = {}
+    nodes_taken: dict[ResourceId, ResourceDocument] = {}
     for document in documents:
         if document.key.kind is not ResourceKind.SERVICE:
             continue
@@ -1219,6 +1522,9 @@ def _validate_service_uniqueness(documents: Sequence[ResourceDocument]) -> None:
                 field_path=("spec",),
             )
             raise ConfigValidationError(issue)
+        if raw_kind == "elasticsearch":
+            _claim_elasticsearch_nodes(document, spec, raw_port, nodes_taken, ports)
+            continue
         placement = (server_id, raw_kind)
         if placement in placements:
             issue = ValidationIssue(
@@ -1245,6 +1551,165 @@ def _validate_service_uniqueness(documents: Sequence[ResourceDocument]) -> None:
             )
             raise ConfigValidationError(issue)
         ports[listener] = document
+
+
+def _claim_elasticsearch_nodes(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    port: int,
+    nodes_taken: dict[ResourceId, ResourceDocument],
+    ports: dict[tuple[ResourceId, int], ResourceDocument],
+) -> None:
+    """Refuse a node already in another cluster, or whose port is taken.
+
+    The Debian package runs one Elasticsearch instance per host, and every
+    node listens on the service's port.
+    """
+    for position, node in enumerate(_elasticsearch_nodes(document, spec)):
+        if node in nodes_taken:
+            raise _elasticsearch_refusal(
+                document,
+                ERROR_ELASTICSEARCH_SERVER_SHARED,
+                f"Server/{node} is already a node of the Elasticsearch service "
+                f"declared at {nodes_taken[node].source.display()}; a server "
+                "holds at most one Elasticsearch node",
+                "nodes",
+                position,
+            )
+        nodes_taken[node] = document
+        listener = (node, port)
+        if listener in ports:
+            issue = ValidationIssue(
+                code="service_port_conflict",
+                message=(
+                    f"Server/{node} port {port} already used by the "
+                    f"service declared at {ports[listener].source.display()}"
+                ),
+                source=document.source,
+                field_path=("spec", "bind", "port"),
+            )
+            raise ConfigValidationError(issue)
+        ports[listener] = document
+
+
+def _validate_elasticsearch_files(
+    documents: Sequence[ResourceDocument], project_directory: Path | None
+) -> None:
+    """Refuse an existing cluster's CA file that is missing, foreign or not a CA."""
+    for document in documents:
+        if document.key.kind is not ResourceKind.SERVICE:
+            continue
+        spec = _required_mapping(document.content, "spec", document.source)
+        if spec.get("serviceKind") != "elasticsearch":
+            continue
+        elasticsearch = _required_mapping(spec, "elasticsearch", document.source)
+        if "existingCluster" not in elasticsearch:
+            continue
+        existing = _required_mapping(
+            elasticsearch, "existingCluster", document.source
+        )
+        _validate_ca_certificate_file(
+            document, existing.get("caCertificateFile"), project_directory
+        )
+
+
+def _validate_ca_certificate_file(
+    document: ResourceDocument,
+    raw_path: object,
+    project_directory: Path | None,
+) -> None:
+    field = ("existingCluster", "caCertificateFile")
+
+    def refuse(message: str) -> ConfigValidationError:
+        return _elasticsearch_refusal(
+            document, ERROR_ELASTICSEARCH_EXISTING_CLUSTER, message, *field
+        )
+
+    if project_directory is None:
+        message = (
+            "caCertificateFile is a path inside the project, and these "
+            "resources were not read from a project directory"
+        )
+        raise refuse(message)
+    try:
+        relative = ProjectFilePath.from_boundary(raw_path)
+    except (TypeError, ValueError) as error:
+        raise refuse(str(error)) from error
+    root = project_directory.resolve()
+    path = (root / relative.value).resolve()
+    if not path.is_relative_to(root):
+        message = f"caCertificateFile {relative.value} resolves outside the project"
+        raise refuse(message)
+    if not path.is_file():
+        message = f"caCertificateFile {relative.value} does not exist"
+        raise refuse(message)
+    problem = _ca_certificate_problem(path.read_bytes())
+    if problem is not None:
+        message = f"caCertificateFile {relative.value} {problem}"
+        raise refuse(message)
+
+
+def _ca_certificate_problem(content: bytes) -> str | None:
+    """Say what keeps ``content`` from being CA certificates only, if anything."""
+    if b"PRIVATE KEY" in content:
+        return "holds a private key; give the CA's certificate only"
+    try:
+        certificates = x509.load_pem_x509_certificates(content)
+    except ValueError:
+        return "is not a PEM certificate"
+    for certificate in certificates:
+        try:
+            constraints = certificate.extensions.get_extension_for_class(
+                x509.BasicConstraints
+            ).value
+        except x509.ExtensionNotFound:
+            return "is not a CA certificate"
+        if not constraints.ca:
+            return "is not a CA certificate"
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class ElasticsearchVersionEnding:
+    """A service whose Elasticsearch line ends within the window, or has ended."""
+
+    service: ResourceId
+    version: ElasticsearchVersion
+    line: ElasticsearchLine
+
+    def message(self, today: date) -> str:
+        """Say when the line ends, or that it has ended."""
+        tense = "ended" if today > self.line.end_of_life else "ends"
+        return (
+            f"Service/{self.service} runs Elasticsearch {self.version.value}, "
+            f"whose line {self.line.label} {tense} on "
+            f"{self.line.end_of_life.isoformat()}; move it to a later "
+            "supported line"
+        )
+
+
+def elasticsearch_versions_ending(
+    config: ValidatedConfig,
+    today: date,
+    lines: tuple[ElasticsearchLine, ...] = SUPPORTED_LINES,
+) -> tuple[ElasticsearchVersionEnding, ...]:
+    """Return each Elasticsearch service whose line is within its window on ``today``.
+
+    ``today`` is passed in, so the answer depends on the caller's clock only.
+    """
+    endings: list[ElasticsearchVersionEnding] = []
+    for document in config.resources(ResourceKind.SERVICE):
+        spec = _required_mapping(document.content, "spec", document.source)
+        if spec.get("serviceKind") != "elasticsearch":
+            continue
+        elasticsearch = _required_mapping(spec, "elasticsearch", document.source)
+        version = ElasticsearchVersion.from_boundary(elasticsearch.get("version"))
+        line = supported_line(version, lines)
+        if line is not None and line.is_ending(today):
+            endings.append(
+                ElasticsearchVersionEnding(document.key.resource_id, version, line)
+            )
+    return tuple(endings)
 
 
 def _validate_logging_references(

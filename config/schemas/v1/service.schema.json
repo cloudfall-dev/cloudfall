@@ -81,6 +81,155 @@
       "minLength": 1,
       "maxLength": 100,
       "pattern": "^[A-Za-z0-9 *:,.^~/-]+$"
+    },
+    "elasticsearchIndexPattern": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[a-z0-9._*+-]+$"
+    },
+    "elasticsearchIndexPatterns": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/elasticsearchIndexPattern"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "elasticsearch": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "heapMb": {
+          "type": "integer",
+          "minimum": 512,
+          "maximum": 31744
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/resourceId"
+          },
+          "minItems": 1
+        },
+        "clusterName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+        },
+        "existingCluster": {
+          "type": "object",
+          "properties": {
+            "seedHosts": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 261,
+                "pattern": "^(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?):[0-9]{1,5}$"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "caCertificateFile": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "seedHosts",
+            "caCertificateFile"
+          ],
+          "additionalProperties": false
+        },
+        "users": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 63,
+                "pattern": "^[a-z][a-z0-9_-]*$"
+              },
+              "access": {
+                "enum": [
+                  "read",
+                  "write"
+                ]
+              },
+              "indexPatterns": {
+                "$ref": "#/$defs/elasticsearchIndexPatterns"
+              },
+              "passwordRef": {
+                "$ref": "#/$defs/secretValueReference"
+              }
+            },
+            "required": [
+              "name",
+              "access",
+              "indexPatterns",
+              "passwordRef"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "remoteAccess": {
+          "$ref": "#/$defs/remoteAccess"
+        },
+        "snapshotRepository": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "s3"
+            },
+            "bucket": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 63,
+              "pattern": "^[a-z0-9][a-z0-9.-]*[a-z0-9]$"
+            },
+            "endpoint": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 253,
+              "pattern": "^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$"
+            },
+            "basePath": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$"
+            },
+            "credentialsRef": {
+              "$ref": "#/$defs/secretValueReference"
+            }
+          },
+          "required": [
+            "type",
+            "bucket",
+            "endpoint",
+            "credentialsRef"
+          ],
+          "additionalProperties": false
+        },
+        "restoreCheckIndices": {
+          "$ref": "#/$defs/elasticsearchIndexPatterns"
+        }
+      },
+      "required": [
+        "version",
+        "heapMb"
+      ],
+      "additionalProperties": false
     }
   },
   "type": "object",
@@ -100,7 +249,8 @@
         "serviceKind": {
           "enum": [
             "postgresql",
-            "redis"
+            "redis",
+            "elasticsearch"
           ]
         },
         "environment": {
@@ -249,6 +399,9 @@
           ],
           "additionalProperties": false
         },
+        "elasticsearch": {
+          "$ref": "#/$defs/elasticsearch"
+        },
         "metrics": {
           "type": "object",
           "properties": {
@@ -305,6 +458,41 @@
             "not": {
               "required": [
                 "postgresql"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "serviceKind": {
+                "const": "elasticsearch"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "elasticsearch"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "postgresql"
+                  ]
+                },
+                {
+                  "required": [
+                    "redis"
+                  ]
+                }
+              ]
+            }
+          },
+          "else": {
+            "not": {
+              "required": [
+                "elasticsearch"
               ]
             }
           }

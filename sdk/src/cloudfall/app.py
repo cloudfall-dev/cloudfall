@@ -152,6 +152,7 @@ from cloudfall.domain import (
     ResourceKind,
     TcpPort,
 )
+from cloudfall.elasticsearch import WARNING_VERSION_ENDING
 from cloudfall.importer import (
     ImportTargets,
     RenderImportError,
@@ -368,6 +369,7 @@ from cloudfall.validation import (
     DeprecatedName,
     SchemaCatalog,
     ValidatedConfig,
+    elasticsearch_versions_ending,
     validate_config,
 )
 from cloudfall.volumes import ACTIONS_VARIABLE as VOLUME_ACTIONS_VARIABLE
@@ -395,6 +397,7 @@ from cloudfall.why import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+    from datetime import date
 
     from cloudfall.audit import AuditReport
     from cloudfall.catalog import Operation
@@ -777,10 +780,28 @@ def config_validate(_args: ProjectArgs, ctx: Ctx, fleet: Fleet) -> ValidatedPayl
 
     A file read under a deprecated name still validates; each such file
     gets one ``DEPRECATED_NAME`` warning naming its old names and the
-    command that rewrites them.
+    command that rewrites them. An Elasticsearch service whose line ends
+    within 90 days, or has ended, gets one ``ELASTICSEARCH_VERSION_ENDING``
+    warning naming the date.
     """
     _warn_deprecated_names(ctx, fleet)
+    _warn_elasticsearch_versions_ending(ctx, fleet.state, datetime.now(UTC).date())
     return ValidatedPayload(fleet.state.as_dict())
+
+
+def _warn_elasticsearch_versions_ending(
+    ctx: Ctx, state: ValidatedConfig, today: date
+) -> None:
+    """Warn once per Elasticsearch service whose line is ending on ``today``."""
+    for ending in elasticsearch_versions_ending(state, today):
+        ctx.warn(
+            WARNING_VERSION_ENDING,
+            ending.message(today),
+            service=ending.service.value,
+            version=ending.version.value,
+            line=ending.line.label,
+            endOfLife=ending.line.end_of_life.isoformat(),
+        )
 
 
 def _warn_deprecated_names(ctx: Ctx, fleet: Fleet) -> None:
