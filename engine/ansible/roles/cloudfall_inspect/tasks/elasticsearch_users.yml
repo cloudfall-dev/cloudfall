@@ -1,0 +1,92 @@
+---
+# The users and roles of one Elasticsearch service's cluster (S-012), read on
+# its home server as the cloudfall account: their names, and whether they
+# carry the service's marker. Built-in users and roles are left out; no
+# password, hash or digest leaves the host.
+- name: Look for the cloudfall account password
+  ansible.builtin.stat:
+    path: "{{ cloudfall_inspect_elasticsearch_password_path }}"
+    get_checksum: false
+  register: cloudfall_inspect_elasticsearch_password_file
+
+- name: Read the cloudfall account password
+  ansible.builtin.slurp:
+    src: "{{ cloudfall_inspect_elasticsearch_password_path }}"
+  register: cloudfall_inspect_elasticsearch_password
+  no_log: true
+  when: cloudfall_inspect_elasticsearch_password_file.stat.exists
+
+- name: Read the users and roles of the cluster
+  ansible.builtin.uri:
+    url: >-
+      http://{{ cloudfall_inspect_elasticsearch_service.bind.address }}:{{
+        cloudfall_inspect_elasticsearch_service.bind.port
+      }}/_security/{{ item }}
+    url_username: cloudfall
+    url_password: "{{ cloudfall_inspect_elasticsearch_password.content | b64decode }}"
+    force_basic_auth: true
+    status_code: 200
+  loop:
+    - user
+    - role
+  register: cloudfall_inspect_elasticsearch_security
+  failed_when: false
+  no_log: true
+  when: cloudfall_inspect_elasticsearch_password_file.stat.exists
+
+- name: Attach the cluster's users and roles
+  ansible.builtin.set_fact:
+    cloudfall_inspect_elasticsearch_users: >-
+      {{
+        cloudfall_inspect_elasticsearch_users | default([])
+        + [cloudfall_inspect_elasticsearch_evidence]
+      }}
+  vars:
+    cloudfall_inspect_elasticsearch_answers: >-
+      {{
+        cloudfall_inspect_elasticsearch_security.results | default([])
+        | selectattr('status', 'defined')
+        | selectattr('status', 'equalto', 200)
+        | map(attribute='json') | list
+      }}
+    cloudfall_inspect_elasticsearch_available: >-
+      {{ cloudfall_inspect_elasticsearch_answers | length == 2 }}
+    # Each answer's entries that are not built in, by name, then those of
+    # them that carry the service's marker.
+    cloudfall_inspect_elasticsearch_own: >-
+      {{
+        cloudfall_inspect_elasticsearch_answers
+        | map('dict2items')
+        | map('rejectattr', 'value.metadata._reserved', 'defined')
+        | map('list') | list
+      }}
+    cloudfall_inspect_elasticsearch_names: >-
+      {{
+        cloudfall_inspect_elasticsearch_own
+        | map('map', attribute='key') | map('sort') | list
+      }}
+    cloudfall_inspect_elasticsearch_marked: >-
+      {{
+        cloudfall_inspect_elasticsearch_own
+        | map('selectattr', 'value.metadata.cloudfall_managed_by', 'defined')
+        | map('selectattr', 'value.metadata.cloudfall_managed_by', 'equalto',
+              cloudfall_inspect_elasticsearch_service.id)
+        | map('map', attribute='key') | map('sort') | list
+      }}
+    cloudfall_inspect_elasticsearch_evidence: >-
+      {{
+        {
+          'service': cloudfall_inspect_elasticsearch_service.id,
+          'available': cloudfall_inspect_elasticsearch_available,
+          'users': {
+            'managed': cloudfall_inspect_elasticsearch_marked[0],
+            'unmanaged': cloudfall_inspect_elasticsearch_names[0]
+            | reject('in', cloudfall_inspect_elasticsearch_marked[0]) | list,
+          } if cloudfall_inspect_elasticsearch_available else none,
+          'roles': {
+            'managed': cloudfall_inspect_elasticsearch_marked[1],
+            'unmanaged': cloudfall_inspect_elasticsearch_names[1]
+            | reject('in', cloudfall_inspect_elasticsearch_marked[1]) | list,
+          } if cloudfall_inspect_elasticsearch_available else none,
+        }
+      }}

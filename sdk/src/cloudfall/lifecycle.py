@@ -43,6 +43,8 @@ from cloudfall.secrets import (
     SecretsError,
     elasticsearch_account_passwords,
     elasticsearch_services,
+    elasticsearch_user_passwords,
+    elasticsearch_users,
     owned_databases,
     owned_role_passwords,
     staged_password_files,
@@ -68,6 +70,7 @@ if TYPE_CHECKING:
     )
     from cloudfall.secrets import (
         ElasticsearchAccountPassword,
+        ElasticsearchUserPassword,
         OwnedRolePassword,
         SopsSecretProvider,
     )
@@ -1091,6 +1094,7 @@ class ServicesSecrets:
 
     owned_roles: tuple[OwnedRolePassword, ...] = ()
     elasticsearch: tuple[ElasticsearchAccountPassword, ...] = ()
+    elasticsearch_users: tuple[ElasticsearchUserPassword, ...] = ()
 
 
 def services_passwords(
@@ -1098,8 +1102,9 @@ def services_passwords(
 ) -> ServicesSecrets:
     """Decrypt every password ``services.yml`` sets before it may run.
 
-    Those are each owner role's, and the ``cloudfall`` and ``elastic``
-    passwords of each Elasticsearch service. A missing file or key fails
+    Those are each owner role's, the ``cloudfall`` and ``elastic`` passwords
+    of each Elasticsearch service, and each of its declared users'. A
+    missing file or key fails
     here, naming the expected path and key, so the converge stops before any
     playbook starts.
     """
@@ -1111,6 +1116,7 @@ def services_passwords(
             elasticsearch_account_passwords(
                 elasticsearch_services(inventory), provider
             ),
+            elasticsearch_user_passwords(elasticsearch_users(inventory), provider),
         )
     except SecretsError as error:
         raise LifecycleError(ERROR_SERVICES_SECRET, error.message) from error
@@ -1122,7 +1128,9 @@ def run_services_playbook(context: EngineContext, secrets: ServicesSecrets) -> N
     The files live in a private temp dir outside the project, removed when
     the run ends, whether it passed or failed.
     """
-    with staged_password_files(secrets.owned_roles, secrets.elasticsearch) as extra:
+    with staged_password_files(
+        secrets.owned_roles, secrets.elasticsearch, secrets.elasticsearch_users
+    ) as extra:
         run_engine_playbook(context, "services.yml", extra)
 
 

@@ -35,8 +35,9 @@ from cloudfall.domain import (
     ResourceId,
     SecretKeyName,
 )
-from cloudfall.elasticsearch import ElasticsearchAccount
+from cloudfall.elasticsearch import ElasticsearchAccount, ElasticsearchUserName
 from cloudfall.inventory import (
+    ElasticsearchUser,
     OwnedPostgresDatabase,
     PlatformInventory,
     SecretValueReference,
@@ -386,6 +387,96 @@ class ElasticsearchAccountPassword:
         return elasticsearch_bcrypt_hash(self.value)
 
 
+_USER_SALT_CONTEXT = b"cloudfall elasticsearch user salt"
+_BCRYPT_SALT_BYTES = 16
+_TO_BCRYPT_BASE64 = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",
+    "./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+)
+
+
+def elasticsearch_user_bcrypt_hash(
+    password: str,
+    *,
+    service: ResourceId,
+    user: ElasticsearchUserName,
+    salt_key: str,
+) -> str:
+    """Return the ``$2a$10$`` bcrypt hash of a declared user's password.
+
+    The salt is the HMAC-SHA256 of the service and user names keyed by
+    ``salt_key`` (the service's ``cloudfall`` password), so the same password
+    gives the same hash on every converge and the role can tell an unchanged
+    password from a new one without the password: it compares a digest of
+    this hash. The salt reveals nothing of the password, and without the key
+    nobody can recompute it, so a guess still costs a bcrypt round (D-9).
+    """
+    if not salt_key:
+        message = "a declared user's hash needs a non-empty salt key"
+        raise ValueError(message)
+    message_bytes = b"\0".join(
+        (_USER_SALT_CONTEXT, service.value.encode("utf-8"), user.value.encode("utf-8"))
+    )
+    raw = hmac.digest(salt_key.encode("utf-8"), message_bytes, "sha256")
+    encoded = (
+        base64.b64encode(raw[:_BCRYPT_SALT_BYTES])
+        .decode("ascii")
+        .rstrip("=")
+        .translate(_TO_BCRYPT_BASE64)
+    )
+    salt = f"$2a${_BCRYPT_COST:02d}${encoded}".encode("ascii")
+    return bcrypt.hashpw(password.encode("utf-8"), salt).decode("ascii")
+
+
+@dataclass(frozen=True, slots=True)
+class ElasticsearchUserPassword:
+    """The decrypted password of one declared user of a service, in memory only."""
+
+    service: ResourceId
+    user: ElasticsearchUserName
+    reference: SecretValueReference
+    value: str = field(repr=False)
+
+    def bcrypt_hash(self, salt_key: str) -> str:
+        """Return the hash the cluster stores; the only form the server receives."""
+        return elasticsearch_user_bcrypt_hash(
+            self.value, service=self.service, user=self.user, salt_key=salt_key
+        )
+
+
+def elasticsearch_users(
+    inventory: PlatformInventory,
+) -> tuple[tuple[ResourceId, ElasticsearchUser], ...]:
+    """Return every declared user of every Elasticsearch service, with its service."""
+    return tuple(
+        (service.resource_id, user)
+        for service in inventory.services
+        if service.elasticsearch is not None
+        for user in service.elasticsearch.users
+    )
+
+
+def elasticsearch_user_passwords(
+    users: Iterable[tuple[ResourceId, ElasticsearchUser]],
+    provider: SopsSecretProvider,
+) -> tuple[ElasticsearchUserPassword, ...]:
+    """Decrypt each declared user's ``passwordRef``; a missing one names its key."""
+    found: list[ElasticsearchUserPassword] = []
+    for service_id, user in users:
+        try:
+            value = provider.fetch_value(user.password_ref)
+        except SecretsError as error:
+            message = (
+                f"{error.message}; it is the passwordRef of user {user.name.value} "
+                f"of Elasticsearch service {service_id.value}"
+            )
+            raise SecretsError(error.code, message) from error
+        found.append(
+            ElasticsearchUserPassword(service_id, user.name, user.password_ref, value)
+        )
+    return tuple(found)
+
+
 def elasticsearch_services(
     inventory: PlatformInventory,
 ) -> tuple[tuple[ResourceId, ResourceId], ...]:
@@ -433,7 +524,8 @@ ELASTICSEARCH_FILES_VARIABLE = "cloudfall_services_elasticsearch_files"
 """The ``services.yml`` variable mapping an Elasticsearch service to its staged files.
 
 Each service maps ``cloudfallPassword`` (the password the node keeps in its
-0600 file), ``cloudfallHash`` and ``elasticHash`` (bcrypt hashes only).
+0600 file), ``cloudfallHash`` and ``elasticHash`` (bcrypt hashes only), and,
+when it declares users, ``users``: each user's name to its bcrypt hash file.
 """
 
 
@@ -441,13 +533,15 @@ Each service maps ``cloudfallPassword`` (the password the node keeps in its
 def staged_password_files(
     passwords: tuple[OwnedRolePassword, ...],
     accounts: tuple[ElasticsearchAccountPassword, ...] = (),
+    users: tuple[ElasticsearchUserPassword, ...] = (),
 ) -> Iterator[dict[str, object]]:
     """Write each password's server form to a 0600 file, then remove it.
 
     The files sit in a private temp dir. An owner role's file holds its SCRAM
     verifier, never the password (D-9); an Elasticsearch account's files hold
     its bcrypt hash, and for ``cloudfall`` also the password the spec puts in
-    a 0600 file on each node. Yields the extra vars ``services.yml`` reads:
+    a 0600 file on each node; a declared user's file holds its bcrypt hash
+    alone. Yields the extra vars ``services.yml`` reads:
     the controller paths only, so neither crosses a command line, the
     inventory, or the project. Nothing to stage yields no variable, leaving
     the run as it was.
@@ -470,16 +564,22 @@ def staged_password_files(
             extra_vars[PASSWORD_FILES_VARIABLE] = files
         if accounts:
             extra_vars[ELASTICSEARCH_FILES_VARIABLE] = _stage_accounts(
-                root / "elasticsearch", accounts
+                root / "elasticsearch", accounts, users
             )
+        elif users:
+            message = "declared Elasticsearch users need their service's accounts"
+            raise ValueError(message)
         yield extra_vars
 
 
 def _stage_accounts(
-    root: Path, accounts: tuple[ElasticsearchAccountPassword, ...]
-) -> dict[str, dict[str, str]]:
+    root: Path,
+    accounts: tuple[ElasticsearchAccountPassword, ...],
+    users: tuple[ElasticsearchUserPassword, ...],
+) -> dict[str, dict[str, object]]:
     root.mkdir(mode=0o700)
-    staged: dict[str, dict[str, str]] = {}
+    staged: dict[str, dict[str, object]] = {}
+    salt_keys: dict[ResourceId, str] = {}
     for account in accounts:
         service = staged.setdefault(account.service.value, {})
         prefix = f"{account.service.value}-{account.account.value}"
@@ -490,6 +590,22 @@ def _stage_accounts(
             plain = root / f"{prefix}.password"
             _write_private(plain, account.value)
             service["cloudfallPassword"] = str(plain)
+            salt_keys[account.service] = account.value
+    for user in users:
+        salt_key = salt_keys.get(user.service)
+        if salt_key is None:
+            message = (
+                f"user {user.user.value} of Elasticsearch service "
+                f"{user.service.value} has no cloudfall account staged"
+            )
+            raise ValueError(message)
+        hashed = root / f"{user.service.value}-user-{user.user.value}.bcrypt"
+        _write_private(hashed, user.bcrypt_hash(salt_key))
+        files = cast(
+            "dict[str, str]",
+            staged[user.service.value].setdefault("users", {}),
+        )
+        files[user.user.value] = str(hashed)
     return staged
 
 

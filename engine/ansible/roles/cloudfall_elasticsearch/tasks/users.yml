@@ -1,0 +1,225 @@
+---
+# Declared users (S-012 Access), converged once per cluster from its home
+# server. Each user gets a role of its own name limited to its index
+# patterns, and a native user holding that role alone. Both carry Cloudfall's
+# marker, metadata.cloudfall_managed_by: <service id>, and only marked users
+# and roles are ever changed or deleted: one made by hand, a built-in one, or
+# the file realm's cloudfall account is left as it is, whatever its name.
+#
+# The password reaches the cluster only as the bcrypt hash the controller
+# computed (D-9). Its salt is fixed per user, so an unchanged password gives
+# the same hash, and the user's metadata keeps the SHA-256 of that hash: a
+# converge whose hash digest, role and patterns match sends nothing.
+- name: Name the API and the privileges of each access level
+  ansible.builtin.set_fact:
+    cloudfall_elasticsearch_api: >-
+      http://{{ cloudfall_elasticsearch_service.bind.address }}:{{
+        cloudfall_elasticsearch_service.bind.port
+      }}
+    cloudfall_elasticsearch_access_privileges:
+      read:
+        - read
+        - view_index_metadata
+      write:
+        - read
+        - view_index_metadata
+        - write
+        - create_index
+        - manage
+    cloudfall_elasticsearch_declared_users: >-
+      {{
+        cloudfall_elasticsearch_service.elasticsearch.users
+        | map(attribute='name') | list
+      }}
+
+- name: Read the users of the cluster
+  ansible.builtin.uri:
+    url: "{{ cloudfall_elasticsearch_api }}/_security/user"
+    url_username: cloudfall
+    url_password: >-
+      {{ lookup('ansible.builtin.file',
+                cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+    force_basic_auth: true
+    status_code: 200
+  register: cloudfall_elasticsearch_users_current
+  no_log: true
+
+- name: Read the roles of the cluster
+  ansible.builtin.uri:
+    url: "{{ cloudfall_elasticsearch_api }}/_security/role"
+    url_username: cloudfall
+    url_password: >-
+      {{ lookup('ansible.builtin.file',
+                cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+    force_basic_auth: true
+    status_code: 200
+  register: cloudfall_elasticsearch_roles_current
+  no_log: true
+
+- name: Select the users and roles Cloudfall made for the service
+  ansible.builtin.set_fact:
+    cloudfall_elasticsearch_managed_users: >-
+      {{
+        cloudfall_elasticsearch_users_current.json | dict2items
+        | selectattr('value.metadata.cloudfall_managed_by', 'defined')
+        | selectattr('value.metadata.cloudfall_managed_by', 'equalto',
+                     cloudfall_elasticsearch_service.id)
+        | map(attribute='key') | list
+      }}
+    cloudfall_elasticsearch_managed_roles: >-
+      {{
+        cloudfall_elasticsearch_roles_current.json | dict2items
+        | selectattr('value.metadata.cloudfall_managed_by', 'defined')
+        | selectattr('value.metadata.cloudfall_managed_by', 'equalto',
+                     cloudfall_elasticsearch_service.id)
+        | map(attribute='key') | list
+      }}
+
+# A declared name already held by a user or role Cloudfall did not make is
+# not taken over: its owner renames or deletes it first.
+- name: Refuse a declared user whose name a user or role not made by Cloudfall holds
+  ansible.builtin.assert:
+    that:
+      - cloudfall_elasticsearch_foreign_names | length == 0
+    fail_msg: >-
+      Elasticsearch service {{ cloudfall_elasticsearch_service.id }} declares
+      {{ cloudfall_elasticsearch_foreign_names | join(', ') }}, which a user or
+      role not made by Cloudfall already holds; rename the declared user, or
+      delete the existing one by hand
+  vars:
+    cloudfall_elasticsearch_foreign_names: >-
+      {{
+        (
+          (
+            cloudfall_elasticsearch_declared_users
+            | select('in', cloudfall_elasticsearch_users_current.json)
+            | reject('in', cloudfall_elasticsearch_managed_users)
+            | list
+          )
+          + (
+            cloudfall_elasticsearch_declared_users
+            | select('in', cloudfall_elasticsearch_roles_current.json)
+            | reject('in', cloudfall_elasticsearch_managed_roles)
+            | list
+          )
+        )
+        | unique | list
+      }}
+
+- name: Put the role of each declared user
+  ansible.builtin.uri:
+    url: "{{ cloudfall_elasticsearch_api }}/_security/role/{{ item.name }}"
+    method: PUT
+    url_username: cloudfall
+    url_password: >-
+      {{ lookup('ansible.builtin.file',
+                cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+    force_basic_auth: true
+    body_format: json
+    body: "{{ cloudfall_elasticsearch_role_body }}"
+    status_code: 200
+  loop: "{{ cloudfall_elasticsearch_service.elasticsearch.users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    cloudfall_elasticsearch_role_body:
+      cluster: []
+      indices:
+        - names: "{{ item.indexPatterns }}"
+          privileges: "{{ cloudfall_elasticsearch_access_privileges[item.access] }}"
+      metadata:
+        cloudfall_managed_by: "{{ cloudfall_elasticsearch_service.id }}"
+    cloudfall_elasticsearch_role_current: >-
+      {{ cloudfall_elasticsearch_roles_current.json.get(item.name) }}
+  when: >-
+    cloudfall_elasticsearch_role_current is none
+    or cloudfall_elasticsearch_role_current.cluster != []
+    or cloudfall_elasticsearch_role_current.run_as | default([]) != []
+    or cloudfall_elasticsearch_role_current.applications | default([]) != []
+    or cloudfall_elasticsearch_role_current.indices | length != 1
+    or (cloudfall_elasticsearch_role_current.indices[0].names | sort)
+    != (item.indexPatterns | sort)
+    or (cloudfall_elasticsearch_role_current.indices[0].privileges | sort)
+    != (cloudfall_elasticsearch_access_privileges[item.access] | sort)
+    or 'field_security' in cloudfall_elasticsearch_role_current.indices[0]
+    or 'query' in cloudfall_elasticsearch_role_current.indices[0]
+    or cloudfall_elasticsearch_role_current.metadata
+    != cloudfall_elasticsearch_role_body.metadata
+  changed_when: true
+  no_log: true
+
+- name: Put each declared user with its password hash
+  ansible.builtin.uri:
+    url: "{{ cloudfall_elasticsearch_api }}/_security/user/{{ item.name }}"
+    method: PUT
+    url_username: cloudfall
+    url_password: >-
+      {{ lookup('ansible.builtin.file',
+                cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+    force_basic_auth: true
+    body_format: json
+    body:
+      password_hash: "{{ cloudfall_elasticsearch_user_hash }}"
+      roles:
+        - "{{ item.name }}"
+      enabled: true
+      metadata: "{{ cloudfall_elasticsearch_user_metadata }}"
+    status_code: 200
+  loop: "{{ cloudfall_elasticsearch_service.elasticsearch.users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    cloudfall_elasticsearch_user_hash: >-
+      {{ lookup('ansible.builtin.file',
+                cloudfall_elasticsearch_account_files.users[item.name]) }}
+    cloudfall_elasticsearch_user_metadata:
+      cloudfall_managed_by: "{{ cloudfall_elasticsearch_service.id }}"
+      cloudfall_password_digest: "{{ cloudfall_elasticsearch_user_hash | hash('sha256') }}"
+    cloudfall_elasticsearch_user_current: >-
+      {{ cloudfall_elasticsearch_users_current.json.get(item.name) }}
+  when: >-
+    cloudfall_elasticsearch_user_current is none
+    or cloudfall_elasticsearch_user_current.roles != [item.name]
+    or not cloudfall_elasticsearch_user_current.enabled
+    or cloudfall_elasticsearch_user_current.metadata
+    != cloudfall_elasticsearch_user_metadata
+  changed_when: true
+  no_log: true
+
+# Only users and roles that carry the service's marker leave: a user made by
+# hand stays, and audit lists it as unmanaged.
+- name: Delete the users Cloudfall made that are no longer declared
+  ansible.builtin.uri:
+    url: "{{ cloudfall_elasticsearch_api }}/_security/user/{{ item }}"
+    method: DELETE
+    url_username: cloudfall
+    url_password: >-
+      {{ lookup('ansible.builtin.file',
+                cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+    force_basic_auth: true
+    status_code: 200
+  loop: >-
+    {{
+      cloudfall_elasticsearch_managed_users
+      | reject('in', cloudfall_elasticsearch_declared_users) | list
+    }}
+  changed_when: true
+  no_log: true
+
+- name: Delete the roles Cloudfall made that are no longer declared
+  ansible.builtin.uri:
+    url: "{{ cloudfall_elasticsearch_api }}/_security/role/{{ item }}"
+    method: DELETE
+    url_username: cloudfall
+    url_password: >-
+      {{ lookup('ansible.builtin.file',
+                cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+    force_basic_auth: true
+    status_code: 200
+  loop: >-
+    {{
+      cloudfall_elasticsearch_managed_roles
+      | reject('in', cloudfall_elasticsearch_declared_users) | list
+    }}
+  changed_when: true
+  no_log: true
