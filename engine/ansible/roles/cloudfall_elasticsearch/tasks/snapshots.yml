@@ -1,21 +1,9 @@
 ---
 # Snapshots and the restore drill (S-012, #313). The repository is a
 # filesystem repository in backup.directory, which elasticsearch.yml adds to
-# path.repo; the node writes it, the scripts only ask the node over HTTP.
-# S-012 declares an S3 snapshotRepository, but registering it (its keys in
-# the keystore of every node, the repository itself) is not built yet, so
-# the converge stops here rather than leave the service without snapshots.
-- name: Refuse a snapshot repository this release does not converge
-  ansible.builtin.assert:
-    that:
-      - cloudfall_elasticsearch_service.elasticsearch.snapshotRepository is not defined
-    fail_msg: >-
-      Service {{ cloudfall_elasticsearch_service.id }} declares an S3
-      snapshotRepository, which S-012 specifies but Cloudfall does not build
-      yet: S3 repository registration (the keystore keys from credentialsRef
-      and the repository) is not implemented. Remove snapshotRepository to
-      use the filesystem repository in backup.directory
-
+# path.repo; the node writes it, the scripts only ask the node's API, at
+# the role's cloudfall_elasticsearch_api_url. main.yml has already refused
+# an S3 snapshotRepository, before it changed the host.
 - name: Validate the declared snapshot calendar expressions
   ansible.builtin.command:
     argv:
@@ -40,9 +28,9 @@
 - name: Read the registered snapshot repository
   ansible.builtin.uri:
     url: >-
-      http://{{ cloudfall_elasticsearch_service.bind.address }}:{{
-        cloudfall_elasticsearch_service.bind.port
+      {{ cloudfall_elasticsearch_api_url
       }}/_snapshot/{{ cloudfall_elasticsearch_snapshot_repository }}
+    ca_path: "{{ cloudfall_elasticsearch_api_ca or omit }}"
     url_username: cloudfall
     url_password: >-
       {{ lookup('ansible.builtin.file',
@@ -60,9 +48,9 @@
 - name: Register the filesystem snapshot repository
   ansible.builtin.uri:
     url: >-
-      http://{{ cloudfall_elasticsearch_service.bind.address }}:{{
-        cloudfall_elasticsearch_service.bind.port
+      {{ cloudfall_elasticsearch_api_url
       }}/_snapshot/{{ cloudfall_elasticsearch_snapshot_repository }}
+    ca_path: "{{ cloudfall_elasticsearch_api_ca or omit }}"
     method: PUT
     url_username: cloudfall
     url_password: >-

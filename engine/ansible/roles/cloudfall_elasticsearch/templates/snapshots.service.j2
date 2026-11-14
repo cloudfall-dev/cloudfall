@@ -10,7 +10,8 @@ User=elasticsearch
 Group=elasticsearch
 ExecStart=/usr/local/sbin/cloudfall-elasticsearch-{{ cloudfall_elasticsearch_snapshot_action }}
 # The script only reads the cloudfall password and talks to the node on
-# loopback; the node itself writes the repository (D-10).
+# loopback, or with remoteAccess on its listen address; the node itself
+# writes the repository (D-10).
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -31,6 +32,9 @@ MemoryDenyWriteExecute=yes
 CapabilityBoundingSet=
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 IPAddressAllow=localhost
+{% if cloudfall_elasticsearch_service.elasticsearch.remoteAccess is defined %}
+IPAddressAllow={{ cloudfall_elasticsearch_service.elasticsearch.remoteAccess.listenAddress }}
+{% endif %}
 IPAddressDeny=any
 SystemCallArchitectures=native
 SystemCallFilter=@system-service

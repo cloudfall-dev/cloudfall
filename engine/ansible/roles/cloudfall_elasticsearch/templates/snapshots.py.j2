@@ -25,6 +25,7 @@ import base64
 import json
 import re
 import signal
+import ssl
 import sys
 import time
 import urllib.error
@@ -34,7 +35,10 @@ from pathlib import Path
 
 ACTION = {{ cloudfall_elasticsearch_snapshot_action | to_json }}
 SERVICE = {{ cloudfall_elasticsearch_service.id | to_json }}
-URL = {{ ('http://' ~ cloudfall_elasticsearch_service.bind.address ~ ':' ~ cloudfall_elasticsearch_service.bind.port) | to_json }}
+# The node's API as the role reaches it: plain HTTP on loopback, or, with
+# remoteAccess, HTTPS on the listen address verified against the project CA.
+URL = {{ cloudfall_elasticsearch_api_url | to_json }}
+CA_FILE = {{ cloudfall_elasticsearch_api_ca | to_json }}
 PASSWORD_FILE = {{ cloudfall_elasticsearch_password_path | to_json }}
 REPOSITORY = {{ cloudfall_elasticsearch_snapshot_repository | to_json }}
 COUNTS_INDEX = {{ cloudfall_elasticsearch_snapshot_counts_index | to_json }}
@@ -75,6 +79,8 @@ def authorization():
 
 
 AUTHORIZATION = ""
+# HTTPS verifies the node against the project CA only, never the system's.
+TLS = ssl.create_default_context(cafile=CA_FILE) if CA_FILE else None
 
 
 def request(method, path, body=None, *, answers=(), missing=False):
@@ -85,7 +91,9 @@ def request(method, path, body=None, *, answers=(), missing=False):
     if data is not None:
         call.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(call, timeout=WAIT_SECONDS) as response:
+        with urllib.request.urlopen(
+            call, timeout=WAIT_SECONDS, context=TLS
+        ) as response:
             raw = response.read()
     except urllib.error.HTTPError as error:
         if missing and error.code == 404:

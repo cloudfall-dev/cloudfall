@@ -1079,7 +1079,16 @@ def test_the_filesystem_repository_is_in_path_repo_and_registered_once() -> None
     assert registers({"status": 404})
     assert not registers({"status": 200, "json": {"cloudfall": same}})
     assert registers({"status": 200, "json": {"cloudfall": moved}})
-    refuse = _task("Refuse a snapshot repository this release does not converge")
+    main = DataLoader().load_from_file(str(ROLE / "tasks" / "main.yml"))
+    assert isinstance(main, list)
+    names = [task.get("name") for task in main]
+    # Refused before any task changes the host: right after the declaration.
+    refusing = names.index(
+        "Refuse a snapshot repository this release does not converge"
+    )
+    declaration = "Validate Elasticsearch service target and declaration"
+    assert refusing == names.index(declaration) + 1
+    refuse = main[refusing]
     module = cast("dict[str, object]", refuse["ansible.builtin.assert"])
     assert "S3 repository registration" in str(module["fail_msg"])
     assert "not implemented" in str(module["fail_msg"])
@@ -1092,6 +1101,39 @@ def test_the_filesystem_repository_is_in_path_repo_and_registered_once() -> None
             templar.evaluate_conditional(trust_as_template(condition))
             for condition in conditions
         ) is holds
+
+
+def test_with_remote_access_the_snapshots_use_https_and_the_project_ca() -> None:
+    remote = {"listenAddress": "10.0.0.2", "allowedSources": ["10.0.0.0/24"]}
+    opened = _variables(
+        _service(9200, remoteAccess=remote),
+        cloudfall_elasticsearch_snapshot_action="backup",
+    )
+    loopback = _variables(
+        _service(9200), cloudfall_elasticsearch_snapshot_action="backup"
+    )
+    ca = "/etc/elasticsearch/certs/ca.crt"
+
+    script = _render("snapshots.py.j2", opened).splitlines()
+    assert 'URL = "https://10.0.0.2:9200"' in script
+    assert f'CA_FILE = "{ca}"' in script
+    plain = _render("snapshots.py.j2", loopback).splitlines()
+    assert 'URL = "http://127.0.0.1:9200"' in plain
+    assert 'CA_FILE = ""' in plain
+    for name in (
+        "Read the registered snapshot repository",
+        "Register the filesystem snapshot repository",
+    ):
+        uri = cast("dict[str, object]", _task(name)["ansible.builtin.uri"])
+        assert _value(str(uri["url"]), opened) == (
+            "https://10.0.0.2:9200/_snapshot/cloudfall"
+        )
+        assert _value(str(uri["ca_path"]), opened) == ca
+    unit = _render("snapshots.service.j2", opened).splitlines()
+    assert "IPAddressAllow=10.0.0.2" in unit
+    assert "IPAddressAllow=10.0.0.2" not in _render(
+        "snapshots.service.j2", loopback
+    ).splitlines()
 
 
 def test_every_snapshot_task_that_sees_the_password_is_no_log() -> None:
