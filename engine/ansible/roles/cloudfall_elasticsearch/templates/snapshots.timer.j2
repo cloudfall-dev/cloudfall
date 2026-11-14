@@ -1,0 +1,10 @@
+# Managed by Cloudfall. Local changes will be overwritten.
+[Unit]
+Description=Cloudfall Elasticsearch {{ cloudfall_elasticsearch_snapshot_action }} schedule for {{ cloudfall_elasticsearch_service.id }}
+
+[Timer]
+OnCalendar={{ cloudfall_elasticsearch_snapshot_calendar }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

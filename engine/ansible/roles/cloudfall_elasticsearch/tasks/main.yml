@@ -467,3 +467,6 @@
         owner: root
         group: root
         mode: "0600"
+
+- name: Converge the snapshot repository, the snapshot and the restore drill
+  ansible.builtin.import_tasks: snapshots.yml

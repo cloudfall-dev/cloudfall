@@ -314,6 +314,7 @@ def test_s012_3_the_rendered_configuration_is_a_secured_loopback_cluster() -> No
         "network.host": "127.0.0.1",
         "http.port": 9200,
         "discovery.seed_hosts": ["127.0.0.1"],
+        "path.repo": ["/var/backups/cloudfall/search-main"],
         "xpack.security.enabled": True,
         "xpack.security.enrollment.enabled": False,
         "xpack.security.http.ssl.enabled": False,

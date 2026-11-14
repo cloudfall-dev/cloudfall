@@ -1,0 +1,393 @@
+#!/usr/bin/python3
+# Managed by Cloudfall. Local changes will be overwritten.
+"""{{ cloudfall_elasticsearch_snapshot_action }} of Elasticsearch service {{ cloudfall_elasticsearch_service.id }} (S-012).
+
+backup: takes the snapshot cloudfall-<timestamp> of every index and the
+cluster state into the repository the converge registered, waits for it,
+fails unless its state is SUCCESS, then deletes Cloudfall's snapshots of the
+service older than retentionDays, never the newest. The snapshot's metadata
+records the document count of each index the restore drill restores.
+
+restore-check: verifies the repository, restores the recorded indices of the
+newest snapshot under the prefix cloudfall-restore-check- with no replicas,
+waits for them to be green, compares each document count with the recorded
+one, and deletes the restored copies, also when a step failed.
+
+The cloudfall password is read from its file and sent only in the
+Authorization header; nothing here prints it.
+"""
+
+import base64
+import json
+import re
+import signal
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+ACTION = {{ cloudfall_elasticsearch_snapshot_action | to_json }}
+SERVICE = {{ cloudfall_elasticsearch_service.id | to_json }}
+URL = {{ ('http://' ~ cloudfall_elasticsearch_service.bind.address ~ ':' ~ cloudfall_elasticsearch_service.bind.port) | to_json }}
+PASSWORD_FILE = {{ cloudfall_elasticsearch_password_path | to_json }}
+REPOSITORY = {{ cloudfall_elasticsearch_snapshot_repository | to_json }}
+RETENTION_DAYS = {{ cloudfall_elasticsearch_service.backup.retentionDays | int }}
+RESTORE_CHECK_INDICES = {{ cloudfall_elasticsearch_service.elasticsearch.restoreCheckIndices | default([]) | to_json }}
+POLL_SECONDS = {{ cloudfall_elasticsearch_snapshot_poll_seconds | int }}
+WAIT_SECONDS = {{ cloudfall_elasticsearch_snapshot_wait_seconds | int }}
+
+SNAPSHOT_NAME = re.compile(r"cloudfall-[0-9]{8}-[0-9]{6}")
+RESTORE_PREFIX = "cloudfall-restore-check-"
+# Elasticsearch refuses snapshot metadata of 1024 bytes or more.
+METADATA_BYTES = 1000
+BYTE_UNITS = {"b": 0, "kb": 1, "mb": 2, "gb": 3, "tb": 4, "pb": 5}
+
+
+class Failure(Exception):
+    """A step failed; its message says which and why."""
+
+
+def authorization():
+    password = Path(PASSWORD_FILE).read_text(encoding="utf-8").strip()
+    if not password:
+        raise Failure(f"{PASSWORD_FILE} is empty")
+    token = base64.b64encode(f"cloudfall:{password}".encode()).decode()
+    return f"Basic {token}"
+
+
+AUTHORIZATION = ""
+
+
+def request(method, path, body=None, *, answers=(), missing=False):
+    """Send one request; a 404 is None when ``missing``, a code in ``answers`` is read."""
+    data = None if body is None else json.dumps(body).encode()
+    call = urllib.request.Request(URL + path, data=data, method=method)
+    call.add_header("Authorization", AUTHORIZATION)
+    if data is not None:
+        call.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(call, timeout=WAIT_SECONDS) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as error:
+        if missing and error.code == 404:
+            return None
+        raw = error.read()
+        if error.code not in answers:
+            detail = raw.decode("utf-8", "replace")[:600]
+            raise Failure(f"{method} {path} answered {error.code}: {detail}") from None
+    return json.loads(raw) if raw else {}
+
+
+def quoted(*names):
+    return ",".join(urllib.parse.quote(name, safe="") for name in names)
+
+
+def ours(snapshot):
+    metadata = snapshot.get("metadata") or {}
+    return (
+        SNAPSHOT_NAME.fullmatch(snapshot["snapshot"]) is not None
+        and metadata.get("takenBy") == "cloudfall"
+        and metadata.get("service") == SERVICE
+    )
+
+
+def our_snapshots():
+    """Every snapshot of the repository Cloudfall took of this service."""
+    answer = request("GET", f"/_snapshot/{quoted(REPOSITORY)}/cloudfall-*")
+    return [snapshot for snapshot in answer["snapshots"] if ours(snapshot)]
+
+
+def newest(snapshots):
+    done = [snapshot for snapshot in snapshots if snapshot["state"] == "SUCCESS"]
+    return max(done, key=lambda snapshot: snapshot["start_time_in_millis"], default=None)
+
+
+def matches(name):
+    return any(
+        re.fullmatch(".*".join(re.escape(part) for part in pattern.split("*")), name)
+        for pattern in RESTORE_CHECK_INDICES
+    )
+
+
+def drill_counts():
+    """The document count of each index the drill restores, smallest first."""
+    rows = request(
+        "GET",
+        "/_cat/indices?format=json&bytes=b&h=index,pri.store.size"
+        "&expand_wildcards=open",
+    )
+    sized = sorted(
+        (int(row["pri.store.size"] or 0), row["index"])
+        for row in rows
+        if not row["index"].startswith((".", RESTORE_PREFIX))
+        and (not RESTORE_CHECK_INDICES or matches(row["index"]))
+    )
+    names = [name for _, name in sized]
+    if not RESTORE_CHECK_INDICES:
+        names = names[:1]
+    if not names:
+        return {}, []
+    request("POST", f"/{quoted(*names)}/_refresh")
+    counts = {}
+    left_out = []
+    for name in names:
+        count = request("GET", f"/{quoted(name)}/_count")["count"]
+        trial = {**counts, name: count}
+        if len(json.dumps(metadata(trial), separators=(",", ":")).encode()) > METADATA_BYTES:
+            left_out.append(name)
+        else:
+            counts = trial
+    return counts, left_out
+
+
+def metadata(counts):
+    return {"takenBy": "cloudfall", "service": SERVICE, "restoreCheckCounts": counts}
+
+
+def wait_for(name):
+    deadline = time.monotonic() + WAIT_SECONDS
+    while True:
+        answer = request("GET", f"/_snapshot/{quoted(REPOSITORY)}/{quoted(name)}")
+        (snapshot,) = answer["snapshots"]
+        if snapshot["state"] != "IN_PROGRESS":
+            return snapshot
+        if time.monotonic() > deadline:
+            raise Failure(f"snapshot {name} still in progress after {WAIT_SECONDS} s")
+        time.sleep(POLL_SECONDS)
+
+
+def retention(taken):
+    """Delete Cloudfall's snapshots older than retentionDays, never the newest."""
+    snapshots = our_snapshots()
+    kept = {taken, newest(snapshots)["snapshot"]}
+    cutoff = (time.time() - RETENTION_DAYS * 86400) * 1000
+    old = sorted(
+        snapshot["snapshot"]
+        for snapshot in snapshots
+        if snapshot["start_time_in_millis"] < cutoff
+        and snapshot["snapshot"] not in kept
+        and snapshot["state"] != "IN_PROGRESS"
+    )
+    if old:
+        request("DELETE", f"/_snapshot/{quoted(REPOSITORY)}/{quoted(*old)}")
+        print(
+            f"retention {RETENTION_DAYS} days: deleted {len(old)} older "
+            f"snapshots ({', '.join(old)}), kept {len(snapshots) - len(old)}"
+        )
+    else:
+        print(
+            f"retention {RETENTION_DAYS} days: no older snapshot to delete, "
+            f"kept {len(snapshots)}"
+        )
+
+
+def backup():
+    counts, left_out = drill_counts()
+    name = time.strftime("cloudfall-%Y%m%d-%H%M%S", time.gmtime())
+    request(
+        "PUT",
+        f"/_snapshot/{quoted(REPOSITORY)}/{quoted(name)}?wait_for_completion=false",
+        {"include_global_state": True, "metadata": metadata(counts)},
+    )
+    snapshot = wait_for(name)
+    shards = snapshot.get("shards", {})
+    if snapshot["state"] != "SUCCESS":
+        failures = "; ".join(
+            str(failure.get("reason", failure)) for failure in snapshot.get("failures", [])
+        )
+        raise Failure(
+            f"snapshot {name} of {SERVICE} ended {snapshot['state']}, not SUCCESS "
+            f"({shards.get('failed', '?')} of {shards.get('total', '?')} shards failed)"
+            + (f": {failures}" if failures else "")
+        )
+    print(
+        f"snapshot {name} of {SERVICE}: SUCCESS, {len(snapshot['indices'])} "
+        f"indices, {shards.get('successful', 0)} of {shards.get('total', 0)} shards"
+    )
+    if counts:
+        print(
+            "restore check will restore "
+            + ", ".join(f"{index} ({count} documents)" for index, count in counts.items())
+        )
+    else:
+        print("no index to record for the restore check")
+    if left_out:
+        print(
+            f"restore check leaves out {', '.join(left_out)}: the snapshot "
+            f"metadata holds at most {METADATA_BYTES} bytes"
+        )
+    retention(name)
+
+
+def byte_size(value):
+    found = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([kmgtp]?b)", value.strip().lower())
+    if found is None:
+        raise Failure(f"can't read the byte size {value!r}")
+    return float(found[1]) * 1024 ** BYTE_UNITS[found[2]]
+
+
+def required_free(total):
+    """The free bytes the low disk watermark asks a node to keep."""
+    answer = request(
+        "GET", "/_cluster/settings?include_defaults=true&flat_settings=true"
+    )
+
+    def setting(key):
+        for layer in ("transient", "persistent", "defaults"):
+            if key in answer.get(layer, {}):
+                return str(answer[layer][key])
+        return None
+
+    key = "cluster.routing.allocation.disk.watermark.low"
+    low = setting(key)
+    if low is None:
+        raise Failure(f"the cluster settings hold no {key}")
+    ratio = None
+    if low.strip().endswith("%"):
+        ratio = float(low.strip()[:-1]) / 100
+    elif re.fullmatch(r"[0-9]*\.?[0-9]+", low.strip()):
+        ratio = float(low)
+    if ratio is None:
+        return byte_size(low), low
+    needed = total * (1 - ratio)
+    headroom = setting(key + ".max_headroom")
+    if headroom is not None and headroom.strip() != "-1":
+        needed = min(needed, byte_size(headroom))
+    return needed, low
+
+
+def check_disk(size):
+    answer = request("GET", "/_nodes/_local/stats/fs")
+    (node,) = answer["nodes"].values()
+    total = node["fs"]["total"]["total_in_bytes"]
+    available = node["fs"]["total"]["available_in_bytes"]
+    needed, low = required_free(total)
+    if available - size < needed:
+        raise Failure(
+            f"restoring {size} bytes would leave {available - size} bytes free on "
+            f"{node.get('name', 'the node')}, past the low disk watermark ({low}); "
+            "free disk space or narrow restoreCheckIndices"
+        )
+
+
+def delete_copies(copies):
+    """Delete the copies this drill restored; return those still there."""
+    left = []
+    for copy in copies:
+        try:
+            request("DELETE", f"/{quoted(copy)}", missing=True)
+        except Failure as error:
+            print(f"could not delete the restored copy {copy}: {error}", file=sys.stderr)
+            left.append(copy)
+    return left
+
+
+def drill(name, counts):
+    copies = {index: RESTORE_PREFIX + index for index in counts}
+    answer = request(
+        "POST",
+        f"/_snapshot/{quoted(REPOSITORY)}/{quoted(name)}/_restore?wait_for_completion=true",
+        {
+            "indices": ",".join(counts),
+            "include_global_state": False,
+            "include_aliases": False,
+            "rename_pattern": "(.+)",
+            "rename_replacement": RESTORE_PREFIX + "$1",
+            "index_settings": {"index.number_of_replicas": 0},
+        },
+    )
+    shards = answer["snapshot"]["shards"]
+    if shards["failed"]:
+        raise Failure(
+            f"restoring {name} failed {shards['failed']} of {shards['total']} shards"
+        )
+    health = request(
+        "GET",
+        f"/_cluster/health/{quoted(*copies.values())}"
+        "?wait_for_status=green&timeout=60s",
+        answers=(408,),
+    )
+    if health["status"] != "green":
+        raise Failure(f"the restored copies are {health['status']}, not green")
+    mismatched = []
+    for index, copy in copies.items():
+        restored = request("GET", f"/{quoted(copy)}/_count")["count"]
+        if restored != counts[index]:
+            mismatched.append(
+                f"{index}: the snapshot recorded {counts[index]} documents, "
+                f"the restore brought back {restored}"
+            )
+    if mismatched:
+        raise Failure(
+            f"restore check failed for {SERVICE}: snapshot {name}; "
+            + "; ".join(mismatched)
+        )
+
+
+def restore_check():
+    request("POST", f"/_snapshot/{quoted(REPOSITORY)}/_verify")
+    snapshot = newest(our_snapshots())
+    if snapshot is None:
+        raise Failure(
+            f"no snapshot exists in repository {REPOSITORY} that Cloudfall took "
+            f"of {SERVICE} with state SUCCESS; run cloudfall backup run {SERVICE} first"
+        )
+    name = snapshot["snapshot"]
+    counts = snapshot["metadata"].get("restoreCheckCounts") or {}
+    if not counts:
+        raise Failure(f"snapshot {name} records no index to restore")
+    absent = sorted(set(counts) - set(snapshot["indices"]))
+    if absent:
+        raise Failure(f"snapshot {name} does not hold {', '.join(absent)}")
+    details = request(
+        "GET",
+        f"/_snapshot/{quoted(REPOSITORY)}/{quoted(name)}?index_details=true",
+    )["snapshots"][0]["index_details"]
+    check_disk(sum(details[index]["size_in_bytes"] for index in counts))
+    copies = [RESTORE_PREFIX + index for index in counts]
+    taken = [copy for copy in copies if request("HEAD", f"/{quoted(copy)}", missing=True) is not None]
+    if taken:
+        # Never restore over, or delete, an index this drill did not restore.
+        raise Failure(
+            f"{', '.join(taken)} already exist; the drill restores only under "
+            "names nothing holds: delete them once you know they are an earlier "
+            "drill's copies"
+        )
+    try:
+        drill(name, counts)
+    finally:
+        left = delete_copies(copies)
+    if left:
+        raise Failure(f"the restored copies {', '.join(left)} are still there")
+    print(
+        f"restore check passed for {SERVICE}: snapshot {name} restored "
+        + ", ".join(f"{index} ({count} documents)" for index, count in counts.items())
+        + " with equal document counts; the restored copies are deleted"
+    )
+
+
+def stop(signum, frame):
+    raise Failure(f"stopped by signal {signum}")
+
+
+def main():
+    global AUTHORIZATION
+    signal.signal(signal.SIGTERM, stop)
+    try:
+        AUTHORIZATION = authorization()
+        if ACTION == "backup":
+            backup()
+        elif ACTION == "restore-check":
+            restore_check()
+        else:
+            raise Failure(f"unknown action {ACTION!r}")
+    except Failure as error:
+        print(f"{ACTION} of {SERVICE} failed: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
