@@ -286,7 +286,7 @@ def _host_firewall(
     if baseline.firewall is None:
         if remote_access:
             message = (
-                "PostgreSQL remoteAccess needs a firewall on its server: "
+                "remoteAccess needs a firewall on its server: "
                 f"{server.resource_id.value}"
             )
             raise ValueError(message)

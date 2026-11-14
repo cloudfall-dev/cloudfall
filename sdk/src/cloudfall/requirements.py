@@ -23,6 +23,7 @@ from cloudfall.domain import (
     BlockDevicePath,
     ByteSize,
     Hostname,
+    IpAddress,
     NetworkProtocol,
     PackageName,
     PackageVersion,
@@ -247,11 +248,14 @@ class SecretRequirement:
 
 @dataclass(frozen=True, slots=True)
 class CertificateRequirement:
-    """A certificate and key chained to the project CA, with that CA beside it."""
+    """A certificate and key chained to the project CA, with that CA beside it.
+
+    A subject name is a DNS name or an IP address a client reaches it at.
+    """
 
     name: RequirementName
     usage: CertificateUsage
-    subject_names: tuple[Hostname, ...]
+    subject_names: tuple[Hostname | IpAddress, ...]
     certificate_path: AbsolutePath
     key_path: AbsolutePath
     ca_path: AbsolutePath
@@ -383,7 +387,7 @@ def requirements_of(inventory: PlatformInventory) -> tuple[ServerRequirements, .
         if requirement not in held:
             held.append(requirement)
     for service in inventory.services:
-        for server_id, requirement in _elasticsearch_requirements(service):
+        for server_id, requirement in _elasticsearch_requirements(service, servers):
             by_server.setdefault(server_id.value, []).append(requirement)
     return tuple(
         ServerRequirements(
@@ -404,6 +408,11 @@ ELASTICSEARCH_PACKAGE = PackageName("elasticsearch")
 ELASTICSEARCH_PASSWORD_NAME = RequirementName("elasticsearch-cloudfall-password")
 ELASTICSEARCH_PASSWORD_PATH = AbsolutePath("/etc/elasticsearch/cloudfall-password")
 """Where each node keeps the ``cloudfall`` account's password, 0600 elasticsearch."""
+ELASTICSEARCH_CERTIFICATE_NAME = RequirementName("elasticsearch-node")
+# Inside the node's configuration directory, where Elasticsearch reads them.
+ELASTICSEARCH_CERTIFICATE_PATH = AbsolutePath("/etc/elasticsearch/certs/node.crt")
+ELASTICSEARCH_KEY_PATH = AbsolutePath("/etc/elasticsearch/certs/node.key")
+ELASTICSEARCH_CA_PATH = AbsolutePath("/etc/elasticsearch/certs/ca.crt")
 ELASTIC_PASSWORD_NAME = "elasticsearch-elastic-password"  # noqa: S105 - a name
 """How ``secrets generate`` names the ``elastic`` password; no host keeps it."""
 _ELASTICSEARCH_ACCOUNT_KEYS = {
@@ -424,12 +433,14 @@ def elasticsearch_account_reference(
 
 
 def _elasticsearch_requirements(
-    service: ServiceInventory,
+    service: ServiceInventory, servers: dict[str, ServerInventory]
 ) -> list[tuple[ResourceId, Requirement]]:
     """Each node of an Elasticsearch service needs its package and Cloudfall's password.
 
     The password is generated (S-012, What each node needs); the role writes
-    it on the node and only its bcrypt hash into the file realm.
+    it on the node and only its bcrypt hash into the file realm. With
+    ``remoteAccess``, each node also needs its certificate from the project
+    CA, for HTTP over TLS: a client verifies it at the listen address.
     """
     elasticsearch = service.elasticsearch
     if elasticsearch is None:
@@ -448,11 +459,31 @@ def _elasticsearch_requirements(
         ELASTICSEARCH_PACKAGE,
         PackageVersion(elasticsearch.version.value),
     )
-    return [
+    placed = [
         (node, Requirement(owner, spec))
         for node in elasticsearch.nodes
         for spec in (password, package)
     ]
+    remote_access = elasticsearch.remote_access
+    if remote_access is not None:
+        placed.extend(
+            (
+                node,
+                Requirement(
+                    owner,
+                    CertificateRequirement(
+                        ELASTICSEARCH_CERTIFICATE_NAME,
+                        CertificateUsage.SERVER,
+                        (servers[node.value].hostname, remote_access.listen_address),
+                        ELASTICSEARCH_CERTIFICATE_PATH,
+                        ELASTICSEARCH_KEY_PATH,
+                        ELASTICSEARCH_CA_PATH,
+                    ),
+                ),
+            )
+            for node in elasticsearch.nodes
+        )
+    return placed
 
 
 TELEGRAM_TOKEN_NAME = RequirementName("telegram-bot-token")

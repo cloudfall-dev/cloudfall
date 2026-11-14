@@ -52,6 +52,45 @@
   loop: "{{ cloudfall_logging_collector_tls_files.results }}"
   when: item.item == cloudfall_logging_collector_stack.collectors.clientTls.keyPath
 
+# systemd refuses to start Alloy when a credential's file is missing, so the
+# Elasticsearch exporter's files must exist before its configuration lands:
+# services.yml writes them when it converges the node.
+- name: Inspect the files the Elasticsearch exporters read
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: true
+    get_checksum: false
+  loop: >-
+    {{
+      ([cloudfall_logging_collector_elasticsearch_password_path]
+       if cloudfall_logging_collector_elasticsearch | length > 0 else [])
+      + ([cloudfall_logging_collector_elasticsearch_ca_path]
+         if cloudfall_logging_collector_elasticsearch
+         | selectattr('elasticsearch.remoteAccess', 'defined') | list | length > 0
+         else [])
+    }}
+  register: cloudfall_logging_collector_elasticsearch_files
+  vars:
+    cloudfall_logging_collector_elasticsearch: >-
+      {{
+        cloudfall_services | default([])
+        | selectattr('serviceKind', 'equalto', 'elasticsearch')
+        | selectattr('metrics', 'defined')
+        | list
+      }}
+
+- name: Require the Elasticsearch node before its exporter
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+    fail_msg: >-
+      {{ item.item }} is missing: the Elasticsearch exporter reads it, so
+      converge the service (services.yml) before logging deploy
+  loop: "{{ cloudfall_logging_collector_elasticsearch_files.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
 # Alloy runs as alloy:alloy, the account this role creates before the install
 - name: Check the service users reach their files before anything is installed
   ansible.builtin.include_tasks: preflight.yml

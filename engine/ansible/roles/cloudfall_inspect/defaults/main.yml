@@ -11,6 +11,9 @@ cloudfall_inspect_certificates: []
 cloudfall_inspect_volumes: []
 # The AlertChannel the server's baseline names (S-015), or empty
 cloudfall_inspect_alert_channel: ""
+# The configuration file of the Elasticsearch node on the server (S-012), or
+# empty when the server is no node
+cloudfall_inspect_elasticsearch_configuration: ""
 cloudfall_inspect_alerting_root: /etc/cloudfall/alerting
 cloudfall_inspect_alerting_sender: /usr/local/sbin/cloudfall-alert
 cloudfall_inspect_mdadm_conf: /etc/mdadm/mdadm.conf

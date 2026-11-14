@@ -2794,6 +2794,20 @@ class SourceRestrictedFirewallRule:
         }
 
 
+def service_remote_access(
+    service: ServiceInventory, server_id: ResourceId
+) -> PostgresRemoteAccess | None:
+    """Return the ``remoteAccess`` a service opens on ``server_id``, if any.
+
+    PostgreSQL opens it on its server; Elasticsearch on each of its nodes.
+    """
+    if service.postgresql is not None and service.server_id == server_id:
+        return service.postgresql.remote_access
+    if service.elasticsearch is not None and server_id in service.elasticsearch.nodes:
+        return service.elasticsearch.remote_access
+    return None
+
+
 def remote_access_rules_for_server(
     server: ServerInventory, services: tuple[ServiceInventory, ...]
 ) -> tuple[SourceRestrictedFirewallRule, ...]:
@@ -2801,17 +2815,16 @@ def remote_access_rules_for_server(
 
     The rule carries the declared sources, so the firewall opens the service
     port to those networks only; a service without ``remoteAccess`` adds none.
+    An Elasticsearch service opens it on each of its nodes (S-012).
     """
     rules: list[SourceRestrictedFirewallRule] = []
     for service in services:
-        if service.server_id != server.resource_id or service.postgresql is None:
-            continue
-        remote_access = service.postgresql.remote_access
+        remote_access = service_remote_access(service, server.resource_id)
         if remote_access is None:
             continue
         if any(source.is_unrestricted for source in remote_access.allowed_sources):
             message = (
-                "PostgreSQL remoteAccess refuses a source of every address: "
+                "remoteAccess refuses a source of every address: "
                 f"{service.resource_id.value}"
             )
             raise ValueError(message)

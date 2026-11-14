@@ -602,7 +602,6 @@ def test_this_release_refuses_what_later_slices_converge() -> None:
     for service in (
         _service(nodes=["h1", "h2"]),
         _service(users=[user]),
-        _service(remoteAccess={"listenAddress": "10.0.0.2", "allowedSources": []}),
         _service(existingCluster={"seedHosts": ["10.0.0.11:9300"]}),
     ):
         assert not _holds(validate, _variables(cloudfall_elasticsearch_service=service))

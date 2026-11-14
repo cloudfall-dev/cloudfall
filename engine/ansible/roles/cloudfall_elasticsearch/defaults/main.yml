@@ -12,6 +12,32 @@ cloudfall_elasticsearch_log_path: /var/log/elasticsearch
 # The S-011 secret requirement's path (requirements.ELASTICSEARCH_PASSWORD_PATH).
 cloudfall_elasticsearch_password_path: /etc/elasticsearch/cloudfall-password
 cloudfall_elasticsearch_state_directory: /var/lib/cloudfall/elasticsearch
+# The node's certificate from the project CA, its key and that CA: the S-011
+# certificate requirement's paths (requirements.ELASTICSEARCH_CERTIFICATE_PATH,
+# _KEY_PATH, _CA_PATH). HTTP uses them with remoteAccess.
+cloudfall_elasticsearch_certificate_path: /etc/elasticsearch/certs/node.crt
+cloudfall_elasticsearch_key_path: /etc/elasticsearch/certs/node.key
+cloudfall_elasticsearch_ca_path: /etc/elasticsearch/certs/ca.crt
+# Where the role reaches the node's API: plain HTTP on loopback, or, with
+# remoteAccess, HTTPS on the listen address the certificate names, verified
+# against the project CA (plain HTTP is refused there).
+cloudfall_elasticsearch_api_url: >-
+  {%- set remote = cloudfall_elasticsearch_service.elasticsearch.remoteAccess
+                   | default(none) -%}
+  {%- if remote is none -%}
+  http://{{ cloudfall_elasticsearch_service.bind.address }}:{{
+    cloudfall_elasticsearch_service.bind.port }}
+  {%- else -%}
+  https://{{ ('[' ~ remote.listenAddress ~ ']') if ':' in remote.listenAddress
+             else remote.listenAddress }}:{{
+    cloudfall_elasticsearch_service.bind.port }}
+  {%- endif -%}
+cloudfall_elasticsearch_api_ca: >-
+  {{
+    cloudfall_elasticsearch_ca_path
+    if cloudfall_elasticsearch_service.elasticsearch.remoteAccess is defined
+    else ''
+  }}
 # Written once the node served its cluster: from then on the configuration
 # never carries cluster.initial_master_nodes again.
 cloudfall_elasticsearch_formed_marker: >-

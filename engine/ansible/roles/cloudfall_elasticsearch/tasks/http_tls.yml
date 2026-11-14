@@ -1,0 +1,48 @@
+---
+# HTTP over TLS for remoteAccess (S-012, Access): the node's certificate from
+# the project CA, its key and that CA, at the paths of the node's S-011
+# certificate requirement (elasticsearch-node). The certificate provider puts
+# them there; this file only checks them and lets the elasticsearch account
+# read them, so a configuration that names a missing file is never written.
+- name: Look for the node certificate, its key and the project CA
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: true
+    get_checksum: false
+  loop:
+    - "{{ cloudfall_elasticsearch_certificate_path }}"
+    - "{{ cloudfall_elasticsearch_key_path }}"
+    - "{{ cloudfall_elasticsearch_ca_path }}"
+  register: cloudfall_elasticsearch_tls_files
+
+- name: Require the node certificate before HTTP uses TLS
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+    fail_msg: >-
+      {{ item.item }} is missing on {{ cloudfall_server_id }}: remoteAccess of
+      service {{ cloudfall_elasticsearch_service.id }} serves HTTP over TLS with
+      the node's certificate from the project CA (requirement
+      elasticsearch-node); provide it, then converge again
+  loop: "{{ cloudfall_elasticsearch_tls_files.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Let Elasticsearch read the node certificate and the project CA
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: file
+    owner: root
+    group: elasticsearch
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ cloudfall_elasticsearch_certificate_path }}"
+      mode: "0644"
+    - path: "{{ cloudfall_elasticsearch_key_path }}"
+      mode: "0640"
+    - path: "{{ cloudfall_elasticsearch_ca_path }}"
+      mode: "0644"
+  loop_control:
+    label: "{{ item.path }}"
+  notify: Restart Elasticsearch
