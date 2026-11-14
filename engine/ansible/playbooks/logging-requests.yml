@@ -3,9 +3,13 @@
 # key a certificate requirement names, unless it has one, and a signing
 # request from it; the key never leaves the host. The request and the
 # certificate already at the requirement's path, if any, are written to the
-# controller for the project CA to judge and sign.
+# controller for the project CA to judge and sign. The services converge has
+# its Elasticsearch nodes request their transport certificates the same way,
+# naming them in cloudfall_provider_hosts (S-012).
 - name: Make certificate keys and signing requests on logging hosts
-  hosts: cloudfall_logging_backends:cloudfall_logging_collectors
+  hosts: >-
+    {{ cloudfall_provider_hosts
+       | default('cloudfall_logging_backends:cloudfall_logging_collectors') }}
   become: true
   gather_facts: false
   vars:

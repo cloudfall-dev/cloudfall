@@ -33,6 +33,14 @@ from cloudfall.domain import (
     TcpPort,
 )
 from cloudfall.elasticsearch import ElasticsearchAccount
+from cloudfall.elasticsearch_cluster import (
+    DATA_PATH,
+    TRANSPORT_CA_PATH,
+    TRANSPORT_CERTIFICATE_PATH,
+    TRANSPORT_KEY_PATH,
+    TRANSPORT_PORT,
+    cluster_nodes,
+)
 from cloudfall.inventory import SecretValueReference, StoragePool
 
 if TYPE_CHECKING:
@@ -111,6 +119,8 @@ class CertificateUsage(StrEnum):
 
     SERVER = "server"
     CLIENT = "client"
+    SERVER_AND_CLIENT = "server-and-client"
+    """Both sides: a cluster node's transport, which accepts and opens connections."""
 
 
 class RequirementState(StrEnum):
@@ -383,7 +393,7 @@ def requirements_of(inventory: PlatformInventory) -> tuple[ServerRequirements, .
         if requirement not in held:
             held.append(requirement)
     for service in inventory.services:
-        for server_id, requirement in _elasticsearch_requirements(service):
+        for server_id, requirement in _elasticsearch_requirements(service, inventory):
             by_server.setdefault(server_id.value, []).append(requirement)
     return tuple(
         ServerRequirements(
@@ -401,6 +411,10 @@ def requirements_of(inventory: PlatformInventory) -> tuple[ServerRequirements, .
 
 
 ELASTICSEARCH_PACKAGE = PackageName("elasticsearch")
+ELASTICSEARCH_VOLUME_NAME = RequirementName("elasticsearch")
+ELASTICSEARCH_VOLUME_SIZE = ByteSize(10 * GIBIBYTE)
+"""The starting size of each node's data volume; it grows, never shrinks."""
+ELASTICSEARCH_TRANSPORT_NAME = RequirementName("elasticsearch-transport")
 ELASTICSEARCH_PASSWORD_NAME = RequirementName("elasticsearch-cloudfall-password")
 ELASTICSEARCH_PASSWORD_PATH = AbsolutePath("/etc/elasticsearch/cloudfall-password")
 """Where each node keeps the ``cloudfall`` account's password, 0600 elasticsearch."""
@@ -424,17 +438,78 @@ def elasticsearch_account_reference(
 
 
 def _elasticsearch_requirements(
-    service: ServiceInventory,
+    service: ServiceInventory, inventory: PlatformInventory
 ) -> list[tuple[ResourceId, Requirement]]:
-    """Each node of an Elasticsearch service needs its package and Cloudfall's password.
+    """Place what each node of an Elasticsearch service needs (S-012).
 
-    The password is generated (S-012, What each node needs); the role writes
-    it on the node and only its bcrypt hash into the file realm.
+    Every node needs its data volume, its package and Cloudfall's generated
+    password; the role writes the password on the node and only its bcrypt
+    hash into the file realm. A node of a cluster of two or more also needs
+    the transport port, open to the other nodes only, and its transport
+    certificate from the project CA; one node keeps its transport on loopback.
     """
     elasticsearch = service.elasticsearch
     if elasticsearch is None:
         return []
     owner = RequirementOwner(ResourceKind.SERVICE, service.resource_id)
+    servers = {server.resource_id: server for server in inventory.servers}
+    nodes = cluster_nodes(service, inventory.servers)
+    placement = (
+        VolumePlacement.EXPENDABLE if nodes else VolumePlacement.MIRRORED
+    )
+    placed: list[tuple[ResourceId, Requirement]] = []
+    for node_id in elasticsearch.nodes:
+        baseline = inventory.baseline(servers[node_id].baseline_id)
+        placed.append(
+            (
+                node_id,
+                Requirement(
+                    owner,
+                    VolumeRequirement(
+                        ELASTICSEARCH_VOLUME_NAME,
+                        DATA_PATH,
+                        ELASTICSEARCH_VOLUME_SIZE,
+                        placement,
+                        (SystemdUnitName("elasticsearch.service"),),
+                        _pool(baseline, None, ELASTICSEARCH_VOLUME_NAME.value),
+                    ),
+                ),
+            )
+        )
+    for node in nodes:
+        others = tuple(
+            item.server_id for item in nodes if item.server_id != node.server_id
+        )
+        placed.append(
+            (
+                node.server_id,
+                Requirement(
+                    owner,
+                    PortRequirement(
+                        ELASTICSEARCH_TRANSPORT_NAME,
+                        TRANSPORT_PORT,
+                        NetworkProtocol.TCP,
+                        others,
+                    ),
+                ),
+            )
+        )
+        placed.append(
+            (
+                node.server_id,
+                Requirement(
+                    owner,
+                    CertificateRequirement(
+                        ELASTICSEARCH_TRANSPORT_NAME,
+                        CertificateUsage.SERVER_AND_CLIENT,
+                        node.subject_names,
+                        TRANSPORT_CERTIFICATE_PATH,
+                        TRANSPORT_KEY_PATH,
+                        TRANSPORT_CA_PATH,
+                    ),
+                ),
+            )
+        )
     password = SecretRequirement(
         ELASTICSEARCH_PASSWORD_NAME,
         SecretSource.GENERATE,
@@ -448,9 +523,9 @@ def _elasticsearch_requirements(
         ELASTICSEARCH_PACKAGE,
         PackageVersion(elasticsearch.version.value),
     )
-    return [
-        (node, Requirement(owner, spec))
-        for node in elasticsearch.nodes
+    return placed + [
+        (node_id, Requirement(owner, spec))
+        for node_id in elasticsearch.nodes
         for spec in (password, package)
     ]
 

@@ -14,9 +14,10 @@
       {{ ansible_facts['memtotal_mb'] }} MB of {{ cloudfall_server_id }}:
       lower heapMb, or move the service to a server with more memory
 
-# This release converges one node on loopback with Cloudfall's own account;
-# more nodes (#312), declared users (#311), remote access (#314) and joining
-# an existing cluster (#315) come later, so they stop here, not half-done.
+# This release converges the nodes of a cluster Cloudfall forms, HTTP on
+# loopback, with Cloudfall's own account; declared users (#311), remote
+# access (#314) and joining an existing cluster (#315) come later, so they
+# stop here, not half-done.
 - name: Validate Elasticsearch service target and declaration
   ansible.builtin.assert:
     that:
@@ -24,16 +25,15 @@
       - ansible_facts["distribution_major_version"] == "13"
       - ansible_facts["service_mgr"] == "systemd"
       - cloudfall_elasticsearch_service.serviceKind == "elasticsearch"
-      - cloudfall_elasticsearch_service.server == cloudfall_server_id
+      - cloudfall_server_id in cloudfall_elasticsearch_service.elasticsearch.nodes
       - cloudfall_elasticsearch_service.bind.address == "127.0.0.1"
-      - cloudfall_elasticsearch_service.elasticsearch.nodes == [cloudfall_server_id]
       - cloudfall_elasticsearch_service.elasticsearch.users | length == 0
       - cloudfall_elasticsearch_service.elasticsearch.remoteAccess is not defined
       - cloudfall_elasticsearch_service.elasticsearch.existingCluster is not defined
     fail_msg: >-
       Elasticsearch service {{ cloudfall_elasticsearch_service.id }} needs a
-      Debian 13 server with systemd, a loopback bind address, and one node,
-      its own server; this release converges no declared users, remoteAccess
+      Debian 13 server with systemd that is one of its nodes, and a loopback
+      bind address; this release converges no declared users, remoteAccess
       or existingCluster yet
 
 - name: Require the staged account files of the service
@@ -130,6 +130,13 @@
   ansible.builtin.stat:
     path: "{{ cloudfall_elasticsearch_formed_marker }}"
   register: cloudfall_elasticsearch_cluster_formed
+
+- name: Provide the node's data volume
+  ansible.builtin.include_tasks: storage.yml
+
+- name: Open the transport to the other nodes, with its certificate
+  ansible.builtin.include_tasks: transport.yml
+  when: cloudfall_elasticsearch_service.elasticsearch.nodes | length > 1
 
 - name: Install the managed Elasticsearch configuration
   ansible.builtin.template:
@@ -280,6 +287,18 @@
     update_cache: true
   when: cloudfall_elasticsearch_repository is changed
 
+# A new patch or minor of the installed major (S-012-6): the running node
+# leaves its cluster the safe way before APT replaces its files, and the
+# restart the install notifies brings it back.
+- name: Take the node out of its cluster before its package changes
+  ansible.builtin.include_tasks: node-stop.yml
+  when:
+    - cloudfall_elasticsearch_installed.rc == 0
+    - cloudfall_elasticsearch_installed.stdout is match('installed ')
+    - >-
+      cloudfall_elasticsearch_installed.stdout.split(' ', 1) | last
+      != cloudfall_elasticsearch_service.elasticsearch.version
+
 # The package is held, so the pinned install may move it to a new declared
 # version; an unattended upgrade never does.
 - name: Install the declared Elasticsearch version
@@ -294,6 +313,17 @@
   ansible.builtin.dpkg_selections:
     name: elasticsearch
     selection: hold
+
+# The volume role keeps the mount path 0755; the node owns its data,
+# whatever the package's scripts set, so the next converge finds both agree.
+- name: Give the node its data volume
+  ansible.builtin.file:
+    path: "{{ cloudfall_elasticsearch_data_path }}"
+    state: directory
+    owner: elasticsearch
+    group: elasticsearch
+    mode: "0755"
+  when: not ansible_check_mode
 
 - name: Apply the managed configuration
   ansible.builtin.meta: flush_handlers
@@ -393,14 +423,17 @@
   when: not ansible_check_mode
 
 # elastic is a person's break-glass account: set once, as the hash computed
-# on the controller (D-9), and never used by Cloudfall afterwards.
+# on the controller (D-9), and never used by Cloudfall afterwards. It lives
+# in the cluster, so only the home node sets it.
 - name: Set the elastic password once
   vars:
     cloudfall_elasticsearch_elastic_marker: >-
       {{ cloudfall_elasticsearch_state_directory }}/{{
         cloudfall_elasticsearch_service.id
       }}.elastic-password-set
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - cloudfall_elasticsearch_service.server == cloudfall_server_id
   block:
     - name: Read whether the elastic password was set
       ansible.builtin.stat:

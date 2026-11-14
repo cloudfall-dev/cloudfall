@@ -5,6 +5,10 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, cast
 
+from cloudfall.elasticsearch_cluster import (
+    transport_for_server,
+    transport_rules_for_server,
+)
 from cloudfall.inventory import (
     DomainStaticRoute,
     firewall_rules_for_server,
@@ -180,11 +184,25 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
                 for component in inventory.components
                 if server.resource_id in component.server_ids
             ],
+            # An Elasticsearch service lands on each of its nodes (S-012).
             "cloudfall_services": [
                 service.as_dict()
                 for service in inventory.services
                 if service.server_id == server.resource_id
+                or (
+                    service.elasticsearch is not None
+                    and server.resource_id in service.elasticsearch.nodes
+                )
             ],
+            **(
+                {"cloudfall_elasticsearch_transport": transport}
+                if (
+                    transport := transport_for_server(
+                        server, inventory.servers, inventory.services
+                    )
+                )
+                else {}
+            ),
             "cloudfall_domains": [
                 _host_domain(domain, components_by_id)
                 for domain in inventory.domains
@@ -196,8 +214,23 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
                 if domain.origin.server_id == server.resource_id
             ],
         }
-        for server in inventory.servers
+        for server in _rollout_order(inventory)
     }
+
+
+def _rollout_order(inventory: PlatformInventory) -> list[ServerInventory]:
+    """Return the servers in declared order, each cluster's home first (S-012).
+
+    A play over ``cloudfall_servers`` runs its hosts in this order, one at a
+    time: the home node of an Elasticsearch cluster of two or more moves its
+    transport off loopback before a new node looks for it there.
+    """
+    homes = {
+        service.server_id
+        for service in inventory.services
+        if service.elasticsearch is not None and len(service.elasticsearch.nodes) > 1
+    }
+    return sorted(inventory.servers, key=lambda server: server.resource_id not in homes)
 
 
 def _certificates_by_server(
@@ -283,6 +316,9 @@ def _host_firewall(
     inventory: PlatformInventory,
 ) -> dict[str, object]:
     remote_access = remote_access_rules_for_server(server, inventory.services)
+    transport = transport_rules_for_server(
+        server, inventory.servers, inventory.services
+    )
     if baseline.firewall is None:
         if remote_access:
             message = (
@@ -305,6 +341,7 @@ def _host_firewall(
                 *(rule.as_dict() for rule in rules),
                 *(rule.as_dict() for rule in remote_access),
                 *(rule.as_dict() for rule in gateway),
+                *(rule.as_dict() for rule in transport),
             ],
         }
     }

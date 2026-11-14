@@ -43,6 +43,14 @@ _CA_PATH = AbsolutePath("/pki/ca")
 _CA_KEY = SecretKeyName("CA_KEY")
 _CA_CERTIFICATE = SecretKeyName("CA_CERTIFICATE")
 _CLOCK_SKEW = datetime.timedelta(minutes=5)
+_EXTENDED_USAGES: dict[CertificateUsage, tuple[x509.ObjectIdentifier, ...]] = {
+    CertificateUsage.SERVER: (ExtendedKeyUsageOID.SERVER_AUTH,),
+    CertificateUsage.CLIENT: (ExtendedKeyUsageOID.CLIENT_AUTH,),
+    CertificateUsage.SERVER_AND_CLIENT: (
+        ExtendedKeyUsageOID.SERVER_AUTH,
+        ExtendedKeyUsageOID.CLIENT_AUTH,
+    ),
+}
 
 
 class PkiError(RuntimeError):
@@ -103,11 +111,7 @@ class ProjectCa:
             message = f"{requirement.name.value}: only EC and RSA keys are signed"
             raise PkiError(ERROR_CSR_INVALID, message)
         names = [name.value.removesuffix(".") for name in requirement.subject_names]
-        usage = (
-            ExtendedKeyUsageOID.SERVER_AUTH
-            if requirement.usage is CertificateUsage.SERVER
-            else ExtendedKeyUsageOID.CLIENT_AUTH
-        )
+        usages = _EXTENDED_USAGES[requirement.usage]
         certificate = (
             x509.CertificateBuilder()
             .subject_name(
@@ -135,7 +139,7 @@ class ProjectCa:
                 ),
                 critical=True,
             )
-            .add_extension(x509.ExtendedKeyUsage([usage]), critical=False)
+            .add_extension(x509.ExtendedKeyUsage(list(usages)), critical=False)
             .add_extension(
                 x509.SubjectAlternativeName([_general_name(name) for name in names]),
                 critical=False,
@@ -320,8 +324,7 @@ def _usage(certificate: x509.Certificate) -> CertificateUsage | None:
     except x509.ExtensionNotFound:
         return None
     usages = set(extension.value)
-    if usages == {ExtendedKeyUsageOID.SERVER_AUTH}:
-        return CertificateUsage.SERVER
-    if usages == {ExtendedKeyUsageOID.CLIENT_AUTH}:
-        return CertificateUsage.CLIENT
-    return None
+    return next(
+        (usage for usage, oids in _EXTENDED_USAGES.items() if set(oids) == usages),
+        None,
+    )
