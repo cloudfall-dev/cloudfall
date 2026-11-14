@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, cast
 
 from cryptography import x509
 
+from cloudfall.dashboards import bundled_dashboards
 from cloudfall.domain import ResourceKind
 from cloudfall.inventory import (
     firewall_rules_for_server,
@@ -152,9 +153,16 @@ def audit_inventory(
     inventory: PlatformInventory,
     observations: ObservationSet,
     environment_receipts: Mapping[str, str] | None = None,
+    dashboards: Mapping[str, str] | None = None,
 ) -> AuditReport:
-    """Audit every desired server against its validated observation."""
+    """Audit every desired server against its validated observation.
+
+    ``dashboards`` maps each bundled Grafana dashboard's file name to its
+    sha256 (S-016); by default the installed release's own.
+    """
     receipts = environment_receipts if environment_receipts is not None else {}
+    if dashboards is None and inventory.logging_stacks:
+        dashboards = bundled_dashboards()
     placed = requirements_of(inventory)
     certificates = {
         server.server_id.value: tuple(
@@ -205,6 +213,7 @@ def audit_inventory(
             certificates.get(server.resource_id.value, ()),
             volumes.get(server.resource_id.value, ()),
             logging_packages.get(server.resource_id.value, ()),
+            dashboards if server.resource_id in stacks_by_backend else None,
         )
         for server in inventory.servers
     )
@@ -235,6 +244,7 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
     certificates: tuple[CertificateRequirement, ...] = (),
     volumes: tuple[VolumeRequirement, ...] = (),
     logging_packages: tuple[PackageRequirement, ...] = (),
+    dashboards: Mapping[str, str] | None = None,
 ) -> ServerAudit:
     if snapshot is None:
         check = AuditCheck(
@@ -279,6 +289,8 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
     checks.extend(_audit_volumes(volumes, snapshot))
     if baseline.alert_channel is not None:
         checks.append(_audit_alert_channel(baseline.alert_channel, snapshot))
+    if dashboards is not None:
+        checks.append(_audit_dashboards(dashboards, snapshot))
     checks.extend(_audit_service_binds(services, snapshot))
     checks.extend(_audit_alert_rules(alert_rules, snapshot))
     checks.extend(
@@ -625,6 +637,53 @@ def _audit_certificates(
             requirement, evidence.get(requirement.name.value), observed_at
         )
         for requirement in certificates
+    )
+
+
+def _audit_dashboards(
+    bundled: Mapping[str, str], snapshot: ObservedServerSnapshot
+) -> AuditCheck:
+    """Check the backend carries exactly the bundled dashboards (S-016-6)."""
+    desired = dict(sorted(bundled.items()))
+    evidence = snapshot.spec.get("loggingDashboards")
+    if not isinstance(evidence, dict):
+        return AuditCheck(
+            check="logging.dashboards",
+            status=AuditStatus.UNKNOWN,
+            desired=desired,
+            observed=None,
+            message="the observation carries no dashboard evidence",
+        )
+    files = evidence.get("files")
+    observed = {
+        str(item.get("name")): item.get("sha256")
+        for item in (files if isinstance(files, list) else [])
+        if isinstance(item, dict)
+    }
+    missing = sorted(set(desired) - set(observed))
+    extra = sorted(set(observed) - set(desired))
+    changed = sorted(
+        name for name in set(desired) & set(observed) if observed[name] != desired[name]
+    )
+    problems = [
+        f"{label}: {', '.join(names)}"
+        for label, names in (
+            ("missing", missing),
+            ("extra", extra),
+            ("changed", changed),
+        )
+        if names
+    ]
+    return AuditCheck(
+        check="logging.dashboards",
+        status=AuditStatus.DRIFT if problems else AuditStatus.COMPLIANT,
+        desired=desired,
+        observed=dict(sorted(observed.items())),
+        message=(
+            "; ".join(problems)
+            if problems
+            else "the backend carries exactly the bundled dashboards"
+        ),
     )
 
 

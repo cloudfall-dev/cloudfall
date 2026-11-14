@@ -15,3 +15,5 @@ cloudfall_inspect_alerting_root: /etc/cloudfall/alerting
 cloudfall_inspect_alerting_sender: /usr/local/sbin/cloudfall-alert
 cloudfall_inspect_mdadm_conf: /etc/mdadm/mdadm.conf
 cloudfall_inspect_smartd_conf: /etc/smartd.conf
+# The bundled Grafana dashboards on a logging backend (S-016); the backend role writes here
+cloudfall_inspect_grafana_dashboards: /etc/grafana/dashboards/cloudfall
