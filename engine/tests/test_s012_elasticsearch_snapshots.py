@@ -48,6 +48,8 @@ SNAPSHOT_MISSING = "snapshot_missing_exception"
 REPOSITORY_MISSING = "repository_missing_exception"
 COUNTS = "cloudfall-snapshot-counts"
 COPY = "cloudfall-restore-check-"
+# Elasticsearch's default http.max_initial_line_length (4kb).
+MAX_INITIAL_LINE = 4096
 # Live indices: name -> (documents, primary store bytes).
 INDICES = {
     "crm-1": (3, 4_000),
@@ -341,12 +343,16 @@ def _handler(fake: FakeElasticsearch) -> type[BaseHTTPRequestHandler]:
             fake.calls.append((self.command, unquote(split.path), body))
             fake.authorizations.add(self.headers.get("Authorization", ""))
             parts = [unquote(part) for part in split.path.strip("/").split("/")]
-            try:
-                status, answer = 200, _route(
-                    fake, self.command, parts, parse_qs(split.query), body
-                )
-            except _Answer as error:
-                status, answer = error.status, error.body
+            # A node refuses a request line over http.max_initial_line_length.
+            if len(self.requestline.encode()) > MAX_INITIAL_LINE:
+                status, answer = 400, {"error": "too_long_http_line_exception"}
+            else:
+                try:
+                    status, answer = 200, _route(
+                        fake, self.command, parts, parse_qs(split.query), body
+                    )
+                except _Answer as error:
+                    status, answer = error.status, error.body
             raw = b"" if answer is None else json.dumps(answer).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
@@ -851,6 +857,28 @@ def test_s012_11_nothing_is_deleted_inside_the_retention(
     assert done.returncode == 0, done.stderr
     assert state.requests("DELETE") == []
     assert "no older snapshot to delete, kept 2" in done.stdout
+
+
+# proves: S-012-11
+def test_s012_11_many_old_snapshots_are_deleted_within_the_request_line(
+    tmp_path: Path, fake: tuple[FakeElasticsearch, int]
+) -> None:
+    """Hourly snapshots past a long gap: more names than one request line holds."""
+    state, port = fake
+    old = [
+        f"cloudfall-202609{day:02d}-{hour:02d}0000"
+        for day in range(1, 11)
+        for hour in range(24)
+    ]
+    for name in old:
+        state.snapshot(name, age_days=40)
+
+    done = _run(tmp_path, port, "backup")
+
+    assert done.returncode == 0, done.stderr
+    (taken,) = state.names()
+    assert taken not in old
+    assert f"deleted {len(old)} older snapshots" in done.stdout
 
 
 def _backup_playbook(

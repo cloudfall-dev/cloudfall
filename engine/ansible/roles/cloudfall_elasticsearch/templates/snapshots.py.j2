@@ -46,6 +46,8 @@ WAIT_SECONDS = {{ cloudfall_elasticsearch_snapshot_wait_seconds | int }}
 SNAPSHOT_NAME = re.compile(r"cloudfall-[0-9]{8}-[0-9]{6}")
 RESTORE_PREFIX = "cloudfall-restore-check-"
 BYTE_UNITS = {"b": 0, "kb": 1, "mb": 2, "gb": 3, "tb": 4, "pb": 5}
+# The names one request path carries, well inside the node's 4kb request line.
+LINE_ROOM = 3000
 # Only the service and snapshot fields are indexed; the counts stay in the
 # source, so no index name ever becomes a field of the mapping.
 COUNTS_INDEX_BODY = {
@@ -99,6 +101,25 @@ def quoted(*names):
     return ",".join(urllib.parse.quote(name, safe="") for name in names)
 
 
+def batches(names):
+    """Split ``names`` into lists whose quoted form fits one request line.
+
+    A node refuses a request line longer than http.max_initial_line_length
+    (4kb by default), so a request naming many indices or snapshots in its
+    path is sent in parts.
+    """
+    batch, size = [], 0
+    for name in names:
+        width = len(quoted(name)) + 1
+        if batch and size + width > LINE_ROOM:
+            yield batch
+            batch, size = [], 0
+        batch.append(name)
+        size += width
+    if batch:
+        yield batch
+
+
 def ours(snapshot):
     metadata = snapshot.get("metadata") or {}
     return (
@@ -145,7 +166,8 @@ def drill_counts():
         names = [name for _, name in sized[:1]]
     if not names:
         return {}
-    request("POST", f"/{quoted(*names)}/_refresh")
+    for batch in batches(names):
+        request("POST", f"/{quoted(*batch)}/_refresh")
     return {name: request("GET", f"/{quoted(name)}/_count")["count"] for name in names}
 
 
@@ -196,8 +218,9 @@ def retention(taken):
         and snapshot["state"] != "IN_PROGRESS"
     )
     if old:
-        request("DELETE", f"/_snapshot/{quoted(REPOSITORY)}/{quoted(*old)}")
-        forget_counts(old)
+        for batch in batches(old):
+            request("DELETE", f"/_snapshot/{quoted(REPOSITORY)}/{quoted(*batch)}")
+            forget_counts(batch)
         print(
             f"retention {RETENTION_DAYS} days: deleted {len(old)} older "
             f"snapshots ({', '.join(old)}), kept {len(snapshots) - len(old)}"
@@ -353,13 +376,14 @@ def restore(name, indices, restored):
         raise Failure(
             f"restoring {name} failed {shards['failed']} of {shards['total']} shards"
         )
-    health = request(
-        "GET",
-        f"/_cluster/health/{quoted(*copies)}?wait_for_status=green&timeout=60s",
-        answers=(408,),
-    )
-    if health["status"] != "green":
-        raise Failure(f"the restored copies are {health['status']}, not green")
+    for batch in batches(copies):
+        health = request(
+            "GET",
+            f"/_cluster/health/{quoted(*batch)}?wait_for_status=green&timeout=60s",
+            answers=(408,),
+        )
+        if health["status"] != "green":
+            raise Failure(f"the restored copies are {health['status']}, not green")
 
 
 def drill(snapshot, restored):
