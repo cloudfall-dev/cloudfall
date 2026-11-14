@@ -68,14 +68,33 @@ prometheus.remote_write "cloudfall" {
   }
 }
 {% for service in cloudfall_services | default([]) %}
-{% if service.metrics is defined and service.serviceKind in ('postgresql', 'redis') %}
+{% if service.metrics is defined and service.serviceKind in ('postgresql', 'redis', 'elasticsearch') %}
 {% set component = service.id | replace('-', '_') %}
+{% set exporter = {'postgresql': 'postgres', 'redis': 'redis', 'elasticsearch': 'elasticsearch'}[service.serviceKind] %}
 
 {% if service.serviceKind == 'postgresql' %}
 prometheus.exporter.postgres "{{ component }}" {
   data_source_names = [
     "postgresql://{{ cloudfall_logging_collector_metrics_role }}@:{{ service.bind.port }}/postgres?host=/var/run/postgresql&sslmode=disable",
   ]
+}
+{% elif service.serviceKind == 'elasticsearch' %}
+{% set remote = service.elasticsearch.remoteAccess | default(none) %}
+{# The local node, as the cloudfall account; the password and, with
+   remoteAccess, the project CA reach Alloy as systemd credentials (D-10). #}
+prometheus.exporter.elasticsearch "{{ component }}" {
+{% if remote is none %}
+  address = "http://{{ service.bind.address }}:{{ service.bind.port }}"
+{% else %}
+  address = "https://{{ ('[' ~ remote.listenAddress ~ ']') if ':' in remote.listenAddress else remote.listenAddress }}:{{ service.bind.port }}"
+  ca      = "{{ cloudfall_logging_collector_credentials_directory }}/elasticsearch-{{ service.id }}-ca"
+{% endif %}
+  node    = "_local"
+
+  basic_auth {
+    username      = "cloudfall"
+    password_file = "{{ cloudfall_logging_collector_credentials_directory }}/elasticsearch-{{ service.id }}-password"
+  }
 }
 {% else %}
 prometheus.exporter.redis "{{ component }}" {
@@ -93,7 +112,7 @@ prometheus.relabel "{{ component }}" {
 }
 
 prometheus.scrape "{{ component }}" {
-  targets         = prometheus.exporter.{{ 'postgres' if service.serviceKind == 'postgresql' else 'redis' }}.{{ component }}.targets
+  targets         = prometheus.exporter.{{ exporter }}.{{ component }}.targets
   forward_to      = [prometheus.relabel.{{ component }}.receiver]
   scrape_interval = "{{ cloudfall_logging_collector_stack.metrics.collection.intervalSeconds }}s"
 }

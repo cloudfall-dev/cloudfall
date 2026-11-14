@@ -121,3 +121,12 @@ argument_specs:
       cloudfall_logging_collector_metrics_role:
         type: str
         default: alloy
+      cloudfall_logging_collector_credentials_directory:
+        type: path
+        default: /run/credentials/alloy.service
+      cloudfall_logging_collector_elasticsearch_password_path:
+        type: path
+        default: /etc/elasticsearch/cloudfall-password
+      cloudfall_logging_collector_elasticsearch_ca_path:
+        type: path
+        default: /etc/elasticsearch/certs/ca.crt

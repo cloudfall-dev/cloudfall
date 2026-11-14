@@ -33,3 +33,6 @@ argument_specs:
       cloudfall_inspect_alert_channel:
         type: str
         default: ""
+      cloudfall_inspect_elasticsearch_configuration:
+        type: str
+        default: ""

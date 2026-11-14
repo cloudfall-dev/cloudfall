@@ -11,17 +11,21 @@ from enum import StrEnum
 from ipaddress import ip_network
 from typing import TYPE_CHECKING, cast
 
+import yaml
 from cryptography import x509
 
 from cloudfall.dashboards import bundled_dashboards
 from cloudfall.domain import ResourceKind
+from cloudfall.elasticsearch import supported_line
 from cloudfall.inventory import (
     firewall_rules_for_server,
     logging_gateway_rules_for_server,
     remote_access_rules_for_server,
+    service_remote_access,
 )
 from cloudfall.pki import RENEW_BEFORE, certificate_names
 from cloudfall.requirements import (
+    ELASTICSEARCH_PACKAGE,
     CertificateRequirement,
     PackageRequirement,
     VolumeRequirement,
@@ -42,6 +46,7 @@ if TYPE_CHECKING:
         BaselineInventory,
         ComponentInventory,
         ConfigurationFileRequirement,
+        ElasticsearchService,
         FirewallRequirement,
         LoggingStackInventory,
         PlatformInventory,
@@ -60,6 +65,7 @@ _LOOPBACK_ADDRESSES = frozenset({"127.0.0.1", "::1"})
 # An inbound rule without a saddr match accepts every source.
 _ANY_SOURCE = ""
 _MINIMUM_SOCKET_FIELDS = 5
+ELASTICSEARCH_UNIT = "elasticsearch.service"
 
 
 class AuditStatus(StrEnum):
@@ -214,6 +220,12 @@ def audit_inventory(
             volumes.get(server.resource_id.value, ()),
             logging_packages.get(server.resource_id.value, ()),
             dashboards if server.resource_id in stacks_by_backend else None,
+            tuple(
+                service
+                for service in inventory.services
+                if service.elasticsearch is not None
+                and server.resource_id in service.elasticsearch.nodes
+            ),
         )
         for server in inventory.servers
     )
@@ -245,6 +257,7 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
     volumes: tuple[VolumeRequirement, ...] = (),
     logging_packages: tuple[PackageRequirement, ...] = (),
     dashboards: Mapping[str, str] | None = None,
+    elasticsearch_nodes: tuple[ServiceInventory, ...] = (),
 ) -> ServerAudit:
     if snapshot is None:
         check = AuditCheck(
@@ -292,6 +305,8 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
     if dashboards is not None:
         checks.append(_audit_dashboards(dashboards, snapshot))
     checks.extend(_audit_service_binds(services, snapshot))
+    for service in elasticsearch_nodes:
+        checks.extend(_audit_elasticsearch_node(service, snapshot))
     checks.extend(_audit_alert_rules(alert_rules, snapshot))
     checks.extend(
         _audit_component_environment(
@@ -1052,9 +1067,7 @@ def _audit_service_binds(
         declared_present = any(
             listener.address == address for listener in on_port
         )
-        remote_access = (
-            None if service.postgresql is None else service.postgresql.remote_access
-        )
+        remote_access = service_remote_access(service, service.server_id)
         # The remoteAccess listener is narrowed to its declared sources by the
         # firewall, which firewall.allowedInbound verifies; any other
         # non-loopback listener is exposed.
@@ -1102,6 +1115,171 @@ def _audit_service_binds(
             )
         )
     return tuple(checks)
+
+
+def elasticsearch_managed_settings(service: ServiceInventory) -> dict[str, object]:
+    """Return the HTTP and security settings the role writes for a node (S-012).
+
+    ``http.host`` is ``None`` without ``remoteAccess``: the node then listens
+    where ``network.host`` says, and a hand-written ``http.host`` is drift.
+    """
+    elasticsearch = service.elasticsearch
+    if elasticsearch is None:
+        message = f"not an Elasticsearch service: {service.resource_id.value}"
+        raise ValueError(message)
+    remote_access = elasticsearch.remote_access
+    return {
+        "network.host": service.bind.address.value,
+        "http.port": service.bind.port.value,
+        "http.host": (
+            None
+            if remote_access is None
+            else [service.bind.address.value, remote_access.listen_address.value]
+        ),
+        "xpack.security.enabled": True,
+        "xpack.security.http.ssl.enabled": remote_access is not None,
+    }
+
+
+def _audit_elasticsearch_node(
+    service: ServiceInventory, snapshot: ObservedServerSnapshot
+) -> tuple[AuditCheck, ...]:
+    """Check one node of an Elasticsearch service; every check only reads (S-012).
+
+    The installed package against ``version``, the line against its end of
+    maintenance at the observation's time (D-12), the unit, and the managed
+    settings of ``elasticsearch.yml`` as the file holds them: a hand edit
+    is drift before the node restarts with it.
+    """
+    elasticsearch = service.elasticsearch
+    if elasticsearch is None:
+        return ()
+    service_id = service.resource_id.value
+    version = elasticsearch.version.value
+    installed = [
+        _string(entry, "version")
+        for entry in _mapping_sequence(snapshot.spec, "packages")
+        if _string(entry, "name") == ELASTICSEARCH_PACKAGE.value
+    ]
+    unit = _optional_mapping(
+        _mapping(snapshot.spec, "services").get(ELASTICSEARCH_UNIT)
+    )
+    unit_observed = (
+        None
+        if unit is None
+        else {"state": _string(unit, "state"), "status": _string(unit, "status")}
+    )
+    unit_desired = {"state": "running", "status": "enabled"}
+    return (
+        _comparison(
+            f"elasticsearch.version[{service_id}]",
+            {"version": version},
+            {"versions": installed} if installed else None,
+            matches=installed == [version],
+        ),
+        _audit_elasticsearch_line(service, snapshot),
+        _comparison(
+            f"elasticsearch.unit[{service_id}]",
+            {"unit": ELASTICSEARCH_UNIT, **unit_desired},
+            unit_observed,
+            matches=unit_observed == unit_desired,
+        ),
+        _audit_elasticsearch_settings(service, snapshot),
+    )
+
+
+def _audit_elasticsearch_line(
+    service: ServiceInventory, snapshot: ObservedServerSnapshot
+) -> AuditCheck:
+    """Report a node whose line is past its end of maintenance (D-12)."""
+    elasticsearch = cast("ElasticsearchService", service.elasticsearch)
+    check = f"elasticsearch.line[{service.resource_id.value}]"
+    line = supported_line(elasticsearch.version)
+    observed_on = datetime.fromisoformat(_string(snapshot.spec, "observedAt")).date()
+    if line is None:
+        return AuditCheck(
+            check=check,
+            status=AuditStatus.DRIFT,
+            desired={"supported": True},
+            observed={"version": elasticsearch.version.value, "line": None},
+            message=(
+                f"Elasticsearch {elasticsearch.version.value} is of no supported "
+                "line; Cloudfall installs only lines Elastic still maintains"
+            ),
+        )
+    ended = observed_on >= line.end_of_life
+    return AuditCheck(
+        check=check,
+        status=AuditStatus.DRIFT if ended else AuditStatus.COMPLIANT,
+        desired={
+            "line": line.label,
+            "endOfMaintenance": line.end_of_life.isoformat(),
+        },
+        observed={
+            "version": elasticsearch.version.value,
+            "on": observed_on.isoformat(),
+        },
+        message=(
+            f"the node runs an unsupported version: line {line.label} ended its "
+            f"maintenance on {line.end_of_life.isoformat()}"
+            if ended
+            else f"line {line.label} is maintained until "
+            f"{line.end_of_life.isoformat()}"
+        ),
+    )
+
+
+def _audit_elasticsearch_settings(
+    service: ServiceInventory, snapshot: ObservedServerSnapshot
+) -> AuditCheck:
+    desired = elasticsearch_managed_settings(service)
+    check = f"elasticsearch.configuration[{service.resource_id.value}]"
+    evidence = _optional_mapping(snapshot.spec.get("elasticsearch"))
+    if evidence is None:
+        return AuditCheck(
+            check=check,
+            status=AuditStatus.UNKNOWN,
+            desired=desired,
+            observed=None,
+            message="the observation carries no Elasticsearch configuration evidence",
+        )
+    content = evidence.get("configuration")
+    if not isinstance(content, str):
+        return _comparison(check, desired, {"present": False}, matches=False)
+    settings = _elasticsearch_settings(content)
+    if settings is None:
+        return _comparison(
+            check, desired, {"present": True, "readable": False}, matches=False
+        )
+    observed = {key: settings.get(key) for key in desired}
+    return _comparison(check, desired, observed, matches=observed == desired)
+
+
+def _elasticsearch_settings(content: str) -> dict[str, object] | None:
+    """Flatten ``elasticsearch.yml`` into dotted keys, as the node reads it.
+
+    ``network: {host: ...}`` and ``network.host: ...`` are the same setting.
+    ``None`` when the file is not a YAML mapping.
+    """
+    try:
+        document: object = yaml.safe_load(content)
+    except yaml.YAMLError:
+        return None
+    if document is None:
+        return {}
+    if not isinstance(document, dict):
+        return None
+    flat: dict[str, object] = {}
+
+    def walk(prefix: str, value: object) -> None:
+        if isinstance(value, dict) and value:
+            for key, item in value.items():
+                walk(f"{prefix}.{key}" if prefix else str(key), item)
+        else:
+            flat[prefix] = value
+
+    walk("", document)
+    return flat
 
 
 def _parse_listening_sockets(raw: str) -> tuple[_SocketListener, ...]:

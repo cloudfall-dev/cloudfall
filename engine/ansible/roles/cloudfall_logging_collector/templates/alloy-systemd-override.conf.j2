@@ -1,3 +1,13 @@
 [Service]
 ExecStart=
 ExecStart=/usr/bin/alloy run --storage.path=/var/lib/alloy/data /etc/alloy/cloudfall.alloy
+{% for service in cloudfall_services | default([]) %}
+{% if service.metrics is defined and service.serviceKind == 'elasticsearch' %}
+# The Elasticsearch exporter of {{ service.id }} reads the cloudfall password
+# where the node keeps it, as a credential only this unit sees (D-10)
+LoadCredential=elasticsearch-{{ service.id }}-password:{{ cloudfall_logging_collector_elasticsearch_password_path }}
+{% if service.elasticsearch.remoteAccess is defined %}
+LoadCredential=elasticsearch-{{ service.id }}-ca:{{ cloudfall_logging_collector_elasticsearch_ca_path }}
+{% endif %}
+{% endif %}
+{% endfor %}

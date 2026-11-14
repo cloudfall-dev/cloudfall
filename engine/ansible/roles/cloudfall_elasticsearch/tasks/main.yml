@@ -14,9 +14,10 @@
       {{ ansible_facts['memtotal_mb'] }} MB of {{ cloudfall_server_id }}:
       lower heapMb, or move the service to a server with more memory
 
-# This release converges one node on loopback with Cloudfall's own account;
-# more nodes (#312), declared users (#311), remote access (#314) and joining
-# an existing cluster (#315) come later, so they stop here, not half-done.
+# This release converges one node on loopback with Cloudfall's own account,
+# optionally opened by remoteAccess; more nodes (#312), declared users (#311)
+# and joining an existing cluster (#315) come later, so they stop here, not
+# half-done.
 - name: Validate Elasticsearch service target and declaration
   ansible.builtin.assert:
     that:
@@ -28,13 +29,36 @@
       - cloudfall_elasticsearch_service.bind.address == "127.0.0.1"
       - cloudfall_elasticsearch_service.elasticsearch.nodes == [cloudfall_server_id]
       - cloudfall_elasticsearch_service.elasticsearch.users | length == 0
-      - cloudfall_elasticsearch_service.elasticsearch.remoteAccess is not defined
       - cloudfall_elasticsearch_service.elasticsearch.existingCluster is not defined
     fail_msg: >-
       Elasticsearch service {{ cloudfall_elasticsearch_service.id }} needs a
       Debian 13 server with systemd, a loopback bind address, and one node,
-      its own server; this release converges no declared users, remoteAccess
-      or existingCluster yet
+      its own server; this release converges no declared users or
+      existingCluster yet
+
+# The same refusals as validation's and the PostgreSQL role's (S-006): the
+# HTTP port opens on one address, to declared sources only.
+- name: Refuse remote access that is not narrowed to declared sources
+  ansible.builtin.assert:
+    that:
+      - cloudfall_elasticsearch_remote_access.listenAddress | length > 0
+      - >-
+        cloudfall_elasticsearch_remote_access.listenAddress
+        not in ['*', '0.0.0.0', '::', 'localhost', '_local_', '_site_', '_global_']
+      - cloudfall_elasticsearch_remote_access.allowedSources | length > 0
+      - >-
+        cloudfall_elasticsearch_remote_access.allowedSources
+        | select('in', ['0.0.0.0/0', '::/0'])
+        | list
+        | length == 0
+    fail_msg: >-
+      remoteAccess of service {{ cloudfall_elasticsearch_service.id }} needs
+      one listen address that is not a wildcard and at least one source that
+      is not 0.0.0.0/0 or ::/0
+  vars:
+    cloudfall_elasticsearch_remote_access: >-
+      {{ cloudfall_elasticsearch_service.elasticsearch.remoteAccess }}
+  when: cloudfall_elasticsearch_service.elasticsearch.remoteAccess is defined
 
 - name: Require the staged account files of the service
   ansible.builtin.assert:
@@ -121,6 +145,12 @@
   loop:
     - "{{ cloudfall_elasticsearch_configuration_directory }}"
     - "{{ cloudfall_elasticsearch_configuration_directory }}/jvm.options.d"
+
+# With remoteAccess, HTTP uses TLS with the node's certificate: it is checked
+# and made readable before a configuration that names it is written.
+- name: Prepare the node certificate for HTTP over TLS
+  ansible.builtin.include_tasks: http_tls.yml
+  when: cloudfall_elasticsearch_service.elasticsearch.remoteAccess is defined
 
 # The node writes its data path's _state at its first start, before the
 # cluster forms, so _state can't tell a formed cluster from a first start
@@ -308,9 +338,9 @@
 - name: Wait for the node to serve the cluster
   ansible.builtin.uri:
     url: >-
-      http://{{ cloudfall_elasticsearch_service.bind.address }}:{{
-        cloudfall_elasticsearch_service.bind.port
+      {{ cloudfall_elasticsearch_api_url
       }}/_cluster/health?wait_for_status=yellow&timeout=10s
+    ca_path: "{{ cloudfall_elasticsearch_api_ca or omit }}"
     url_username: cloudfall
     url_password: >-
       {{ lookup('ansible.builtin.file',
@@ -368,9 +398,9 @@
 - name: Read whether the node locked its memory
   ansible.builtin.uri:
     url: >-
-      http://{{ cloudfall_elasticsearch_service.bind.address }}:{{
-        cloudfall_elasticsearch_service.bind.port
+      {{ cloudfall_elasticsearch_api_url
       }}/_nodes/_local/process?filter_path=nodes.*.process.mlockall
+    ca_path: "{{ cloudfall_elasticsearch_api_ca or omit }}"
     url_username: cloudfall
     url_password: >-
       {{ lookup('ansible.builtin.file',
@@ -410,9 +440,8 @@
     - name: Set the elastic password from its hash
       ansible.builtin.uri:
         url: >-
-          http://{{ cloudfall_elasticsearch_service.bind.address }}:{{
-            cloudfall_elasticsearch_service.bind.port
-          }}/_security/user/elastic/_password
+          {{ cloudfall_elasticsearch_api_url }}/_security/user/elastic/_password
+        ca_path: "{{ cloudfall_elasticsearch_api_ca or omit }}"
         method: POST
         url_username: cloudfall
         url_password: >-

@@ -636,6 +636,31 @@
           ],
           "additionalProperties": false
         },
+        "elasticsearch": {
+          "description": "The managed configuration file of an Elasticsearch node (S-012), as text; null when it is missing",
+          "type": "object",
+          "properties": {
+            "configurationPath": {
+              "$ref": "common.schema.json#/$defs/absolutePath"
+            },
+            "configuration": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 1048576
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "configurationPath",
+            "configuration"
+          ],
+          "additionalProperties": false
+        },
         "volumes": {
           "type": "object",
           "properties": {

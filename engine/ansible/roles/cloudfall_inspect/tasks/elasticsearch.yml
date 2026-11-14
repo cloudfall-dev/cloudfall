@@ -1,0 +1,33 @@
+---
+# The managed configuration of an Elasticsearch node (S-012), read as text:
+# audit compares the settings Cloudfall manages, so a hand edit is drift even
+# before the node restarts with it. Elasticsearch keeps secure settings in
+# its keystore, never in this file.
+- name: Look for the Elasticsearch configuration
+  ansible.builtin.stat:
+    path: "{{ cloudfall_inspect_elasticsearch_configuration }}"
+    get_checksum: false
+  register: cloudfall_inspect_elasticsearch_file
+
+- name: Read the Elasticsearch configuration
+  ansible.builtin.slurp:
+    src: "{{ cloudfall_inspect_elasticsearch_configuration }}"
+  register: cloudfall_inspect_elasticsearch_content
+  when: cloudfall_inspect_elasticsearch_file.stat.isreg | default(false)
+
+- name: Attach Elasticsearch configuration evidence
+  ansible.builtin.set_fact:
+    cloudfall_inspect_snapshot: >-
+      {{
+        cloudfall_inspect_snapshot | combine(
+          {'spec': {'elasticsearch': {
+            'configurationPath': cloudfall_inspect_elasticsearch_configuration,
+            'configuration': (
+              cloudfall_inspect_elasticsearch_content.content | b64decode
+              if cloudfall_inspect_elasticsearch_file.stat.isreg | default(false)
+              else none
+            ),
+          }}},
+          recursive=true
+        )
+      }}

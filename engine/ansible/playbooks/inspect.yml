@@ -22,3 +22,11 @@
         {{ cloudfall_volumes | default([]) }}
       cloudfall_inspect_alert_channel: >-
         {{ cloudfall_alert_channel | default('') }}
+      cloudfall_inspect_elasticsearch_configuration: >-
+        {{
+          '/etc/elasticsearch/elasticsearch.yml'
+          if cloudfall_services | default([])
+          | selectattr('serviceKind', 'equalto', 'elasticsearch')
+          | list | length > 0
+          else ''
+        }}
