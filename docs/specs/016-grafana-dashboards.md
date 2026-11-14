@@ -100,6 +100,11 @@ the ones the installed Cloudfall release bundles; drift names a missing, extra o
 
 ## Issues
 
+Built in slices by cloudfall-dev/cloudfall#305, #306 and #307 under the feature issue below,
+and proven live on 0.8.0rc34.
+
+- cloudfall-dev/cloudfall#304: S-016-1, S-016-2, S-016-3, S-016-4, S-016-5, S-016-6, S-016-7
+
 ## Verification
 
 Built in #305 (dashboards), #306 (`logging open`) and #307 (`logging.dashboards`), released in
