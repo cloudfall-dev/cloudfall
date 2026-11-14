@@ -4,10 +4,16 @@ ExecStart=/usr/bin/alloy run --storage.path=/var/lib/alloy/data /etc/alloy/cloud
 {% for service in cloudfall_services | default([]) %}
 {% if service.metrics is defined and service.serviceKind == 'elasticsearch' %}
 # The Elasticsearch exporter of {{ service.id }} reads the cloudfall password
-# where the node keeps it, as a credential only this unit sees (D-10)
+# where the node keeps it, as a credential only this unit sees (D-10). Each
+# SetCredential= is the default systemd uses when the file is gone, so a
+# removed node fails only this exporter's scrapes instead of stopping Alloy:
+# a newline, since systemd drops an empty value, read by Alloy as an empty
+# password and an empty CA pool (#326)
 LoadCredential=elasticsearch-{{ service.id }}-password:{{ cloudfall_logging_collector_elasticsearch_password_path }}
+SetCredential=elasticsearch-{{ service.id }}-password:\n
 {% if service.elasticsearch.remoteAccess is defined %}
 LoadCredential=elasticsearch-{{ service.id }}-ca:{{ cloudfall_logging_collector_elasticsearch_ca_path }}
+SetCredential=elasticsearch-{{ service.id }}-ca:\n
 {% endif %}
 {% endif %}
 {% endfor %}
