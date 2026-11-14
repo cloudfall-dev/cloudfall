@@ -1,6 +1,5 @@
 ---
+# A restart is a rolling one (S-012-6): one node at a time, from a healthy
+# cluster, back to the status it had before the next server.
 - name: Restart Elasticsearch
-  ansible.builtin.systemd_service:
-    name: elasticsearch.service
-    state: restarted
-    daemon_reload: true
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/restart.yml"

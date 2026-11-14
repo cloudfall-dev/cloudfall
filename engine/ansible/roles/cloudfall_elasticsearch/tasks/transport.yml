@@ -1,0 +1,106 @@
+---
+# A node of a cluster of two or more (S-012, #312): its transport listens on
+# its address, admitted by its firewall from the other nodes only, and runs
+# TLS both ways with the node's certificate from the project CA.
+- name: Require the node's rendered transport
+  ansible.builtin.assert:
+    that:
+      - cloudfall_elasticsearch_node_transport | length > 0
+      - cloudfall_elasticsearch_node_transport.address is defined
+      - cloudfall_elasticsearch_node_transport.seedHosts | length > 1
+    fail_msg: >-
+      {{ cloudfall_server_id }} is a node of Elasticsearch service
+      {{ cloudfall_elasticsearch_service.id }}, but the inventory carries no
+      transport for it; render the inventory with this Cloudfall release
+
+# A node that has not served its cluster yet bootstraps one only when it is
+# the home and no other node of the cluster is already running: a home
+# moved to a new server must join the running cluster, never start a second.
+- name: Look for a running node before the home bootstraps the cluster
+  ansible.builtin.wait_for:
+    host: "{{ item.rsplit(':', 1)[0] }}"
+    port: "{{ item.rsplit(':', 1)[1] | int }}"
+    timeout: 5
+  loop: >-
+    {{
+      cloudfall_elasticsearch_node_transport.seedHosts
+      | reject('equalto', cloudfall_elasticsearch_node_transport.address ~ ':'
+               ~ cloudfall_elasticsearch_node_transport.port)
+      | list
+    }}
+  register: cloudfall_elasticsearch_peers
+  failed_when: false
+  check_mode: false
+  when:
+    - cloudfall_elasticsearch_service.server == cloudfall_server_id
+    - not cloudfall_elasticsearch_cluster_formed.stat.exists
+
+- name: Refuse to bootstrap a second cluster beside a running node
+  ansible.builtin.assert:
+    that:
+      # wait_for reports the state it waited for only when the port answered
+      - >-
+        cloudfall_elasticsearch_peers.results | default([])
+        | selectattr('state', 'defined') | list | length == 0
+    fail_msg: >-
+      {{ cloudfall_server_id }} has never served cluster
+      {{ cloudfall_elasticsearch_service.elasticsearch.clusterName }}, but
+      another of its nodes answers on its transport: a home that bootstraps
+      now would start a second cluster. Keep the home on the server that
+      formed the cluster, or remove the running nodes first
+
+# The declared firewall carries the transport rule (S-012-5): 9300 admitted
+# from the other nodes' addresses only, before this node joins them.
+- name: Enforce the declared firewall with the transport rule
+  ansible.builtin.include_role:
+    name: cloudfall_firewall
+  vars:
+    cloudfall_firewall_ruleset: "{{ cloudfall_firewall }}"
+  when: cloudfall_firewall is defined
+
+# The signed certificate and the CA come from the services converge only
+# when they are missing or due; the key was made on this host and never
+# left it.
+- name: Install the transport certificate and the project CA
+  ansible.builtin.copy:
+    src: "{{ item.source }}"
+    dest: "{{ item.path }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+    force: "{{ item.force }}"
+  loop: "{{ cloudfall_elasticsearch_delivered_files }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Read the transport certificate, its key and the CA
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ cloudfall_elasticsearch_node_transport.certificatePath }}"
+    - "{{ cloudfall_elasticsearch_node_transport.keyPath }}"
+    - "{{ cloudfall_elasticsearch_node_transport.caPath }}"
+  register: cloudfall_elasticsearch_transport_files
+
+- name: Refuse a node without its transport certificate
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudfall_elasticsearch_transport_files.results
+        | map(attribute='stat.exists') | list == [true, true, true]
+    fail_msg: >-
+      {{ cloudfall_server_id }} has no transport certificate, key or CA at
+      {{ cloudfall_elasticsearch_node_transport.certificatePath | dirname }};
+      converge the service through cloudfall, which has the node make its key
+      and the project CA sign its certificate
+  when: not ansible_check_mode
+
+# Made by root, 0600; the node reads it through its group. Elasticsearch
+# reloads a changed certificate on its own, so nothing here restarts it.
+- name: Let the node read its transport key
+  ansible.builtin.file:
+    path: "{{ cloudfall_elasticsearch_node_transport.keyPath }}"
+    owner: root
+    group: elasticsearch
+    mode: "0640"
+  when: not ansible_check_mode

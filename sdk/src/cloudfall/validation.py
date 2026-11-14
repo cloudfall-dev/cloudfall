@@ -1239,7 +1239,9 @@ ERROR_ELASTICSEARCH_SNAPSHOT_LOCAL = "service_elasticsearch_snapshot_repository_
 ERROR_ELASTICSEARCH_USER_RESERVED = "service_elasticsearch_user_reserved"
 ERROR_ELASTICSEARCH_USER_DUPLICATE = "service_elasticsearch_user_duplicate"
 ERROR_ELASTICSEARCH_PATTERN = "service_elasticsearch_pattern"
+ERROR_ELASTICSEARCH_NODE_UNADDRESSED = "service_elasticsearch_node_unaddressed"
 _ELASTICSEARCH_PATH = ("spec", "elasticsearch")
+_IPV4 = 4
 
 
 def _elasticsearch_refusal(
@@ -1309,6 +1311,7 @@ def _validate_elasticsearch_service(
             "repository would have to be one shared mount on every node, which "
             "Cloudfall does not provide",
         )
+    _validate_elasticsearch_node_hosts(document, nodes, index)
     if "remoteAccess" in elasticsearch:
         remote_access = _required_mapping(
             elasticsearch, "remoteAccess", document.source
@@ -1322,6 +1325,93 @@ def _validate_elasticsearch_service(
                 index,
                 (*_ELASTICSEARCH_PATH, "remoteAccess"),
             )
+
+
+def _validate_elasticsearch_node_hosts(
+    document: ResourceDocument,
+    nodes: tuple[ResourceId, ...],
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> None:
+    """Refuse a node whose server can't hold what the node needs (S-012).
+
+    Each node's data volume goes into the only storage pool of its server's
+    baseline, on two disks for a cluster of one, the only copy of its data.
+    A node of a cluster of two or more binds its transport to an IPv4 the
+    other nodes reach and their firewalls admit.
+    """
+    single = len(nodes) == 1
+    for position, node in enumerate(nodes):
+        server = index[ResourceKey(kind=ResourceKind.SERVER, resource_id=node)]
+        server_spec = _required_mapping(server.content, "spec", server.source)
+        baseline_id = _resource_id_value(server_spec, "baseline", server.source)
+        baseline = _require_resource(
+            index,
+            ResourceKind.BASELINE,
+            baseline_id,
+            server.source,
+            ("spec", "baseline"),
+        )
+        baseline_spec = _required_mapping(baseline.content, "spec", baseline.source)
+        storage = _required_mapping(baseline_spec, "storage", baseline.source)
+        raw_pools = storage.get("pools")
+        pools = [
+            pool
+            for pool in (raw_pools if isinstance(raw_pools, list) else [])
+            if isinstance(pool, dict)
+        ]
+        if len(pools) != 1:
+            code = (
+                "volume_requirement_pool_missing"
+                if not pools
+                else "volume_requirement_pool_ambiguous"
+            )
+            reason = (
+                f"Baseline/{baseline_id} declares no storage pool"
+                if not pools
+                else f"Baseline/{baseline_id} declares {len(pools)} pools, and the "
+                "node's volume goes into the only one"
+            )
+            raise _elasticsearch_refusal(
+                document,
+                code,
+                f"the elasticsearch volume of node Server/{node} has nowhere to "
+                f"live: {reason}",
+                "nodes",
+                position,
+            )
+        if single and "secondary" not in pools[0]:
+            raise _elasticsearch_refusal(
+                document,
+                "volume_requirement_pool_unmirrored",
+                f"the elasticsearch volume of Server/{node} is mirrored, the only "
+                f"copy of a cluster of one, but pool {pools[0].get('id')} of "
+                f"Baseline/{baseline_id} has no secondary physical volume; add "
+                "one, or a second node",
+                "nodes",
+                position,
+            )
+        if not single and not (
+            "network" in server_spec or _is_ipv4(server_spec.get("address"))
+        ):
+            raise _elasticsearch_refusal(
+                document,
+                ERROR_ELASTICSEARCH_NODE_UNADDRESSED,
+                f"node Server/{node} has a name for its address and declares no "
+                "network, so the other nodes have no IPv4 to reach its transport "
+                "at and their firewalls none to admit; give it an IPv4 address "
+                "or a network block",
+                "nodes",
+                position,
+            )
+
+
+def _is_ipv4(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return ip_address(value).version == _IPV4
+    except ValueError:
+        return False
 
 
 def _validate_elasticsearch_version(

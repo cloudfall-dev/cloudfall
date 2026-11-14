@@ -1,0 +1,108 @@
+---
+# Start the node on its new package or configuration (S-012-6, #312). After a
+# node-stop.yml, wait for the node to rejoin with the declared version, let
+# replicas move again, and wait for the cluster to return to the status it
+# had before the next server's turn.
+- name: Start Elasticsearch on its new package or configuration
+  ansible.builtin.systemd_service:
+    name: elasticsearch.service
+    state: restarted
+    daemon_reload: true
+
+- name: Bring the node back into its cluster
+  when:
+    - cloudfall_elasticsearch_rolling | default({}) | length > 0
+    - not ansible_check_mode
+  block:
+    - name: Wait for the node to rejoin its cluster
+      ansible.builtin.uri:
+        url: >-
+          http://{{ cloudfall_elasticsearch_service.bind.address }}:{{
+            cloudfall_elasticsearch_service.bind.port
+          }}/_cluster/health?wait_for_nodes=%3E%3D{{
+            cloudfall_elasticsearch_rolling.nodes
+          }}&timeout=10s
+        url_username: cloudfall
+        url_password: >-
+          {{ lookup('ansible.builtin.file',
+                    cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+        force_basic_auth: true
+        status_code: 200
+      register: cloudfall_elasticsearch_rejoined
+      retries: "{{ cloudfall_elasticsearch_rejoin_retries }}"
+      delay: 10
+      until: cloudfall_elasticsearch_rejoined.status == 200
+      no_log: true
+
+    - name: Read the version the node reports
+      ansible.builtin.uri:
+        url: >-
+          http://{{ cloudfall_elasticsearch_service.bind.address }}:{{
+            cloudfall_elasticsearch_service.bind.port
+          }}/_nodes/_local?filter_path=nodes.*.version
+        url_username: cloudfall
+        url_password: >-
+          {{ lookup('ansible.builtin.file',
+                    cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+        force_basic_auth: true
+        status_code: 200
+      register: cloudfall_elasticsearch_node_version
+      no_log: true
+
+    - name: Refuse a node that came back on another version
+      ansible.builtin.assert:
+        that:
+          - >-
+            cloudfall_elasticsearch_node_version.json.nodes.values()
+            | map(attribute='version') | list
+            == [cloudfall_elasticsearch_service.elasticsearch.version]
+        fail_msg: >-
+          {{ cloudfall_server_id }} rejoined on
+          {{ cloudfall_elasticsearch_node_version.json.nodes.values()
+             | map(attribute='version') | join(', ') }}, not the declared
+          {{ cloudfall_elasticsearch_service.elasticsearch.version }}
+
+    - name: Let replicas move again
+      ansible.builtin.uri:
+        url: >-
+          http://{{ cloudfall_elasticsearch_service.bind.address }}:{{
+            cloudfall_elasticsearch_service.bind.port
+          }}/_cluster/settings
+        method: PUT
+        url_username: cloudfall
+        url_password: >-
+          {{ lookup('ansible.builtin.file',
+                    cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+        force_basic_auth: true
+        body_format: json
+        body:
+          persistent:
+            cluster.routing.allocation.enable: null
+        status_code: 200
+      changed_when: true
+      no_log: true
+      when: cloudfall_elasticsearch_rolling.nodes | int > 1
+
+    - name: Wait for the cluster to return to the status it had
+      ansible.builtin.uri:
+        url: >-
+          http://{{ cloudfall_elasticsearch_service.bind.address }}:{{
+            cloudfall_elasticsearch_service.bind.port
+          }}/_cluster/health?wait_for_status={{
+            cloudfall_elasticsearch_rolling.status
+          }}&timeout=10s
+        url_username: cloudfall
+        url_password: >-
+          {{ lookup('ansible.builtin.file',
+                    cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+        force_basic_auth: true
+        status_code: 200
+      register: cloudfall_elasticsearch_recovered
+      retries: "{{ cloudfall_elasticsearch_rejoin_retries }}"
+      delay: 10
+      until: cloudfall_elasticsearch_recovered.status == 200
+      no_log: true
+
+    - name: Forget the restart this node finished
+      ansible.builtin.set_fact:
+        cloudfall_elasticsearch_rolling: {}

@@ -1,0 +1,102 @@
+---
+# Take a running node out of its cluster for a restart (S-012-6, #312).
+# services.yml converges one server at a time, so one node at a time stops:
+# only from a green cluster (yellow for a cluster of one), with replicas left
+# where they are, and node-start.yml waits for the node to rejoin and the
+# cluster to return to the status it had before the next server starts.
+# A node that is not running, or already stopped by this run, is left alone.
+- name: Read whether Elasticsearch runs
+  ansible.builtin.command:
+    argv: [systemctl, is-active, --quiet, elasticsearch.service]
+  register: cloudfall_elasticsearch_active
+  # rc 3: inactive or failed; rc 4: no such unit yet
+  failed_when: cloudfall_elasticsearch_active.rc not in [0, 3, 4]
+  changed_when: false
+  check_mode: false
+
+- name: Stop the node one at a time, keeping its cluster from going red
+  when:
+    - cloudfall_elasticsearch_active.rc == 0
+    - cloudfall_elasticsearch_rolling | default({}) | length == 0
+    - not ansible_check_mode
+  block:
+    - name: Read the cluster's health before the node stops
+      ansible.builtin.uri:
+        url: >-
+          http://{{ cloudfall_elasticsearch_service.bind.address }}:{{
+            cloudfall_elasticsearch_service.bind.port
+          }}/_cluster/health
+        url_username: cloudfall
+        url_password: >-
+          {{ lookup('ansible.builtin.file',
+                    cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+        force_basic_auth: true
+        status_code: 200
+      register: cloudfall_elasticsearch_health_before
+      no_log: true
+
+    - name: Refuse to stop a node of a cluster that is not healthy
+      ansible.builtin.assert:
+        that:
+          - >-
+            cloudfall_elasticsearch_health_before.json.status == 'green'
+            or (
+              cloudfall_elasticsearch_health_before.json.status == 'yellow'
+              and cloudfall_elasticsearch_health_before.json.number_of_nodes == 1
+            )
+        fail_msg: >-
+          Cluster {{ cloudfall_elasticsearch_service.elasticsearch.clusterName }}
+          is {{ cloudfall_elasticsearch_health_before.json.status }} with
+          {{ cloudfall_elasticsearch_health_before.json.number_of_nodes }}
+          nodes; restarting {{ cloudfall_server_id }} now could make it red.
+          Bring it back to green, then converge again
+
+    # Without this the cluster copies the stopped node's shards elsewhere,
+    # and copies them back once it returns.
+    - name: Keep replicas where they are while the node is away
+      ansible.builtin.uri:
+        url: >-
+          http://{{ cloudfall_elasticsearch_service.bind.address }}:{{
+            cloudfall_elasticsearch_service.bind.port
+          }}/_cluster/settings
+        method: PUT
+        url_username: cloudfall
+        url_password: >-
+          {{ lookup('ansible.builtin.file',
+                    cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+        force_basic_auth: true
+        body_format: json
+        body:
+          persistent:
+            cluster.routing.allocation.enable: primaries
+        status_code: 200
+      changed_when: true
+      no_log: true
+      when: cloudfall_elasticsearch_health_before.json.number_of_nodes > 1
+
+    - name: Flush the node's indices so it recovers from disk
+      ansible.builtin.uri:
+        url: >-
+          http://{{ cloudfall_elasticsearch_service.bind.address }}:{{
+            cloudfall_elasticsearch_service.bind.port
+          }}/_flush
+        method: POST
+        url_username: cloudfall
+        url_password: >-
+          {{ lookup('ansible.builtin.file',
+                    cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+        force_basic_auth: true
+        status_code: 200
+      changed_when: false
+      no_log: true
+
+    - name: Stop Elasticsearch
+      ansible.builtin.systemd_service:
+        name: elasticsearch.service
+        state: stopped
+
+    - name: Remember what the cluster had before the node stopped
+      ansible.builtin.set_fact:
+        cloudfall_elasticsearch_rolling:
+          status: "{{ cloudfall_elasticsearch_health_before.json.status }}"
+          nodes: "{{ cloudfall_elasticsearch_health_before.json.number_of_nodes }}"

@@ -600,7 +600,7 @@ def test_this_release_refuses_what_later_slices_converge() -> None:
 
     assert _holds(validate, _variables())
     for service in (
-        _service(nodes=["h1", "h2"]),
+        _service(nodes=["h2", "h3"]),
         _service(users=[user]),
         _service(remoteAccess={"listenAddress": "10.0.0.2", "allowedSources": []}),
         _service(existingCluster={"seedHosts": ["10.0.0.11:9300"]}),

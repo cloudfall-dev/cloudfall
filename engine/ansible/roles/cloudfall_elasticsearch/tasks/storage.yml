@@ -1,0 +1,39 @@
+---
+# S-012's volume requirement (#312): the node's data lives on its own volume
+# at path.data, mirrored for a cluster of one and expendable for two or
+# more. The services converge decided its action before any host changed
+# (S-014); a run that brings no decision (cloudfall-engine playbook run)
+# needs the volume already mounted.
+- name: Create, grow and mount the node's data volume
+  ansible.builtin.include_role:
+    name: cloudfall_volumes
+  vars:
+    cloudfall_volumes_actions: "{{ cloudfall_elasticsearch_volume_actions }}"
+  when: cloudfall_elasticsearch_volume_actions | length > 0
+
+- name: Read what is mounted at the data path
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --noheadings
+      - --output
+      - SOURCE
+      - --mountpoint
+      - "{{ cloudfall_elasticsearch_data_path }}"
+  register: cloudfall_elasticsearch_data_mount
+  # rc 1: nothing is mounted there
+  failed_when: cloudfall_elasticsearch_data_mount.rc not in [0, 1]
+  changed_when: false
+  check_mode: false
+
+# A dry run creates no volume, so only a real run can tell.
+- name: Refuse a node whose data path is not its volume
+  ansible.builtin.assert:
+    that:
+      - cloudfall_elasticsearch_data_mount.rc == 0
+    fail_msg: >-
+      {{ cloudfall_elasticsearch_data_path }} on {{ cloudfall_server_id }} is
+      not a mounted volume; converge the service through cloudfall
+      (converge_services, cloudfall migrate or operator approve), which
+      creates the node's data volume in its baseline's storage pool
+  when: not ansible_check_mode

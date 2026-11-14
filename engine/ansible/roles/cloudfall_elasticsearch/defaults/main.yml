@@ -18,3 +18,20 @@ cloudfall_elasticsearch_formed_marker: >-
   {{ cloudfall_elasticsearch_state_directory }}/{{
     cloudfall_elasticsearch_service.id
   }}.cluster-formed
+# A node of a cluster of two or more (#312): its transport address, every
+# node's seed host and its certificate paths, as the inventory renders them;
+# empty for a cluster of one, whose transport stays on loopback.
+cloudfall_elasticsearch_node_transport: >-
+  {{ (cloudfall_elasticsearch_transport | default({}))
+     .get(cloudfall_elasticsearch_service.id, {}) }}
+# What the services converge decided and staged for this node: its data
+# volume's action, and the transport certificate and CA it just signed.
+cloudfall_elasticsearch_volume_actions: >-
+  {{ (cloudfall_volume_actions | default({})).get(cloudfall_server_id, [])
+     | selectattr('name', 'equalto', 'elasticsearch') | list }}
+cloudfall_elasticsearch_delivered_files: >-
+  {{ (cloudfall_services_delivered_files | default({}))
+     .get(cloudfall_server_id, []) }}
+# How long a restarted node may take to rejoin, and its cluster to return to
+# the status it had (10 s apart).
+cloudfall_elasticsearch_rejoin_retries: 60
