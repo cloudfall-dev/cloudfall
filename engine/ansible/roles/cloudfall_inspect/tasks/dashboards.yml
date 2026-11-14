@@ -1,0 +1,54 @@
+---
+# The bundled Grafana dashboards on a logging backend (S-016): each file's name and sha256
+- name: Look for the bundled dashboards directory
+  ansible.builtin.stat:
+    path: "{{ cloudfall_inspect_grafana_dashboards }}"
+    get_checksum: false
+  register: cloudfall_inspect_dashboards_directory
+
+- name: List the bundled dashboards
+  ansible.builtin.find:
+    paths: "{{ cloudfall_inspect_grafana_dashboards }}"
+    patterns: "*"
+    file_type: any
+  register: cloudfall_inspect_dashboard_files
+  when: cloudfall_inspect_dashboards_directory.stat.isdir | default(false)
+
+- name: Hash the bundled dashboards
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  loop: "{{ cloudfall_inspect_dashboard_files.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  register: cloudfall_inspect_dashboard_hashes
+
+- name: Start the dashboard evidence
+  ansible.builtin.set_fact:
+    cloudfall_inspect_dashboard_evidence: []
+
+- name: Record each dashboard's name and sha256
+  ansible.builtin.set_fact:
+    cloudfall_inspect_dashboard_evidence: >-
+      {{
+        cloudfall_inspect_dashboard_evidence
+        + [{'name': item.stat.path | basename, 'sha256': item.stat.checksum | default(none)}]
+      }}
+  loop: "{{ cloudfall_inspect_dashboard_hashes.results | default([]) }}"
+  loop_control:
+    label: "{{ item.stat.path | basename }}"
+
+- name: Attach dashboard evidence
+  ansible.builtin.set_fact:
+    cloudfall_inspect_snapshot: >-
+      {{
+        cloudfall_inspect_snapshot | combine(
+          {'spec': {'loggingDashboards': {
+            'directory': cloudfall_inspect_grafana_dashboards,
+            'present': cloudfall_inspect_dashboards_directory.stat.isdir | default(false),
+            'files': cloudfall_inspect_dashboard_evidence | sort(attribute='name'),
+          }}},
+          recursive=true
+        )
+      }}

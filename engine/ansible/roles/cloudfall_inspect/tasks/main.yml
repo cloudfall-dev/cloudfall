@@ -637,6 +637,10 @@
   ansible.builtin.include_tasks: alert_channel.yml
   when: cloudfall_inspect_alert_channel | length > 0
 
+- name: Collect bundled dashboard evidence
+  ansible.builtin.include_tasks: dashboards.yml
+  when: cloudfall_inspect_logging_backend | length > 0
+
 - name: Create controller observation directory
   ansible.builtin.file:
     path: "{{ cloudfall_inspect_output_directory }}"

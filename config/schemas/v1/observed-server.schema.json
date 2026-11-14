@@ -588,6 +588,54 @@
           ],
           "additionalProperties": false
         },
+        "loggingDashboards": {
+          "type": "object",
+          "properties": {
+            "directory": {
+              "$ref": "common.schema.json#/$defs/absolutePath"
+            },
+            "present": {
+              "type": "boolean"
+            },
+            "files": {
+              "type": "array",
+              "maxItems": 256,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "pattern": "^[^/]+$"
+                  },
+                  "sha256": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "name",
+                  "sha256"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "directory",
+            "present",
+            "files"
+          ],
+          "additionalProperties": false
+        },
         "volumes": {
           "type": "object",
           "properties": {

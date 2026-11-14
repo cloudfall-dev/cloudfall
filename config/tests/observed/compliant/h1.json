@@ -177,6 +177,28 @@
         "/var/lib/loki-cloudfall": "/dev/mapper/vg_data-lv_loki",
         "/var/lib/prometheus-cloudfall": "/dev/mapper/vg_data-lv_prometheus"
       }
+    },
+    "loggingDashboards": {
+      "directory": "/etc/grafana/dashboards/cloudfall",
+      "present": true,
+      "files": [
+        {
+          "name": "cloudfall-fleet.json",
+          "sha256": "ca409bd55b8861d693c0a19cb3ee609d65ffb00795b84a194ea6dba5aee83853"
+        },
+        {
+          "name": "cloudfall-logs.json",
+          "sha256": "8a9108659ac0d8a376bf51953558652c7bf1de213b8120d438ceb985513bdb67"
+        },
+        {
+          "name": "cloudfall-server.json",
+          "sha256": "3000d9511798430777a3b66fdc827d9ce50d52b5f8f7a98da29bb614b6d29287"
+        },
+        {
+          "name": "cloudfall-services.json",
+          "sha256": "377f68e3a01318160fd346755f3b5e8ec2d7bef0161ff4d46b0461a1ba81cb8a"
+        }
+      ]
     }
   }
 }
