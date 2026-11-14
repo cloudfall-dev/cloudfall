@@ -93,3 +93,15 @@
       loop_control:
         loop_var: cloudfall_service_item
         label: "{{ cloudfall_service_item.id }}"
+
+    # #329: an exporter follows its node in the same run (remoteAccess turns
+    # an Elasticsearch scrape from plain HTTP to HTTPS and back), on a
+    # collector where logging deploy already set Alloy up; any other host is
+    # left alone
+    - name: Follow the converged services with the logging collector
+      ansible.builtin.include_role:
+        name: cloudfall_logging_collector
+        tasks_from: exporters
+      vars:
+        cloudfall_logging_collector_stack: "{{ cloudfall_logging_collector }}"
+      when: cloudfall_logging_collector is defined

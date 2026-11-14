@@ -2,7 +2,7 @@
 argument_specs:
   main:
     short_description: Install Alloy without removing legacy log agents
-    options:
+    options: &cloudfall_logging_collector_options
       cloudfall_logging_collector_stack:
         type: dict
         required: true
@@ -130,3 +130,7 @@ argument_specs:
       cloudfall_logging_collector_elasticsearch_ca_path:
         type: path
         default: /etc/elasticsearch/certs/ca.crt
+  # services.yml re-renders the exporters of a converged host (#329)
+  exporters:
+    short_description: Re-render the Alloy files where logging deploy set Alloy up
+    options: *cloudfall_logging_collector_options

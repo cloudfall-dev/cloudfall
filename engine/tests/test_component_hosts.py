@@ -200,6 +200,10 @@ def _roles(tmp_path: Path) -> Path:
         role_tasks = roles / role / "tasks"
         role_tasks.mkdir(parents=True)
         (role_tasks / "main.yml").write_text(STUB_TASKS, encoding="utf-8")
+    # services.yml re-renders the exporters through this entry point (#329)
+    (roles / "cloudfall_logging_collector" / "tasks" / "exporters.yml").write_text(
+        STUB_TASKS, encoding="utf-8"
+    )
     return roles
 
 
