@@ -641,6 +641,24 @@
   ansible.builtin.include_tasks: dashboards.yml
   when: cloudfall_inspect_logging_backend | length > 0
 
+- name: Collect Elasticsearch user evidence
+  ansible.builtin.include_tasks: elasticsearch_users.yml
+  loop: "{{ cloudfall_inspect_elasticsearch_services }}"
+  loop_control:
+    loop_var: cloudfall_inspect_elasticsearch_service
+    label: "{{ cloudfall_inspect_elasticsearch_service.id }}"
+
+- name: Attach Elasticsearch user evidence
+  ansible.builtin.set_fact:
+    cloudfall_inspect_snapshot: >-
+      {{
+        cloudfall_inspect_snapshot | combine(
+          {'spec': {'elasticsearchUsers': cloudfall_inspect_elasticsearch_users}},
+          recursive=true
+        )
+      }}
+  when: cloudfall_inspect_elasticsearch_services | length > 0
+
 - name: Create controller observation directory
   ansible.builtin.file:
     path: "{{ cloudfall_inspect_output_directory }}"

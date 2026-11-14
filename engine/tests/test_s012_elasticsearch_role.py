@@ -599,9 +599,11 @@ def test_this_release_refuses_what_later_slices_converge() -> None:
     }
 
     assert _holds(validate, _variables())
+    # Declared users converge since #311.
+    with_users = _variables(cloudfall_elasticsearch_service=_service(users=[user]))
+    assert _holds(validate, with_users)
     for service in (
         _service(nodes=["h1", "h2"]),
-        _service(users=[user]),
         _service(remoteAccess={"listenAddress": "10.0.0.2", "allowedSources": []}),
         _service(existingCluster={"seedHosts": ["10.0.0.11:9300"]}),
     ):

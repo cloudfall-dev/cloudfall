@@ -7,7 +7,8 @@ argument_specs:
         type: dict
         description: >-
           Controller paths of the staged cloudfallPassword, cloudfallHash and
-          elasticHash files; cloudfall passes them, never the values
+          elasticHash files, and under users each declared user's bcrypt hash
+          file; cloudfall passes them, never the values
       cloudfall_elasticsearch_service:
         type: dict
         required: true

@@ -14,8 +14,8 @@
       {{ ansible_facts['memtotal_mb'] }} MB of {{ cloudfall_server_id }}:
       lower heapMb, or move the service to a server with more memory
 
-# This release converges one node on loopback with Cloudfall's own account;
-# more nodes (#312), declared users (#311), remote access (#314) and joining
+# This release converges one node on loopback with Cloudfall's own account
+# and the declared users; more nodes (#312), remote access (#314) and joining
 # an existing cluster (#315) come later, so they stop here, not half-done.
 - name: Validate Elasticsearch service target and declaration
   ansible.builtin.assert:
@@ -27,14 +27,13 @@
       - cloudfall_elasticsearch_service.server == cloudfall_server_id
       - cloudfall_elasticsearch_service.bind.address == "127.0.0.1"
       - cloudfall_elasticsearch_service.elasticsearch.nodes == [cloudfall_server_id]
-      - cloudfall_elasticsearch_service.elasticsearch.users | length == 0
       - cloudfall_elasticsearch_service.elasticsearch.remoteAccess is not defined
       - cloudfall_elasticsearch_service.elasticsearch.existingCluster is not defined
     fail_msg: >-
       Elasticsearch service {{ cloudfall_elasticsearch_service.id }} needs a
       Debian 13 server with systemd, a loopback bind address, and one node,
-      its own server; this release converges no declared users, remoteAccess
-      or existingCluster yet
+      its own server; this release converges no remoteAccess or
+      existingCluster yet
 
 - name: Require the staged account files of the service
   ansible.builtin.assert:
@@ -42,9 +41,15 @@
       - "'cloudfallPassword' in cloudfall_elasticsearch_account_files"
       - "'cloudfallHash' in cloudfall_elasticsearch_account_files"
       - "'elasticHash' in cloudfall_elasticsearch_account_files"
+      - >-
+        cloudfall_elasticsearch_service.elasticsearch.users
+        | map(attribute='name')
+        | reject('in', cloudfall_elasticsearch_account_files['users'] | default({}))
+        | list | length == 0
     fail_msg: >-
       The cloudfall and elastic passwords of service
-      {{ cloudfall_elasticsearch_service.id }} are not staged; run
+      {{ cloudfall_elasticsearch_service.id }}, or the hash of a declared
+      user's, are not staged; run
       services.yml through cloudfall (converge_services, cloudfall migrate,
       operator approve, or cloudfall-engine playbook run services.yml), which
       reads them from --secrets-dir after `cloudfall secrets generate`
@@ -438,3 +443,10 @@
         owner: root
         group: root
         mode: "0600"
+
+# Users and roles are the cluster's, so its home server converges them once.
+- name: Converge the declared users and their roles
+  ansible.builtin.include_tasks: users.yml
+  when:
+    - not ansible_check_mode
+    - cloudfall_elasticsearch_service.server == cloudfall_server_id

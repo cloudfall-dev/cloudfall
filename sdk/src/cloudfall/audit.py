@@ -292,6 +292,7 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
     if dashboards is not None:
         checks.append(_audit_dashboards(dashboards, snapshot))
     checks.extend(_audit_service_binds(services, snapshot))
+    checks.extend(_audit_elasticsearch_users(services, snapshot))
     checks.extend(_audit_alert_rules(alert_rules, snapshot))
     checks.extend(
         _audit_component_environment(
@@ -1102,6 +1103,86 @@ def _audit_service_binds(
             )
         )
     return tuple(checks)
+
+
+def _audit_elasticsearch_users(
+    services: tuple[ServiceInventory, ...],
+    snapshot: ObservedServerSnapshot,
+) -> tuple[AuditCheck, ...]:
+    """Compare each home cluster's managed users and roles with the declared ones.
+
+    A user or role without Cloudfall's marker was not made by it: the
+    converge leaves it alone, and the check lists it as unmanaged without
+    counting it as drift (S-012). A declared user or role that is missing, or
+    a marked one that is no longer declared, is drift.
+    """
+    evidence = {
+        _string(entry, "service"): entry
+        for entry in _mapping_sequence(snapshot.spec, "elasticsearchUsers")
+    }
+    checks: list[AuditCheck] = []
+    for service in services:
+        if service.elasticsearch is None:
+            continue
+        name = f"elasticsearch.users[{service.resource_id.value}]"
+        declared = sorted(user.name.value for user in service.elasticsearch.users)
+        desired = {"users": declared, "roles": declared}
+        entry = evidence.get(service.resource_id.value)
+        if entry is None or entry.get("available") is not True:
+            checks.append(
+                AuditCheck(
+                    check=name,
+                    status=AuditStatus.UNKNOWN,
+                    desired=desired,
+                    observed=None,
+                    message=(
+                        "the cluster's users and roles were not read; inspect "
+                        "again once the node answers as the cloudfall account"
+                    ),
+                )
+            )
+            continue
+        users = _mapping(entry, "users")
+        roles = _mapping(entry, "roles")
+        observed = {
+            "users": sorted(_strings(users, "managed")),
+            "roles": sorted(_strings(roles, "managed")),
+            "unmanagedUsers": sorted(_strings(users, "unmanaged")),
+            "unmanagedRoles": sorted(_strings(roles, "unmanaged")),
+        }
+        matches = observed["users"] == declared and observed["roles"] == declared
+        unmanaged = [
+            f"{kind} {', '.join(names)}"
+            for kind, names in (
+                ("users", observed["unmanagedUsers"]),
+                ("roles", observed["unmanagedRoles"]),
+            )
+            if names
+        ]
+        message = "desired state matches" if matches else "desired state does not match"
+        if unmanaged:
+            message += (
+                "; unmanaged (not made by Cloudfall, left as they are): "
+                + "; ".join(unmanaged)
+            )
+        checks.append(
+            AuditCheck(
+                check=name,
+                status=AuditStatus.COMPLIANT if matches else AuditStatus.DRIFT,
+                desired=desired,
+                observed=observed,
+                message=message,
+            )
+        )
+    return tuple(checks)
+
+
+def _strings(content: Mapping[str, object], key: str) -> tuple[str, ...]:
+    value = content.get(key)
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        message = f"validated field {key!r} is not a list of strings"
+        raise TypeError(message)
+    return tuple(cast("list[str]", value))
 
 
 def _parse_listening_sockets(raw: str) -> tuple[_SocketListener, ...]:

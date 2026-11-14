@@ -15,5 +15,9 @@ cloudfall_inspect_alerting_root: /etc/cloudfall/alerting
 cloudfall_inspect_alerting_sender: /usr/local/sbin/cloudfall-alert
 cloudfall_inspect_mdadm_conf: /etc/mdadm/mdadm.conf
 cloudfall_inspect_smartd_conf: /etc/smartd.conf
+# The Elasticsearch services whose home is this server (S-012): their users
+# and roles are read here, once per cluster
+cloudfall_inspect_elasticsearch_services: []
+cloudfall_inspect_elasticsearch_password_path: /etc/elasticsearch/cloudfall-password
 # The bundled Grafana dashboards on a logging backend (S-016); the backend role writes here
 cloudfall_inspect_grafana_dashboards: /etc/grafana/dashboards/cloudfall

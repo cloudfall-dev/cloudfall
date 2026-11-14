@@ -27,6 +27,39 @@
         "null"
       ]
     },
+    "elasticsearchSecurityNames": {
+      "description": "Names of a cluster's users or roles that are not built in, split by Cloudfall's marker; null when the cluster could not be read",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "managed": {
+              "$ref": "#/$defs/elasticsearchSecurityNameList"
+            },
+            "unmanaged": {
+              "$ref": "#/$defs/elasticsearchSecurityNameList"
+            }
+          },
+          "required": [
+            "managed",
+            "unmanaged"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "elasticsearchSecurityNameList": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
     "blockDevice": {
       "type": "object",
       "properties": {
@@ -740,6 +773,34 @@
               "path",
               "exists",
               "certificate"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "elasticsearchUsers": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "properties": {
+              "service": {
+                "$ref": "common.schema.json#/$defs/resourceId"
+              },
+              "available": {
+                "type": "boolean"
+              },
+              "users": {
+                "$ref": "#/$defs/elasticsearchSecurityNames"
+              },
+              "roles": {
+                "$ref": "#/$defs/elasticsearchSecurityNames"
+              }
+            },
+            "required": [
+              "service",
+              "available",
+              "users",
+              "roles"
             ],
             "additionalProperties": false
           }

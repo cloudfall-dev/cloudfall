@@ -22,3 +22,10 @@
         {{ cloudfall_volumes | default([]) }}
       cloudfall_inspect_alert_channel: >-
         {{ cloudfall_alert_channel | default('') }}
+      cloudfall_inspect_elasticsearch_services: >-
+        {{
+          cloudfall_services | default([])
+          | selectattr('serviceKind', 'equalto', 'elasticsearch')
+          | selectattr('server', 'equalto', cloudfall_server_id)
+          | list
+        }}
