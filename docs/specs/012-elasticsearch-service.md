@@ -1,6 +1,6 @@
 # S-012: Elasticsearch service
 
-status: draft
+status: approved
 serves: G-1, G-3
 
 ## Problem
