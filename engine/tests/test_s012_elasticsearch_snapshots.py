@@ -343,6 +343,8 @@ def _handler(fake: FakeElasticsearch) -> type[BaseHTTPRequestHandler]:
             fake.calls.append((self.command, unquote(split.path), body))
             fake.authorizations.add(self.headers.get("Authorization", ""))
             parts = [unquote(part) for part in split.path.strip("/").split("/")]
+            status: int
+            answer: object
             # A node refuses a request line over http.max_initial_line_length.
             if len(self.requestline.encode()) > MAX_INITIAL_LINE:
                 status, answer = 400, {"error": "too_long_http_line_exception"}
