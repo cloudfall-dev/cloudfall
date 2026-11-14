@@ -1,0 +1,440 @@
+---
+# A Baseline declares no memory, so the heap meets the host here (S-012):
+# the first task, so a heap the host can't hold stops the converge before
+# any repository, package or file changes.
+- name: Refuse a heap above half of the host's memory
+  ansible.builtin.assert:
+    that:
+      - >-
+        (cloudfall_elasticsearch_service.elasticsearch.heapMb | int) * 2
+        <= (ansible_facts['memtotal_mb'] | int)
+    fail_msg: >-
+      heapMb {{ cloudfall_elasticsearch_service.elasticsearch.heapMb }} of
+      service {{ cloudfall_elasticsearch_service.id }} is above half of the
+      {{ ansible_facts['memtotal_mb'] }} MB of {{ cloudfall_server_id }}:
+      lower heapMb, or move the service to a server with more memory
+
+# This release converges one node on loopback with Cloudfall's own account;
+# more nodes (#312), declared users (#311), remote access (#314) and joining
+# an existing cluster (#315) come later, so they stop here, not half-done.
+- name: Validate Elasticsearch service target and declaration
+  ansible.builtin.assert:
+    that:
+      - ansible_facts["distribution"] == "Debian"
+      - ansible_facts["distribution_major_version"] == "13"
+      - ansible_facts["service_mgr"] == "systemd"
+      - cloudfall_elasticsearch_service.serviceKind == "elasticsearch"
+      - cloudfall_elasticsearch_service.server == cloudfall_server_id
+      - cloudfall_elasticsearch_service.bind.address == "127.0.0.1"
+      - cloudfall_elasticsearch_service.elasticsearch.nodes == [cloudfall_server_id]
+      - cloudfall_elasticsearch_service.elasticsearch.users | length == 0
+      - cloudfall_elasticsearch_service.elasticsearch.remoteAccess is not defined
+      - cloudfall_elasticsearch_service.elasticsearch.existingCluster is not defined
+    fail_msg: >-
+      Elasticsearch service {{ cloudfall_elasticsearch_service.id }} needs a
+      Debian 13 server with systemd, a loopback bind address, and one node,
+      its own server; this release converges no declared users, remoteAccess
+      or existingCluster yet
+
+- name: Require the staged account files of the service
+  ansible.builtin.assert:
+    that:
+      - "'cloudfallPassword' in cloudfall_elasticsearch_account_files"
+      - "'cloudfallHash' in cloudfall_elasticsearch_account_files"
+      - "'elasticHash' in cloudfall_elasticsearch_account_files"
+    fail_msg: >-
+      The cloudfall and elastic passwords of service
+      {{ cloudfall_elasticsearch_service.id }} are not staged; run
+      services.yml through cloudfall (converge_services, cloudfall migrate,
+      operator approve, or cloudfall-engine playbook run services.yml), which
+      reads them from --secrets-dir after `cloudfall secrets generate`
+
+- name: Read the installed Elasticsearch version
+  ansible.builtin.command:
+    argv:
+      - dpkg-query
+      - --show
+      - --showformat
+      - "${db:Status-Status} ${Version}"
+      - elasticsearch
+  register: cloudfall_elasticsearch_installed
+  # rc 1: dpkg knows no such package, so nothing is installed
+  failed_when: cloudfall_elasticsearch_installed.rc not in [0, 1]
+  changed_when: false
+  # A read: a dry run (--check) must refuse a drifted host too
+  check_mode: false
+
+# Upgrading across a major needs Elastic's upgrade checks, and APT does not
+# downgrade a node: both are out of the converge's reach (S-012).
+- name: Refuse a version the installed node can't move to
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudfall_elasticsearch_installed_version == ''
+        or (
+          cloudfall_elasticsearch_installed_version.split('.')[0]
+          == cloudfall_elasticsearch_service.elasticsearch.version.split('.')[0]
+          and cloudfall_elasticsearch_installed_version
+          is version(cloudfall_elasticsearch_service.elasticsearch.version, '<=')
+        )
+    fail_msg: >-
+      elasticsearch {{ cloudfall_elasticsearch_installed_version }} is installed
+      on {{ cloudfall_server_id }}; declared
+      {{ cloudfall_elasticsearch_service.elasticsearch.version }} is another
+      major or older, which this converge does not install
+  vars:
+    cloudfall_elasticsearch_installed_version: >-
+      {{
+        cloudfall_elasticsearch_installed.stdout.split(' ', 1) | last
+        if cloudfall_elasticsearch_installed.rc == 0
+        and cloudfall_elasticsearch_installed.stdout is match('installed ')
+        else ''
+      }}
+
+# The account and the managed files exist before the package is installed:
+# with xpack.security.enabled already set, the package's security
+# auto-configuration skips the node, so it writes no certificates, keystore
+# passwords or elastic password of its own, and dpkg keeps these files.
+- name: Create the Elasticsearch service group before the package
+  ansible.builtin.group:
+    name: elasticsearch
+    system: true
+    state: present
+
+- name: Create the Elasticsearch service account before the package
+  ansible.builtin.user:
+    name: elasticsearch
+    group: elasticsearch
+    home: /nonexistent
+    shell: /bin/false
+    create_home: false
+    system: true
+    state: present
+
+- name: Create the Elasticsearch configuration directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: elasticsearch
+    mode: "2750"
+  loop:
+    - "{{ cloudfall_elasticsearch_configuration_directory }}"
+    - "{{ cloudfall_elasticsearch_configuration_directory }}/jvm.options.d"
+
+# The node writes its data path's _state at its first start, before the
+# cluster forms, so _state can't tell a formed cluster from a first start
+# that failed: the role's own marker, written once the node served the
+# cluster, does.
+- name: Read whether the cluster has formed
+  ansible.builtin.stat:
+    path: "{{ cloudfall_elasticsearch_formed_marker }}"
+  register: cloudfall_elasticsearch_cluster_formed
+
+- name: Install the managed Elasticsearch configuration
+  ansible.builtin.template:
+    src: elasticsearch.yml.j2
+    dest: "{{ cloudfall_elasticsearch_configuration_directory }}/elasticsearch.yml"
+    owner: root
+    group: elasticsearch
+    mode: "0660"
+  vars:
+    cloudfall_elasticsearch_bootstrap: >-
+      {{
+        cloudfall_elasticsearch_service.server == cloudfall_server_id
+        and cloudfall_elasticsearch_service.elasticsearch.existingCluster is not defined
+        and not cloudfall_elasticsearch_cluster_formed.stat.exists
+      }}
+  notify: Restart Elasticsearch
+
+- name: Install the declared heap
+  ansible.builtin.template:
+    src: heap.options.j2
+    dest: "{{ cloudfall_elasticsearch_configuration_directory }}/jvm.options.d/cloudfall-heap.options"
+    owner: root
+    group: elasticsearch
+    mode: "0660"
+  notify: Restart Elasticsearch
+
+- name: Create the Elasticsearch unit drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/elasticsearch.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Let Elasticsearch lock its heap in memory
+  ansible.builtin.template:
+    src: memlock.conf.j2
+    dest: /etc/systemd/system/elasticsearch.service.d/cloudfall-memlock.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Elasticsearch
+
+# The S-011 secret requirement: the role, the snapshot scripts and the
+# metrics exporter read the cloudfall password here.
+- name: Install the cloudfall account password
+  ansible.builtin.copy:
+    src: "{{ cloudfall_elasticsearch_account_files.cloudfallPassword }}"
+    dest: "{{ cloudfall_elasticsearch_password_path }}"
+    owner: elasticsearch
+    group: elasticsearch
+    mode: "0600"
+  register: cloudfall_elasticsearch_password_file
+  no_log: true
+
+- name: Read whether the file realm has the cloudfall account
+  ansible.builtin.command:
+    argv:
+      - grep
+      - --quiet
+      - "^cloudfall:"
+      - "{{ cloudfall_elasticsearch_configuration_directory }}/users"
+  register: cloudfall_elasticsearch_realm_account
+  # rc 1: no cloudfall line; rc 2: no users file yet
+  failed_when: cloudfall_elasticsearch_realm_account.rc not in [0, 1, 2]
+  changed_when: false
+  check_mode: false
+
+# Only the bcrypt hash computed on the controller reaches the file realm,
+# which reloads the file on its own. The hash has a random salt, so it
+# differs on each run: the line is written only when the password changed
+# or the account is missing, and a second converge leaves it alone.
+- name: Put the cloudfall account in the file realm
+  ansible.builtin.lineinfile:
+    path: "{{ cloudfall_elasticsearch_configuration_directory }}/users"
+    regexp: "^cloudfall:"
+    line: >-
+      cloudfall:{{
+        lookup('ansible.builtin.file',
+               cloudfall_elasticsearch_account_files.cloudfallHash)
+      }}
+    create: true
+    owner: root
+    group: elasticsearch
+    mode: "0660"
+  no_log: true
+  when: >-
+    cloudfall_elasticsearch_password_file is changed
+    or cloudfall_elasticsearch_realm_account.rc != 0
+
+- name: Make the cloudfall account a superuser
+  ansible.builtin.lineinfile:
+    path: "{{ cloudfall_elasticsearch_configuration_directory }}/users_roles"
+    regexp: "^superuser:"
+    line: superuser:cloudfall
+    create: true
+    owner: root
+    group: elasticsearch
+    mode: "0660"
+
+- name: Install Elastic repository prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - python3-debian
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create APT keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install Elastic repository signing key
+  ansible.builtin.get_url:
+    url: "{{ cloudfall_elasticsearch_repository_key_url }}"
+    dest: "{{ cloudfall_elasticsearch_repository_key_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure the Elastic package repository of the declared major
+  ansible.builtin.deb822_repository:
+    name: elasticsearch
+    types:
+      - deb
+    uris:
+      - >-
+        {{ cloudfall_elasticsearch_repository_url }}/{{
+          cloudfall_elasticsearch_service.elasticsearch.version.split('.')[0]
+        }}.x/apt
+    suites:
+      - stable
+    components:
+      - main
+    signed_by: "{{ cloudfall_elasticsearch_repository_key_path }}"
+    state: present
+  register: cloudfall_elasticsearch_repository
+
+# Not a handler: the refreshed index must exist before the pinned install
+# below runs, and handlers only flush later.
+- name: Refresh APT cache after repository changes  # noqa: no-handler
+  ansible.builtin.apt:
+    update_cache: true
+  when: cloudfall_elasticsearch_repository is changed
+
+# The package is held, so the pinned install may move it to a new declared
+# version; an unattended upgrade never does.
+- name: Install the declared Elasticsearch version
+  ansible.builtin.apt:
+    name: "elasticsearch={{ cloudfall_elasticsearch_service.elasticsearch.version }}"
+    state: present
+    allow_change_held_packages: true
+    policy_rc_d: 101
+  notify: Restart Elasticsearch
+
+- name: Hold the Elasticsearch package at the declared version
+  ansible.builtin.dpkg_selections:
+    name: elasticsearch
+    selection: hold
+
+- name: Apply the managed configuration
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start Elasticsearch
+  ansible.builtin.systemd_service:
+    name: elasticsearch.service
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Wait for the node to serve the cluster
+  ansible.builtin.uri:
+    url: >-
+      http://{{ cloudfall_elasticsearch_service.bind.address }}:{{
+        cloudfall_elasticsearch_service.bind.port
+      }}/_cluster/health?wait_for_status=yellow&timeout=10s
+    url_username: cloudfall
+    url_password: >-
+      {{ lookup('ansible.builtin.file',
+                cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+    force_basic_auth: true
+    status_code: 200
+  register: cloudfall_elasticsearch_health
+  retries: 30
+  delay: 10
+  until: cloudfall_elasticsearch_health.status == 200
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Create the Elasticsearch role state directory
+  ansible.builtin.file:
+    path: "{{ cloudfall_elasticsearch_state_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: not ansible_check_mode
+
+- name: Record that the cluster has formed
+  ansible.builtin.copy:
+    dest: "{{ cloudfall_elasticsearch_formed_marker }}"
+    content: |
+      {{ cloudfall_elasticsearch_service.id }}: cluster formed
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - not ansible_check_mode
+    - cloudfall_elasticsearch_health is succeeded
+
+# The node has served its cluster, so cluster.initial_master_nodes is useless
+# and unsafe to keep: it leaves the file now, with no restart (the setting is
+# read only at start), and the next converge, seeing the marker, renders the
+# same file and finds nothing to do.
+- name: Remove cluster.initial_master_nodes once the cluster has formed
+  ansible.builtin.template:
+    src: elasticsearch.yml.j2
+    dest: "{{ cloudfall_elasticsearch_configuration_directory }}/elasticsearch.yml"
+    owner: root
+    group: elasticsearch
+    mode: "0660"
+  vars:
+    cloudfall_elasticsearch_bootstrap: false
+  when:
+    - not ansible_check_mode
+    - not cloudfall_elasticsearch_cluster_formed.stat.exists
+    - cloudfall_elasticsearch_health is succeeded
+
+# Outside production mode (a loopback transport) Elasticsearch only warns
+# when it can't lock its memory; the converge stops instead.
+- name: Read whether the node locked its memory
+  ansible.builtin.uri:
+    url: >-
+      http://{{ cloudfall_elasticsearch_service.bind.address }}:{{
+        cloudfall_elasticsearch_service.bind.port
+      }}/_nodes/_local/process?filter_path=nodes.*.process.mlockall
+    url_username: cloudfall
+    url_password: >-
+      {{ lookup('ansible.builtin.file',
+                cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+    force_basic_auth: true
+    status_code: 200
+  register: cloudfall_elasticsearch_process
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Refuse a node that runs without its memory locked
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudfall_elasticsearch_process.json.nodes.values()
+        | map(attribute='process.mlockall') | list == [true]
+    fail_msg: >-
+      Elasticsearch on {{ cloudfall_server_id }} could not lock its memory
+      (mlockall false); check LimitMEMLOCK in the unit and the host's memory
+  when: not ansible_check_mode
+
+# elastic is a person's break-glass account: set once, as the hash computed
+# on the controller (D-9), and never used by Cloudfall afterwards.
+- name: Set the elastic password once
+  vars:
+    cloudfall_elasticsearch_elastic_marker: >-
+      {{ cloudfall_elasticsearch_state_directory }}/{{
+        cloudfall_elasticsearch_service.id
+      }}.elastic-password-set
+  when: not ansible_check_mode
+  block:
+    - name: Read whether the elastic password was set
+      ansible.builtin.stat:
+        path: "{{ cloudfall_elasticsearch_elastic_marker }}"
+      register: cloudfall_elasticsearch_elastic_set
+
+    - name: Set the elastic password from its hash
+      ansible.builtin.uri:
+        url: >-
+          http://{{ cloudfall_elasticsearch_service.bind.address }}:{{
+            cloudfall_elasticsearch_service.bind.port
+          }}/_security/user/elastic/_password
+        method: POST
+        url_username: cloudfall
+        url_password: >-
+          {{ lookup('ansible.builtin.file',
+                    cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+        force_basic_auth: true
+        body_format: json
+        body:
+          password_hash: >-
+            {{ lookup('ansible.builtin.file',
+                      cloudfall_elasticsearch_account_files.elasticHash) }}
+        status_code: 200
+      changed_when: true
+      no_log: true
+      when: not cloudfall_elasticsearch_elastic_set.stat.exists
+
+    # The state directory was created with the cluster-formed marker.
+    - name: Record that the elastic password was set
+      ansible.builtin.copy:
+        dest: "{{ cloudfall_elasticsearch_elastic_marker }}"
+        content: |
+          {{ cloudfall_elasticsearch_service.id }}: elastic password set from its hash
+        owner: root
+        group: root
+        mode: "0600"

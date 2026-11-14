@@ -43,6 +43,7 @@ from cloudfall.secrets import (
     ERROR_SOPS_MISSING,
     SecretsError,
     SopsSecretProvider,
+    elasticsearch_account_passwords,
     owned_role_passwords,
     staged_password_files,
 )
@@ -85,7 +86,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from cloudfall.domain import BuildTimeoutSeconds
-    from cloudfall.secrets import OwnedRolePassword
+    from cloudfall.secrets import ElasticsearchAccountPassword, OwnedRolePassword
     from treaty import Completed
 
 app = App(
@@ -600,8 +601,39 @@ def _rendered_owned_databases(
     or JSON of another shape) declares none, so the run stays as it was.
     Only an entry that names a ``passwordRef`` must be well formed.
     """
+    owned: list[tuple[ResourceId, OwnedPostgresDatabase]] = []
+    for service in _rendered_services(inventory_file, "postgresql"):
+        databases = _nested(service, "postgresql").get("databases")
+        owned.extend(
+            (ResourceId.from_boundary(service.get("id")), _owned_database(database))
+            for database in _mappings(databases)
+            if "passwordRef" in database
+        )
+    return tuple(owned)
+
+
+def _rendered_elasticsearch_services(
+    inventory_file: Path,
+) -> tuple[tuple[ResourceId, ResourceId], ...]:
+    """Read each Elasticsearch service's id and environment from an inventory."""
+    return tuple(
+        (
+            ResourceId.from_boundary(service.get("id")),
+            ResourceId.from_boundary(service.get("environment")),
+        )
+        for service in _rendered_services(inventory_file, "elasticsearch")
+    )
+
+
+def _rendered_services(
+    inventory_file: Path, kind: str
+) -> list[Mapping[str, object]]:
+    """Return every service of ``kind`` a rendered inventory carries.
+
+    An inventory that isn't a rendered Cloudfall one carries none.
+    """
     if not inventory_file.is_file():
-        return ()
+        return []
     try:
         # The rendered strings are marked unsafe for Ansible (#174).
         document = cast(
@@ -611,20 +643,14 @@ def _rendered_owned_databases(
             ),
         )
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return ()
+        return []
     hosts = _nested(document, "all", "children", "cloudfall_servers", "hosts")
-    owned: list[tuple[ResourceId, OwnedPostgresDatabase]] = []
-    for host in hosts.values():
-        for service in _mappings(_nested(host).get("cloudfall_services")):
-            if service.get("serviceKind") != "postgresql":
-                continue
-            databases = _nested(service, "postgresql").get("databases")
-            owned.extend(
-                (ResourceId.from_boundary(service.get("id")), _owned_database(database))
-                for database in _mappings(databases)
-                if "passwordRef" in database
-            )
-    return tuple(owned)
+    return [
+        service
+        for host in hosts.values()
+        for service in _mappings(_nested(host).get("cloudfall_services"))
+        if service.get("serviceKind") == kind
+    ]
 
 
 def _nested(value: object, *keys: str) -> Mapping[str, object]:
@@ -663,24 +689,32 @@ def _owned_database(database: Mapping[str, object]) -> OwnedPostgresDatabase:
 
 def _services_passwords(
     args: RunArgs, run: PlaybookRun, ctx: Ctx
-) -> tuple[OwnedRolePassword, ...]:
-    """Decrypt the owner passwords the bundled services.yml sets, before it starts."""
+) -> tuple[tuple[OwnedRolePassword, ...], tuple[ElasticsearchAccountPassword, ...]]:
+    """Decrypt the passwords the bundled services.yml sets, before it starts.
+
+    Those are each owner role's, and the ``cloudfall`` and ``elastic``
+    passwords of each Elasticsearch service.
+    """
     # An engine without services.yml still runs its other playbooks (#296).
     services = playbook_directory(args.engine) / SERVICES_PLAYBOOK
     if args.syntax_check or run.playbook != services:
-        return ()
+        return (), ()
     try:
         databases = _rendered_owned_databases(args.inventory)
+        clusters = _rendered_elasticsearch_services(args.inventory)
     except (TypeError, ValueError) as error:
-        message = f"the inventory declares a malformed owned database: {error}"
+        message = f"the inventory declares a malformed service: {error}"
         raise ParseError(message, context={"flag": "inventory"}) from error
-    if not databases:
-        return ()
+    if not databases and not clusters:
+        return (), ()
     provider = SopsSecretProvider(
         secrets_directory=args.secrets_dir, decrypt=_sops_decrypt(ctx)
     )
     try:
-        return owned_role_passwords(databases, provider)
+        return (
+            owned_role_passwords(databases, provider),
+            elasticsearch_account_passwords(clusters, provider),
+        )
     except SecretsError as error:
         raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
 
@@ -718,8 +752,8 @@ def run_playbook(args: RunArgs, ctx: Ctx) -> Played:
     file outside the project, removed when the run ends; only the file paths
     cross the command line.
     """
-    passwords = _services_passwords(args, _playbook_run(args), ctx)
-    with staged_password_files(passwords) as staged:
+    passwords, accounts = _services_passwords(args, _playbook_run(args), ctx)
+    with staged_password_files(passwords, accounts) as staged:
         played = _run_ansible(
             args, ctx, _playbook_run(args, (json.dumps(staged),) if staged else ())
         )

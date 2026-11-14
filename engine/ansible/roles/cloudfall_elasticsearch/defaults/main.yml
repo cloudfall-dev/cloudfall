@@ -1,0 +1,20 @@
+---
+cloudfall_elasticsearch_service: {}
+# Controller paths of the files cloudfall stages for the service's accounts
+# (cloudfallPassword, cloudfallHash, elasticHash); never the values.
+cloudfall_elasticsearch_account_files: {}
+cloudfall_elasticsearch_repository_key_url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+cloudfall_elasticsearch_repository_key_path: /etc/apt/keyrings/elasticsearch.asc
+cloudfall_elasticsearch_repository_url: https://artifacts.elastic.co/packages
+cloudfall_elasticsearch_configuration_directory: /etc/elasticsearch
+cloudfall_elasticsearch_data_path: /var/lib/elasticsearch
+cloudfall_elasticsearch_log_path: /var/log/elasticsearch
+# The S-011 secret requirement's path (requirements.ELASTICSEARCH_PASSWORD_PATH).
+cloudfall_elasticsearch_password_path: /etc/elasticsearch/cloudfall-password
+cloudfall_elasticsearch_state_directory: /var/lib/cloudfall/elasticsearch
+# Written once the node served its cluster: from then on the configuration
+# never carries cluster.initial_master_nodes again.
+cloudfall_elasticsearch_formed_marker: >-
+  {{ cloudfall_elasticsearch_state_directory }}/{{
+    cloudfall_elasticsearch_service.id
+  }}.cluster-formed

@@ -32,6 +32,7 @@ from cloudfall.domain import (
     SystemdUnitName,
     TcpPort,
 )
+from cloudfall.elasticsearch import ElasticsearchAccount
 from cloudfall.inventory import SecretValueReference, StoragePool
 
 if TYPE_CHECKING:
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
         LoggingStackInventory,
         PlatformInventory,
         ServerInventory,
+        ServiceInventory,
     )
 
 GIBIBYTE = 1024**3
@@ -380,6 +382,9 @@ def requirements_of(inventory: PlatformInventory) -> tuple[ServerRequirements, .
         held = by_server.setdefault(server_id.value, [])
         if requirement not in held:
             held.append(requirement)
+    for service in inventory.services:
+        for server_id, requirement in _elasticsearch_requirements(service):
+            by_server.setdefault(server_id.value, []).append(requirement)
     return tuple(
         ServerRequirements(
             server.resource_id,
@@ -393,6 +398,61 @@ def requirements_of(inventory: PlatformInventory) -> tuple[ServerRequirements, .
         for server in inventory.servers
         if server.resource_id.value in by_server
     )
+
+
+ELASTICSEARCH_PACKAGE = PackageName("elasticsearch")
+ELASTICSEARCH_PASSWORD_NAME = RequirementName("elasticsearch-cloudfall-password")
+ELASTICSEARCH_PASSWORD_PATH = AbsolutePath("/etc/elasticsearch/cloudfall-password")
+"""Where each node keeps the ``cloudfall`` account's password, 0600 elasticsearch."""
+ELASTIC_PASSWORD_NAME = "elasticsearch-elastic-password"  # noqa: S105 - a name
+"""How ``secrets generate`` names the ``elastic`` password; no host keeps it."""
+_ELASTICSEARCH_ACCOUNT_KEYS = {
+    ElasticsearchAccount.CLOUDFALL: SecretKeyName("CLOUDFALL_PASSWORD"),
+    ElasticsearchAccount.ELASTIC: SecretKeyName("ELASTIC_PASSWORD"),
+}
+
+
+def elasticsearch_account_reference(
+    environment: ResourceId, service_id: ResourceId, account: ElasticsearchAccount
+) -> SecretValueReference:
+    """Return where the store keeps an account's password: ``/services/<id>``."""
+    return SecretValueReference(
+        environment=environment,
+        path=AbsolutePath(f"/services/{service_id.value}"),
+        key=_ELASTICSEARCH_ACCOUNT_KEYS[account],
+    )
+
+
+def _elasticsearch_requirements(
+    service: ServiceInventory,
+) -> list[tuple[ResourceId, Requirement]]:
+    """Each node of an Elasticsearch service needs its package and Cloudfall's password.
+
+    The password is generated (S-012, What each node needs); the role writes
+    it on the node and only its bcrypt hash into the file realm.
+    """
+    elasticsearch = service.elasticsearch
+    if elasticsearch is None:
+        return []
+    owner = RequirementOwner(ResourceKind.SERVICE, service.resource_id)
+    password = SecretRequirement(
+        ELASTICSEARCH_PASSWORD_NAME,
+        SecretSource.GENERATE,
+        ELASTICSEARCH_PASSWORD_PATH,
+        elasticsearch_account_reference(
+            service.environment, service.resource_id, ElasticsearchAccount.CLOUDFALL
+        ),
+    )
+    package = PackageRequirement(
+        RequirementName("elasticsearch"),
+        ELASTICSEARCH_PACKAGE,
+        PackageVersion(elasticsearch.version.value),
+    )
+    return [
+        (node, Requirement(owner, spec))
+        for node in elasticsearch.nodes
+        for spec in (password, package)
+    ]
 
 
 TELEGRAM_TOKEN_NAME = RequirementName("telegram-bot-token")

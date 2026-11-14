@@ -152,7 +152,7 @@ from cloudfall.domain import (
     ResourceKind,
     TcpPort,
 )
-from cloudfall.elasticsearch import WARNING_VERSION_ENDING
+from cloudfall.elasticsearch import WARNING_VERSION_ENDING, ElasticsearchAccount
 from cloudfall.importer import (
     ImportTargets,
     RenderImportError,
@@ -324,8 +324,10 @@ from cloudfall.render_api import (
     read_api_key,
 )
 from cloudfall.requirements import (
+    ELASTIC_PASSWORD_NAME,
     SecretRequirement,
     SecretSource,
+    elasticsearch_account_reference,
     requirements_of,
 )
 from cloudfall.resources import default_engine_directory, default_schema_directory
@@ -345,6 +347,7 @@ from cloudfall.secrets import (
     ERROR_SOPS_MISSING,
     SecretsError,
     SopsSecretProvider,
+    elasticsearch_services,
     load_environment_receipts,
     render_environment,
 )
@@ -4113,17 +4116,29 @@ def secrets_generate(
     store = _secret_store(args, ctx, fleet)
     written: list[dict[str, object]] = []
     skipped: list[dict[str, object]] = []
+    generated = [
+        (secret.name.value, secret.reference)
+        for secret in secret_requirements(requirements_of(fleet.inventory))
+        if secret.source is SecretSource.GENERATE
+    ]
+    # No host keeps the elastic password, so it is no requirement: the
+    # converge sets only its hash, and a person reads it from the store.
+    generated.extend(
+        (
+            ELASTIC_PASSWORD_NAME,
+            elasticsearch_account_reference(
+                environment, service_id, ElasticsearchAccount.ELASTIC
+            ),
+        )
+        for service_id, environment in elasticsearch_services(fleet.inventory)
+    )
     try:
-        for secret in secret_requirements(requirements_of(fleet.inventory)):
-            if secret.source is not SecretSource.GENERATE:
+        for name, reference in generated:
+            if store.holds(reference):
+                skipped.append({"name": name, "reference": reference.as_dict()})
                 continue
-            if store.holds(secret.reference):
-                skipped.append(
-                    {"name": secret.name.value, "reference": secret.reference.as_dict()}
-                )
-                continue
-            stored = store.generate(secret.reference)
-            written.append({"name": secret.name.value, **stored.as_dict()})
+            stored = store.generate(reference)
+            written.append({"name": name, **stored.as_dict()})
     except SecretsError as error:
         raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
     return SecretsGeneratedPayload(
