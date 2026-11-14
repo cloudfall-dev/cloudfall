@@ -237,6 +237,59 @@ def test_s012_4_the_heap_guard_stops_a_real_run_before_any_other_task(
     )
 
 
+# proves: S-012-4
+def test_s012_4_services_checks_the_heap_before_any_role_changes_the_host() -> None:
+    """A server with PostgreSQL and Elasticsearch: the heap stops it unchanged."""
+    (play,) = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))
+    tasks = [*play["pre_tasks"], *play["tasks"]]
+    names = [task["name"] for task in tasks]
+    check = next(
+        task
+        for task in tasks
+        if task["name"].startswith("Refuse an Elasticsearch heap")
+    )
+    facts = names.index("Stop at a server whose earlier servers did not finish")
+    first_change = next(
+        index
+        for index, task in enumerate(tasks)
+        if "ansible.builtin.include_role" in task or _module(task) in CHANGING
+    )
+
+    # Facts first (rollout-start gathers them), then the check, then any role.
+    assert facts < names.index(check["name"]) < first_change
+    assert play["gather_facts"] is False
+    # The same message as the role's own guard.
+    role_message = str(
+        cast("dict[str, object]", _tasks()[0]["ansible.builtin.assert"])["fail_msg"]
+    )
+    assert check["ansible.builtin.assert"]["fail_msg"] == role_message.replace(
+        "cloudfall_elasticsearch_service", "cloudfall_service_item"
+    )
+
+    postgresql = {"id": "postgresql-main", "serviceKind": "postgresql"}
+    elsewhere = _service(heapMb=10**6, nodes=["h2"])
+    elsewhere["id"] = "search-other"
+
+    def refused(heap_mb: int) -> list[str]:
+        services = [postgresql, _service(heapMb=heap_mb), elsewhere]
+        variables = _variables(cloudfall_services=services)
+        items = cast("list[dict[str, object]]", _value(check["loop"], variables))
+        return [
+            str(item["id"])
+            for item in items
+            if not all(
+                _templar(
+                    {**variables, "cloudfall_service_item": item}
+                ).evaluate_conditional(trust_as_template(condition))
+                for condition in check["ansible.builtin.assert"]["that"]
+            )
+        ]
+
+    # Only this server's nodes are checked; a node of h2 is h2's to refuse.
+    assert refused(4096) == []
+    assert refused(4097) == ["search-main"]
+
+
 # proves: S-012-3
 def test_s012_3_the_rendered_configuration_is_a_secured_loopback_cluster() -> None:
     first_start = yaml.safe_load(
@@ -401,9 +454,7 @@ def test_s012_4_a_formed_cluster_is_marked_and_a_second_converge_changes_nothing
 
 # proves: S-012-4
 def test_s012_4_only_a_package_or_configuration_change_restarts_the_node() -> None:
-    notifying = sorted(
-        str(task["name"]) for task in _tasks() if task.get("notify")
-    )
+    notifying = sorted(str(task["name"]) for task in _tasks() if task.get("notify"))
 
     assert notifying == [
         "Install the declared Elasticsearch version",

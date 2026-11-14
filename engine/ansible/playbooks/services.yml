@@ -9,6 +9,31 @@
   pre_tasks:
     - name: Stop at a server whose earlier servers did not finish
       ansible.builtin.import_tasks: tasks/rollout-start.yml
+
+    # The Elasticsearch role refuses such a heap as its first task too; this
+    # check runs before any service role, so the server is left unchanged
+    # (S-012-4). Facts are gathered by rollout-start.yml above.
+    - name: Refuse an Elasticsearch heap above half of the server's memory
+      ansible.builtin.assert:
+        that:
+          - >-
+            (cloudfall_service_item.elasticsearch.heapMb | int) * 2
+            <= (ansible_facts['memtotal_mb'] | int)
+        fail_msg: >-
+          heapMb {{ cloudfall_service_item.elasticsearch.heapMb }} of
+          service {{ cloudfall_service_item.id }} is above half of the
+          {{ ansible_facts['memtotal_mb'] }} MB of {{ cloudfall_server_id }}:
+          lower heapMb, or move the service to a server with more memory
+      loop: >-
+        {{
+          cloudfall_services | default([])
+          | selectattr('serviceKind', 'equalto', 'elasticsearch')
+          | selectattr('elasticsearch.nodes', 'contains', cloudfall_server_id)
+          | list
+        }}
+      loop_control:
+        loop_var: cloudfall_service_item
+        label: "{{ cloudfall_service_item.id }}"
   tasks:
     - name: Deploy declared PostgreSQL services
       ansible.builtin.include_role:
