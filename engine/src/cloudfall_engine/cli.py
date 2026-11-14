@@ -77,6 +77,7 @@ from cloudfall_engine.playbook import (
     PlaybookRun,
     bundled_playbooks,
     playbook_command,
+    playbook_directory,
     resolve_playbook,
 )
 
@@ -664,9 +665,9 @@ def _services_passwords(
     args: RunArgs, run: PlaybookRun, ctx: Ctx
 ) -> tuple[OwnedRolePassword, ...]:
     """Decrypt the owner passwords the bundled services.yml sets, before it starts."""
-    if args.syntax_check or run.playbook != resolve_playbook(
-        SERVICES_PLAYBOOK, args.engine
-    ):
+    # An engine without services.yml still runs its other playbooks (#296).
+    services = playbook_directory(args.engine) / SERVICES_PLAYBOOK
+    if args.syntax_check or run.playbook != services:
         return ()
     try:
         databases = _rendered_owned_databases(args.inventory)
