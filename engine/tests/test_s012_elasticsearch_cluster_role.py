@@ -4,20 +4,17 @@ S-012, #312. Both need live hosts for the whole proof; here the rendered
 inventory of a two-node service is real, each node's configuration and the
 firewall ruleset are rendered from their templates, the role's decisions are
 evaluated with Ansible's own templating, and the rollout order is read from
-``ansible-playbook --list-hosts``.
+Ansible's inventory manager.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import re
-import shutil
-import subprocess
 from pathlib import Path
 from typing import Any, cast
 
 import yaml
+from ansible.inventory.manager import InventoryManager
 from ansible.parsing.dataloader import DataLoader
 from ansible.template import Templar, trust_as_template
 from cloudfall.ansible_data import as_ansible_data
@@ -266,24 +263,24 @@ def test_each_node_carries_its_transport_and_the_engine_reads_the_service_once(
 def test_s012_5_the_home_node_converges_before_the_node_that_joins_it(
     tmp_path: Path,
 ) -> None:
-    """Declared h1, h2 with h2 as home: services.yml must run h2 first."""
+    """Declared h1, h2 with h2 as home: services.yml must run h2 first.
+
+    A play keeps its hosts in inventory order (``order`` unset) and ``serial:
+    1`` takes them one by one in that order; ``--list-hosts`` prints a set,
+    so the order is read from Ansible's inventory manager the play uses.
+    """
     rendered = _rendered(tmp_path, server="h2")
     inventory = _inventory_file(rendered, tmp_path / "ansible-inventory.json")
-    binary = shutil.which("ansible-playbook")
-    assert binary is not None
+    (play,) = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))
 
-    done = subprocess.run(  # noqa: S603 - fixed binary and arguments.
-        [binary, "--list-hosts", "--inventory", str(inventory), str(SERVICES)],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        env={**os.environ, "ANSIBLE_ROLES_PATH": str(ROLES)},
-    )
+    manager = InventoryManager(loader=DataLoader(), sources=[str(inventory)])
 
-    assert done.returncode == 0, done.stdout + done.stderr
-    listed = re.findall(r"^\s+(h\d)\s*$", done.stdout, flags=re.MULTILINE)
-    assert listed == ["h2", "h1"]
+    assert play["serial"] == 1
+    assert "order" not in play
+    hosts = manager.get_hosts(play["hosts"], order="inventory")
+    assert [host.name for host in hosts] == ["h2", "h1"]
+    declared = _rendered(tmp_path / "declared")
+    assert list(_hosts(declared)) == ["h1", "h2"]
 
 
 def test_the_role_converges_every_node_of_the_service(tmp_path: Path) -> None:
