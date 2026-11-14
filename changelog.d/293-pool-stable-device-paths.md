@@ -1,0 +1,3 @@
+### Fixed
+
+- A storage pool's `primary` and `secondary` may be stable paths such as `/dev/disk/by-id/nvme-<model>_<serial>-part5`: `logging deploy` and `inspect` resolve each one on the host with `realpath`, the volume provider and audit's `volume.<name>` compare the device it names with LVM's physical volumes, `lvcreate` and `lvextend` name the physical volume as LVM reports it, and audit shows each declared path next to its device (`resolvedPhysicalVolumes`); before, any path but the kernel name failed with "is not in vg_data", and NVMe kernel names can swap between boots. A pool path that does not exist on the host, and a pool whose `primary` and `secondary` resolve to one device, are refused naming the server, pool and path (#293)

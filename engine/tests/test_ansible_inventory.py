@@ -261,8 +261,16 @@ def test_inventory_renders_ansible_host_variables() -> None:
             {"name": "logging-collector", "path": "/etc/cloudfall/logging/client.crt"},
         ],
         "cloudfall_volumes": [
-            {"name": "loki", "path": "/var/lib/loki-cloudfall"},
-            {"name": "prometheus", "path": "/var/lib/prometheus-cloudfall"},
+            {
+                "name": "loki",
+                "path": "/var/lib/loki-cloudfall",
+                "physicalVolumes": ["/dev/nvme0n1p5"],
+            },
+            {
+                "name": "prometheus",
+                "path": "/var/lib/prometheus-cloudfall",
+                "physicalVolumes": ["/dev/nvme0n1p5"],
+            },
         ],
         "cloudfall_network": {
             "ipv4": "203.0.113.11",

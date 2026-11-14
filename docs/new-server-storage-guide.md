@@ -508,6 +508,30 @@ spec:
         mode: "0644"
 ```
 
+When a workload's volumes should be created by Cloudfall (a `LoggingStack`'s
+Loki and Prometheus data, S-014), declare each volume group as a pool under
+`storage.pools`, and name its physical volume by a stable path from
+`ls -l /dev/disk/by-id/`, not by its kernel name:
+
+```yaml
+  storage:
+    pools:
+      - id: data0
+        volumeGroup: vg_data0
+        primary: /dev/disk/by-id/nvme-<model>_<serial>-partN
+      - id: data1
+        volumeGroup: vg_data1
+        primary: /dev/disk/by-id/nvme-<model>_<serial>-partN
+```
+
+NVMe kernel names are assigned in probe order, so `/dev/nvme0n1` and
+`/dev/nvme1n1` can swap between boots; a pool declared by kernel name would then
+point at the other drive, and its volumes would go to the disk you meant for the
+other pool. A `by-id` path carries the drive's model and serial and always names
+the same partition. Cloudfall resolves each path on the host with `realpath`
+before comparing it with LVM's physical volumes, and refuses a path that does
+not exist there. A kernel name still works, but re-check it after every reboot.
+
 In Cloudfall v1, `minimumUsableBytes` refers in practice to the largest observed MD
 device rather than total capacity across all arrays. A 90 GB threshold is
 therefore appropriate for the example 96 GiB root array; do not enter the sum

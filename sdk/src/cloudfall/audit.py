@@ -26,7 +26,11 @@ from cloudfall.requirements import (
     VolumeRequirement,
     requirements_of,
 )
-from cloudfall.volumes import parse_logical_volumes
+from cloudfall.volumes import (
+    DeviceResolution,
+    parse_devices,
+    parse_logical_volumes,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -696,8 +700,12 @@ def _audit_volumes(
             for volume in volumes
         )
     logical = parse_logical_volumes(report)
+    # An observation from before #293 has no resolved devices: it compares
+    # the declared paths literally, as it always did
+    raw_devices = evidence.get("devices") if isinstance(evidence, dict) else None
+    devices = None if raw_devices is None else parse_devices(raw_devices)
     return tuple(
-        _audit_volume(volume, logical, mounts) for volume in volumes
+        _audit_volume(volume, logical, mounts, devices) for volume in volumes
     )
 
 
@@ -712,10 +720,35 @@ def _volume_desired(volume: VolumeRequirement) -> dict[str, object]:
     }
 
 
+def _volume_devices_match(
+    volume: VolumeRequirement,
+    sits_on: object,
+    devices: Mapping[str, DeviceResolution] | None,
+) -> bool:
+    """Compare an LV's devices with the declared paths, on resolved devices (#293)."""
+    if not isinstance(sits_on, list):
+        return False
+    declared = [item.value for item in volume.physical_volumes]
+    if devices is None:
+        return sorted(str(item) for item in sits_on) == sorted(declared)
+    wanted = [devices[path].device if path in devices else None for path in declared]
+    if None in wanted:
+        return False
+
+    def canonical(name: str) -> str:
+        found = devices.get(name)
+        return found.device if found is not None and found.device else name
+
+    return sorted(canonical(str(item)) for item in sits_on) == sorted(
+        str(item) for item in wanted
+    )
+
+
 def _audit_volume(
     volume: VolumeRequirement,
     logical: Mapping[str, Mapping[str, object]],
     mounts: Mapping[str, object],
+    devices: Mapping[str, DeviceResolution] | None,
 ) -> AuditCheck:
     desired = _volume_desired(volume)
     check = f"volume.{volume.name.value}"
@@ -727,7 +760,7 @@ def _audit_volume(
     source = mounts.get(volume.path.value)
     lv_path = f"/dev/{volume.pool.volume_group.value}/{volume.logical_volume}"
     size = held.get("sizeBytes")
-    observed = {
+    observed: dict[str, object] = {
         "logicalVolume": f"{volume.pool.volume_group.value}/{volume.logical_volume}",
         "type": held.get("type"),
         "physicalVolumes": held.get("devices"),
@@ -735,9 +768,18 @@ def _audit_volume(
         "health": held.get("health") or None,
         "mountedFrom": source,
     }
+    if devices is not None:
+        # The declared path next to the device it resolved to, None when the
+        # host could not resolve it
+        observed["resolvedPhysicalVolumes"] = {
+            item.value: (
+                devices[item.value].device if item.value in devices else None
+            )
+            for item in volume.physical_volumes
+        }
     held_matches = (
         held.get("type") == desired["type"]
-        and held.get("devices") == desired["physicalVolumes"]
+        and _volume_devices_match(volume, held.get("devices"), devices)
         and isinstance(size, int)
         and size >= volume.minimum_size.value
         and not held.get("health")

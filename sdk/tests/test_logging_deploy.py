@@ -75,6 +75,12 @@ if args[-1].endswith("logging-volumes.yml"):
             "paths": {{
                 item["path"]: {{"mountedFrom": None, "empty": True}} for item in items
             }},
+            # Kernel names resolve to themselves, as realpath prints them
+            "devices": {{
+                path: {{"device": path, "error": None}}
+                for path in [pv["pv_name"] for pv in pvs]
+                + [path for item in items for path in item["physicalVolumes"]]
+            }},
         }}
         with open(os.path.join(root, server + ".json"), "w") as out:
             json.dump(content, out)

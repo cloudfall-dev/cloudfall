@@ -1,7 +1,9 @@
 ---
 # S-014 volume provider, host side, read only: each logging host reports its
 # volume groups, physical volumes, logical volumes, the filesystem on each
-# requested volume, and whether each mount path is mounted or holds files.
+# requested volume, whether each mount path is mounted or holds files, and the
+# device each declared pool path and each physical volume resolves to, so a
+# stable /dev/disk/by-id path matches the name LVM reports (#293).
 # The controller decides from this report; nothing here changes the host.
 - name: Report volume facts from logging hosts
   hosts: cloudfall_logging_backends:cloudfall_logging_collectors
@@ -10,6 +12,13 @@
   vars:
     cloudfall_volume_items: >-
       {{ (cloudfall_volume_requests | default({})).get(cloudfall_server_id, []) }}
+    cloudfall_volume_pool_paths: >-
+      {{ cloudfall_volume_items | map(attribute='physicalVolumes') | flatten | unique | list }}
+    cloudfall_volume_pv_names: >-
+      {{ ((cloudfall_volume_lvm.results[1].stdout | from_json).report
+          | map(attribute='pv', default=[]) | flatten
+          | map(attribute='pv_name') | list)
+         if cloudfall_volume_items | length > 0 else [] }}
   tasks:
     - name: Read LVM's reports
       ansible.builtin.command:
@@ -25,6 +34,17 @@
       register: cloudfall_volume_lvm
       changed_when: false
       when: cloudfall_volume_items | length > 0
+
+    # realpath follows every link (by-id, by-path, by-partuuid, /dev/mapper);
+    # it exits 1 when a path does not resolve, and its message goes into the
+    # report so the controller refuses naming the path. Any other exit fails.
+    - name: Resolve each pool path and each physical volume to its device
+      ansible.builtin.command:
+        argv: [realpath, --canonicalize-existing, --, "{{ item }}"]
+      loop: "{{ (cloudfall_volume_pool_paths + cloudfall_volume_pv_names) | unique | list }}"
+      register: cloudfall_volume_devices
+      changed_when: false
+      failed_when: cloudfall_volume_devices.rc not in [0, 1]
 
     - name: Read the filesystem on each requested volume
       ansible.builtin.command:
@@ -97,5 +117,13 @@
             {%- set _ = found.update({mount.item.path: {
                   'mountedFrom': (mount.stdout | trim) if mount.rc == 0 else none,
                   'empty': (contents.matched | default(0)) == 0}}) -%}
+            {%- endfor -%}
+            {{ found }}
+          devices: >-
+            {%- set found = {} -%}
+            {%- for read in cloudfall_volume_devices.results -%}
+            {%- set _ = found.update({read.item: {
+                  'device': (read.stdout | trim) if read.rc == 0 else none,
+                  'error': none if read.rc == 0 else (read.stderr | trim)}}) -%}
             {%- endfor -%}
             {{ found }}
