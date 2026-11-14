@@ -36,6 +36,21 @@
       its own server; this release converges no declared users or
       existingCluster yet
 
+# Snapshots (S-012, #313): S-012 declares an S3 snapshotRepository, but
+# registering it (its keys in the keystore of every node, the repository
+# itself) is not built yet, so the converge stops before it changes the host
+# rather than leave the service without snapshots.
+- name: Refuse a snapshot repository this release does not converge
+  ansible.builtin.assert:
+    that:
+      - cloudfall_elasticsearch_service.elasticsearch.snapshotRepository is not defined
+    fail_msg: >-
+      Service {{ cloudfall_elasticsearch_service.id }} declares an S3
+      snapshotRepository, which S-012 specifies but Cloudfall does not build
+      yet: S3 repository registration (the keystore keys from credentialsRef
+      and the repository) is not implemented. Remove snapshotRepository to
+      use the filesystem repository in backup.directory
+
 # The same refusals as validation's and the PostgreSQL role's (S-006): the
 # HTTP port opens on one address, to declared sources only.
 - name: Refuse remote access that is not narrowed to declared sources
@@ -467,3 +482,6 @@
         owner: root
         group: root
         mode: "0600"
+
+- name: Converge the snapshot repository, the snapshot and the restore drill
+  ansible.builtin.import_tasks: snapshots.yml

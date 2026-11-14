@@ -1,0 +1,41 @@
+# Managed by Cloudfall. Local changes will be overwritten.
+[Unit]
+Description=Cloudfall Elasticsearch {{ cloudfall_elasticsearch_snapshot_action }} for {{ cloudfall_elasticsearch_service.id }}
+After=elasticsearch.service
+Requires=elasticsearch.service
+
+[Service]
+Type=oneshot
+User=elasticsearch
+Group=elasticsearch
+ExecStart=/usr/local/sbin/cloudfall-elasticsearch-{{ cloudfall_elasticsearch_snapshot_action }}
+# The script only reads the cloudfall password and talks to the node on
+# loopback, or with remoteAccess on its listen address; the node itself
+# writes the repository (D-10).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressAllow=localhost
+{% if cloudfall_elasticsearch_service.elasticsearch.remoteAccess is defined %}
+IPAddressAllow={{ cloudfall_elasticsearch_service.elasticsearch.remoteAccess.listenAddress }}
+{% endif %}
+IPAddressDeny=any
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources

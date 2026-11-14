@@ -45,3 +45,23 @@ cloudfall_elasticsearch_formed_marker: >-
   {{ cloudfall_elasticsearch_state_directory }}/{{
     cloudfall_elasticsearch_service.id
   }}.cluster-formed
+# Snapshots and the restore drill (S-012): the repository the converge
+# registers, and how often and how long the scripts wait for Elasticsearch.
+cloudfall_elasticsearch_snapshot_repository: cloudfall
+# Cloudfall's own index: one document per snapshot with the document counts
+# the restore drill compares, taken into the snapshot it describes.
+cloudfall_elasticsearch_snapshot_counts_index: cloudfall-snapshot-counts
+cloudfall_elasticsearch_snapshot_poll_seconds: 5
+cloudfall_elasticsearch_snapshot_wait_seconds: 21600
+# The timers: the snapshot always, the restore drill when it has a calendar.
+cloudfall_elasticsearch_snapshot_jobs: >-
+  {{
+    [{'action': 'backup',
+      'calendar': cloudfall_elasticsearch_service.backup.onCalendar}]
+    + (
+      [{'action': 'restore-check',
+        'calendar': cloudfall_elasticsearch_service.backup.restoreCheckOnCalendar}]
+      if cloudfall_elasticsearch_service.backup.restoreCheckOnCalendar is defined
+      else []
+    )
+  }}

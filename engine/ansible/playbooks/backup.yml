@@ -69,9 +69,11 @@
       become: true
       become_user: >-
         {{
-          'postgres'
-          if cloudfall_backup_item.serviceKind == 'postgresql'
-          else 'redis'
+          {
+            'postgresql': 'postgres',
+            'redis': 'redis',
+            'elasticsearch': 'elasticsearch',
+          }[cloudfall_backup_item.serviceKind]
         }}
       loop: "{{ cloudfall_backup_matched }}"
       loop_control:

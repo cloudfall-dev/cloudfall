@@ -1,0 +1,135 @@
+---
+# Snapshots and the restore drill (S-012, #313). The repository is a
+# filesystem repository in backup.directory, which elasticsearch.yml adds to
+# path.repo; the node writes it, the scripts only ask the node's API, at
+# the role's cloudfall_elasticsearch_api_url. main.yml has already refused
+# an S3 snapshotRepository, before it changed the host.
+- name: Validate the declared snapshot calendar expressions
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemd-analyze
+      - calendar
+      - "{{ cloudfall_elasticsearch_snapshot_job.calendar }}"
+  loop: "{{ cloudfall_elasticsearch_snapshot_jobs }}"
+  loop_control:
+    loop_var: cloudfall_elasticsearch_snapshot_job
+    label: "{{ cloudfall_elasticsearch_snapshot_job.action }}"
+  changed_when: false
+  check_mode: false
+
+- name: Create the snapshot repository directory
+  ansible.builtin.file:
+    path: "{{ cloudfall_elasticsearch_service.backup.directory }}"
+    state: directory
+    owner: elasticsearch
+    group: elasticsearch
+    mode: "0750"
+
+- name: Read the registered snapshot repository
+  ansible.builtin.uri:
+    url: >-
+      {{ cloudfall_elasticsearch_api_url
+      }}/_snapshot/{{ cloudfall_elasticsearch_snapshot_repository }}
+    ca_path: "{{ cloudfall_elasticsearch_api_ca or omit }}"
+    url_username: cloudfall
+    url_password: >-
+      {{ lookup('ansible.builtin.file',
+                cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+    force_basic_auth: true
+    status_code:
+      - 200
+      - 404
+  register: cloudfall_elasticsearch_registered_repository
+  no_log: true
+  when: not ansible_check_mode
+
+# Registering verifies that the node can write the directory; a second
+# converge finds the same repository and changes nothing.
+- name: Register the filesystem snapshot repository
+  ansible.builtin.uri:
+    url: >-
+      {{ cloudfall_elasticsearch_api_url
+      }}/_snapshot/{{ cloudfall_elasticsearch_snapshot_repository }}
+    ca_path: "{{ cloudfall_elasticsearch_api_ca or omit }}"
+    method: PUT
+    url_username: cloudfall
+    url_password: >-
+      {{ lookup('ansible.builtin.file',
+                cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+    force_basic_auth: true
+    body_format: json
+    body:
+      type: fs
+      settings:
+        location: "{{ cloudfall_elasticsearch_service.backup.directory }}"
+    status_code: 200
+  changed_when: true
+  no_log: true
+  when:
+    - not ansible_check_mode
+    - >-
+      cloudfall_elasticsearch_registered_repository.status == 404
+      or cloudfall_elasticsearch_registered_repository.json
+      [cloudfall_elasticsearch_snapshot_repository].type != 'fs'
+      or cloudfall_elasticsearch_registered_repository.json
+      [cloudfall_elasticsearch_snapshot_repository].settings.location
+      != cloudfall_elasticsearch_service.backup.directory
+
+- name: Install the snapshot and restore-drill scripts
+  ansible.builtin.template:
+    src: snapshots.py.j2
+    dest: /usr/local/sbin/cloudfall-elasticsearch-{{ cloudfall_elasticsearch_snapshot_action }}
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - backup
+    - restore-check
+  loop_control:
+    loop_var: cloudfall_elasticsearch_snapshot_action
+
+- name: Install the snapshot and restore-drill service units
+  ansible.builtin.template:
+    src: snapshots.service.j2
+    dest: >-
+      /etc/systemd/system/cloudfall-elasticsearch-{{
+        cloudfall_elasticsearch_snapshot_action
+      }}.service
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ cloudfall_elasticsearch_snapshot_jobs }}"
+  loop_control:
+    loop_var: cloudfall_elasticsearch_snapshot_job
+    label: "{{ cloudfall_elasticsearch_snapshot_job.action }}"
+  vars:
+    cloudfall_elasticsearch_snapshot_action: "{{ cloudfall_elasticsearch_snapshot_job.action }}"
+
+- name: Install the snapshot and restore-drill timer units
+  ansible.builtin.template:
+    src: snapshots.timer.j2
+    dest: >-
+      /etc/systemd/system/cloudfall-elasticsearch-{{
+        cloudfall_elasticsearch_snapshot_action
+      }}.timer
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ cloudfall_elasticsearch_snapshot_jobs }}"
+  loop_control:
+    loop_var: cloudfall_elasticsearch_snapshot_job
+    label: "{{ cloudfall_elasticsearch_snapshot_job.action }}"
+  vars:
+    cloudfall_elasticsearch_snapshot_action: "{{ cloudfall_elasticsearch_snapshot_job.action }}"
+    cloudfall_elasticsearch_snapshot_calendar: "{{ cloudfall_elasticsearch_snapshot_job.calendar }}"
+
+- name: Enable the snapshot and restore-drill timers
+  ansible.builtin.systemd_service:
+    name: cloudfall-elasticsearch-{{ cloudfall_elasticsearch_snapshot_job.action }}.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop: "{{ cloudfall_elasticsearch_snapshot_jobs }}"
+  loop_control:
+    loop_var: cloudfall_elasticsearch_snapshot_job
+    label: "{{ cloudfall_elasticsearch_snapshot_job.action }}"

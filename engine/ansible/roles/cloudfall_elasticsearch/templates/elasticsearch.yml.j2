@@ -19,6 +19,9 @@ http.port: {{ cloudfall_elasticsearch_service.bind.port }}
 http.host: {{ [cloudfall_elasticsearch_service.bind.address, cloudfall_elasticsearch_service.elasticsearch.remoteAccess.listenAddress] | to_json }}
 {% endif %}
 discovery.seed_hosts: {{ [cloudfall_elasticsearch_service.bind.address] | to_json }}
+{% if cloudfall_elasticsearch_service.elasticsearch.snapshotRepository is not defined %}
+path.repo: {{ [cloudfall_elasticsearch_service.backup.directory] | to_json }}
+{% endif %}
 {% if cloudfall_elasticsearch_bootstrap | bool %}
 cluster.initial_master_nodes: {{ [cloudfall_server_id] | to_json }}
 {% endif %}
