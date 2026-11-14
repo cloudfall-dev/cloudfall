@@ -245,6 +245,15 @@ def test_s014_7_a_kernel_name_missing_on_the_host_is_refused() -> None:
     assert f"physical volume {PRIMARY} does not resolve" in reason
 
 
+def test_s014_4_a_missing_secondary_does_not_block_a_linear_volume() -> None:
+    """Kernel names behave as before: a linear volume never reads the secondary."""
+    resolved = {**RESOLVED, SECONDARY: None}
+    assert _plan(_raw(resolved=resolved)) == {
+        "loki": VolumeAction.CREATE,
+        "prometheus": VolumeAction.CREATE,
+    }
+
+
 def test_s014_7_a_pool_whose_paths_name_one_device_is_refused(tmp_path: Path) -> None:
     """#293: two different stable paths may name one partition."""
     other = "/dev/disk/by-partuuid/0f6c2a5e-6b1d-4f1e-9a51-1c2d3e4f5a6b"

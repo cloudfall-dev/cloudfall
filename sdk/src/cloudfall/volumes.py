@@ -388,16 +388,20 @@ def _physical_names(
     """
     pool = spec.pool.resource_id.value
     group = spec.pool.volume_group.value
+    # Only the paths the volume sits on must resolve: a linear volume never
+    # reads the secondary, as before #293
     resolved = {
-        path.value: _resolve(server, pool, path, devices) for path in pool_paths(spec)
+        path.value: _resolve(server, pool, path, devices)
+        for path in spec.physical_volumes
     }
     primary, secondary = spec.pool.primary, spec.pool.secondary
-    if secondary is not None and resolved[primary.value] == resolved[secondary.value]:
+    first = _canonical(primary.value, devices)
+    if secondary is not None and first == _canonical(secondary.value, devices):
         # Two different stable paths can name one partition; validation only
         # sees the strings, so a mirror would sit twice on one disk
         reason = (
             f"primary and secondary name one device: {primary.value} and "
-            f"{secondary.value} both resolve to {resolved[primary.value]}"
+            f"{secondary.value} both resolve to {first}"
         )
         raise VolumeRefusedError(server, pool, reason)
     physical = _mapping(report, "physicalVolumes")
