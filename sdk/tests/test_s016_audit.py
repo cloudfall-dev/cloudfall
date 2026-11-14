@@ -167,7 +167,9 @@ def _inspect(tmp_path: Path, directory: Path) -> dict[str, object]:
         timeout=300,
     )
     snapshot = json.loads(output.read_text(encoding="utf-8"))
-    return snapshot["spec"]["loggingDashboards"]
+    evidence = snapshot["spec"]["loggingDashboards"]
+    assert isinstance(evidence, dict)
+    return evidence
 
 
 def test_s016_6_inspect_hashes_each_dashboard_file(tmp_path: Path) -> None:
