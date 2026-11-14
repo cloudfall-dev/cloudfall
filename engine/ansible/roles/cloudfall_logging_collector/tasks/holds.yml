@@ -1,0 +1,18 @@
+---
+# Keep each package the stack pins at its declared version (#294): an APT
+# preference at priority 1001 stops a later `apt-get dist-upgrade` from moving
+# it. Written before the pinned install, so a new declared version rewrites
+# the file first and the install goes through.
+- name: Hold each pinned logging package at its declared version
+  ansible.builtin.copy:
+    dest: "{{ cloudfall_logging_collector_apt_preferences_dir }}/cloudfall-logging-{{ item.name }}"
+    content: |
+      Package: {{ item.name }}
+      Pin: version {{ item.version }}
+      Pin-Priority: 1001
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ cloudfall_logging_collector_holds }}"
+  loop_control:
+    label: "{{ item.name }}={{ item.version }}"

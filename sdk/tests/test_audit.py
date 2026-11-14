@@ -147,6 +147,58 @@ def test_audit_reports_raid_package_service_and_config_drift(
     assert captured.err == ""
 
 
+def test_audit_reports_a_logging_package_moved_off_its_pin(tmp_path: Path) -> None:
+    # 294: a dist-upgrade took Grafana past the stack's declared version
+    observations = tmp_path / "observed"
+    shutil.copytree(COMPLIANT, observations)
+    h1 = observations / "h1.json"
+    content = json.loads(h1.read_text(encoding="utf-8"))
+    for entry in content["spec"]["packages"]:
+        if entry["name"] == "grafana":
+            entry["version"] = "13.3.1"
+    h1.write_text(json.dumps(content), encoding="utf-8")
+
+    report = _audit(observations)
+    checks = {
+        (server.server_id, check.check): check
+        for server in report.servers
+        for check in server.checks
+        if check.check.startswith("logging.packages[")
+    }
+
+    assert {key: check.status for key, check in checks.items()} == {
+        ("h1", "logging.packages[loki]"): AuditStatus.COMPLIANT,
+        ("h1", "logging.packages[grafana]"): AuditStatus.DRIFT,
+        ("h1", "logging.packages[alloy]"): AuditStatus.COMPLIANT,
+        ("h2", "logging.packages[alloy]"): AuditStatus.COMPLIANT,
+    }
+    grafana = checks["h1", "logging.packages[grafana]"]
+    assert (grafana.desired, grafana.observed) == (
+        {"version": "13.1.0"},
+        {"versions": ["13.3.1"]},
+    )
+    assert report.status is AuditStatus.DRIFT
+
+
+def test_audit_reports_a_missing_logging_package(tmp_path: Path) -> None:
+    observations = tmp_path / "observed"
+    shutil.copytree(COMPLIANT, observations)
+    h2 = observations / "h2.json"
+    content = json.loads(h2.read_text(encoding="utf-8"))
+    content["spec"]["packages"] = [
+        entry for entry in content["spec"]["packages"] if entry["name"] != "alloy"
+    ]
+    h2.write_text(json.dumps(content), encoding="utf-8")
+
+    report = _audit(observations)
+    h2_report = next(server for server in report.servers if server.server_id == "h2")
+    alloy = next(
+        check for check in h2_report.checks if check.check == "logging.packages[alloy]"
+    )
+
+    assert (alloy.status, alloy.observed) == (AuditStatus.DRIFT, None)
+
+
 def test_audit_reports_firewall_and_timer_drift(tmp_path: Path) -> None:
     observations = tmp_path / "observed"
     shutil.copytree(COMPLIANT, observations)

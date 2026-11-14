@@ -1,0 +1,3 @@
+### Fixed
+
+- `logging deploy` holds Loki, Grafana, Alloy, and Prometheus and Alertmanager when they have a declared version, at the LoggingStack's declared versions: each role writes `/etc/apt/preferences.d/cloudfall-logging-<package>` (`Pin: version <declared>`, `Pin-Priority: 1001`) before its pinned install, so a later `apt-get dist-upgrade` no longer moves them, and removes the file of a package now installed without a declared version; `cloudfall audit` adds a `logging.packages[<package>]` check per pinned package on each of the stack's hosts, reporting drift when the installed version is not the declared one (#294)

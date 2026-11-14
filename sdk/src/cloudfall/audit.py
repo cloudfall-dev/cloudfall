@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, cast
 
 from cryptography import x509
 
+from cloudfall.domain import ResourceKind
 from cloudfall.inventory import (
     firewall_rules_for_server,
     logging_gateway_rules_for_server,
@@ -21,6 +22,7 @@ from cloudfall.inventory import (
 from cloudfall.pki import RENEW_BEFORE, certificate_names
 from cloudfall.requirements import (
     CertificateRequirement,
+    PackageRequirement,
     VolumeRequirement,
     requirements_of,
 )
@@ -149,13 +151,14 @@ def audit_inventory(
 ) -> AuditReport:
     """Audit every desired server against its validated observation."""
     receipts = environment_receipts if environment_receipts is not None else {}
+    placed = requirements_of(inventory)
     certificates = {
         server.server_id.value: tuple(
             requirement.spec
             for requirement in server.requirements
             if isinstance(requirement.spec, CertificateRequirement)
         )
-        for server in requirements_of(inventory)
+        for server in placed
     }
     volumes = {
         server.server_id.value: tuple(
@@ -163,7 +166,16 @@ def audit_inventory(
             for requirement in server.requirements
             if isinstance(requirement.spec, VolumeRequirement)
         )
-        for server in requirements_of(inventory)
+        for server in placed
+    }
+    logging_packages = {
+        server.server_id.value: tuple(
+            requirement.spec
+            for requirement in server.requirements
+            if isinstance(requirement.spec, PackageRequirement)
+            and requirement.owner.kind is ResourceKind.LOGGING_STACK
+        )
+        for server in placed
     }
     stacks_by_backend = {
         stack.backend.server_id: stack for stack in inventory.logging_stacks
@@ -188,6 +200,7 @@ def audit_inventory(
             _gateway_rules(server, inventory),
             certificates.get(server.resource_id.value, ()),
             volumes.get(server.resource_id.value, ()),
+            logging_packages.get(server.resource_id.value, ()),
         )
         for server in inventory.servers
     )
@@ -217,6 +230,7 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
     gateway_rules: tuple[SourceRestrictedFirewallRule, ...] = (),
     certificates: tuple[CertificateRequirement, ...] = (),
     volumes: tuple[VolumeRequirement, ...] = (),
+    logging_packages: tuple[PackageRequirement, ...] = (),
 ) -> ServerAudit:
     if snapshot is None:
         check = AuditCheck(
@@ -249,6 +263,7 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
         checks.extend(_audit_raid(baseline.raid, snapshot))
     checks.extend(_audit_mounts(baseline, snapshot))
     checks.extend(_audit_packages(baseline, snapshot))
+    checks.extend(_audit_logging_packages(logging_packages, snapshot))
     checks.extend(_audit_services(baseline, snapshot))
     if baseline.firewall is not None:
         checks.extend(
@@ -438,6 +453,30 @@ def _audit_packages(
                 {"installed": False},
                 {"installed": present},
                 matches=not present,
+            )
+        )
+    return tuple(checks)
+
+
+def _audit_logging_packages(
+    requirements: tuple[PackageRequirement, ...], snapshot: ObservedServerSnapshot
+) -> tuple[AuditCheck, ...]:
+    """Compare each package a LoggingStack pins with the installed one (#294)."""
+    installed: dict[str, list[str]] = {}
+    for entry in _mapping_sequence(snapshot.spec, "packages"):
+        installed.setdefault(_string(entry, "name"), []).append(
+            _string(entry, "version")
+        )
+    checks: list[AuditCheck] = []
+    for requirement in requirements:
+        versions = installed.get(requirement.package.value)
+        checks.append(
+            _comparison(
+                f"logging.packages[{requirement.package.value}]",
+                {"version": requirement.version.value},
+                {"versions": versions} if versions is not None else None,
+                matches=versions is not None
+                and requirement.version.value in versions,
             )
         )
     return tuple(checks)
