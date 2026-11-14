@@ -203,6 +203,15 @@ def _snapshot(  # noqa: PLR0913 - one observation, each hand change a keyword.
             _node_configuration(service) if configuration is None else configuration
         ),
     }
+    # The cluster answered as the cloudfall account, with no declared users.
+    spec["elasticsearchUsers"] = [
+        {
+            "service": "search-main",
+            "available": True,
+            "users": {"managed": [], "unmanaged": []},
+            "roles": {"managed": [], "unmanaged": []},
+        }
+    ]
     if firewall is not None:
         spec["firewall"]["managedTableJson"] = firewall
     return cast("dict[str, object]", document)
@@ -234,6 +243,7 @@ COMPLIANT_NODE = {
     "elasticsearch.line[search-main]": "compliant",
     "elasticsearch.unit[search-main]": "compliant",
     "elasticsearch.configuration[search-main]": "compliant",
+    "elasticsearch.users[search-main]": "compliant",
     "services.bind[search-main]": "compliant",
 }
 
