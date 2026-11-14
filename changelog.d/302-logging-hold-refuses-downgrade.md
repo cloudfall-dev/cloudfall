@@ -1,0 +1,3 @@
+### Fixed
+
+- `logging deploy` no longer leaves a host whose pinned logging package is already newer than declared (Grafana 13.3.1 installed, 13.2.6 declared) with a hold that makes every later `apt-get dist-upgrade` and unattended-upgrades abort on a downgrade: the holds are written at `Pin-Priority: 999`, which keeps a held package from moving up without ever forcing a downgrade, and before writing them each role compares the installed version with the declared one (`dpkg --compare-versions`, a dry run too) and stops on a newer one, naming the package and both versions and saying to declare the installed version or downgrade the package by hand, with no hold written on that host (#302)
