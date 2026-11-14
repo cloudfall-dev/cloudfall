@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from ipaddress import ip_address
 from typing import TYPE_CHECKING
 
 from cloudfall.domain import (
@@ -34,6 +35,12 @@ from cloudfall.domain import (
     TcpPort,
 )
 from cloudfall.elasticsearch import ElasticsearchAccount
+from cloudfall.elasticsearch_cluster import (
+    TRANSPORT_CA_PATH,
+    TRANSPORT_CERTIFICATE_PATH,
+    TRANSPORT_KEY_PATH,
+    transport_address,
+)
 from cloudfall.inventory import SecretValueReference, StoragePool
 
 if TYPE_CHECKING:
@@ -112,6 +119,8 @@ class CertificateUsage(StrEnum):
 
     SERVER = "server"
     CLIENT = "client"
+    SERVER_AND_CLIENT = "server-and-client"
+    """Both sides: a cluster node's transport, which accepts and opens connections."""
 
 
 class RequirementState(StrEnum):
@@ -408,11 +417,7 @@ ELASTICSEARCH_PACKAGE = PackageName("elasticsearch")
 ELASTICSEARCH_PASSWORD_NAME = RequirementName("elasticsearch-cloudfall-password")
 ELASTICSEARCH_PASSWORD_PATH = AbsolutePath("/etc/elasticsearch/cloudfall-password")
 """Where each node keeps the ``cloudfall`` account's password, 0600 elasticsearch."""
-ELASTICSEARCH_CERTIFICATE_NAME = RequirementName("elasticsearch-node")
-# Inside the node's configuration directory, where Elasticsearch reads them.
-ELASTICSEARCH_CERTIFICATE_PATH = AbsolutePath("/etc/elasticsearch/certs/node.crt")
-ELASTICSEARCH_KEY_PATH = AbsolutePath("/etc/elasticsearch/certs/node.key")
-ELASTICSEARCH_CA_PATH = AbsolutePath("/etc/elasticsearch/certs/ca.crt")
+ELASTICSEARCH_TRANSPORT_NAME = RequirementName("elasticsearch-transport")
 ELASTIC_PASSWORD_NAME = "elasticsearch-elastic-password"  # noqa: S105 - a name
 """How ``secrets generate`` names the ``elastic`` password; no host keeps it."""
 _ELASTICSEARCH_ACCOUNT_KEYS = {
@@ -439,8 +444,9 @@ def _elasticsearch_requirements(
 
     The password is generated (S-012, What each node needs); the role writes
     it on the node and only its bcrypt hash into the file realm. With
-    ``remoteAccess``, each node also needs its certificate from the project
-    CA, for HTTP over TLS: a client verifies it at the listen address.
+    ``remoteAccess``, each node also needs its one certificate from the
+    project CA, which HTTP uses for TLS: a client verifies it at the listen
+    address. The same certificate serves the transport of a cluster (#312).
     """
     elasticsearch = service.elasticsearch
     if elasticsearch is None:
@@ -472,18 +478,44 @@ def _elasticsearch_requirements(
                 Requirement(
                     owner,
                     CertificateRequirement(
-                        ELASTICSEARCH_CERTIFICATE_NAME,
-                        CertificateUsage.SERVER,
-                        (servers[node.value].hostname, remote_access.listen_address),
-                        ELASTICSEARCH_CERTIFICATE_PATH,
-                        ELASTICSEARCH_KEY_PATH,
-                        ELASTICSEARCH_CA_PATH,
+                        ELASTICSEARCH_TRANSPORT_NAME,
+                        CertificateUsage.SERVER_AND_CLIENT,
+                        elasticsearch_node_names(
+                            servers[node.value], remote_access.listen_address
+                        ),
+                        TRANSPORT_CERTIFICATE_PATH,
+                        TRANSPORT_KEY_PATH,
+                        TRANSPORT_CA_PATH,
                     ),
                 ),
             )
             for node in elasticsearch.nodes
         )
     return placed
+
+
+def elasticsearch_node_names(
+    server: ServerInventory, listen_address: IpAddress | None = None
+) -> tuple[Hostname | IpAddress, ...]:
+    """Return the names of a node's one certificate: hostname, then every address.
+
+    The addresses are the server's IPv4 (its ``network`` or an IP ``address``),
+    an IP ``address`` of another family, and the ``remoteAccess`` listen
+    address, each once, in that order (S-012, What each node needs).
+    """
+    addresses: list[str] = []
+    ipv4 = transport_address(server)
+    if ipv4 is not None:
+        addresses.append(str(ipv4))
+    try:
+        address = ip_address(server.address.value)
+    except ValueError:
+        address = None  # a DNS name: the hostname names it already
+    if address is not None:
+        addresses.append(str(address))
+    if listen_address is not None:
+        addresses.append(listen_address.value)
+    return (server.hostname, *(IpAddress(item) for item in dict.fromkeys(addresses)))
 
 
 TELEGRAM_TOKEN_NAME = RequirementName("telegram-bot-token")

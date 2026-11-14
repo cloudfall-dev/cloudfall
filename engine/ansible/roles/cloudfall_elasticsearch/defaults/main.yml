@@ -12,11 +12,12 @@ cloudfall_elasticsearch_log_path: /var/log/elasticsearch
 # The S-011 secret requirement's path (requirements.ELASTICSEARCH_PASSWORD_PATH).
 cloudfall_elasticsearch_password_path: /etc/elasticsearch/cloudfall-password
 cloudfall_elasticsearch_state_directory: /var/lib/cloudfall/elasticsearch
-# The node's certificate from the project CA, its key and that CA: the S-011
-# certificate requirement's paths (requirements.ELASTICSEARCH_CERTIFICATE_PATH,
-# _KEY_PATH, _CA_PATH). HTTP uses them with remoteAccess.
-cloudfall_elasticsearch_certificate_path: /etc/elasticsearch/certs/node.crt
-cloudfall_elasticsearch_key_path: /etc/elasticsearch/certs/node.key
+# The node's one certificate from the project CA, its key and that CA: the
+# paths of its S-011 elasticsearch-transport requirement
+# (elasticsearch_cluster.TRANSPORT_CERTIFICATE_PATH, _KEY_PATH, _CA_PATH).
+# The transport of a cluster and, with remoteAccess, HTTP use them.
+cloudfall_elasticsearch_certificate_path: /etc/elasticsearch/certs/transport.crt
+cloudfall_elasticsearch_key_path: /etc/elasticsearch/certs/transport.key
 cloudfall_elasticsearch_ca_path: /etc/elasticsearch/certs/ca.crt
 # Where the role reaches the node's API: plain HTTP on loopback, or, with
 # remoteAccess, HTTPS on the listen address the certificate names, verified

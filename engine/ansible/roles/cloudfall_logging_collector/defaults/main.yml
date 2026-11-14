@@ -5,7 +5,8 @@ cloudfall_logging_collector_metrics_role: alloy
 cloudfall_logging_collector_credentials_directory: /run/credentials/alloy.service
 # Where an Elasticsearch node keeps the cloudfall password and, with
 # remoteAccess, the project CA (requirements.ELASTICSEARCH_PASSWORD_PATH,
-# ELASTICSEARCH_CA_PATH); systemd hands them to Alloy as credentials
+# elasticsearch_cluster.TRANSPORT_CA_PATH); systemd hands them to Alloy as
+# credentials
 cloudfall_logging_collector_elasticsearch_password_path: /etc/elasticsearch/cloudfall-password
 cloudfall_logging_collector_elasticsearch_ca_path: /etc/elasticsearch/certs/ca.crt
 cloudfall_logging_collector_grafana_repository_key_url: >-

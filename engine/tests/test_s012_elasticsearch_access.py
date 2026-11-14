@@ -11,6 +11,7 @@ are left for the proving run.
 
 from __future__ import annotations
 
+import datetime
 import json
 import shutil
 import subprocess
@@ -23,18 +24,28 @@ import yaml
 from ansible.parsing.dataloader import DataLoader
 from ansible.template import Templar, trust_as_template
 from cloudfall.audit import AuditCheck, audit_inventory, elasticsearch_managed_settings
+from cloudfall.domain import IpAddress, ResourceId
+from cloudfall.elasticsearch_cluster import (
+    TRANSPORT_CA_PATH,
+    TRANSPORT_CERTIFICATE_PATH,
+    TRANSPORT_KEY_PATH,
+)
 from cloudfall.inventory import PlatformInventory
 from cloudfall.observation import load_observations
+from cloudfall.pki import CertificateState, certificate_names, load_or_create_ca
 from cloudfall.requirements import (
-    ELASTICSEARCH_CA_PATH,
-    ELASTICSEARCH_CERTIFICATE_PATH,
-    ELASTICSEARCH_KEY_PATH,
     ELASTICSEARCH_PASSWORD_PATH,
     CertificateRequirement,
+    elasticsearch_node_names,
     requirements_of,
 )
+from cloudfall.secret_store import SecretStore
 from cloudfall.validation import validate_config
 from cloudfall_engine.ansible_inventory import render_ansible_inventory
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from elasticsearch_project import SCHEMAS, elasticsearch_service, write_project
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
@@ -550,11 +561,11 @@ def test_s012_14_http_is_tls_only_on_loopback_and_the_listen_address(
     assert rendered["http.host"] == ["127.0.0.1", "10.0.0.2"]
     assert rendered["xpack.security.http.ssl.enabled"] is True
     assert rendered["xpack.security.http.ssl.certificate"] == (
-        ELASTICSEARCH_CERTIFICATE_PATH.value
+        TRANSPORT_CERTIFICATE_PATH.value
     )
-    assert rendered["xpack.security.http.ssl.key"] == ELASTICSEARCH_KEY_PATH.value
+    assert rendered["xpack.security.http.ssl.key"] == TRANSPORT_KEY_PATH.value
     assert rendered["xpack.security.http.ssl.certificate_authorities"] == [
-        ELASTICSEARCH_CA_PATH.value
+        TRANSPORT_CA_PATH.value
     ]
     # The transport stays on loopback; only HTTP opens.
     assert rendered["network.host"] == "127.0.0.1"
@@ -582,27 +593,96 @@ def test_s012_14_the_node_certificate_comes_from_the_project_ca(
             if isinstance(requirement.spec, CertificateRequirement)
         ]
 
+    # The node's one certificate (S-012, What each node needs): server and
+    # client, for its hostname and every address, the listen address included,
+    # which a client verifies when it connects there.
     (certificate,) = certificates(opened)
-    assert certificate.name.value == "elasticsearch-node"
-    assert certificate.usage.value == "server"
-    # A client verifies the name it connects to: the listen address.
-    assert [name.value for name in certificate.subject_names] == [
-        "h1.example.internal",
-        "10.0.0.2",
-    ]
-    assert certificate.ca_path == ELASTICSEARCH_CA_PATH
+    assert certificate.name.value == "elasticsearch-transport"
+    assert certificate.as_dict() == {
+        "usage": "server-and-client",
+        "subjectNames": ["h1.example.internal", "203.0.113.11", "10.0.0.2"],
+        "certificatePath": "/etc/elasticsearch/certs/transport.crt",
+        "keyPath": "/etc/elasticsearch/certs/transport.key",
+        "caPath": "/etc/elasticsearch/certs/ca.crt",
+    }
     assert _host(opened)["cloudfall_certificates"] == [
-        {"name": "elasticsearch-node", "path": ELASTICSEARCH_CERTIFICATE_PATH.value}
+        {"name": "elasticsearch-transport", "path": TRANSPORT_CERTIFICATE_PATH.value}
     ]
     assert certificates(closed) == []
     assert "cloudfall_certificates" not in _host(closed)
     # The role reads them where the requirement puts them.
     defaults = _role_defaults()
     assert defaults["cloudfall_elasticsearch_certificate_path"] == (
-        ELASTICSEARCH_CERTIFICATE_PATH.value
+        TRANSPORT_CERTIFICATE_PATH.value
     )
-    assert defaults["cloudfall_elasticsearch_key_path"] == ELASTICSEARCH_KEY_PATH.value
-    assert defaults["cloudfall_elasticsearch_ca_path"] == ELASTICSEARCH_CA_PATH.value
+    assert defaults["cloudfall_elasticsearch_key_path"] == TRANSPORT_KEY_PATH.value
+    assert defaults["cloudfall_elasticsearch_ca_path"] == TRANSPORT_CA_PATH.value
+
+
+def test_the_node_certificate_names_each_address_once(tmp_path: Path) -> None:
+    project = _project(tmp_path, remote_access=REMOTE_ACCESS)
+    server = project / "servers" / "h1.yaml"
+    document = yaml.safe_load(server.read_text(encoding="utf-8"))
+    del document["spec"]["network"]
+    document["spec"]["address"] = "10.0.0.2"
+    server.write_text(yaml.safe_dump(document), encoding="utf-8")
+    (node,) = _inventory(project).servers
+
+    assert [name.value for name in elasticsearch_node_names(node)] == [
+        "h1.example.internal",
+        "10.0.0.2",
+    ]
+    assert [
+        name.value
+        for name in elasticsearch_node_names(node, IpAddress("2001:db8::2"))
+    ] == ["h1.example.internal", "10.0.0.2", "2001:db8::2"]
+
+
+def test_the_project_ca_signs_the_node_certificate_for_both_sides(
+    tmp_path: Path,
+) -> None:
+    """Signed for server and client auth, it is ``met`` on the next converge."""
+    now = datetime.datetime(2026, 11, 14, 12, 0, tzinfo=datetime.UTC)
+    inventory = _inventory(_project(tmp_path, remote_access=REMOTE_ACCESS))
+    (requirement,) = [
+        item.spec
+        for server in requirements_of(inventory)
+        for item in server.requirements
+        if isinstance(item.spec, CertificateRequirement)
+    ]
+    key = ec.generate_private_key(ec.SECP256R1())
+    request = (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "h1")]))
+        .sign(key, hashes.SHA256())
+        .public_bytes(serialization.Encoding.PEM)
+        .decode()
+    )
+    store = SecretStore(
+        tmp_path / "secrets",
+        decrypt=lambda source: "".join(
+            f"{line}\n"
+            for line in source.read_text(encoding="utf-8").splitlines()
+            if not line.startswith("sops_")
+        ),
+        encrypt=lambda _target, plaintext: plaintext + "sops_mac=fake\n",
+    )
+    ca, _ = load_or_create_ca(store, ResourceId("production"), now)
+
+    signed = ca.sign(request, requirement, now)
+
+    certificate = x509.load_pem_x509_certificate(signed.encode())
+    usages = certificate.extensions.get_extension_for_class(x509.ExtendedKeyUsage)
+    assert list(usages.value) == [
+        ExtendedKeyUsageOID.SERVER_AUTH,
+        ExtendedKeyUsageOID.CLIENT_AUTH,
+    ]
+    assert certificate_names(certificate) == {
+        "h1.example.internal",
+        "203.0.113.11",
+        "10.0.0.2",
+    }
+    assert ca.state(signed, requirement, now) is CertificateState.MET
 
 
 # proves: S-012-14
@@ -638,7 +718,7 @@ def test_s012_14_the_role_calls_its_api_over_https_verifying_the_project_ca(
         "https://10.0.0.2:9200"
     )
     assert _role_value("{{ cloudfall_elasticsearch_api_ca }}", opened) == (
-        ELASTICSEARCH_CA_PATH.value
+        TRANSPORT_CA_PATH.value
     )
     assert _role_value("{{ cloudfall_elasticsearch_api_url }}", closed) == (
         "http://127.0.0.1:9200"
@@ -912,7 +992,7 @@ def test_metrics_with_remote_access_verify_the_project_ca(tmp_path: Path) -> Non
         'ca      = "/run/credentials/alloy.service/elasticsearch-search-main-ca"'
     ) in rendered
     assert (
-        f"LoadCredential=elasticsearch-search-main-ca:{ELASTICSEARCH_CA_PATH.value}"
+        f"LoadCredential=elasticsearch-search-main-ca:{TRANSPORT_CA_PATH.value}"
     ) in override.splitlines()
 
 
@@ -942,7 +1022,7 @@ def test_the_collector_requires_the_exporter_files_before_it_changes_the_host(
     assert files([loopback]) == [ELASTICSEARCH_PASSWORD_PATH.value]
     assert files([opened]) == [
         ELASTICSEARCH_PASSWORD_PATH.value,
-        ELASTICSEARCH_CA_PATH.value,
+        TRANSPORT_CA_PATH.value,
     ]
     assert files([_without_metrics(loopback)]) == []
     assert files([]) == []
