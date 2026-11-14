@@ -52,6 +52,18 @@
   loop: "{{ cloudfall_logging_collector_tls_files.results }}"
   when: item.item == cloudfall_logging_collector_stack.collectors.clientTls.keyPath
 
+# Alloy runs as alloy:alloy, the account this role creates before the install
+- name: Check the service users reach their files before anything is installed
+  ansible.builtin.include_tasks: preflight.yml
+  vars:
+    cloudfall_logging_collector_readers:
+      - user: alloy
+        group: alloy
+        paths:
+          - "{{ cloudfall_logging_collector_stack.collectors.clientTls.caPath }}"
+          - "{{ cloudfall_logging_collector_stack.collectors.clientTls.certificatePath }}"
+          - "{{ cloudfall_logging_collector_stack.collectors.clientTls.keyPath }}"
+
 - name: Install Grafana repository prerequisites
   ansible.builtin.apt:
     name:
