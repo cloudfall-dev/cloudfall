@@ -17,6 +17,35 @@
   changed_when: false
   failed_when: false
 
+- name: Read LVM's physical volume names
+  ansible.builtin.command:
+    argv: [pvs, --reportformat, json, -o, pv_name]
+  register: cloudfall_inspect_pvs
+  changed_when: false
+  failed_when: false
+
+# realpath follows every link (by-id, by-path, by-partuuid, /dev/mapper), so
+# audit compares the devices a declared path and an LV's devices name (#293).
+# It exits 1 when a path does not resolve; its message is evidence. Any other
+# exit fails the task.
+- name: Resolve each declared physical volume and each LVM one to its device
+  ansible.builtin.command:
+    argv: [realpath, --canonicalize-existing, --, "{{ cloudfall_inspect_device_path }}"]
+  loop: >-
+    {{ ((cloudfall_inspect_volumes | map(attribute='physicalVolumes') | flatten)
+        + cloudfall_inspect_pv_names) | unique | list }}
+  loop_control:
+    loop_var: cloudfall_inspect_device_path
+  register: cloudfall_inspect_devices
+  changed_when: false
+  failed_when: cloudfall_inspect_devices.rc not in [0, 1]
+  vars:
+    cloudfall_inspect_pv_names: >-
+      {{ ((cloudfall_inspect_pvs.stdout | from_json).report
+          | map(attribute='pv', default=[]) | flatten
+          | map(attribute='pv_name') | list)
+         if cloudfall_inspect_pvs.rc == 0 else [] }}
+
 - name: Read what is mounted at each volume's path
   ansible.builtin.command:
     argv:
@@ -42,11 +71,20 @@
           {'spec': {'volumes': {
             'lvsJson': (cloudfall_inspect_lvs.stdout
                         if cloudfall_inspect_lvs.rc == 0 else none),
-            'mounts': cloudfall_inspect_volume_mount_evidence}}},
+            'mounts': cloudfall_inspect_volume_mount_evidence,
+            'devices': cloudfall_inspect_device_evidence}}},
           recursive=true
         )
       }}
   vars:
+    cloudfall_inspect_device_evidence: >-
+      {%- set found = {} -%}
+      {%- for read in cloudfall_inspect_devices.results -%}
+      {%- set _ = found.update({read.cloudfall_inspect_device_path: {
+            'device': (read.stdout | trim) if read.rc == 0 else none,
+            'error': none if read.rc == 0 else (read.stderr | trim)}}) -%}
+      {%- endfor -%}
+      {{ found }}
     cloudfall_inspect_volume_mount_evidence: >-
       {%- set found = {} -%}
       {%- for read in cloudfall_inspect_volume_mounts.results -%}

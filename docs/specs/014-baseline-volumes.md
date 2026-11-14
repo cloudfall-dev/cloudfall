@@ -30,12 +30,17 @@ spec:
     pools:
       - id: data
         volumeGroup: vg_data
-        primary: /dev/nvme0n1p5
-        secondary: /dev/nvme1n1p5
+        primary: /dev/disk/by-id/nvme-SAMSUNG_MZQL2960HCJR_S64FNE0R100001-part5
+        secondary: /dev/disk/by-id/nvme-SAMSUNG_MZQL2960HCJR_S64FNE0R100002-part5
 ```
 
 - `volumeGroup` names an existing LVM volume group; `primary` and `secondary` name two of its
   physical volumes. `secondary` is optional: a pool without it can hold only expendable volumes
+- Name `primary` and `secondary` by a stable path (`/dev/disk/by-id/...`, or `by-path`,
+  `by-partuuid`): NVMe kernel names such as `/dev/nvme0n1p5` can swap between boots, and a
+  swap would silently turn the primary into the secondary. The host resolves each path with
+  `realpath` before comparing it with LVM's physical volumes; a kernel name still works and
+  resolves to itself (cloudfall-dev/cloudfall#293)
 - A volume requirement's placement maps to an LV type: `mirrored` is `raid1` over `primary` and
   `secondary`; `expendable` is linear on `primary` alone. Every `lvcreate` and `lvextend` names
   its physical volumes, so LVM never spreads a linear volume over both disks

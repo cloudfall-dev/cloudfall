@@ -226,9 +226,13 @@ def _certificates_by_server(
 
 def _volumes_by_server(
     inventory: PlatformInventory,
-) -> dict[str, list[dict[str, str]]]:
-    """Return, by server, the volumes its host requirements name (S-014)."""
-    found: dict[str, list[dict[str, str]]] = {}
+) -> dict[str, list[dict[str, object]]]:
+    """Return, by server, the volumes its host requirements name (S-014).
+
+    ``physicalVolumes`` are the declared paths inspect resolves on the host,
+    so audit compares the devices they name (#293).
+    """
+    found: dict[str, list[dict[str, object]]] = {}
     for server in requirements_of(inventory):
         for requirement in server.requirements:
             if isinstance(requirement.spec, VolumeRequirement):
@@ -236,6 +240,9 @@ def _volumes_by_server(
                     {
                         "name": requirement.spec.name.value,
                         "path": requirement.spec.path.value,
+                        "physicalVolumes": [
+                            item.value for item in requirement.spec.physical_volumes
+                        ],
                     }
                 )
     return found

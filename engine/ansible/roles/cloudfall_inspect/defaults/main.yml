@@ -6,7 +6,8 @@ cloudfall_inspect_baseline: {}
 cloudfall_inspect_server_id: ""
 # The certificates the server's host requirements name (S-011): [{name, path}]
 cloudfall_inspect_certificates: []
-# The volumes the server's host requirements name (S-014): [{name, path}]
+# The volumes the server's host requirements name (S-014):
+# [{name, path, physicalVolumes}]
 cloudfall_inspect_volumes: []
 # The AlertChannel the server's baseline names (S-015), or empty
 cloudfall_inspect_alert_channel: ""

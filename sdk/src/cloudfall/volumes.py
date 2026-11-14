@@ -1,7 +1,8 @@
 """The volume provider of S-014: decide on the controller, act on the host.
 
 ``logging-volumes.yml`` only reads a host: its volume groups, physical
-volumes, logical volumes and the mount paths. This module turns that report
+volumes, logical volumes, the mount paths, and the device each pool path
+resolves to (``realpath -e``). This module turns that report
 and the volume requirements into actions, or into a refusal that names the
 server, the pool and the reason. Every refusal is decided before anything
 changes on any server; the role that applies the actions only runs what is
@@ -16,6 +17,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from cloudfall.domain import BlockDevicePath
 from cloudfall.requirements import ServerRequirements, VolumeRequirement
 
 if TYPE_CHECKING:
@@ -55,12 +57,18 @@ class VolumeAction(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class PlannedVolume:
-    """One volume and what the role does to it on its server."""
+    """One volume and what the role does to it on its server.
+
+    ``physical_volumes`` are the names LVM reports for the requirement's
+    declared physical volumes, matched on the device each resolves to, so
+    ``lvcreate`` and ``lvextend`` name what LVM reports back (#293).
+    """
 
     server: str
     requirement: VolumeRequirement
     action: VolumeAction
     size_bytes: int
+    physical_volumes: tuple[BlockDevicePath, ...]
 
     def as_dict(self) -> dict[str, object]:
         """Serialize for the role and the answer."""
@@ -71,7 +79,7 @@ class PlannedVolume:
             "volumeGroup": spec.pool.volume_group.value,
             "logicalVolume": spec.logical_volume,
             "type": spec.volume_type,
-            "physicalVolumes": [item.value for item in spec.physical_volumes],
+            "physicalVolumes": [item.value for item in self.physical_volumes],
             "sizeBytes": self.size_bytes,
             "path": spec.path.value,
             "label": spec.name.value[:16],
@@ -79,10 +87,55 @@ class PlannedVolume:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class DeviceResolution:
+    """What ``realpath -e`` made of one path on the host: a device or an error."""
+
+    device: str | None
+    error: str | None
+
+    @classmethod
+    def from_boundary(cls, path: str, value: object) -> DeviceResolution:
+        """Read one entry of a report's ``devices``; refuse a malformed one."""
+        if not isinstance(value, dict):
+            message = f"volume report device entry for {path!r} is not an object"
+            raise TypeError(message)
+        device = value.get("device")
+        error = value.get("error")
+        if device is None and isinstance(error, str):
+            return cls(None, error)
+        if isinstance(device, str) and device.startswith("/") and error is None:
+            return cls(device, None)
+        message = f"volume report device entry for {path!r} is malformed: {value!r}"
+        raise TypeError(message)
+
+
+def parse_devices(content: object) -> dict[str, DeviceResolution]:
+    """Return each resolved path of a report's or an observation's ``devices``."""
+    if not isinstance(content, dict):
+        message = "volume report field 'devices' is not an object"
+        raise TypeError(message)
+    return {
+        str(path): DeviceResolution.from_boundary(str(path), value)
+        for path, value in content.items()
+    }
+
+
+def pool_paths(spec: VolumeRequirement) -> tuple[BlockDevicePath, ...]:
+    """Return every physical volume path the requirement's pool declares."""
+    pool = spec.pool
+    return (pool.primary,) if pool.secondary is None else (pool.primary, pool.secondary)
+
+
 def volume_requests(
     servers: tuple[ServerRequirements, ...],
 ) -> dict[str, list[dict[str, object]]]:
-    """Return, by server, the volume groups, volumes and paths the host reads."""
+    """Return, by server, the volume groups, volumes and paths the host reads.
+
+    ``physicalVolumes`` are the pool's declared paths, which the host resolves
+    with ``realpath``: a stable ``/dev/disk/by-id`` path names the same device
+    across boots, a kernel name resolves to itself (#293).
+    """
     requests: dict[str, list[dict[str, object]]] = {}
     for server, spec in _volumes(servers):
         requests.setdefault(server, []).append(
@@ -91,6 +144,7 @@ def volume_requests(
                 "volumeGroup": spec.pool.volume_group.value,
                 "logicalVolume": spec.logical_volume,
                 "path": spec.path.value,
+                "physicalVolumes": [item.value for item in pool_paths(spec)],
             }
         )
     return requests
@@ -119,7 +173,9 @@ def normalize_report(raw: dict[str, object]) -> dict[str, object]:
 
     ``raw`` holds ``vgs``, ``pvs`` and ``lvs`` as the JSON ``--reportformat
     json`` prints (``lvs`` with ``-a``, so a raid1 volume's hidden images are
-    there), ``filesystems`` by LV name, and ``paths`` by mount path.
+    there), ``filesystems`` by LV name, ``paths`` by mount path, and
+    ``devices``: what ``realpath -e`` made of each declared pool path and each
+    physical volume LVM names (#293).
     """
     groups: dict[str, object] = {
         str(row["vg_name"]): {} for row in _rows(raw, "vgs", "vg")
@@ -149,6 +205,7 @@ def normalize_report(raw: dict[str, object]) -> dict[str, object]:
         "physicalVolumes": physical,
         "logicalVolumes": logical,
         "paths": paths if isinstance(paths, dict) else {},
+        "devices": parse_devices(raw.get("devices")),
     }
 
 
@@ -243,13 +300,8 @@ def _plan(
     if group not in groups:
         reason = f"volume group {group} does not exist"
         raise VolumeRefusedError(server, pool, reason)
-    physical = _mapping(report, "physicalVolumes")
-    for device in spec.physical_volumes:
-        entry = physical.get(device.value)
-        owner = entry.get("volumeGroup") if isinstance(entry, dict) else None
-        if owner != group:
-            reason = f"physical volume {device.value} is not in {group}"
-            raise VolumeRefusedError(server, pool, reason)
+    devices = _devices_of(report)
+    names = _physical_names(server, spec, report, devices)
     wanted = spec.minimum_size.value
     logical = _mapping(report, "logicalVolumes")
     paths = _mapping(report, "paths")
@@ -267,9 +319,9 @@ def _plan(
                 f"{spec.logical_volume} over it would hide them"
             )
             raise VolumeRefusedError(server, pool, reason)
-        return PlannedVolume(server, spec, VolumeAction.CREATE, wanted)
+        return PlannedVolume(server, spec, VolumeAction.CREATE, wanted, names)
     held = _mapping(logical, key)
-    _refuse_mismatch(server, pool, spec, held)
+    _refuse_mismatch(server, pool, spec, held, devices)
     if mounted_from is not None and mounted_from not in {lv_path, held.get("mapper")}:
         reason = f"{spec.path.value} is already mounted from {mounted_from}"
         raise VolumeRefusedError(server, pool, reason)
@@ -281,8 +333,90 @@ def _plan(
         raise VolumeRefusedError(server, pool, reason)
     size = _integer(held, "sizeBytes")
     if size < wanted:
-        return PlannedVolume(server, spec, VolumeAction.GROW, wanted)
-    return PlannedVolume(server, spec, VolumeAction.KEEP, size)
+        return PlannedVolume(server, spec, VolumeAction.GROW, wanted, names)
+    return PlannedVolume(server, spec, VolumeAction.KEEP, size, names)
+
+
+def _devices_of(report: dict[str, object]) -> dict[str, DeviceResolution]:
+    devices = report.get("devices")
+    if not isinstance(devices, dict) or not all(
+        isinstance(item, DeviceResolution) for item in devices.values()
+    ):
+        message = "volume report field 'devices' is not a resolved device map"
+        raise TypeError(message)
+    return devices
+
+
+def _resolve(
+    server: str, pool: str, path: BlockDevicePath, devices: dict[str, DeviceResolution]
+) -> str:
+    """Return the device a declared path resolved to, or refuse naming the path."""
+    found = devices.get(path.value)
+    if found is None:
+        reason = f"physical volume {path.value} was not resolved on the host"
+        raise VolumeRefusedError(server, pool, reason)
+    if found.device is None:
+        reason = (
+            f"physical volume {path.value} does not resolve to a device on the "
+            f"host: {found.error}"
+        )
+        raise VolumeRefusedError(server, pool, reason)
+    return found.device
+
+
+def _canonical(name: str, devices: dict[str, DeviceResolution]) -> str:
+    """Return the device a name LVM reports resolved to, or the name itself."""
+    found = devices.get(name)
+    return found.device if found is not None and found.device is not None else name
+
+
+def _shown(path: BlockDevicePath, device: str) -> str:
+    return path.value if path.value == device else f"{path.value} ({device})"
+
+
+def _physical_names(
+    server: str,
+    spec: VolumeRequirement,
+    report: dict[str, object],
+    devices: dict[str, DeviceResolution],
+) -> tuple[BlockDevicePath, ...]:
+    """Return LVM's names for the requirement's physical volumes, or refuse.
+
+    Each declared path is matched on the device it resolves to, so a stable
+    ``/dev/disk/by-id`` path finds the physical volume LVM calls by its kernel
+    or ``/dev/mapper`` name (#293).
+    """
+    pool = spec.pool.resource_id.value
+    group = spec.pool.volume_group.value
+    # Only the paths the volume sits on must resolve: a linear volume never
+    # reads the secondary, as before #293
+    resolved = {
+        path.value: _resolve(server, pool, path, devices)
+        for path in spec.physical_volumes
+    }
+    primary, secondary = spec.pool.primary, spec.pool.secondary
+    first = _canonical(primary.value, devices)
+    if secondary is not None and first == _canonical(secondary.value, devices):
+        # Two different stable paths can name one partition; validation only
+        # sees the strings, so a mirror would sit twice on one disk
+        reason = (
+            f"primary and secondary name one device: {primary.value} and "
+            f"{secondary.value} both resolve to {first}"
+        )
+        raise VolumeRefusedError(server, pool, reason)
+    physical = _mapping(report, "physicalVolumes")
+    by_device = {_canonical(name, devices): name for name in physical}
+    names: list[BlockDevicePath] = []
+    for path in spec.physical_volumes:
+        device = resolved[path.value]
+        name = by_device.get(device)
+        entry = physical.get(name) if name is not None else None
+        owner = entry.get("volumeGroup") if isinstance(entry, dict) else None
+        if name is None or owner != group:
+            reason = f"physical volume {_shown(path, device)} is not in {group}"
+            raise VolumeRefusedError(server, pool, reason)
+        names.append(BlockDevicePath(name))
+    return tuple(names)
 
 
 def _refuse_mismatch(
@@ -290,6 +424,7 @@ def _refuse_mismatch(
     pool: str,
     spec: VolumeRequirement,
     held: dict[str, object],
+    devices: dict[str, DeviceResolution],
 ) -> None:
     segment = held.get("type")
     if segment != spec.volume_type:
@@ -298,10 +433,19 @@ def _refuse_mismatch(
             f"{spec.volume_type}"
         )
         raise VolumeRefusedError(server, pool, reason)
-    devices = held.get("devices")
-    wanted = sorted(item.value for item in spec.physical_volumes)
-    if not isinstance(devices, list) or sorted(str(item) for item in devices) != wanted:
-        reason = f"{spec.logical_volume} sits on {devices}, not on {', '.join(wanted)}"
+    sits_on = held.get("devices")
+    wanted = {
+        path.value: _resolve(server, pool, path, devices)
+        for path in spec.physical_volumes
+    }
+    if not isinstance(sits_on, list) or sorted(
+        _canonical(str(item), devices) for item in sits_on
+    ) != sorted(wanted.values()):
+        declared = ", ".join(
+            _shown(BlockDevicePath(path), device)
+            for path, device in sorted(wanted.items())
+        )
+        reason = f"{spec.logical_volume} sits on {sits_on}, not on {declared}"
         raise VolumeRefusedError(server, pool, reason)
     filesystem = held.get("filesystem")
     if filesystem is None:
@@ -332,7 +476,7 @@ def _check_free_space(
             held = f"{spec.pool.volume_group.value}/{spec.logical_volume}"
             current = _integer(_mapping(logical, held), "sizeBytes")
         extra = item.size_bytes - current
-        for device in item.requirement.physical_volumes:
+        for device in item.physical_volumes:
             key = (item.server, device.value)
             needed[key] = needed.get(key, 0) + extra + _EXTENT_SLACK
     for (server, device_path), amount in needed.items():
@@ -343,8 +487,7 @@ def _check_free_space(
                 item.requirement.pool.resource_id.value
                 for item in planned
                 if item.server == server
-                and device_path
-                in {pv.value for pv in item.requirement.physical_volumes}
+                and device_path in {pv.value for pv in item.physical_volumes}
             )
             reason = f"{device_path} has {free} bytes free; the volumes need {amount}"
             raise VolumeRefusedError(server, pool, reason)
