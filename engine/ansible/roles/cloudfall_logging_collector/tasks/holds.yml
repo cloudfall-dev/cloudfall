@@ -1,15 +1,69 @@
 ---
 # Keep each package the stack pins at its declared version (#294): an APT
-# preference at priority 1001 stops a later `apt-get dist-upgrade` from moving
-# it. Written before the pinned install, so a new declared version rewrites
-# the file first and the install goes through.
+# preference at priority 999 beats the archive's 500, so a later
+# `apt-get dist-upgrade` no longer moves it up, and stays below 1000, so it
+# never forces a downgrade (#302). Written before the pinned install, so a new
+# declared version rewrites the file first and the install goes through.
+#
+# A package already installed newer than declared stops the run before any
+# file is written: the pinned install could not downgrade it, so dpkg
+# compares the two versions by Debian's rules first.
+- name: Read the installed version of each pinned logging package
+  ansible.builtin.command:
+    argv:
+      - dpkg-query
+      - --show
+      - --showformat
+      - "${db:Status-Status} ${Version}"
+      - "{{ item.name }}"
+  loop: "{{ cloudfall_logging_collector_holds | rejectattr('version', 'none') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: cloudfall_logging_collector_installed
+  # rc 1: dpkg knows no such package, so nothing is installed
+  failed_when: cloudfall_logging_collector_installed.rc not in [0, 1]
+  changed_when: false
+  # A read: a dry run (--check) must refuse a drifted host too
+  check_mode: false
+
+- name: Compare each installed pinned package with its declared version
+  ansible.builtin.command:
+    argv:
+      - dpkg
+      - --compare-versions
+      - "{{ item.stdout.split(' ', 1) | last }}"
+      - gt
+      - "{{ item.item.version }}"
+  loop: >-
+    {{ cloudfall_logging_collector_installed.results | selectattr('rc', 'eq', 0)
+       | selectattr('stdout', 'match', 'installed ') | list }}
+  loop_control:
+    label: "{{ item.item.name }}"
+  register: cloudfall_logging_collector_newer
+  # rc 0: installed is newer; rc 1: it is not
+  failed_when: cloudfall_logging_collector_newer.rc not in [0, 1]
+  changed_when: false
+  check_mode: false
+
+- name: Refuse a pinned logging package installed newer than declared
+  ansible.builtin.fail:
+    msg: >-
+      {{ item.item.item.name }} is installed at
+      {{ item.item.stdout.split(' ', 1) | last }}, newer than the declared
+      {{ item.item.item.version }}: declare
+      {{ item.item.stdout.split(' ', 1) | last }}, or downgrade
+      {{ item.item.item.name }} by hand
+  loop: "{{ cloudfall_logging_collector_newer.results | selectattr('rc', 'eq', 0) | list }}"
+  loop_control:
+    label: "{{ item.item.item.name }}"
+
 - name: Hold each pinned logging package at its declared version
   ansible.builtin.copy:
     dest: "{{ cloudfall_logging_collector_apt_preferences_dir }}/cloudfall-logging-{{ item.name }}"
     content: |
       Package: {{ item.name }}
       Pin: version {{ item.version }}
-      Pin-Priority: 1001
+      Pin-Priority: 999
     owner: root
     group: root
     mode: "0644"
