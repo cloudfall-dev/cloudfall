@@ -46,3 +46,25 @@
       loop_control:
         loop_var: cloudfall_service_item
         label: "{{ cloudfall_service_item.id }}"
+
+    - name: Deploy declared Elasticsearch services
+      ansible.builtin.include_role:
+        name: cloudfall_elasticsearch
+      vars:
+        cloudfall_elasticsearch_service: "{{ cloudfall_service_item }}"
+        # Controller paths of the staged cloudfall password and the account
+        # hashes cloudfall passes as cloudfall_services_elasticsearch_files.
+        cloudfall_elasticsearch_account_files: >-
+          {{
+            (cloudfall_services_elasticsearch_files | default({}))
+            [cloudfall_service_item.id] | default({})
+          }}
+      loop: >-
+        {{
+          cloudfall_services | default([])
+          | selectattr('serviceKind', 'equalto', 'elasticsearch')
+          | list
+        }}
+      loop_control:
+        loop_var: cloudfall_service_item
+        label: "{{ cloudfall_service_item.id }}"

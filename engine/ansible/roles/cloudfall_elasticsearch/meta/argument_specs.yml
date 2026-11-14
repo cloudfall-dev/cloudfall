@@ -1,0 +1,91 @@
+---
+argument_specs:
+  main:
+    short_description: Converge one declared Elasticsearch service on its home server
+    options:
+      cloudfall_elasticsearch_account_files:
+        type: dict
+        description: >-
+          Controller paths of the staged cloudfallPassword, cloudfallHash and
+          elasticHash files; cloudfall passes them, never the values
+      cloudfall_elasticsearch_service:
+        type: dict
+        required: true
+        options:
+          id:
+            type: str
+            required: true
+          serviceKind:
+            type: str
+            choices:
+              - elasticsearch
+            required: true
+          environment:
+            type: str
+            required: true
+          server:
+            type: str
+            required: true
+          bind:
+            type: dict
+            required: true
+            options:
+              address:
+                type: str
+                choices:
+                  - 127.0.0.1
+                required: true
+              port:
+                type: int
+                required: true
+          elasticsearch:
+            type: dict
+            required: true
+            options:
+              version:
+                type: str
+                required: true
+              heapMb:
+                type: int
+                required: true
+              nodes:
+                type: list
+                elements: str
+                required: true
+              clusterName:
+                type: str
+                required: true
+              users:
+                type: list
+                elements: dict
+                required: true
+              existingCluster:
+                type: dict
+              remoteAccess:
+                type: dict
+              snapshotRepository:
+                type: dict
+              restoreCheckIndices:
+                type: list
+                elements: str
+          backup:
+            type: dict
+            required: true
+            options:
+              directory:
+                type: path
+                required: true
+              onCalendar:
+                type: str
+                required: true
+              restoreCheckOnCalendar:
+                type: str
+              retentionDays:
+                type: int
+                required: true
+          metrics:
+            type: dict
+            options:
+              enabled:
+                type: bool
+                required: true

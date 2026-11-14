@@ -41,6 +41,8 @@ from cloudfall.lifecycle_error import (
 )
 from cloudfall.secrets import (
     SecretsError,
+    elasticsearch_account_passwords,
+    elasticsearch_services,
     owned_databases,
     owned_role_passwords,
     staged_password_files,
@@ -64,7 +66,11 @@ if TYPE_CHECKING:
         ServerInventory,
         ServiceInventory,
     )
-    from cloudfall.secrets import OwnedRolePassword, SopsSecretProvider
+    from cloudfall.secrets import (
+        ElasticsearchAccountPassword,
+        OwnedRolePassword,
+        SopsSecretProvider,
+    )
     from cloudfall.service_evidence import DeploymentReceipt
 
 _ARTIFACT_SCHEMA = "artifact.schema.json"
@@ -1079,41 +1085,54 @@ ERROR_SERVICES_SECRET = "lifecycle_services_secret_unavailable"  # noqa: S105 - 
 """An owner role's password could not be read; no playbook ran."""
 
 
+@dataclass(frozen=True, slots=True)
+class ServicesSecrets:
+    """The passwords ``services.yml`` needs, decrypted before it runs."""
+
+    owned_roles: tuple[OwnedRolePassword, ...] = ()
+    elasticsearch: tuple[ElasticsearchAccountPassword, ...] = ()
+
+
 def services_passwords(
     context: EngineContext, provider: SopsSecretProvider
-) -> tuple[OwnedRolePassword, ...]:
-    """Decrypt every owner role's password before ``services.yml`` may run.
+) -> ServicesSecrets:
+    """Decrypt every password ``services.yml`` sets before it may run.
 
-    A missing file or key fails here, naming the expected path and key, so
-    the converge stops before any playbook starts.
+    Those are each owner role's, and the ``cloudfall`` and ``elastic``
+    passwords of each Elasticsearch service. A missing file or key fails
+    here, naming the expected path and key, so the converge stops before any
+    playbook starts.
     """
     state = validate_config(context.project_directory, context.schema_directory)
     inventory = PlatformInventory.from_state(state)
     try:
-        return owned_role_passwords(owned_databases(inventory), provider)
+        return ServicesSecrets(
+            owned_role_passwords(owned_databases(inventory), provider),
+            elasticsearch_account_passwords(
+                elasticsearch_services(inventory), provider
+            ),
+        )
     except SecretsError as error:
         raise LifecycleError(ERROR_SERVICES_SECRET, error.message) from error
 
 
-def run_services_playbook(
-    context: EngineContext, passwords: tuple[OwnedRolePassword, ...]
-) -> None:
-    """Run ``services.yml`` with each owner password staged in a 0600 file.
+def run_services_playbook(context: EngineContext, secrets: ServicesSecrets) -> None:
+    """Run ``services.yml`` with each password's server form staged in a 0600 file.
 
     The files live in a private temp dir outside the project, removed when
     the run ends, whether it passed or failed.
     """
-    with staged_password_files(passwords) as extra_vars:
-        run_engine_playbook(context, "services.yml", extra_vars)
+    with staged_password_files(secrets.owned_roles, secrets.elasticsearch) as extra:
+        run_engine_playbook(context, "services.yml", extra)
 
 
 def converge_services(
     context: EngineContext, provider: SopsSecretProvider
 ) -> tuple[OwnedRolePassword, ...]:
-    """Converge every declared service; return the passwords it set, by hash."""
-    passwords = services_passwords(context, provider)
-    run_services_playbook(context, passwords)
-    return passwords
+    """Converge every declared service; return the owner passwords it set, by hash."""
+    secrets = services_passwords(context, provider)
+    run_services_playbook(context, secrets)
+    return secrets.owned_roles
 
 
 def build_release_artifact(

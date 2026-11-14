@@ -31,6 +31,7 @@ from cloudfall.lifecycle import (
     DataCopySchemas,
     DeployOptions,
     LifecycleError,
+    ServicesSecrets,
     build_release_artifact,
     deploy,
     migrate_data,
@@ -67,7 +68,6 @@ if TYPE_CHECKING:
     from cloudfall.agent_tools import AgentConfig
     from cloudfall.inventory import DomainInventory, ServerInventory
     from cloudfall.release_approval import ApprovalCheck
-    from cloudfall.secrets import OwnedRolePassword
 
     Runner = Callable[[], dict[str, object]]
 
@@ -180,7 +180,7 @@ def execute_migration(
             step.step_id == "services" and step.status is StepStatus.PENDING
             for step in steps
         )
-        else ()
+        else ServicesSecrets()
     )
     resolved_runners = (
         runners
@@ -467,7 +467,7 @@ def _build_runners(  # noqa: PLR0913 - the run's whole contract.
     inventory: PlatformInventory,
     releases: dict[str, str],
     steps: list[PlanStep],
-    passwords: tuple[OwnedRolePassword, ...],
+    passwords: ServicesSecrets,
 ) -> dict[str, Runner]:
     context = config.context()
     runners: dict[str, Runner] = {
@@ -650,20 +650,18 @@ def _playbook(
     return {"playbook": playbook_name}
 
 
-def _services_passwords(config: AgentConfig) -> tuple[OwnedRolePassword, ...]:
+def _services_passwords(config: AgentConfig) -> ServicesSecrets:
     try:
         return services_passwords(config.context(), config.secret_provider())
     except LifecycleError as error:
         raise MigrateError(error.code, error.detail) from error
 
 
-def _services(
-    config: AgentConfig, passwords: tuple[OwnedRolePassword, ...]
-) -> dict[str, object]:
-    run_services_playbook(config.context(), passwords)
+def _services(config: AgentConfig, secrets: ServicesSecrets) -> dict[str, object]:
+    run_services_playbook(config.context(), secrets)
     detail: dict[str, object] = {"playbook": "services.yml"}
-    if passwords:
-        detail["ownedRoles"] = [password.as_dict() for password in passwords]
+    if secrets.owned_roles:
+        detail["ownedRoles"] = [password.as_dict() for password in secrets.owned_roles]
     return detail
 
 

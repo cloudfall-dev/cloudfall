@@ -1,0 +1,3 @@
+# Managed by Cloudfall: the declared heap of service {{ cloudfall_elasticsearch_service.id }}
+-Xms{{ cloudfall_elasticsearch_service.elasticsearch.heapMb | int }}m
+-Xmx{{ cloudfall_elasticsearch_service.elasticsearch.heapMb | int }}m

@@ -110,6 +110,17 @@ def supported_lines_text(lines: tuple[ElasticsearchLine, ...] = SUPPORTED_LINES)
     return ", ".join(line.label for line in lines)
 
 
+class ElasticsearchAccount(StrEnum):
+    """A built-in account Cloudfall sets the password of on every cluster.
+
+    ``cloudfall`` is Cloudfall's own superuser in the file realm of each node;
+    ``elastic`` is a person's break-glass account, set once as a hash.
+    """
+
+    CLOUDFALL = "cloudfall"
+    ELASTIC = "elastic"
+
+
 class ElasticsearchAccess(StrEnum):
     """What a declared user may do on its index patterns."""
 
