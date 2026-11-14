@@ -52,9 +52,10 @@
   loop: "{{ cloudfall_logging_collector_tls_files.results }}"
   when: item.item == cloudfall_logging_collector_stack.collectors.clientTls.keyPath
 
-# systemd refuses to start Alloy when a credential's file is missing, so the
-# Elasticsearch exporter's files must exist before its configuration lands:
-# services.yml writes them when it converges the node.
+# A missing credential file no longer stops Alloy (the drop-in's
+# SetCredential= default, #326), but the exporter would then send an empty
+# password and fail quietly, so its files must exist before its configuration
+# lands: services.yml writes them when it converges the node.
 - name: Inspect the files the Elasticsearch exporters read
   ansible.builtin.stat:
     path: "{{ item }}"

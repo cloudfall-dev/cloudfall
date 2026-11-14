@@ -996,6 +996,49 @@ def test_metrics_with_remote_access_verify_the_project_ca(tmp_path: Path) -> Non
     ) in override.splitlines()
 
 
+def _credential_ids(override: str, setting: str) -> list[str]:
+    return [
+        line.removeprefix(f"{setting}=").split(":", 1)[0]
+        for line in override.splitlines()
+        if line.startswith(f"{setting}=")
+    ]
+
+
+def test_a_missing_exporter_credential_falls_back_instead_of_stopping_alloy(
+    tmp_path: Path,
+) -> None:
+    # #326: systemd refuses to start a unit whose LoadCredential= file is
+    # missing unless a SetCredential= of the same ID gives it a default; an
+    # empty SetCredential= value is dropped by the parser, so the fallback is
+    # one newline, which Alloy reads as an empty password and an empty CA pool.
+    loopback = _service(_host(_inventory(_project(tmp_path / "closed"))))
+    opened = _service(
+        _host(_inventory(_project(tmp_path / "opened", remote_access=REMOTE_ACCESS)))
+    )
+
+    for service, ids in (
+        (loopback, ["elasticsearch-search-main-password"]),
+        (
+            opened,
+            ["elasticsearch-search-main-password", "elasticsearch-search-main-ca"],
+        ),
+    ):
+        override = _collector("alloy-systemd-override.conf.j2", [service])
+        assert _credential_ids(override, "LoadCredential") == ids
+        assert _credential_ids(override, "SetCredential") == ids
+        for credential in ids:
+            assert f"SetCredential={credential}:\\n" in override.splitlines()
+
+    # Taking the service out of the project takes its exporter and its
+    # credential lines out with it on the next logging deploy.
+    removed_override = _collector("alloy-systemd-override.conf.j2", [])
+    removed_config = _collector("config.alloy.j2", [])
+    assert "Credential" not in removed_override
+    assert "search-main" not in removed_override
+    assert "prometheus.exporter.elasticsearch" not in removed_config
+    assert "search_main" not in removed_config
+
+
 def test_the_collector_requires_the_exporter_files_before_it_changes_the_host(
     tmp_path: Path,
 ) -> None:
