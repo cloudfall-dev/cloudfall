@@ -1,6 +1,6 @@
 # S-016: Bundled Grafana dashboards and `logging open`
 
-status: draft
+status: approved
 serves: G-1, G-3
 
 ## Problem
