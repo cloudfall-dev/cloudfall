@@ -12,3 +12,9 @@ cloudfall_elasticsearch_log_path: /var/log/elasticsearch
 # The S-011 secret requirement's path (requirements.ELASTICSEARCH_PASSWORD_PATH).
 cloudfall_elasticsearch_password_path: /etc/elasticsearch/cloudfall-password
 cloudfall_elasticsearch_state_directory: /var/lib/cloudfall/elasticsearch
+# Written once the node served its cluster: from then on the configuration
+# never carries cluster.initial_master_nodes again.
+cloudfall_elasticsearch_formed_marker: >-
+  {{ cloudfall_elasticsearch_state_directory }}/{{
+    cloudfall_elasticsearch_service.id
+  }}.cluster-formed

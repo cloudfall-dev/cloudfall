@@ -3,8 +3,8 @@
 #
 # One node is a cluster of one (S-012): never discovery.type: single-node, so
 # growing it is adding a node. cluster.initial_master_nodes is written only
-# for the first start of the home node, while its data path holds no cluster
-# state, and leaves this file once the cluster has formed.
+# for the home node until it has served its cluster once, and leaves this
+# file in that same converge.
 cluster.name: {{ cloudfall_elasticsearch_service.elasticsearch.clusterName | to_json }}
 node.name: {{ cloudfall_server_id | to_json }}
 path.data: {{ cloudfall_elasticsearch_data_path | to_json }}

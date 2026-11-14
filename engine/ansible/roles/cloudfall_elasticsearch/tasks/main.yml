@@ -122,10 +122,14 @@
     - "{{ cloudfall_elasticsearch_configuration_directory }}"
     - "{{ cloudfall_elasticsearch_configuration_directory }}/jvm.options.d"
 
-- name: Read whether the data path holds cluster state
+# The node writes its data path's _state at its first start, before the
+# cluster forms, so _state can't tell a formed cluster from a first start
+# that failed: the role's own marker, written once the node served the
+# cluster, does.
+- name: Read whether the cluster has formed
   ansible.builtin.stat:
-    path: "{{ cloudfall_elasticsearch_data_path }}/_state"
-  register: cloudfall_elasticsearch_cluster_state
+    path: "{{ cloudfall_elasticsearch_formed_marker }}"
+  register: cloudfall_elasticsearch_cluster_formed
 
 - name: Install the managed Elasticsearch configuration
   ansible.builtin.template:
@@ -139,7 +143,7 @@
       {{
         cloudfall_elasticsearch_service.server == cloudfall_server_id
         and cloudfall_elasticsearch_service.elasticsearch.existingCluster is not defined
-        and not cloudfall_elasticsearch_cluster_state.stat.exists
+        and not cloudfall_elasticsearch_cluster_formed.stat.exists
       }}
   notify: Restart Elasticsearch
 
@@ -320,6 +324,45 @@
   no_log: true
   when: not ansible_check_mode
 
+- name: Create the Elasticsearch role state directory
+  ansible.builtin.file:
+    path: "{{ cloudfall_elasticsearch_state_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: not ansible_check_mode
+
+- name: Record that the cluster has formed
+  ansible.builtin.copy:
+    dest: "{{ cloudfall_elasticsearch_formed_marker }}"
+    content: |
+      {{ cloudfall_elasticsearch_service.id }}: cluster formed
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - not ansible_check_mode
+    - cloudfall_elasticsearch_health is succeeded
+
+# The node has served its cluster, so cluster.initial_master_nodes is useless
+# and unsafe to keep: it leaves the file now, with no restart (the setting is
+# read only at start), and the next converge, seeing the marker, renders the
+# same file and finds nothing to do.
+- name: Remove cluster.initial_master_nodes once the cluster has formed
+  ansible.builtin.template:
+    src: elasticsearch.yml.j2
+    dest: "{{ cloudfall_elasticsearch_configuration_directory }}/elasticsearch.yml"
+    owner: root
+    group: elasticsearch
+    mode: "0660"
+  vars:
+    cloudfall_elasticsearch_bootstrap: false
+  when:
+    - not ansible_check_mode
+    - not cloudfall_elasticsearch_cluster_formed.stat.exists
+    - cloudfall_elasticsearch_health is succeeded
+
 # Outside production mode (a loopback transport) Elasticsearch only warns
 # when it can't lock its memory; the converge stops instead.
 - name: Read whether the node locked its memory
@@ -348,28 +391,6 @@
       Elasticsearch on {{ cloudfall_server_id }} could not lock its memory
       (mlockall false); check LimitMEMLOCK in the unit and the host's memory
   when: not ansible_check_mode
-
-# The node has formed its cluster, so its data path holds the state that
-# makes cluster.initial_master_nodes useless and unsafe to keep: it leaves
-# the file now, with no restart, and the next converge finds nothing to do.
-- name: Read whether the cluster state now exists
-  ansible.builtin.stat:
-    path: "{{ cloudfall_elasticsearch_data_path }}/_state"
-  register: cloudfall_elasticsearch_formed
-  when: not cloudfall_elasticsearch_cluster_state.stat.exists
-
-- name: Remove cluster.initial_master_nodes once the cluster has formed
-  ansible.builtin.template:
-    src: elasticsearch.yml.j2
-    dest: "{{ cloudfall_elasticsearch_configuration_directory }}/elasticsearch.yml"
-    owner: root
-    group: elasticsearch
-    mode: "0660"
-  vars:
-    cloudfall_elasticsearch_bootstrap: false
-  when:
-    - not cloudfall_elasticsearch_cluster_state.stat.exists
-    - cloudfall_elasticsearch_formed.stat.exists | default(false)
 
 # elastic is a person's break-glass account: set once, as the hash computed
 # on the controller (D-9), and never used by Cloudfall afterwards.
@@ -408,14 +429,7 @@
       no_log: true
       when: not cloudfall_elasticsearch_elastic_set.stat.exists
 
-    - name: Create the Elasticsearch role state directory
-      ansible.builtin.file:
-        path: "{{ cloudfall_elasticsearch_state_directory }}"
-        state: directory
-        owner: root
-        group: root
-        mode: "0700"
-
+    # The state directory was created with the cluster-formed marker.
     - name: Record that the elastic password was set
       ansible.builtin.copy:
         dest: "{{ cloudfall_elasticsearch_elastic_marker }}"

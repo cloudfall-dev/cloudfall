@@ -93,7 +93,11 @@ def _module(task: dict[str, object]) -> str:
 def _defaults() -> dict[str, object]:
     defaults = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text("utf-8"))
     assert isinstance(defaults, dict)
-    return defaults
+    # The role's defaults are its own templates, as Ansible trusts them.
+    return {
+        name: trust_as_template(value) if isinstance(value, str) else value
+        for name, value in defaults.items()
+    }
 
 
 def _variables(**extra: object) -> dict[str, object]:
@@ -279,12 +283,24 @@ def test_s012_3_cluster_name_is_the_declared_one_or_the_service_id() -> None:
     )
 
 
+def _runs(task: dict[str, object], variables: dict[str, object]) -> bool:
+    conditions = cast("list[str]", task["when"])
+    return all(
+        _templar(variables).evaluate_conditional(trust_as_template(condition))
+        for condition in conditions
+    )
+
+
+_HEALTHY = {"status": 200, "failed": False, "changed": False}
+_SKIPPED = {"skipped": True, "changed": False}
+
+
 # proves: S-012-3
-def test_s012_3_initial_master_nodes_only_until_the_data_path_holds_state() -> None:
-    fresh = _variables(cloudfall_elasticsearch_cluster_state=_stat(exists=False))
-    formed = _variables(cloudfall_elasticsearch_cluster_state=_stat(exists=True))
+def test_s012_3_initial_master_nodes_only_until_the_cluster_has_formed() -> None:
+    fresh = _variables(cloudfall_elasticsearch_cluster_formed=_stat(exists=False))
+    formed = _variables(cloudfall_elasticsearch_cluster_formed=_stat(exists=True))
     joining = _variables(
-        cloudfall_elasticsearch_cluster_state=_stat(exists=False),
+        cloudfall_elasticsearch_cluster_formed=_stat(exists=False),
         cloudfall_elasticsearch_service=_service(
             existingCluster={
                 "seedHosts": ["10.0.0.11:9300"],
@@ -299,26 +315,80 @@ def test_s012_3_initial_master_nodes_only_until_the_data_path_holds_state() -> N
 
 
 # proves: S-012-3
-def test_s012_3_the_first_converge_removes_initial_master_nodes_once_formed() -> None:
-    """Removed in the run that bootstrapped, so a second run finds no change."""
+def test_s012_3_a_first_start_that_failed_still_bootstraps_the_cluster() -> None:
+    """The data path's _state exists from the first start, formed or not.
+
+    A first converge that failed after the node started leaves _state but no
+    marker; the next converge must still write cluster.initial_master_nodes,
+    or a node with discovery.seed_hosts never bootstraps.
+    """
+    failed_first = _variables(
+        cloudfall_elasticsearch_cluster_state=_stat(exists=True),
+        cloudfall_elasticsearch_cluster_formed=_stat(exists=False),
+    )
+
+    assert _bootstrap(failed_first) is True
+    rendered = yaml.safe_load(
+        _render(
+            "elasticsearch.yml.j2",
+            {**failed_first, "cloudfall_elasticsearch_bootstrap": True},
+        )
+    )
+    assert rendered["cluster.initial_master_nodes"] == ["h1"]
+    # Nothing in the role reads the data path's _state any more.
+    text = (ROLE / "tasks" / "main.yml").read_text(encoding="utf-8")
+    assert "/_state" not in text
+
+
+# proves: S-012-4
+def test_s012_4_a_formed_cluster_is_marked_and_a_second_converge_changes_nothing() -> (
+    None
+):
+    marker = _task("Record that the cluster has formed")
     remove = _task("Remove cluster.initial_master_nodes once the cluster has formed")
-    conditions = cast("list[str]", remove["when"])
+    read = _task("Read whether the cluster has formed")
+    directory = _task("Create the Elasticsearch role state directory")
+    names = [task["name"] for task in _tasks()]
     first_run = _variables(
-        cloudfall_elasticsearch_cluster_state=_stat(exists=False),
-        cloudfall_elasticsearch_formed=_stat(exists=True),
+        cloudfall_elasticsearch_cluster_formed=_stat(exists=False),
+        cloudfall_elasticsearch_health=_HEALTHY,
     )
     second_run = _variables(
-        cloudfall_elasticsearch_cluster_state=_stat(exists=True),
+        cloudfall_elasticsearch_cluster_formed=_stat(exists=True),
+        cloudfall_elasticsearch_health=_HEALTHY,
     )
+    dry_run = {**first_run, "ansible_check_mode": True}
 
-    def runs(variables: dict[str, object]) -> bool:
-        return all(
-            _templar(variables).evaluate_conditional(trust_as_template(condition))
-            for condition in conditions
-        )
-
-    assert runs(first_run)
-    assert not runs(second_run)
+    path = "/var/lib/cloudfall/elasticsearch/search-main.cluster-formed"
+    stat = cast("dict[str, str]", read["ansible.builtin.stat"])
+    copy = cast("dict[str, str]", marker["ansible.builtin.copy"])
+    assert _value(stat["path"], first_run) == path
+    assert _value(copy["dest"], first_run) == path
+    assert copy["owner"] == "root"
+    assert copy["mode"] == "0600"
+    # The same content on every run: rewriting it changes nothing.
+    assert _value(copy["content"], first_run) == _value(copy["content"], second_run)
+    wait = names.index("Wait for the node to serve the cluster")
+    assert wait < names.index(str(directory["name"])) < names.index(str(marker["name"]))
+    assert names.index(str(read["name"])) < names.index(
+        "Install the managed Elasticsearch configuration"
+    )
+    # The marker is written after a healthy node, never in check mode.
+    assert _runs(marker, first_run)
+    assert not _runs(marker, dry_run)
+    assert not _runs(
+        marker,
+        {
+            **first_run,
+            "ansible_check_mode": True,
+            "cloudfall_elasticsearch_health": _SKIPPED,
+        },
+    )
+    # initial_master_nodes leaves in the run that formed the cluster only.
+    assert _runs(remove, first_run)
+    assert not _runs(remove, second_run)
+    assert not _runs(remove, dry_run)
+    assert _bootstrap(second_run) is False
     assert cast("dict[str, object]", remove["vars"]) == {
         "cloudfall_elasticsearch_bootstrap": False
     }
