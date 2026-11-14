@@ -91,3 +91,12 @@ entry that supersedes it, never by editing an old one.
 - Why: On Hetzner and most clouds a server type is a hardware model (CX22, AX41-NVMe), and the docs and CLI already call this resource the baseline; splitting storage out is new behaviour that needs its own spec
 - Applies to: sdk/src/cloudfall/*, engine/*, config/schemas/v1/server-type.schema.json, config/schemas/v1/baseline.schema.json, config/examples/*, docs/*, cloudfall add, config validate
 - Enforced by: review
+
+## D-12: An Elasticsearch line ends on Elastic's End of Maintenance date
+
+- Decided: 2026-11-14, in cloudfall-dev/cloudfall#318
+- Rule: The end-of-life date in the SDK's table of supported Elasticsearch lines (S-012, Supported versions) is the End of Maintenance date Elastic publishes for the line; the 90-day ELASTICSEARCH_VERSION_ENDING warning and audit's unsupported-version finding both read that date
+- Why: Elastic's end-of-life page has no single End of Life column and publishes no End of Support date for 9.x; End of Maintenance is published for every line, and it is the earlier date, so the warning comes before fixes stop
+- Applies to: sdk/src/cloudfall/elasticsearch.py; elasticsearch; audit
+- Enforced by: sdk/tests/test_s012_elasticsearch.py
+- Zone: interpretation (notify, veto until 2026-11-15T12:29:00Z)

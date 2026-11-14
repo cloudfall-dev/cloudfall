@@ -333,6 +333,14 @@ Touches `config/schemas/v1/service.schema.json`, `config/examples/services/`,
 
 ## Issues
 
+- cloudfall-dev/cloudfall#309: S-012-1, S-012-2, S-012-12, S-012-16
+- cloudfall-dev/cloudfall#310: S-012-3, S-012-4
+- cloudfall-dev/cloudfall#311: S-012-7, S-012-8, S-012-9
+- cloudfall-dev/cloudfall#312: S-012-5, S-012-6
+- cloudfall-dev/cloudfall#313: S-012-10, S-012-11
+- cloudfall-dev/cloudfall#314: S-012-13, S-012-14, S-012-15
+- cloudfall-dev/cloudfall#315: S-012-17, S-012-18, S-012-19
+
 ## Verification
 
 No criterion is verified yet.
