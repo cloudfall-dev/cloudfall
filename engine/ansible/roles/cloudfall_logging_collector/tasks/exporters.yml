@@ -1,0 +1,52 @@
+---
+# services.yml runs this after it converged the host's services (#329): a
+# node that changed how it is reached (remoteAccess: HTTPS and the project CA
+# instead of plain HTTP) takes its exporter with it in the same run, instead
+# of waiting for the next logging deploy. The same two files main.yml writes,
+# from the same declarations, so an unchanged host is left as it is. Only
+# where logging deploy already set Alloy up: nothing is installed here.
+- name: Inspect the Alloy that logging deploy set up
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  loop:
+    - /etc/alloy/cloudfall.alloy
+    - /usr/bin/alloy
+  register: cloudfall_logging_collector_alloy_files
+
+- name: Follow the converged services with the Alloy exporters
+  when: >-
+    cloudfall_logging_collector_alloy_files.results
+    | rejectattr('stat.exists')
+    | list
+    | length == 0
+  block:
+    - name: Render the Alloy configuration for the converged services
+      ansible.builtin.template:
+        src: config.alloy.j2
+        dest: /etc/alloy/cloudfall.alloy
+        owner: root
+        group: alloy
+        mode: "0640"
+      notify: Restart Alloy
+
+    - name: Render the Alloy credentials for the converged services
+      ansible.builtin.template:
+        src: alloy-systemd-override.conf.j2
+        dest: /etc/systemd/system/alloy.service.d/cloudfall.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart Alloy
+
+    - name: Validate the Alloy configuration for the converged services
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/alloy
+          - validate
+          - /etc/alloy/cloudfall.alloy
+      changed_when: false
+      when: not ansible_check_mode
+
+- name: Apply the validated Alloy configuration
+  ansible.builtin.meta: flush_handlers

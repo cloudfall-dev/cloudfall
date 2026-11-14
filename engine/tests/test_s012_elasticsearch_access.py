@@ -57,6 +57,7 @@ ROLE = ROLES / "cloudfall_elasticsearch"
 INSPECT = ROLES / "cloudfall_inspect"
 COLLECTOR = ROLES / "cloudfall_logging_collector"
 FIREWALL = ROLES / "cloudfall_firewall"
+SERVICES = ROOT / "engine" / "ansible" / "playbooks" / "services.yml"
 ANSIBLE_PLAYBOOK = Path(sys.executable).with_name("ansible-playbook")
 REMOTE_ACCESS: dict[str, object] = {
     "listenAddress": "10.0.0.2",
@@ -633,8 +634,7 @@ def test_the_node_certificate_names_each_address_once(tmp_path: Path) -> None:
         "10.0.0.2",
     ]
     assert [
-        name.value
-        for name in elasticsearch_node_names(node, IpAddress("2001:db8::2"))
+        name.value for name in elasticsearch_node_names(node, IpAddress("2001:db8::2"))
     ] == ["h1.example.internal", "10.0.0.2", "2001:db8::2"]
 
 
@@ -877,9 +877,7 @@ def test_s012_14_audit_holds_the_listen_address_and_no_unrestricted_9200_rule(
     listeners = LOOPBACK_LISTENERS + "\ntcp   LISTEN 0 4096   10.0.0.2:9200  0.0.0.0:*"
     base = [_nft_rule(22), _nft_rule(80), _nft_rule(443)]
     restricted = _nft_table(*base, _nft_rule(9200, "10.0.0.0/24"))
-    unrestricted = _nft_table(
-        *base, _nft_rule(9200, "10.0.0.0/24"), _nft_rule(9200)
-    )
+    unrestricted = _nft_table(*base, _nft_rule(9200, "10.0.0.0/24"), _nft_rule(9200))
 
     converged = _audit(
         tmp_path,
@@ -1069,3 +1067,181 @@ def test_the_collector_requires_the_exporter_files_before_it_changes_the_host(
     ]
     assert files([_without_metrics(loopback)]) == []
     assert files([]) == []
+
+
+# #329: a services converge that changes how the node is reached takes the
+# collector's exporter with it, without waiting for the next logging deploy
+
+
+def _collector_step() -> dict[str, object]:
+    (play,) = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))
+    return next(
+        task
+        for task in play["tasks"]
+        if task.get("ansible.builtin.include_role", {}).get("name")
+        == "cloudfall_logging_collector"
+    )
+
+
+def _flat(tasks: list[dict[str, object]]) -> list[dict[str, object]]:
+    found: list[dict[str, object]] = []
+    for task in tasks:
+        if "block" in task:
+            found.extend(_flat(cast("list[dict[str, object]]", task["block"])))
+        else:
+            found.append(task)
+    return found
+
+
+def _module_arguments(task: dict[str, object], module: str) -> dict[str, object]:
+    return cast("dict[str, object]", task[module])
+
+
+def _exporter_tasks() -> list[dict[str, object]]:
+    include = _module_arguments(_collector_step(), "ansible.builtin.include_role")
+    return cast(
+        "list[dict[str, object]]",
+        DataLoader().load_from_file(
+            str(COLLECTOR / "tasks" / f"{include['tasks_from']}.yml")
+        ),
+    )
+
+
+def _converged_collector(
+    host: dict[str, object], *, alloy_set_up: bool = True
+) -> dict[str, str]:
+    """Each file services.yml writes for Alloy on ``host``, by destination.
+
+    Empty when the step leaves the host alone. The guard of the collector's
+    ``exporters.yml`` is evaluated with the stat results the host would give.
+    """
+    step = _collector_step()
+    variables: dict[str, object] = {**_collector_defaults(), **host}
+    if not _templar(variables).evaluate_conditional(
+        trust_as_template(str(step["when"]))
+    ):
+        return {}
+    for name, value in cast("dict[str, str]", step["vars"]).items():
+        variables[name] = _templar(variables).template(trust_as_template(value))
+    tasks = _exporter_tasks()
+    (inspect,) = [task for task in tasks if "ansible.builtin.stat" in task]
+    (guarded,) = [task for task in tasks if "block" in task]
+    variables[str(inspect["register"])] = {
+        "results": [
+            {"item": path, "stat": {"exists": alloy_set_up}}
+            for path in cast("list[str]", inspect["loop"])
+        ]
+    }
+    if not _templar(variables).evaluate_conditional(
+        trust_as_template(str(guarded["when"]))
+    ):
+        return {}
+    templates = [
+        _module_arguments(task, "ansible.builtin.template")
+        for task in _flat([guarded])
+        if "ansible.builtin.template" in task
+    ]
+    return {
+        str(template["dest"]): _jinja(COLLECTOR / "templates")
+        .get_template(str(template["src"]))
+        .render(variables)
+        for template in templates
+    }
+
+
+def _collector_host(project: Path) -> dict[str, object]:
+    return {
+        **_host(_inventory(project)),
+        "cloudfall_logging_collector": _logging_stack(),
+    }
+
+
+def test_a_services_converge_takes_the_exporter_to_https_with_remote_access(
+    tmp_path: Path,
+) -> None:
+    closed = _collector_host(_project(tmp_path / "closed"))
+    opened = _collector_host(_project(tmp_path / "opened", remote_access=REMOTE_ACCESS))
+
+    before = _converged_collector(closed)
+    after = _converged_collector(opened)
+
+    config = "/etc/alloy/cloudfall.alloy"
+    override = "/etc/systemd/system/alloy.service.d/cloudfall.conf"
+    assert set(after) == {config, override}
+    assert 'address = "http://127.0.0.1:9200"' in before[config]
+    assert 'address = "https://10.0.0.2:9200"' in after[config]
+    assert (
+        'ca      = "/run/credentials/alloy.service/elasticsearch-search-main-ca"'
+    ) in after[config]
+    assert _credential_ids(after[override], "LoadCredential") == [
+        "elasticsearch-search-main-password",
+        "elasticsearch-search-main-ca",
+    ]
+    assert _credential_ids(before[override], "LoadCredential") == [
+        "elasticsearch-search-main-password",
+    ]
+    # The same files logging deploy writes, so the next one changes nothing.
+    for files, project_host in ((before, closed), (after, opened)):
+        services = [_service(project_host)]
+        assert files[config] == _collector("config.alloy.j2", services)
+        assert files[override] == _collector("alloy-systemd-override.conf.j2", services)
+    # Taking remoteAccess away again: the next converge rewrites both files
+    # (so the template tasks change and Alloy restarts) back to plain HTTP.
+    removed = _converged_collector(closed)
+    assert removed[config] != after[config]
+    assert removed[override] != after[override]
+    assert removed == before
+    assert "-ca" not in removed[override]
+    assert (
+        "https://" not in removed[config].split("prometheus.exporter.elasticsearch")[1]
+    )
+
+
+def test_the_services_converge_reloads_alloy_only_through_its_validated_files() -> None:
+    main = DataLoader().load_from_file(str(COLLECTOR / "tasks" / "main.yml"))
+    deployed = {
+        _module_arguments(task, "ansible.builtin.template")["dest"]: task
+        for task in main
+        if "ansible.builtin.template" in task
+    }
+    tasks = _flat(_exporter_tasks())
+    templates = [task for task in tasks if "ansible.builtin.template" in task]
+    names = [task["name"] for task in tasks]
+
+    # The files, owners, modes and the restart of logging deploy, no other.
+    assert len(templates) == len(deployed) == 2
+    for task in templates:
+        arguments = _module_arguments(task, "ansible.builtin.template")
+        assert arguments == _module_arguments(
+            deployed[arguments["dest"]], "ansible.builtin.template"
+        )
+        assert task["notify"] == "Restart Alloy"
+    validate = next(task for task in tasks if "ansible.builtin.command" in task)
+    assert _module_arguments(validate, "ansible.builtin.command")["argv"] == [
+        "/usr/bin/alloy",
+        "validate",
+        "/etc/alloy/cloudfall.alloy",
+    ]
+    flush = names.index("Apply the validated Alloy configuration")
+    assert names.index(validate["name"]) < flush == len(names) - 1
+
+
+def test_a_services_converge_leaves_a_host_without_the_collector_alone(
+    tmp_path: Path,
+) -> None:
+    opened = _project(tmp_path / "opened", remote_access=REMOTE_ACCESS)
+
+    # Not a collector of any logging stack: the role is not even included.
+    assert _converged_collector(_host(_inventory(opened))) == {}
+    # A collector logging deploy has not set up yet: nothing is installed.
+    assert _converged_collector(_collector_host(opened), alloy_set_up=False) == {}
+    step = _collector_step()
+    assert _module_arguments(step, "ansible.builtin.include_role") == {
+        "name": "cloudfall_logging_collector",
+        "tasks_from": "exporters",
+    }
+    (play,) = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))
+    assert play["tasks"][-1] == step
+    for task in _flat(_exporter_tasks()):
+        assert "ansible.builtin.apt" not in task
+        assert "ansible.builtin.user" not in task
