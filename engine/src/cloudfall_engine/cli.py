@@ -615,13 +615,18 @@ def _rendered_owned_databases(
 def _rendered_elasticsearch_services(
     inventory_file: Path,
 ) -> tuple[tuple[ResourceId, ResourceId], ...]:
-    """Read each Elasticsearch service's id and environment from an inventory."""
+    """Read each Elasticsearch service's id and environment from an inventory.
+
+    A service of several nodes is on each of their hosts; it is read once.
+    """
     return tuple(
-        (
-            ResourceId.from_boundary(service.get("id")),
-            ResourceId.from_boundary(service.get("environment")),
+        dict.fromkeys(
+            (
+                ResourceId.from_boundary(service.get("id")),
+                ResourceId.from_boundary(service.get("environment")),
+            )
+            for service in _rendered_services(inventory_file, "elasticsearch")
         )
-        for service in _rendered_services(inventory_file, "elasticsearch")
     )
 
 

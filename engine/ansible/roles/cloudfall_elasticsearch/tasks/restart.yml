@@ -1,0 +1,9 @@
+---
+# The restart a package or managed configuration change notifies: a running
+# node leaves its cluster the safe way first (node-stop.yml), unless the
+# package change already took it out; a node that never ran just starts.
+- name: Take the running node out of its cluster
+  ansible.builtin.include_tasks: node-stop.yml
+
+- name: Start the node and wait for its cluster
+  ansible.builtin.include_tasks: node-start.yml
