@@ -1,0 +1,16 @@
+---
+# Cloudfall's bundled dashboards (S-016). They stay as shipped: a change is saved as a copy
+# in another folder, and a dashboard a later release drops is removed with its file.
+apiVersion: 1
+providers:
+  - name: cloudfall
+    orgId: 1
+    folder: Cloudfall
+    folderUid: cloudfall
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: "{{ cloudfall_logging_backend_dashboards_path }}"
+      foldersFromFilesStructure: false

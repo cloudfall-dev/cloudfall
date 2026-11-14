@@ -471,6 +471,66 @@
     mode: "0640"
   notify: Restart Grafana
 
+# The prune below removes every entry of this directory the release does not bundle, so
+# it must be a directory of its own: an override such as /etc/grafana would delete
+# grafana.ini and the provisioning tree.
+- name: Refuse a dashboards path that is not a dedicated Cloudfall dashboards directory
+  ansible.builtin.assert:
+    that:
+      - cloudfall_logging_backend_dashboards_path is string
+      - cloudfall_logging_backend_dashboards_path is match('^(/[A-Za-z0-9_][A-Za-z0-9._-]*)*/dashboards/cloudfall$')
+    fail_msg: >-
+      cloudfall_logging_backend_dashboards_path must be an absolute path ending in
+      /dashboards/cloudfall with no . or .. parts; got
+      {{ cloudfall_logging_backend_dashboards_path }}
+    quiet: true
+
+- name: Create the bundled dashboards directory
+  ansible.builtin.file:
+    path: "{{ cloudfall_logging_backend_dashboards_path }}"
+    state: directory
+    owner: root
+    group: grafana
+    mode: "0750"
+
+- name: Install the bundled dashboards
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ cloudfall_logging_backend_dashboards_path }}/{{ item | basename }}"
+    owner: root
+    group: grafana
+    mode: "0640"
+  loop: "{{ query('ansible.builtin.fileglob', role_path ~ '/files/dashboards/*.json') | sort }}"
+  loop_control:
+    label: "{{ item | basename }}"
+
+- name: Find dashboards in the bundled directory
+  ansible.builtin.find:
+    paths: "{{ cloudfall_logging_backend_dashboards_path }}"
+    patterns: "*"
+    file_type: any
+  register: cloudfall_logging_backend_dashboard_files
+
+- name: Remove dashboards this release does not bundle
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ cloudfall_logging_backend_dashboard_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: >-
+    (item.path | basename) not in
+    (query('ansible.builtin.fileglob', role_path ~ '/files/dashboards/*.json') | map('basename') | list)
+
+- name: Provision the bundled dashboards
+  ansible.builtin.template:
+    src: dashboards-provider.yml.j2
+    dest: /etc/grafana/provisioning/dashboards/cloudfall.yml
+    owner: root
+    group: grafana
+    mode: "0640"
+  notify: Restart Grafana
+
 - name: Install mTLS-only Loki ingestion gateway
   ansible.builtin.template:
     src: nginx-loki-gateway.conf.j2

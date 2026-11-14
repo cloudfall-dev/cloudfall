@@ -10,3 +10,5 @@ cloudfall_logging_backend_file_owner: root
 cloudfall_logging_backend_file_group: root
 # Where the APT preferences that hold the pinned packages go (#294)
 cloudfall_logging_backend_apt_preferences_dir: /etc/apt/preferences.d
+# S-016: where the bundled dashboards live on the backend; inspect reads the same path
+cloudfall_logging_backend_dashboards_path: /etc/grafana/dashboards/cloudfall
