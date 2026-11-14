@@ -88,6 +88,18 @@ from cloudfall.domain import (
     VolumeGroupName,
     WebhookUrl,
 )
+from cloudfall.elasticsearch import (
+    ElasticsearchAccess,
+    ElasticsearchClusterName,
+    ElasticsearchIndexPattern,
+    ElasticsearchSeedHost,
+    ElasticsearchUserName,
+    ElasticsearchVersion,
+    ProjectFilePath,
+    S3BasePath,
+    S3Bucket,
+    S3Endpoint,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -971,6 +983,106 @@ class RedisService:
 
 
 @dataclass(frozen=True, slots=True)
+class ElasticsearchUser:
+    """One application user, limited to its index patterns (S-012).
+
+    The password stays behind ``passwordRef``; only its hash ever reaches a
+    node (D-9).
+    """
+
+    name: ElasticsearchUserName
+    access: ElasticsearchAccess
+    index_patterns: tuple[ElasticsearchIndexPattern, ...]
+    password_ref: SecretValueReference
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the user with its password reference, never a password."""
+        return {
+            "name": self.name.value,
+            "access": self.access.value,
+            "indexPatterns": [pattern.value for pattern in self.index_patterns],
+            "passwordRef": self.password_ref.as_dict(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ElasticsearchExistingCluster:
+    """A cluster Cloudfall did not create, which the declared nodes join."""
+
+    seed_hosts: tuple[ElasticsearchSeedHost, ...]
+    ca_certificate_file: ProjectFilePath
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the seed hosts and the project path of the foreign CA."""
+        return {
+            "seedHosts": [host.value for host in self.seed_hosts],
+            "caCertificateFile": self.ca_certificate_file.value,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ElasticsearchSnapshotRepository:
+    """An S3-compatible snapshot repository, its keys behind a reference."""
+
+    bucket: S3Bucket
+    endpoint: S3Endpoint
+    base_path: S3BasePath | None
+    credentials_ref: SecretValueReference
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the repository with its credentials reference."""
+        result: dict[str, object] = {
+            "type": "s3",
+            "bucket": self.bucket.value,
+            "endpoint": self.endpoint.value,
+        }
+        if self.base_path is not None:
+            result["basePath"] = self.base_path.value
+        result["credentialsRef"] = self.credentials_ref.as_dict()
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class ElasticsearchService:
+    """Elasticsearch-specific service contract: a cluster of ``nodes``.
+
+    ``nodes`` and ``cluster_name`` hold their resolved values: absent in the
+    declaration, they are the service's server and the service id.
+    """
+
+    version: ElasticsearchVersion
+    heap_mb: PositiveCount
+    nodes: tuple[ResourceId, ...]
+    cluster_name: ElasticsearchClusterName
+    users: tuple[ElasticsearchUser, ...]
+    existing_cluster: ElasticsearchExistingCluster | None
+    remote_access: PostgresRemoteAccess | None
+    snapshot_repository: ElasticsearchSnapshotRepository | None
+    restore_check_indices: tuple[ElasticsearchIndexPattern, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the cluster contract without secret material."""
+        result: dict[str, object] = {
+            "version": self.version.value,
+            "heapMb": self.heap_mb.value,
+            "nodes": [node.value for node in self.nodes],
+            "clusterName": self.cluster_name.value,
+            "users": [user.as_dict() for user in self.users],
+        }
+        if self.existing_cluster is not None:
+            result["existingCluster"] = self.existing_cluster.as_dict()
+        if self.remote_access is not None:
+            result["remoteAccess"] = self.remote_access.as_dict()
+        if self.snapshot_repository is not None:
+            result["snapshotRepository"] = self.snapshot_repository.as_dict()
+        if self.restore_check_indices:
+            result["restoreCheckIndices"] = [
+                pattern.value for pattern in self.restore_check_indices
+            ]
+        return result
+
+
+@dataclass(frozen=True, slots=True)
 class ServiceBackup:
     """Scheduled dump-and-prune backup contract."""
 
@@ -993,13 +1105,19 @@ class ServiceInventory:
     redis: RedisService | None
     backup: ServiceBackup
     metrics_enabled: bool
+    elasticsearch: ElasticsearchService | None = None
 
     def __post_init__(self) -> None:
         """Reject services whose payload contradicts the declared kind."""
-        expected_postgresql = self.service_kind is ServiceKind.POSTGRESQL
-        if (self.postgresql is not None) is not expected_postgresql or (
-            self.redis is not None
-        ) is not (self.service_kind is ServiceKind.REDIS):
+        payloads = (
+            (self.postgresql, ServiceKind.POSTGRESQL),
+            (self.redis, ServiceKind.REDIS),
+            (self.elasticsearch, ServiceKind.ELASTICSEARCH),
+        )
+        if any(
+            (payload is not None) is not (self.service_kind is kind)
+            for payload, kind in payloads
+        ):
             message = (
                 "service payload does not match its declared kind: "
                 f"{self.resource_id.value}"
@@ -1053,6 +1171,8 @@ class ServiceInventory:
             if self.redis.package_version is not None:
                 redis["packageVersion"] = self.redis.package_version.value
             result["redis"] = redis
+        if self.elasticsearch is not None:
+            result["elasticsearch"] = self.elasticsearch.as_dict()
         if self.metrics_enabled:
             result["metrics"] = {"enabled": True}
         return result
@@ -2128,6 +2248,15 @@ def _service_inventory(
                 raw_redis.get("appendOnly"), "redis append only"
             ),
         )
+    elasticsearch = (
+        _elasticsearch_service(
+            _mapping(spec, "elasticsearch"),
+            server_id=ResourceId.from_boundary(spec.get("server")),
+            resource_id=document.key.resource_id,
+        )
+        if service_kind is ServiceKind.ELASTICSEARCH
+        else None
+    )
     return ServiceInventory(
         resource_id=document.key.resource_id,
         service_kind=service_kind,
@@ -2154,6 +2283,99 @@ def _service_inventory(
             ),
         ),
         metrics_enabled=_service_metrics_enabled(spec, document),
+        elasticsearch=elasticsearch,
+    )
+
+
+def _secret_value_reference(content: Mapping[str, object]) -> SecretValueReference:
+    return SecretValueReference(
+        environment=ResourceId.from_boundary(content.get("environment")),
+        path=AbsolutePath.from_boundary(content.get("path")),
+        key=SecretKeyName.from_boundary(content.get("key")),
+    )
+
+
+def _index_patterns(value: object) -> tuple[ElasticsearchIndexPattern, ...]:
+    if not isinstance(value, list) or not value:
+        message = "validated index patterns are not a non-empty list"
+        raise ValueError(message)
+    return tuple(ElasticsearchIndexPattern.from_boundary(item) for item in value)
+
+
+def _elasticsearch_service(
+    content: Mapping[str, object],
+    *,
+    server_id: ResourceId,
+    resource_id: ResourceId,
+) -> ElasticsearchService:
+    raw_nodes = content.get("nodes")
+    if raw_nodes is not None and not isinstance(raw_nodes, list):
+        message = "validated Elasticsearch nodes are not a list"
+        raise TypeError(message)
+    raw_cluster_name = content.get("clusterName")
+    existing_cluster = None
+    if "existingCluster" in content:
+        raw_existing = _mapping(content, "existingCluster")
+        raw_seed_hosts = raw_existing.get("seedHosts")
+        if not isinstance(raw_seed_hosts, list):
+            message = "validated Elasticsearch seed hosts are not a list"
+            raise TypeError(message)
+        existing_cluster = ElasticsearchExistingCluster(
+            seed_hosts=tuple(
+                ElasticsearchSeedHost.from_boundary(host) for host in raw_seed_hosts
+            ),
+            ca_certificate_file=ProjectFilePath.from_boundary(
+                raw_existing.get("caCertificateFile")
+            ),
+        )
+    snapshot_repository = None
+    if "snapshotRepository" in content:
+        raw_repository = _mapping(content, "snapshotRepository")
+        raw_base_path = raw_repository.get("basePath")
+        snapshot_repository = ElasticsearchSnapshotRepository(
+            bucket=S3Bucket.from_boundary(raw_repository.get("bucket")),
+            endpoint=S3Endpoint.from_boundary(raw_repository.get("endpoint")),
+            base_path=(
+                None
+                if raw_base_path is None
+                else S3BasePath.from_boundary(raw_base_path)
+            ),
+            credentials_ref=_secret_value_reference(
+                _mapping(raw_repository, "credentialsRef")
+            ),
+        )
+    return ElasticsearchService(
+        version=ElasticsearchVersion.from_boundary(content.get("version")),
+        heap_mb=PositiveCount.from_boundary(content.get("heapMb")),
+        nodes=(
+            (server_id,)
+            if raw_nodes is None
+            else tuple(ResourceId.from_boundary(node) for node in raw_nodes)
+        ),
+        cluster_name=ElasticsearchClusterName.from_boundary(
+            resource_id.value if raw_cluster_name is None else raw_cluster_name
+        ),
+        users=tuple(
+            ElasticsearchUser(
+                name=ElasticsearchUserName.from_boundary(user.get("name")),
+                access=ElasticsearchAccess.from_boundary(user.get("access")),
+                index_patterns=_index_patterns(user.get("indexPatterns")),
+                password_ref=_secret_value_reference(_mapping(user, "passwordRef")),
+            )
+            for user in _mapping_list(content.get("users", []), "Elasticsearch users")
+        ),
+        existing_cluster=existing_cluster,
+        remote_access=(
+            _postgres_remote_access(_mapping(content, "remoteAccess"))
+            if "remoteAccess" in content
+            else None
+        ),
+        snapshot_repository=snapshot_repository,
+        restore_check_indices=(
+            _index_patterns(content["restoreCheckIndices"])
+            if "restoreCheckIndices" in content
+            else ()
+        ),
     )
 
 
