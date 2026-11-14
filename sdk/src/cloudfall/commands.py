@@ -640,6 +640,27 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
     ),
     CommandContract(
         "cloudfall",
+        "logging open",
+        CommandEffect.READ,
+        "forward a local port over ssh to the LoggingStack's loopback Grafana "
+        "and hold it until stopped (long-running); the answer names where the "
+        "admin password is kept, never the password",
+        output=(
+            _shape(
+                "status",
+                "loggingStack:string",
+                "server",
+                "localPort:integer",
+                "command:array",
+                "url:string",
+                "adminUser:string",
+                "adminPassword:object",
+                when="once, when the forward is up; with `--print-command`, at once",
+            ),
+        ),
+    ),
+    CommandContract(
+        "cloudfall",
         "release approve",
         CommandEffect.PROJECT,
         "record a person's approval of one built release under "
