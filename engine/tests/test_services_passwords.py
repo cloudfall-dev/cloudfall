@@ -203,6 +203,39 @@ def test_a_plain_inventory_runs_services_as_before_without_secrets(
     assert payload["data"]["owned_roles"] == []
 
 
+def test_an_engine_without_services_runs_its_other_playbooks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    engine = tmp_path / "engine"
+    playbooks = engine / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    (engine / "ansible" / "roles").mkdir()
+    (engine / "ansible" / "ansible.cfg").write_text("[defaults]\n", encoding="utf-8")
+    (playbooks / "noop.yml").write_text(
+        "- hosts: localhost\n  gather_facts: false\n  tasks: []\n", encoding="utf-8"
+    )
+    inventory = tmp_path / "hosts.ini"
+    inventory.write_text("localhost ansible_connection=local\n", encoding="utf-8")
+
+    exit_code, payload = _run(
+        [
+            "playbook",
+            "run",
+            "noop",
+            "--engine",
+            str(engine),
+            "--inventory",
+            str(inventory),
+            "--secrets-dir",
+            str(tmp_path / "absent"),
+        ],
+        capsys,
+    )
+
+    assert exit_code == 0, payload
+    assert payload["data"]["owned_roles"] == []
+
+
 FAKE_SOPS = """\
 #!{python}
 import pathlib, sys
