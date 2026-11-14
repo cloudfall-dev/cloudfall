@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from dataclasses import dataclass
-from ipaddress import IPv4Address, IPv6Network, ip_address
+from ipaddress import IPv4Address, IPv6Network, ip_address, ip_network
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, cast
 
@@ -1443,20 +1443,35 @@ def _validate_elasticsearch_patterns(
             ) from error
 
 
-def _server_names(server: ResourceDocument) -> frozenset[str]:
-    """Return the host names and addresses a server is reached at."""
+def _seed_host_is_server(
+    seed_host: ElasticsearchSeedHost, server: ResourceDocument
+) -> bool:
+    """Return whether ``seed_host`` names ``server`` or an address of its prefix."""
     server_spec = _required_mapping(server.content, "spec", server.source)
+    raw_network = server_spec.get("network")
+    network = (
+        cast("Mapping[str, object]", raw_network)
+        if isinstance(raw_network, dict)
+        else {}
+    )
     names = {
-        value
-        for value in (server_spec.get("hostname"), server_spec.get("address"))
+        value.lower().removesuffix(".")
+        for value in (
+            server_spec.get("hostname"),
+            server_spec.get("address"),
+            network.get("ipv4"),
+            network.get("reverseDns"),
+        )
         if isinstance(value, str)
     }
-    network = server_spec.get("network")
-    if isinstance(network, dict):
-        ipv4 = cast("Mapping[str, object]", network).get("ipv4")
-        if isinstance(ipv4, str):
-            names.add(ipv4)
-    return frozenset(name.lower().removesuffix(".") for name in names)
+    if seed_host.host.lower().removesuffix(".") in names:
+        return True
+    ipv6_cidr = network.get("ipv6Cidr")
+    return (
+        seed_host.ipv6 is not None
+        and isinstance(ipv6_cidr, str)
+        and seed_host.ipv6 in ip_network(ipv6_cidr)
+    )
 
 
 def _validate_elasticsearch_existing_cluster(
@@ -1490,7 +1505,7 @@ def _validate_elasticsearch_existing_cluster(
             ) from error
         for node in nodes:
             server = index[ResourceKey(kind=ResourceKind.SERVER, resource_id=node)]
-            if seed_host.host.lower() in _server_names(server):
+            if _seed_host_is_server(seed_host, server):
                 raise _elasticsearch_refusal(
                     document,
                     ERROR_ELASTICSEARCH_EXISTING_CLUSTER,

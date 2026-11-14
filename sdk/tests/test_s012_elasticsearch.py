@@ -338,7 +338,8 @@ def test_s012_12_existing_cluster_ca_file_with_its_key_is_refused(
 
 
 @pytest.mark.parametrize(
-    "seed_host", ["203.0.113.11:9300", "h1.example.internal:9300"]
+    "seed_host",
+    ["203.0.113.11:9300", "h1.example.internal:9300", "[2001:db8:11::5]:9300"],
 )
 def test_s012_12_existing_cluster_seed_host_that_is_a_node_is_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], seed_host: str

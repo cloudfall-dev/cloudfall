@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 from enum import StrEnum
+from ipaddress import IPv6Address, ip_address
 
 _VERSION_PART = r"(0|[1-9][0-9]{0,3})"
 _VERSION_PATTERN = re.compile(rf"{_VERSION_PART}\.{_VERSION_PART}\.{_VERSION_PART}")
@@ -211,6 +212,20 @@ class ElasticsearchSeedHost:
         if match is None or not 1 <= int(match.group(2)) <= _MAX_TCP_PORT:
             message = f"seed host is not host:port: {self.value!r}"
             raise ValueError(message)
+        if self.value.startswith("[") and self.ipv6 is None:
+            message = f"seed host in brackets is not an IPv6 address: {self.value!r}"
+            raise ValueError(message)
+
+    @property
+    def ipv6(self) -> IPv6Address | None:
+        """Return the host as an IPv6 address, when it is one in brackets."""
+        if not self.value.startswith("["):
+            return None
+        try:
+            address = ip_address(self.host)
+        except ValueError:
+            return None
+        return address if isinstance(address, IPv6Address) else None
 
     @property
     def host(self) -> str:
