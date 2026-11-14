@@ -69,6 +69,30 @@
   loop_control:
     label: "{{ item.item }}"
 
+# Grafana runs as grafana:grafana (its package creates both); Debian's
+# Alertmanager runs as prometheus:prometheus and reads the SMTP password and
+# Telegram token files.
+- name: Check the service users reach their files before anything is installed
+  ansible.builtin.include_tasks: preflight.yml
+  vars:
+    cloudfall_logging_backend_readers:
+      - user: grafana
+        group: grafana
+        paths:
+          - "{{ cloudfall_logging_backend_stack.grafana.adminPasswordPath }}"
+      - user: prometheus
+        group: prometheus
+        paths: >-
+          {{
+            (cloudfall_logging_backend_stack.alerting.receivers
+             | selectattr('email', 'defined')
+             | selectattr('email.authPasswordFile', 'defined')
+             | map(attribute='email.authPasswordFile') | list
+             if 'alerting' in cloudfall_logging_backend_stack else [])
+            + (cloudfall_logging_alert_channels | default([])
+               | map(attribute='botTokenFile') | list)
+          }}
+
 - name: Install Grafana repository prerequisites
   ansible.builtin.apt:
     name:

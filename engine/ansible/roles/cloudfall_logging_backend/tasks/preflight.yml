@@ -1,0 +1,37 @@
+---
+# Every file a service user reads must be reachable by that user (#295): each
+# existing parent directory, from / down, has to let it through, or the
+# service fails only when it starts, after the host has changed. Nothing here
+# changes the host: Cloudfall does not manage the mode of /etc/cloudfall, so
+# a hardening playbook that sets it is told plainly what blocks the deploy.
+# Users and groups are judged by name, so a service user its package has not
+# created yet (grafana) counts as the user the package will create. Files
+# only root reads (the gateway's TLS key) are not listed. A parent that does
+# not exist yet is skipped: the role creates it later with a mode it knows.
+- name: Inspect every parent directory of the files service users read
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: true
+    get_checksum: false
+  loop: >-
+    {{ cloudfall_logging_backend_readers | map(attribute='paths') | flatten
+       | map('cloudfall_parent_directories') | flatten | unique | list }}
+  register: cloudfall_logging_backend_parents
+  # A read: a dry run (--check) must check the directories too
+  check_mode: false
+
+- name: Require each service user to reach the files it reads
+  ansible.builtin.fail:
+    msg: >-
+      {{ cloudfall_logging_backend_blocking.path }} is
+      {{ cloudfall_logging_backend_blocking.mode }}
+      {{ cloudfall_logging_backend_blocking.owner }}:{{ cloudfall_logging_backend_blocking.group }};
+      {{ item.0.user }} can't reach {{ item.1 }}
+  when: cloudfall_logging_backend_blocking is not none
+  vars:
+    cloudfall_logging_backend_blocking: >-
+      {{ item.1 | cloudfall_blocking_parent(item.0.user, item.0.group,
+         cloudfall_logging_backend_parents.results) }}
+  loop: "{{ cloudfall_logging_backend_readers | subelements('paths') }}"
+  loop_control:
+    label: "{{ item.0.user }}: {{ item.1 }}"
