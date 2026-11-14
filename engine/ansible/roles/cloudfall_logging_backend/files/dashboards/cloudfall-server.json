@@ -1,0 +1,766 @@
+{
+  "uid": "cloudfall-server",
+  "title": "Server",
+  "description": "One server's host metrics and log volume (Cloudfall S-016)",
+  "tags": [
+    "cloudfall"
+  ],
+  "editable": false,
+  "graphTooltip": 1,
+  "schemaVersion": 42,
+  "version": 1,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "environment",
+        "label": "Environment",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "cloudfall-prometheus"
+        },
+        "query": {
+          "query": "label_values(node_uname_info, environment)",
+          "refId": "environment-var"
+        },
+        "definition": "label_values(node_uname_info, environment)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": false,
+        "multi": false,
+        "current": {},
+        "options": []
+      },
+      {
+        "name": "server",
+        "label": "Server",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "cloudfall-prometheus"
+        },
+        "query": {
+          "query": "label_values(node_uname_info{environment=\"$environment\"}, server)",
+          "refId": "server-var"
+        },
+        "definition": "label_values(node_uname_info{environment=\"$environment\"}, server)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": false,
+        "multi": false,
+        "current": {},
+        "options": []
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "type": "dashboards",
+      "tags": [
+        "cloudfall"
+      ],
+      "asDropdown": true,
+      "title": "Cloudfall",
+      "includeVars": true,
+      "keepTime": true
+    }
+  ],
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Uptime",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "time() - node_boot_time_seconds{environment=\"$environment\", server=\"$server\"}",
+          "refId": "A",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "id": 1,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      }
+    },
+    {
+      "type": "stat",
+      "title": "CPU busy",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{environment=\"$environment\", server=\"$server\", mode=\"idle\"}[5m])))",
+          "refId": "A",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 75
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "id": 2,
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Memory used",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "100 * (1 - node_memory_MemAvailable_bytes{environment=\"$environment\", server=\"$server\"} / node_memory_MemTotal_bytes{environment=\"$environment\", server=\"$server\"})",
+          "refId": "A",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 75
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "id": 3,
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Fullest filesystem",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "max(100 * (1 - node_filesystem_avail_bytes{environment=\"$environment\", server=\"$server\", fstype=~\"ext4|xfs\"} / node_filesystem_size_bytes{environment=\"$environment\", server=\"$server\", fstype=~\"ext4|xfs\"}))",
+          "refId": "A",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 75
+              },
+              {
+                "color": "red",
+                "value": 85
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "id": 4,
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU by mode",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "100 * sum by (mode) (rate(node_cpu_seconds_total{environment=\"$environment\", server=\"$server\", mode!=\"idle\"}[$__rate_interval])) / scalar(count(node_cpu_seconds_total{environment=\"$environment\", server=\"$server\", mode=\"idle\"}))",
+          "refId": "A",
+          "legendFormat": "{{mode}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "fillOpacity": 60,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 5,
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Memory",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "node_memory_MemTotal_bytes{environment=\"$environment\", server=\"$server\"} - node_memory_MemAvailable_bytes{environment=\"$environment\", server=\"$server\"}",
+          "refId": "A",
+          "legendFormat": "used",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "node_memory_MemAvailable_bytes{environment=\"$environment\", server=\"$server\"}",
+          "refId": "B",
+          "legendFormat": "available",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "fillOpacity": 60,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 6,
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Load",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "node_load1{environment=\"$environment\", server=\"$server\"}",
+          "refId": "A",
+          "legendFormat": "1m",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "node_load5{environment=\"$environment\", server=\"$server\"}",
+          "refId": "B",
+          "legendFormat": "5m",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "node_load15{environment=\"$environment\", server=\"$server\"}",
+          "refId": "C",
+          "legendFormat": "15m",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 7,
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Filesystem used",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "100 * (1 - node_filesystem_avail_bytes{environment=\"$environment\", server=\"$server\", fstype=~\"ext4|xfs\"} / node_filesystem_size_bytes{environment=\"$environment\", server=\"$server\", fstype=~\"ext4|xfs\"})",
+          "refId": "A",
+          "legendFormat": "{{mountpoint}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          },
+          "max": 100,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 8,
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Filesystem free",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "node_filesystem_avail_bytes{environment=\"$environment\", server=\"$server\", fstype=~\"ext4|xfs\"}",
+          "refId": "A",
+          "legendFormat": "{{mountpoint}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 9,
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Disk I/O",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "sum by (device) (rate(node_disk_read_bytes_total{environment=\"$environment\", server=\"$server\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{device}} read",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "sum by (device) (rate(node_disk_written_bytes_total{environment=\"$environment\", server=\"$server\"}[$__rate_interval]))",
+          "refId": "B",
+          "legendFormat": "{{device}} written",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 10,
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Network",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "sum by (device) (rate(node_network_receive_bytes_total{environment=\"$environment\", server=\"$server\", device!=\"lo\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{device}} in",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "sum by (device) (rate(node_network_transmit_bytes_total{environment=\"$environment\", server=\"$server\", device!=\"lo\"}[$__rate_interval]))",
+          "refId": "B",
+          "legendFormat": "{{device}} out",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 11,
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Log lines by unit",
+      "description": "",
+      "datasource": {
+        "type": "loki",
+        "uid": "cloudfall-loki"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "cloudfall-loki"
+          },
+          "expr": "sum by (unit) (count_over_time({environment=\"$environment\", server=\"$server\"} [$__auto]))",
+          "refId": "A",
+          "legendFormat": "{{unit}}",
+          "queryType": "range"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 60,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            },
+            "drawStyle": "bars"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 12,
+      "gridPos": {
+        "x": 12,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      }
+    }
+  ]
+}

@@ -1,0 +1,435 @@
+{
+  "uid": "cloudfall-services",
+  "title": "Services",
+  "description": "PostgreSQL and Redis services with metrics declared (Cloudfall S-016); empty when there are none",
+  "tags": [
+    "cloudfall"
+  ],
+  "editable": false,
+  "graphTooltip": 1,
+  "schemaVersion": 42,
+  "version": 1,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "environment",
+        "label": "Environment",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "cloudfall-prometheus"
+        },
+        "query": {
+          "query": "label_values(node_uname_info, environment)",
+          "refId": "environment-var"
+        },
+        "definition": "label_values(node_uname_info, environment)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": false,
+        "multi": false,
+        "current": {},
+        "options": []
+      },
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "cloudfall-prometheus"
+        },
+        "query": {
+          "query": "label_values({__name__=~\"pg_up|redis_up\", environment=\"$environment\"}, service)",
+          "refId": "service-var"
+        },
+        "definition": "label_values({__name__=~\"pg_up|redis_up\", environment=\"$environment\"}, service)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "multi": false,
+        "current": {},
+        "options": [],
+        "allValue": ".*"
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "type": "dashboards",
+      "tags": [
+        "cloudfall"
+      ],
+      "asDropdown": true,
+      "title": "Cloudfall",
+      "includeVars": true,
+      "keepTime": true
+    }
+  ],
+  "panels": [
+    {
+      "type": "stat",
+      "title": "PostgreSQL up",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "pg_up{environment=\"$environment\", service=~\"$service\"}",
+          "refId": "A",
+          "legendFormat": "{{service}}",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "id": 1,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 4
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Redis up",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "redis_up{environment=\"$environment\", service=~\"$service\"}",
+          "refId": "A",
+          "legendFormat": "{{service}}",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "id": 2,
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 4
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "PostgreSQL connections",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "sum by (service, state) (pg_stat_activity_count{environment=\"$environment\", service=~\"$service\"})",
+          "refId": "A",
+          "legendFormat": "{{service}} {{state}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 3,
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "PostgreSQL transactions",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "sum by (service) (rate(pg_stat_database_xact_commit{environment=\"$environment\", service=~\"$service\"}[$__rate_interval]) + rate(pg_stat_database_xact_rollback{environment=\"$environment\", service=~\"$service\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{service}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 4,
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Redis clients",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "sum by (service) (redis_connected_clients{environment=\"$environment\", service=~\"$service\"})",
+          "refId": "A",
+          "legendFormat": "{{service}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 5,
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 8,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Redis commands",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "sum by (service) (rate(redis_commands_processed_total{environment=\"$environment\", service=~\"$service\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{service}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 6,
+      "gridPos": {
+        "x": 8,
+        "y": 12,
+        "w": 8,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Redis memory",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "sum by (service) (redis_memory_used_bytes{environment=\"$environment\", service=~\"$service\"})",
+          "refId": "A",
+          "legendFormat": "{{service}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 7,
+      "gridPos": {
+        "x": 16,
+        "y": 12,
+        "w": 8,
+        "h": 8
+      }
+    }
+  ]
+}

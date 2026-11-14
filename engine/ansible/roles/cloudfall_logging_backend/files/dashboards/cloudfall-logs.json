@@ -1,0 +1,253 @@
+{
+  "uid": "cloudfall-logs",
+  "title": "Logs",
+  "description": "Journal and file logs by server and unit, with a text filter (Cloudfall S-016)",
+  "tags": [
+    "cloudfall"
+  ],
+  "editable": false,
+  "graphTooltip": 1,
+  "schemaVersion": 42,
+  "version": 1,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "environment",
+        "label": "Environment",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "cloudfall-loki"
+        },
+        "query": {
+          "type": 1,
+          "label": "environment",
+          "stream": "",
+          "refId": "environment-var"
+        },
+        "definition": "label_values(environment)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": false,
+        "multi": false,
+        "current": {},
+        "options": []
+      },
+      {
+        "name": "server",
+        "label": "Server",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "cloudfall-loki"
+        },
+        "query": {
+          "type": 1,
+          "label": "server",
+          "stream": "{environment=\"$environment\"}",
+          "refId": "server-var"
+        },
+        "definition": "label_values({environment=\"$environment\"}, server)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "multi": false,
+        "current": {},
+        "options": [],
+        "allValue": ".*"
+      },
+      {
+        "name": "unit",
+        "label": "Unit",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "cloudfall-loki"
+        },
+        "query": {
+          "type": 1,
+          "label": "unit",
+          "stream": "{environment=\"$environment\", server=~\"$server\"}",
+          "refId": "unit-var"
+        },
+        "definition": "label_values({environment=\"$environment\", server=~\"$server\"}, unit)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "multi": false,
+        "current": {},
+        "options": [],
+        "allValue": ".*"
+      },
+      {
+        "name": "search",
+        "label": "Filter (regex)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        }
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "type": "dashboards",
+      "tags": [
+        "cloudfall"
+      ],
+      "asDropdown": true,
+      "title": "Cloudfall",
+      "includeVars": true,
+      "keepTime": true
+    }
+  ],
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Log lines by unit",
+      "description": "",
+      "datasource": {
+        "type": "loki",
+        "uid": "cloudfall-loki"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "cloudfall-loki"
+          },
+          "expr": "sum by (unit) (count_over_time({environment=\"$environment\", server=~\"$server\", unit=~\"$unit\"} |~ \"$search\" [$__auto]))",
+          "refId": "A",
+          "legendFormat": "{{unit}}",
+          "queryType": "range"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 60,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            },
+            "drawStyle": "bars"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 1,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Errors by unit",
+      "description": "Lines matching error, fail or panic, case-insensitive",
+      "datasource": {
+        "type": "loki",
+        "uid": "cloudfall-loki"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "cloudfall-loki"
+          },
+          "expr": "sum by (unit) (count_over_time({environment=\"$environment\", server=~\"$server\", unit=~\"$unit\"} |~ \"$search\" |~ \"(?i)(error|fail|panic)\" [$__auto]))",
+          "refId": "A",
+          "legendFormat": "{{unit}}",
+          "queryType": "range"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 60,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            },
+            "drawStyle": "bars"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 2,
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "logs",
+      "title": "Lines",
+      "datasource": {
+        "type": "loki",
+        "uid": "cloudfall-loki"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "cloudfall-loki"
+          },
+          "expr": "{environment=\"$environment\", server=~\"$server\", unit=~\"$unit\"} |~ \"$search\"",
+          "refId": "A",
+          "queryType": "range"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      },
+      "id": 3,
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 24,
+        "h": 18
+      }
+    }
+  ]
+}

@@ -1,0 +1,630 @@
+{
+  "uid": "cloudfall-fleet",
+  "title": "Fleet",
+  "description": "Every server of the environment at a glance (Cloudfall S-016)",
+  "tags": [
+    "cloudfall"
+  ],
+  "editable": false,
+  "graphTooltip": 1,
+  "schemaVersion": 42,
+  "version": 1,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "environment",
+        "label": "Environment",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "cloudfall-prometheus"
+        },
+        "query": {
+          "query": "label_values(node_uname_info, environment)",
+          "refId": "environment-var"
+        },
+        "definition": "label_values(node_uname_info, environment)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": false,
+        "multi": false,
+        "current": {},
+        "options": []
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "type": "dashboards",
+      "tags": [
+        "cloudfall"
+      ],
+      "asDropdown": true,
+      "title": "Cloudfall",
+      "includeVars": true,
+      "keepTime": true
+    }
+  ],
+  "panels": [
+    {
+      "type": "table",
+      "title": "Servers",
+      "description": "Last sample: seconds since the server's collector last reported",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "time() - max by (server) (timestamp(node_uname_info{environment=\"$environment\"}))",
+          "refId": "A",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "100 * (1 - avg by (server) (rate(node_cpu_seconds_total{environment=\"$environment\", mode=\"idle\"}[5m])))",
+          "refId": "B",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "100 * (1 - max by (server) (node_memory_MemAvailable_bytes{environment=\"$environment\"}) / max by (server) (node_memory_MemTotal_bytes{environment=\"$environment\"}))",
+          "refId": "C",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "max by (server) (100 * (1 - node_filesystem_avail_bytes{environment=\"$environment\", fstype=~\"ext4|xfs\"} / node_filesystem_size_bytes{environment=\"$environment\", fstype=~\"ext4|xfs\"}))",
+          "refId": "D",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "max by (server) (node_load1{environment=\"$environment\"})",
+          "refId": "E",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value #A": "Last sample",
+              "Value #B": "CPU busy",
+              "Value #C": "Memory used",
+              "Value #D": "Fullest filesystem",
+              "Value #E": "Load 1m"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Last sample"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CPU busy"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Memory used"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Fullest filesystem"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Load 1m"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CPU busy"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 75
+                    },
+                    {
+                      "color": "red",
+                      "value": 90
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Memory used"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 75
+                    },
+                    {
+                      "color": "red",
+                      "value": 90
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Fullest filesystem"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 75
+                    },
+                    {
+                      "color": "red",
+                      "value": 90
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Last sample"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 180
+                    },
+                    {
+                      "color": "red",
+                      "value": 600
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      },
+      "id": 1,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 8
+      }
+    },
+    {
+      "type": "table",
+      "title": "Firing alerts",
+      "description": "Alert rules firing now, from Prometheus' ALERTS series",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "ALERTS{alertstate=\"firing\"}",
+          "refId": "A",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "__name__": true
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      },
+      "id": 2,
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 24,
+        "h": 6
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU busy by server",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "100 * (1 - avg by (server) (rate(node_cpu_seconds_total{environment=\"$environment\", mode=\"idle\"}[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "{{server}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          },
+          "max": 100,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 3,
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Fullest filesystem by server",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "max by (server) (100 * (1 - node_filesystem_avail_bytes{environment=\"$environment\", fstype=~\"ext4|xfs\"} / node_filesystem_size_bytes{environment=\"$environment\", fstype=~\"ext4|xfs\"}))",
+          "refId": "A",
+          "legendFormat": "{{server}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          },
+          "max": 100,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 4,
+      "gridPos": {
+        "x": 12,
+        "y": 14,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Memory used by server",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "100 * (1 - max by (server) (node_memory_MemAvailable_bytes{environment=\"$environment\"}) / max by (server) (node_memory_MemTotal_bytes{environment=\"$environment\"}))",
+          "refId": "A",
+          "legendFormat": "{{server}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          },
+          "max": 100,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 5,
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Load 1m by server",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "max by (server) (node_load1{environment=\"$environment\"})",
+          "refId": "A",
+          "legendFormat": "{{server}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 6,
+      "gridPos": {
+        "x": 12,
+        "y": 22,
+        "w": 12,
+        "h": 8
+      }
+    }
+  ]
+}

@@ -1,0 +1,3 @@
+### Added
+
+- `logging deploy` provisions four dashboards into a read-only `Cloudfall` folder in the stack's Grafana: Fleet (every server's freshness, CPU, memory, fullest filesystem, load and the firing alerts), Server (one server's host metrics and log volume by unit), Logs (log volume, error lines and the lines themselves by server and unit, with a filter) and Services (PostgreSQL and Redis exporters by service). They read servers from the data and name the provisioned data sources by uid, so they work on any project; a dashboard dropped by a later release is removed on the next deploy (S-016)
