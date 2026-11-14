@@ -11,6 +11,7 @@ runs on localhost with the rendered scripts, so the receipt is the one
 from __future__ import annotations
 
 import base64
+import copy
 import fnmatch
 import json
 import os
@@ -45,6 +46,8 @@ GIB = 1024**3
 INDEX_MISSING = "index_not_found_exception"
 SNAPSHOT_MISSING = "snapshot_missing_exception"
 REPOSITORY_MISSING = "repository_missing_exception"
+COUNTS = "cloudfall-snapshot-counts"
+COPY = "cloudfall-restore-check-"
 # Live indices: name -> (documents, primary store bytes).
 INDICES = {
     "crm-1": (3, 4_000),
@@ -77,12 +80,16 @@ class FakeElasticsearch:
     snapshots: list[dict[str, object]] = field(default_factory=list)
     # Documents a restored copy holds, by source index, instead of the snapshot's.
     restored_counts: dict[str, int] = field(default_factory=dict)
-    restore_failed_shards: int = 0
+    # Indices whose restore fails a shard.
+    failing_restores: set[str] = field(default_factory=set)
     available: int = 50 * GIB
     total: int = 100 * GIB
     watermark: str = "85%"
+    # The documents of indices whose documents a test reads by id.
+    documents: dict[str, dict[str, object]] = field(default_factory=dict)
     calls: list[tuple[str, str, object]] = field(default_factory=list)
     authorizations: set[str] = field(default_factory=set)
+    created: list[tuple[str, object]] = field(default_factory=list)
 
     def snapshot(
         self,
@@ -95,13 +102,7 @@ class FakeElasticsearch:
     ) -> None:
         """Put a snapshot in the repository, as an earlier run left it."""
         metadata = (
-            None
-            if service is None
-            else {
-                "takenBy": taken_by,
-                "service": service,
-                "restoreCheckCounts": {"crm-1": self.indices["crm-1"]},
-            }
+            None if service is None else {"takenBy": taken_by, "service": service}
         )
         self.snapshots.append(
             {
@@ -111,6 +112,7 @@ class FakeElasticsearch:
                 "metadata": metadata,
                 "indices": [index for index in self.indices if index in INDICES],
                 "contents": dict(self.indices),
+                "documents": copy.deepcopy(self.documents),
                 "polls_left": 0,
             }
         )
@@ -129,11 +131,24 @@ class FakeElasticsearch:
 
     def body(self, method: str, prefix: str) -> dict[str, object]:
         """Return the body of the first ``method`` request under ``prefix``."""
-        return next(
+        return self.bodies(method, prefix)[0]
+
+    def bodies(self, method: str, prefix: str) -> list[dict[str, object]]:
+        """Return the bodies of the ``method`` requests under ``prefix``."""
+        return [
             cast("dict[str, object]", body)
             for verb, path, body in self.calls
             if verb == method and path.startswith(prefix)
-        )
+        ]
+
+    def restored_indices(self) -> list[str]:
+        """Return the ``indices`` of each restore request, in order."""
+        return [
+            str(body["indices"])
+            for verb, path, body in self.calls
+            if verb == "POST" and path.endswith("/_restore")
+            for body in [cast("dict[str, object]", body)]
+        ]
 
 
 class _Answer(Exception):  # noqa: N818 - control flow of the fake, not an error
@@ -147,7 +162,7 @@ def _public(snapshot: dict[str, object]) -> dict[str, object]:
     return {
         key: value
         for key, value in snapshot.items()
-        if key not in {"contents", "polls_left"}
+        if key not in {"contents", "documents", "polls_left"}
     }
 
 
@@ -188,16 +203,40 @@ def _route(  # noqa: C901, PLR0911 - one fake API, one dispatch
     index = parts[0]
     if parts[1:] == ["_refresh"]:
         return {"_shards": {"failed": 0}}
+    if method == "PUT" and len(parts) == 1:
+        fake.created.append((index, body))
+        fake.indices[index] = 0
+        fake.documents[index] = {}
+        return {"acknowledged": True}
     if index not in fake.indices:
         raise _missing(INDEX_MISSING, index)
+    if parts[1:2] == ["_doc"]:
+        return _document(fake, method, index, parts[2], body)
     if method == "HEAD":
         return None
     if method == "DELETE":
         del fake.indices[index]
+        fake.documents.pop(index, None)
         return {"acknowledged": True}
     if parts[1:] == ["_count"]:
         return {"count": fake.indices[index]}
     raise _Answer(400, {"error": f"unexpected {method} {'/'.join(parts)}"})
+
+
+def _document(
+    fake: FakeElasticsearch, method: str, index: str, key: str, body: object
+) -> object:
+    documents = fake.documents.setdefault(index, {})
+    if method == "PUT":
+        documents[key] = body
+    elif key not in documents:
+        raise _Answer(404, {"_id": key, "found": False})
+    elif method == "DELETE":
+        del documents[key]
+    else:
+        return {"_id": key, "found": True, "_source": documents[key]}
+    fake.indices[index] = len(documents)
+    return {"_id": key, "result": "ok"}
 
 
 def _snapshot_route(  # noqa: C901, PLR0911, PLR0912 - the snapshot API of the fake
@@ -228,6 +267,7 @@ def _snapshot_route(  # noqa: C901, PLR0911, PLR0912 - the snapshot API of the f
                 "metadata": payload["metadata"],
                 "indices": list(fake.indices),
                 "contents": dict(fake.indices),
+                "documents": copy.deepcopy(fake.documents),
                 "polls_left": fake.polls,
                 "shards": {"total": 4, "failed": 0, "successful": 4},
             }
@@ -257,7 +297,7 @@ def _snapshot_route(  # noqa: C901, PLR0911, PLR0912 - the snapshot API of the f
     answer = _public(snapshot)
     if query.get("index_details") == ["true"]:
         answer["index_details"] = {
-            name: {"size_in_bytes": fake.sizes[name]}
+            name: {"size_in_bytes": fake.sizes.get(name, 0)}
             for name in cast("list[str]", snapshot["indices"])
         }
     return {"snapshots": [answer]}
@@ -268,17 +308,21 @@ def _restore(
 ) -> dict[str, object]:
     snapshot = next(s for s in fake.snapshots if s["snapshot"] == name)
     contents = cast("dict[str, int]", snapshot["contents"])
+    documents = cast("dict[str, dict[str, object]]", snapshot["documents"])
     replacement = str(body["rename_replacement"]).replace("$1", r"\1")
     restored = []
-    for index in str(body["indices"]).split(","):
+    requested = str(body["indices"]).split(",")
+    for index in requested:
         target = re.sub(f"^{body['rename_pattern']}$", replacement, index)
         if target in fake.indices:
             raise _Answer(500, {"error": f"an open index [{target}] exists"})
         fake.indices[target] = fake.restored_counts.get(index, contents[index])
-        fake.sizes[target] = fake.sizes[index]
+        fake.sizes[target] = fake.sizes.get(index, 0)
+        if index in documents:
+            fake.documents[target] = copy.deepcopy(documents[index])
         restored.append(target)
     total = len(restored)
-    failed = fake.restore_failed_shards
+    failed = len(fake.failing_restores & set(requested))
     return {
         "snapshot": {
             "snapshot": name,
@@ -442,23 +486,47 @@ def test_s012_10_backup_takes_a_snapshot_waits_for_success_and_records_counts(
         "GET /_cat/indices",
         "POST /crm-1/_refresh",
         "GET /crm-1/_count",
+        f"HEAD /{COUNTS}",
+        f"PUT /{COUNTS}",
+        f"PUT /{COUNTS}/_doc/{name}",
         f"PUT /_snapshot/cloudfall/{name}",
         f"GET /_snapshot/cloudfall/{name}",
         f"GET /_snapshot/cloudfall/{name}",
         "GET /_snapshot/cloudfall/cloudfall-*",
     ]
-    # Every index and the cluster state; the smallest index is the drill's.
+    # Every index and the cluster state; the smallest index is the drill's,
+    # its count kept in Cloudfall's own index, which the snapshot holds.
     assert state.body("PUT", "/_snapshot/") == {
         "include_global_state": True,
-        "metadata": {
-            "takenBy": "cloudfall",
-            "service": "search-main",
-            "restoreCheckCounts": {"crm-1": 3},
-        },
+        "metadata": {"takenBy": "cloudfall", "service": "search-main"},
     }
+    assert state.documents[COUNTS] == {
+        name: {
+            "service": "search-main",
+            "snapshot": name,
+            "counts": [{"index": "crm-1", "documents": 3}],
+        }
+    }
+    assert COUNTS in cast("list[str]", taken["indices"])
+    ((created, body),) = state.created
+    mappings = cast("dict[str, object]", cast("dict[str, object]", body)["mappings"])
+    assert created == COUNTS
+    assert mappings["dynamic"] is False
     assert state.authorizations == {_basic()}
-    assert f"snapshot {name} of search-main: SUCCESS, 4 indices" in done.stdout
-    assert "restore check will restore crm-1 (3 documents)" in done.stdout
+    assert f"snapshot {name} of search-main: SUCCESS, 5 indices" in done.stdout
+    assert "restore check will restore 1 indices, 3 documents" in done.stdout
+
+
+def test_a_second_backup_reuses_the_counts_index(
+    tmp_path: Path, fake: tuple[FakeElasticsearch, int]
+) -> None:
+    state, port = fake
+    assert _run(tmp_path, port, "backup").returncode == 0
+    time.sleep(1.1)  # snapshot names are to the second
+
+    assert _run(tmp_path, port, "backup").returncode == 0
+    assert len(state.created) == 1
+    assert sorted(state.documents[COUNTS]) == sorted(state.names())
 
 
 # proves: S-012-10
@@ -497,49 +565,86 @@ def test_s012_10_restore_check_restores_a_renamed_copy_compares_and_deletes_it(
     assert state.requests() == [
         "POST /_snapshot/cloudfall/_verify",
         "GET /_snapshot/cloudfall/cloudfall-*",
+        f"HEAD /{COPY}{COUNTS}",
+        f"POST /_snapshot/cloudfall/{taken}/_restore",
+        f"GET /_cluster/health/{COPY}{COUNTS}",
+        f"GET /{COPY}{COUNTS}/_doc/{taken}",
         f"GET /_snapshot/cloudfall/{taken}",
         "GET /_nodes/_local/stats/fs",
         "GET /_cluster/settings",
-        "HEAD /cloudfall-restore-check-crm-1",
+        f"HEAD /{COPY}crm-1",
         f"POST /_snapshot/cloudfall/{taken}/_restore",
-        "GET /_cluster/health/cloudfall-restore-check-crm-1",
-        "GET /cloudfall-restore-check-crm-1/_count",
-        "DELETE /cloudfall-restore-check-crm-1",
+        f"GET /_cluster/health/{COPY}crm-1",
+        f"GET /{COPY}crm-1/_count",
+        f"DELETE /{COPY}{COUNTS}",
+        f"DELETE /{COPY}crm-1",
     ]
-    assert state.body("POST", f"/_snapshot/cloudfall/{taken}/_restore") == {
-        "indices": "crm-1",
+    options = {
         "include_global_state": False,
         "include_aliases": False,
         "rename_pattern": "(.+)",
         "rename_replacement": "cloudfall-restore-check-$1",
         "index_settings": {"index.number_of_replicas": 0},
     }
-    # The live indices are as they were; the copy is gone.
+    assert state.bodies("POST", f"/_snapshot/cloudfall/{taken}/_restore") == [
+        {"indices": COUNTS, **options},
+        {"indices": "crm-1", **options},
+    ]
+    # The live indices are as they were; the copies are gone.
     assert state.indices == live
     assert (
         f"restore check passed for search-main: snapshot {taken} restored "
-        "crm-1 (3 documents) with equal document counts" in done.stdout
+        "1 indices (crm-1) with 3 documents, as recorded" in done.stdout
     )
 
 
 # proves: S-012-10
-def test_s012_10_restore_check_restores_the_declared_index_patterns(
+def test_s012_10_restore_check_restores_every_index_the_patterns_match(
+    tmp_path: Path, fake: tuple[FakeElasticsearch, int]
+) -> None:
+    """Many matching indices, long names: every one is restored and compared."""
+    state, port = fake
+    for number in range(80):
+        state.indices[f"crm-{number:03d}-{'x' * 40}"] = number
+    crm = sorted(name for name in state.indices if name.startswith("crm-"))
+    assert len(crm) == 82
+    patterns = {"restoreCheckIndices": ["crm-*"]}
+    assert _run(tmp_path, port, "backup", **patterns).returncode == 0
+    (recorded,) = state.documents[COUNTS].values()
+    assert cast("dict[str, object]", recorded)["counts"] == [
+        {"index": name, "documents": state.indices[name]} for name in crm
+    ]
+    live = dict(state.indices)
+
+    done = _run(tmp_path, port, "restore-check", **patterns)
+
+    assert done.returncode == 0, done.stderr
+    assert state.restored_indices() == [COUNTS, ",".join(crm)]
+    counted = [call for call in state.requests("GET") if call.endswith("/_count")]
+    assert counted[-82:] == [f"GET /{COPY}{name}/_count" for name in crm]
+    assert state.requests("DELETE")[-83:] == [
+        f"DELETE /{COPY}{name}" for name in [COUNTS, *crm]
+    ]
+    assert state.indices == live
+    assert "restored 82 indices" in done.stdout
+
+
+# proves: S-012-10
+def test_s012_10_restore_check_fails_on_a_mismatch_in_any_matching_index(
     tmp_path: Path, fake: tuple[FakeElasticsearch, int]
 ) -> None:
     state, port = fake
     patterns = {"restoreCheckIndices": ["crm-*"]}
     assert _run(tmp_path, port, "backup", **patterns).returncode == 0
-    metadata = cast("dict[str, object]", state.snapshots[0]["metadata"])
-    assert metadata["restoreCheckCounts"] == {"crm-1": 3, "crm-2": 7}
+    state.restored_counts = {"crm-2": 6}
 
     done = _run(tmp_path, port, "restore-check", **patterns)
 
-    assert done.returncode == 0, done.stderr
-    restore = state.body("POST", "/_snapshot/cloudfall/cloudfall-")
-    assert restore["indices"] == "crm-1,crm-2"
+    assert done.returncode == 1
+    assert "crm-2: the snapshot recorded 7 documents" in done.stderr
+    assert "crm-1:" not in done.stderr
     assert state.requests("DELETE") == [
-        "DELETE /cloudfall-restore-check-crm-1",
-        "DELETE /cloudfall-restore-check-crm-2",
+        f"DELETE /{COPY}{name}" for name in (COUNTS, "crm-1", "crm-2")
     ]
     assert "billing-1" in state.indices
 
@@ -560,24 +665,30 @@ def test_s012_10_a_count_mismatch_fails_and_still_deletes_the_copy(
         "crm-1: the snapshot recorded 3 documents, the restore brought back 2"
         in done.stderr
     )
-    assert state.requests("DELETE") == ["DELETE /cloudfall-restore-check-crm-1"]
+    assert state.requests("DELETE") == [
+        f"DELETE /{COPY}{COUNTS}",
+        f"DELETE /{COPY}crm-1",
+    ]
     assert state.indices == live
 
 
 # proves: S-012-10
-def test_s012_10_a_failed_restore_deletes_only_the_copy_it_restored(
+def test_s012_10_a_failed_restore_deletes_only_the_copies_it_restored(
     tmp_path: Path, fake: tuple[FakeElasticsearch, int]
 ) -> None:
     state, port = fake
     assert _run(tmp_path, port, "backup").returncode == 0
-    state.restore_failed_shards = 1
+    state.failing_restores = {"crm-1"}
     live = dict(state.indices)
 
     done = _run(tmp_path, port, "restore-check")
 
     assert done.returncode == 1
     assert "failed 1 of 1 shards" in done.stderr
-    assert state.requests("DELETE") == ["DELETE /cloudfall-restore-check-crm-1"]
+    assert state.requests("DELETE") == [
+        f"DELETE /{COPY}{COUNTS}",
+        f"DELETE /{COPY}crm-1",
+    ]
     assert state.indices == live
 
 
@@ -594,8 +705,9 @@ def test_s012_10_restore_check_never_touches_an_index_named_as_its_copy(
 
     assert done.returncode == 1
     assert "cloudfall-restore-check-crm-1 already exist" in done.stderr
-    assert not [call for call in state.requests() if "_restore" in call]
-    assert state.requests("DELETE") == []
+    # Only the counts were restored; only their copy is deleted.
+    assert state.restored_indices() == [COUNTS]
+    assert state.requests("DELETE") == [f"DELETE /{COPY}{COUNTS}"]
     assert state.indices == before
 
 
@@ -646,26 +758,27 @@ def test_s012_10_restore_check_refuses_a_restore_past_the_low_watermark(
 
     assert done.returncode == 1
     assert "past the low disk watermark (85%)" in done.stderr
-    assert not [call for call in state.requests() if "_restore" in call]
+    assert state.restored_indices() == [COUNTS]
+    assert state.requests("DELETE") == [f"DELETE /{COPY}{COUNTS}"]
 
     state.available = 15 * GIB + 4_000
     state.watermark = "500mb"
     assert _run(tmp_path, port, "restore-check").returncode == 0
 
 
-def test_the_drill_counts_leave_out_indices_past_the_metadata_limit(
+# proves: S-012-10
+def test_s012_10_a_snapshot_without_its_counts_fails_the_drill(
     tmp_path: Path, fake: tuple[FakeElasticsearch, int]
 ) -> None:
-    """Elasticsearch refuses snapshot metadata of 1024 bytes or more."""
+    """A snapshot Cloudfall took holds the counts index; without it, no drill."""
     state, port = fake
-    for number in range(60):
-        state.indices[f"crm-{number:03d}-{'x' * 20}"] = number
-    done = _run(tmp_path, port, "backup", restoreCheckIndices=["crm-*"])
+    state.snapshot("cloudfall-20261113-032000", age_days=1)
 
-    assert done.returncode == 0, done.stderr
-    metadata = state.body("PUT", "/_snapshot/")["metadata"]
-    assert len(json.dumps(metadata, separators=(",", ":")).encode()) <= 1000
-    assert "restore check leaves out" in done.stdout
+    done = _run(tmp_path, port, "restore-check")
+
+    assert done.returncode == 1
+    assert f"does not hold {COUNTS}" in done.stderr
+    assert state.restored_indices() == []
 
 
 # proves: S-012-11
@@ -673,9 +786,13 @@ def test_s012_11_snapshots_older_than_retention_are_deleted_and_the_newest_kept(
     tmp_path: Path, fake: tuple[FakeElasticsearch, int]
 ) -> None:
     state, port = fake
-    state.snapshot("cloudfall-20261001-032000", age_days=44)
-    state.snapshot("cloudfall-20261030-032000", age_days=15)
-    state.snapshot("cloudfall-20261111-032000", age_days=3)
+    kept = "cloudfall-20261111-032000"
+    old = ["cloudfall-20261001-032000", "cloudfall-20261030-032000"]
+    state.indices[COUNTS] = 3
+    state.documents[COUNTS] = {name: {"snapshot": name} for name in [*old, kept]}
+    state.snapshot(old[0], age_days=44)
+    state.snapshot(old[1], age_days=15)
+    state.snapshot(kept, age_days=3)
     state.snapshot("cloudfall-20261020-000000", age_days=25, state="IN_PROGRESS")
     # Not Cloudfall's of this service: never touched, however old.
     state.snapshot("manual-before-upgrade", age_days=90, service=None)
@@ -686,10 +803,13 @@ def test_s012_11_snapshots_older_than_retention_are_deleted_and_the_newest_kept(
 
     assert done.returncode == 0, done.stderr
     assert state.requests("DELETE") == [
-        "DELETE /_snapshot/cloudfall/cloudfall-20261001-032000,"
-        "cloudfall-20261030-032000"
+        f"DELETE /_snapshot/cloudfall/{old[0]},{old[1]}",
+        f"DELETE /{COUNTS}/_doc/{old[0]}",
+        f"DELETE /{COUNTS}/_doc/{old[1]}",
     ]
     taken = state.names()[-1]
+    # The counts of the deleted snapshots go with them.
+    assert sorted(state.documents[COUNTS]) == [kept, taken]
     assert state.names() == [
         "cloudfall-20261111-032000",
         "cloudfall-20261020-000000",
@@ -806,7 +926,7 @@ def test_s012_10_backup_run_and_verify_write_receipts_without_the_password(
     state, port = fake
 
     for action, summary in (
-        ("backup", "of search-main: SUCCESS, 4 indices"),
+        ("backup", "of search-main: SUCCESS, 5 indices"),
         ("restore-check", "restore check passed for search-main"),
     ):
         done, path = _backup_playbook(tmp_path, port, action)
@@ -930,7 +1050,10 @@ def test_the_filesystem_repository_is_in_path_repo_and_registered_once() -> None
     assert not registers({"status": 200, "json": {"cloudfall": same}})
     assert registers({"status": 200, "json": {"cloudfall": moved}})
     refuse = _task("Refuse a snapshot repository this release does not converge")
-    conditions = cast("dict[str, list[str]]", refuse["ansible.builtin.assert"])["that"]
+    module = cast("dict[str, object]", refuse["ansible.builtin.assert"])
+    assert "S3 repository registration" in str(module["fail_msg"])
+    assert "not implemented" in str(module["fail_msg"])
+    conditions = cast("list[str]", module["that"])
     declarations = ((service, True), (_service(9200, snapshotRepository=s3), False))
     for declared, holds in declarations:
         scoped = _variables(declared)

@@ -2,16 +2,20 @@
 # Managed by Cloudfall. Local changes will be overwritten.
 """{{ cloudfall_elasticsearch_snapshot_action }} of Elasticsearch service {{ cloudfall_elasticsearch_service.id }} (S-012).
 
-backup: takes the snapshot cloudfall-<timestamp> of every index and the
-cluster state into the repository the converge registered, waits for it,
-fails unless its state is SUCCESS, then deletes Cloudfall's snapshots of the
-service older than retentionDays, never the newest. The snapshot's metadata
-records the document count of each index the restore drill restores.
+backup: counts the documents of each index the restore drill restores
+(every index restoreCheckIndices matches, or the smallest index) and writes
+the counts as one document, named after the snapshot, into Cloudfall's own
+index cloudfall-snapshot-counts. It then takes the snapshot
+cloudfall-<timestamp> of every index, that one included, and the cluster
+state into the repository the converge registered, waits for it, fails
+unless its state is SUCCESS, and deletes Cloudfall's snapshots of the
+service older than retentionDays, never the newest, with their counts.
 
-restore-check: verifies the repository, restores the recorded indices of the
-newest snapshot under the prefix cloudfall-restore-check- with no replicas,
-waits for them to be green, compares each document count with the recorded
-one, and deletes the restored copies, also when a step failed.
+restore-check: verifies the repository, restores the counts index of the
+newest snapshot under the prefix cloudfall-restore-check-, reads the counts
+the snapshot holds, restores those indices under the same prefix with no
+replicas, waits for them to be green, compares each document count with the
+recorded one, and deletes the restored copies, also when a step failed.
 
 The cloudfall password is read from its file and sent only in the
 Authorization header; nothing here prints it.
@@ -33,6 +37,7 @@ SERVICE = {{ cloudfall_elasticsearch_service.id | to_json }}
 URL = {{ ('http://' ~ cloudfall_elasticsearch_service.bind.address ~ ':' ~ cloudfall_elasticsearch_service.bind.port) | to_json }}
 PASSWORD_FILE = {{ cloudfall_elasticsearch_password_path | to_json }}
 REPOSITORY = {{ cloudfall_elasticsearch_snapshot_repository | to_json }}
+COUNTS_INDEX = {{ cloudfall_elasticsearch_snapshot_counts_index | to_json }}
 RETENTION_DAYS = {{ cloudfall_elasticsearch_service.backup.retentionDays | int }}
 RESTORE_CHECK_INDICES = {{ cloudfall_elasticsearch_service.elasticsearch.restoreCheckIndices | default([]) | to_json }}
 POLL_SECONDS = {{ cloudfall_elasticsearch_snapshot_poll_seconds | int }}
@@ -40,9 +45,19 @@ WAIT_SECONDS = {{ cloudfall_elasticsearch_snapshot_wait_seconds | int }}
 
 SNAPSHOT_NAME = re.compile(r"cloudfall-[0-9]{8}-[0-9]{6}")
 RESTORE_PREFIX = "cloudfall-restore-check-"
-# Elasticsearch refuses snapshot metadata of 1024 bytes or more.
-METADATA_BYTES = 1000
 BYTE_UNITS = {"b": 0, "kb": 1, "mb": 2, "gb": 3, "tb": 4, "pb": 5}
+# Only the service and snapshot fields are indexed; the counts stay in the
+# source, so no index name ever becomes a field of the mapping.
+COUNTS_INDEX_BODY = {
+    "settings": {"index.number_of_shards": 1, "index.auto_expand_replicas": "0-1"},
+    "mappings": {
+        "dynamic": False,
+        "properties": {
+            "service": {"type": "keyword"},
+            "snapshot": {"type": "keyword"},
+        },
+    },
+}
 
 
 class Failure(Exception):
@@ -112,7 +127,7 @@ def matches(name):
 
 
 def drill_counts():
-    """The document count of each index the drill restores, smallest first."""
+    """The document count of each index the drill restores."""
     rows = request(
         "GET",
         "/_cat/indices?format=json&bytes=b&h=index,pri.store.size"
@@ -122,28 +137,38 @@ def drill_counts():
         (int(row["pri.store.size"] or 0), row["index"])
         for row in rows
         if not row["index"].startswith((".", RESTORE_PREFIX))
+        and row["index"] != COUNTS_INDEX
         and (not RESTORE_CHECK_INDICES or matches(row["index"]))
     )
-    names = [name for _, name in sized]
+    names = sorted(name for _, name in sized)
     if not RESTORE_CHECK_INDICES:
-        names = names[:1]
+        names = [name for _, name in sized[:1]]
     if not names:
-        return {}, []
+        return {}
     request("POST", f"/{quoted(*names)}/_refresh")
-    counts = {}
-    left_out = []
+    return {name: request("GET", f"/{quoted(name)}/_count")["count"] for name in names}
+
+
+def record_counts(name, counts):
+    """Write the counts as the snapshot's document of the counts index."""
+    if request("HEAD", f"/{quoted(COUNTS_INDEX)}", missing=True) is None:
+        request("PUT", f"/{quoted(COUNTS_INDEX)}", COUNTS_INDEX_BODY)
+    request(
+        "PUT",
+        f"/{quoted(COUNTS_INDEX)}/_doc/{quoted(name)}?refresh=true",
+        {
+            "service": SERVICE,
+            "snapshot": name,
+            "counts": [
+                {"index": index, "documents": count} for index, count in counts.items()
+            ],
+        },
+    )
+
+
+def forget_counts(names):
     for name in names:
-        count = request("GET", f"/{quoted(name)}/_count")["count"]
-        trial = {**counts, name: count}
-        if len(json.dumps(metadata(trial), separators=(",", ":")).encode()) > METADATA_BYTES:
-            left_out.append(name)
-        else:
-            counts = trial
-    return counts, left_out
-
-
-def metadata(counts):
-    return {"takenBy": "cloudfall", "service": SERVICE, "restoreCheckCounts": counts}
+        request("DELETE", f"/{quoted(COUNTS_INDEX)}/_doc/{quoted(name)}", missing=True)
 
 
 def wait_for(name):
@@ -172,6 +197,7 @@ def retention(taken):
     )
     if old:
         request("DELETE", f"/_snapshot/{quoted(REPOSITORY)}/{quoted(*old)}")
+        forget_counts(old)
         print(
             f"retention {RETENTION_DAYS} days: deleted {len(old)} older "
             f"snapshots ({', '.join(old)}), kept {len(snapshots) - len(old)}"
@@ -184,13 +210,22 @@ def retention(taken):
 
 
 def backup():
-    counts, left_out = drill_counts()
+    counts = drill_counts()
     name = time.strftime("cloudfall-%Y%m%d-%H%M%S", time.gmtime())
-    request(
-        "PUT",
-        f"/_snapshot/{quoted(REPOSITORY)}/{quoted(name)}?wait_for_completion=false",
-        {"include_global_state": True, "metadata": metadata(counts)},
-    )
+    record_counts(name, counts)
+    try:
+        request(
+            "PUT",
+            f"/_snapshot/{quoted(REPOSITORY)}/{quoted(name)}?wait_for_completion=false",
+            {
+                "include_global_state": True,
+                "metadata": {"takenBy": "cloudfall", "service": SERVICE},
+            },
+        )
+    except Failure:
+        # No snapshot was started, so its counts describe nothing.
+        forget_counts([name])
+        raise
     snapshot = wait_for(name)
     shards = snapshot.get("shards", {})
     if snapshot["state"] != "SUCCESS":
@@ -202,22 +237,19 @@ def backup():
             f"({shards.get('failed', '?')} of {shards.get('total', '?')} shards failed)"
             + (f": {failures}" if failures else "")
         )
+    if COUNTS_INDEX not in snapshot["indices"]:
+        raise Failure(f"snapshot {name} does not hold {COUNTS_INDEX}")
     print(
         f"snapshot {name} of {SERVICE}: SUCCESS, {len(snapshot['indices'])} "
         f"indices, {shards.get('successful', 0)} of {shards.get('total', 0)} shards"
     )
     if counts:
         print(
-            "restore check will restore "
-            + ", ".join(f"{index} ({count} documents)" for index, count in counts.items())
+            f"restore check will restore {len(counts)} indices, "
+            f"{sum(counts.values())} documents"
         )
     else:
         print("no index to record for the restore check")
-    if left_out:
-        print(
-            f"restore check leaves out {', '.join(left_out)}: the snapshot "
-            f"metadata holds at most {METADATA_BYTES} bytes"
-        )
     retention(name)
 
 
@@ -284,13 +316,31 @@ def delete_copies(copies):
     return left
 
 
-def drill(name, counts):
-    copies = {index: RESTORE_PREFIX + index for index in counts}
+def restore(name, indices, restored):
+    """Restore ``indices`` of snapshot ``name`` as renamed copies and wait for green.
+
+    Each copy's name is checked to be free first, so ``restored`` collects
+    only copies this drill created, which are the only ones it deletes.
+    """
+    copies = [RESTORE_PREFIX + index for index in indices]
+    taken = [
+        copy
+        for copy in copies
+        if request("HEAD", f"/{quoted(copy)}", missing=True) is not None
+    ]
+    if taken:
+        # Never restore over, or delete, an index this drill did not restore.
+        raise Failure(
+            f"{', '.join(taken)} already exist; the drill restores only under "
+            "names nothing holds: delete them once you know they are an earlier "
+            "drill's copies"
+        )
+    restored.extend(copies)
     answer = request(
         "POST",
         f"/_snapshot/{quoted(REPOSITORY)}/{quoted(name)}/_restore?wait_for_completion=true",
         {
-            "indices": ",".join(counts),
+            "indices": ",".join(indices),
             "include_global_state": False,
             "include_aliases": False,
             "rename_pattern": "(.+)",
@@ -305,37 +355,26 @@ def drill(name, counts):
         )
     health = request(
         "GET",
-        f"/_cluster/health/{quoted(*copies.values())}"
-        "?wait_for_status=green&timeout=60s",
+        f"/_cluster/health/{quoted(*copies)}?wait_for_status=green&timeout=60s",
         answers=(408,),
     )
     if health["status"] != "green":
         raise Failure(f"the restored copies are {health['status']}, not green")
-    mismatched = []
-    for index, copy in copies.items():
-        restored = request("GET", f"/{quoted(copy)}/_count")["count"]
-        if restored != counts[index]:
-            mismatched.append(
-                f"{index}: the snapshot recorded {counts[index]} documents, "
-                f"the restore brought back {restored}"
-            )
-    if mismatched:
-        raise Failure(
-            f"restore check failed for {SERVICE}: snapshot {name}; "
-            + "; ".join(mismatched)
-        )
 
 
-def restore_check():
-    request("POST", f"/_snapshot/{quoted(REPOSITORY)}/_verify")
-    snapshot = newest(our_snapshots())
-    if snapshot is None:
-        raise Failure(
-            f"no snapshot exists in repository {REPOSITORY} that Cloudfall took "
-            f"of {SERVICE} with state SUCCESS; run cloudfall backup run {SERVICE} first"
-        )
+def drill(snapshot, restored):
     name = snapshot["snapshot"]
-    counts = snapshot["metadata"].get("restoreCheckCounts") or {}
+    restore(name, [COUNTS_INDEX], restored)
+    document = request(
+        "GET",
+        f"/{quoted(RESTORE_PREFIX + COUNTS_INDEX)}/_doc/{quoted(name)}",
+        missing=True,
+    )
+    if document is None:
+        raise Failure(f"snapshot {name} holds no recorded document counts")
+    counts = {
+        entry["index"]: entry["documents"] for entry in document["_source"]["counts"]
+    }
     if not counts:
         raise Failure(f"snapshot {name} records no index to restore")
     absent = sorted(set(counts) - set(snapshot["indices"]))
@@ -346,25 +385,45 @@ def restore_check():
         f"/_snapshot/{quoted(REPOSITORY)}/{quoted(name)}?index_details=true",
     )["snapshots"][0]["index_details"]
     check_disk(sum(details[index]["size_in_bytes"] for index in counts))
-    copies = [RESTORE_PREFIX + index for index in counts]
-    taken = [copy for copy in copies if request("HEAD", f"/{quoted(copy)}", missing=True) is not None]
-    if taken:
-        # Never restore over, or delete, an index this drill did not restore.
+    restore(name, sorted(counts), restored)
+    mismatched = []
+    for index in sorted(counts):
+        found = request("GET", f"/{quoted(RESTORE_PREFIX + index)}/_count")["count"]
+        if found != counts[index]:
+            mismatched.append(
+                f"{index}: the snapshot recorded {counts[index]} documents, "
+                f"the restore brought back {found}"
+            )
+    if mismatched:
         raise Failure(
-            f"{', '.join(taken)} already exist; the drill restores only under "
-            "names nothing holds: delete them once you know they are an earlier "
-            "drill's copies"
+            f"restore check failed for {SERVICE}: snapshot {name}; "
+            + "; ".join(mismatched)
         )
+    return counts
+
+
+def restore_check():
+    request("POST", f"/_snapshot/{quoted(REPOSITORY)}/_verify")
+    snapshot = newest(our_snapshots())
+    if snapshot is None:
+        raise Failure(
+            f"no snapshot exists in repository {REPOSITORY} that Cloudfall took "
+            f"of {SERVICE} with state SUCCESS; run cloudfall backup run {SERVICE} first"
+        )
+    if COUNTS_INDEX not in snapshot["indices"]:
+        raise Failure(f"snapshot {snapshot['snapshot']} does not hold {COUNTS_INDEX}")
+    restored = []
     try:
-        drill(name, counts)
+        counts = drill(snapshot, restored)
     finally:
-        left = delete_copies(copies)
+        left = delete_copies(restored)
     if left:
         raise Failure(f"the restored copies {', '.join(left)} are still there")
     print(
-        f"restore check passed for {SERVICE}: snapshot {name} restored "
-        + ", ".join(f"{index} ({count} documents)" for index, count in counts.items())
-        + " with equal document counts; the restored copies are deleted"
+        f"restore check passed for {SERVICE}: snapshot {snapshot['snapshot']} "
+        f"restored {len(counts)} indices ({', '.join(sorted(counts))}) with "
+        f"{sum(counts.values())} documents, as recorded; the restored copies "
+        "are deleted"
     )
 
 
