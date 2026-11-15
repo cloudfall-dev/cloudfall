@@ -80,9 +80,14 @@ def test_config_validate_warns_once_per_file_and_names_the_rewrite(
     )
 
     assert exit_code == 0
-    warnings = payload["warnings"]
-    assert isinstance(warnings, list)
-    assert [warning["code"] for warning in warnings] == ["DEPRECATED_NAME"] * 2
+    every_warning = payload["warnings"]
+    assert isinstance(every_warning, list)
+    # A project with the old names has no [tool.cloudfall] table: format 0.
+    assert [warning["code"] for warning in every_warning] == [
+        "PROJECT_FORMAT_OLD",
+        *["DEPRECATED_NAME"] * 2,
+    ]
+    warnings = every_warning[1:]
     by_path = {warning["context"]["path"]: warning for warning in warnings}
     assert set(by_path) == {SERVER.as_posix(), OLD_BASELINE.as_posix()}
     baseline = by_path[OLD_BASELINE.as_posix()]

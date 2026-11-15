@@ -297,6 +297,16 @@ from cloudfall.project import (
     resolve_installed_version,
     resolve_project_directory,
 )
+from cloudfall.project_format import (
+    PROJECT_FORMAT_UNSUPPORTED_EXIT,
+    SUPPORTED_FORMATS,
+    UPGRADE_FIX,
+    WARNING_PROJECT_FORMAT_OLD,
+    FormatRange,
+    ProjectFormatError,
+    check_project_format,
+    old_format_message,
+)
 from cloudfall.recording import Recording, RecordingError
 from cloudfall.release_approval import (
     APPROVALS_DIRECTORY,
@@ -500,6 +510,21 @@ app.exit_code(
     side_effects="none",
 )
 app.exit_code(
+    "PROJECT_FORMAT_UNSUPPORTED",
+    PROJECT_FORMAT_UNSUPPORTED_EXIT,
+    description=(
+        "The project's [tool.cloudfall] format is outside the formats this "
+        "Cloudfall reads, or malformed"
+    ),
+    retryable=False,
+    side_effects="none",
+    suggestion=(
+        "read error.context.code: project_format_too_new, raise the cloudfall== "
+        "pin and run uv sync; project_format_too_old, run `cloudfall config "
+        "upgrade`; project_format_invalid, fix [tool.cloudfall] format"
+    ),
+)
+app.exit_code(
     "RECORD_INVALID",
     86,
     description=(
@@ -682,15 +707,12 @@ class Fleet:
 
     @classmethod
     def _project(cls, args: ProjectArgs) -> Self:
+        return cls._validated(_project_directory(args), args)
+
+    @classmethod
+    def _validated(cls, directory: Path, args: ProjectArgs) -> Self:
         try:
-            directory = resolve_project_directory(
-                args.project, os.environ, Path.cwd()
-            )
             return cls(directory, validate_config(directory, args.schemas))
-        except ProjectError as error:
-            raise Exit.PROJECT_INVALID(
-                error.detail, context={"code": error.code}
-            ) from error
         except ConfigValidationError as error:
             raise _config_invalid(error) from error
 
@@ -702,6 +724,58 @@ class Fleet:
     def inventory(self) -> PlatformInventory:
         """The typed, secret-free inventory the config declares."""
         return PlatformInventory.from_state(self.state)
+
+
+@dataclass(frozen=True, slots=True)
+class FormattedFleet(Fleet):
+    """A project whose format is checked before it is validated (S-017).
+
+    A format outside the supported range stops the command before any
+    resource is read; a format below the current one adds one
+    ``PROJECT_FORMAT_OLD`` warning.
+    """
+
+    @classmethod
+    def acquire(cls, args: ProjectArgs, ctx: Ctx) -> Self:
+        """Resolve the project, check its format, then validate it."""
+        directory = _project_directory(args)
+        check_format(ctx, directory, SUPPORTED_FORMATS)
+        return cls._validated(directory, args)
+
+
+def _project_directory(args: ProjectArgs) -> Path:
+    """Return the project directory the command runs in."""
+    try:
+        return resolve_project_directory(args.project, os.environ, Path.cwd())
+    except ProjectError as error:
+        raise Exit.PROJECT_INVALID(
+            error.detail, context={"code": error.code}
+        ) from error
+
+
+def check_format(ctx: Ctx, directory: Path, supported: FormatRange) -> None:
+    """Stop on a project format ``supported`` does not read; warn on an old one.
+
+    The range is a parameter so a caller, or a test, can check a project
+    against another range than the one this release reads.
+    """
+    try:
+        project_format = check_project_format(directory, supported)
+    except ProjectFormatError as error:
+        raise project_format_unsupported(error) from error
+    if project_format < supported.current:
+        ctx.warn(
+            WARNING_PROJECT_FORMAT_OLD,
+            old_format_message(project_format, supported),
+            projectFormat=project_format.value,
+            current=supported.current.value,
+            fix=UPGRADE_FIX,
+        )
+
+
+def project_format_unsupported(error: ProjectFormatError) -> CliExit:
+    """Return the ``PROJECT_FORMAT_UNSUPPORTED`` exit for a refused format."""
+    return Exit.PROJECT_FORMAT_UNSUPPORTED(error.detail, context=error.context)
 
 
 @dataclass(frozen=True, slots=True)
@@ -778,14 +852,19 @@ class ValidatedPayload(Payload):
     "validate",
     description="Validate every resource against the schemas and cross-references",
     danger_level="safe",
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID"],
+    exit_codes=["PROJECT_INVALID", "PROJECT_FORMAT_UNSUPPORTED", "CONFIG_INVALID"],
     examples=[("Validate the project in this directory", "cloudfall config validate")],
 )
-def config_validate(_args: ProjectArgs, ctx: Ctx, fleet: Fleet) -> ValidatedPayload:
+def config_validate(
+    _args: ProjectArgs, ctx: Ctx, fleet: FormattedFleet
+) -> ValidatedPayload:
     """Answer the validation summary of the resolved project.
 
-    A file read under a deprecated name still validates; each such file
-    gets one ``DEPRECATED_NAME`` warning naming its old names and the
+    The project's format is checked first: one outside the formats this
+    release reads exits ``PROJECT_FORMAT_UNSUPPORTED``, and one below the
+    current format gets one ``PROJECT_FORMAT_OLD`` warning. A file read
+    under a deprecated name still validates; each such file gets one
+    ``DEPRECATED_NAME`` warning naming its old names and the
     command that rewrites them. An Elasticsearch service whose line ends
     within 90 days, or has ended, gets one ``ELASTICSEARCH_VERSION_ENDING``
     warning naming the date.
