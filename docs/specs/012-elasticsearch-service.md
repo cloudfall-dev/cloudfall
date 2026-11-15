@@ -63,7 +63,7 @@ spec:
 | `users` | no | Application users, each limited to its index patterns |
 | `remoteAccess` | no | `listenAddress` and `allowedSources`, the shape PostgreSQL uses (S-006) |
 | `snapshotRepository` | no | An S3-compatible repository; absent means a filesystem repository in `backup.directory` |
-| `restoreCheckIndices` | no | Index patterns the restore drill restores; absent means the smallest index of the newest snapshot |
+| `restoreCheckIndices` | no | Index patterns the restore drill restores; absent means the smallest index of the newest snapshot. Name indices nothing writes to during the backup (a closed or rolled-over index): the drill requires an exact count |
 
 ### Supported versions
 
@@ -201,9 +201,16 @@ project CA.
   snapshots older than `retentionDays`
 - `cloudfall-elasticsearch-restore-check` verifies the repository, restores the drill
   indices from the newest snapshot under the prefix `cloudfall-restore-check-` with no
-  replicas, waits for them to be `green`, compares each document count with the count the
-  snapshot recorded, and deletes the restored copies. It fails when there is no snapshot, on
-  any mismatch, and when the restore would cross the low disk watermark
+  replicas, waits for them to be `green`, compares each document count with the count
+  `cloudfall backup run` recorded just before the snapshot started, and deletes the restored
+  copies. It fails when there is no snapshot, on any mismatch, and when the restore would
+  cross the low disk watermark
+- The comparison is exact (#327): Elasticsearch snapshots each shard at its own moment and
+  stores no counts, so a document written to a drill index between the count and the
+  snapshot fails the drill. That is a false failure, never a false success. The drill
+  indices are therefore ones nothing writes to during the backup (a closed or rolled-over
+  index); an index that is always written to (a live `logs-*` index) fails the drill until
+  `restoreCheckIndices` names a quiet one
 
 ### Validation
 
@@ -238,7 +245,9 @@ project CA.
 ### Documentation
 
 `docs/elasticsearch-service-guide.md` covers declaring a one-node service, growing it, the
-accounts, snapshots and the drill, and states that the role installs Elastic's own packages,
+accounts, snapshots and the drill (including that `restoreCheckIndices` names indices
+nothing writes to during the backup, since the drill compares exact counts), and states that
+the role installs Elastic's own packages,
 which Elastic distributes under the Elastic License 2.0, so the operator checks that license
 against their use (offering the service to third parties is the case it restricts).
 
