@@ -30,3 +30,10 @@
           | list | length > 0
           else ''
         }}
+      cloudfall_inspect_elasticsearch_services: >-
+        {{
+          cloudfall_services | default([])
+          | selectattr('serviceKind', 'equalto', 'elasticsearch')
+          | selectattr('server', 'equalto', cloudfall_server_id)
+          | list
+        }}

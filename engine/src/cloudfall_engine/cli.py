@@ -27,7 +27,13 @@ from cloudfall.domain import (
     ResourceId,
     SecretKeyName,
 )
+from cloudfall.elasticsearch import (
+    ElasticsearchAccess,
+    ElasticsearchIndexPattern,
+    ElasticsearchUserName,
+)
 from cloudfall.inventory import (
+    ElasticsearchUser,
     OwnedPostgresDatabase,
     PlatformInventory,
     SecretValueReference,
@@ -45,6 +51,7 @@ from cloudfall.secrets import (
     SopsSecretProvider,
     elasticsearch_account_passwords,
     elasticsearch_s3_credentials,
+    elasticsearch_user_passwords,
     owned_role_passwords,
     staged_password_files,
 )
@@ -90,6 +97,7 @@ if TYPE_CHECKING:
     from cloudfall.secrets import (
         ElasticsearchAccountPassword,
         ElasticsearchS3Credentials,
+        ElasticsearchUserPassword,
         OwnedRolePassword,
     )
     from treaty import Completed
@@ -663,6 +671,38 @@ def _secret_reference(reference: object, name: str) -> SecretValueReference:
     )
 
 
+def _rendered_elasticsearch_users(
+    inventory_file: Path,
+) -> tuple[tuple[ResourceId, ElasticsearchUser], ...]:
+    """Read every declared user of each Elasticsearch service from an inventory.
+
+    A service of several nodes is on each of their hosts; its users are read
+    once.
+    """
+    found: dict[tuple[str, str], tuple[ResourceId, ElasticsearchUser]] = {}
+    for service in _rendered_services(inventory_file, "elasticsearch"):
+        service_id = ResourceId.from_boundary(service.get("id"))
+        for entry in _mappings(_nested(service, "elasticsearch").get("users")):
+            user = _elasticsearch_user(entry)
+            found[(service_id.value, user.name.value)] = (service_id, user)
+    return tuple(found.values())
+
+
+def _elasticsearch_user(user: Mapping[str, object]) -> ElasticsearchUser:
+    patterns = user.get("indexPatterns")
+    if not isinstance(patterns, list):
+        message = "an Elasticsearch user's indexPatterns is not a list"
+        raise TypeError(message)
+    return ElasticsearchUser(
+        name=ElasticsearchUserName.from_boundary(user.get("name")),
+        access=ElasticsearchAccess.from_boundary(user.get("access")),
+        index_patterns=tuple(
+            ElasticsearchIndexPattern.from_boundary(pattern) for pattern in patterns
+        ),
+        password_ref=_secret_reference(user.get("passwordRef"), "passwordRef"),
+    )
+
+
 def _rendered_services(
     inventory_file: Path, kind: str
 ) -> list[Mapping[str, object]]:
@@ -726,14 +766,15 @@ class _ServicesSecrets:
     owned_roles: tuple[OwnedRolePassword, ...] = ()
     accounts: tuple[ElasticsearchAccountPassword, ...] = ()
     s3: tuple[ElasticsearchS3Credentials, ...] = ()
+    users: tuple[ElasticsearchUserPassword, ...] = ()
 
 
 def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesSecrets:
     """Decrypt the secrets the bundled services.yml sets, before it starts.
 
     Those are each owner role's password, the ``cloudfall`` and ``elastic``
-    passwords of each Elasticsearch service, and the S3 keys of each S3
-    snapshot repository.
+    passwords of each Elasticsearch service and each of its declared users',
+    and the S3 keys of each S3 snapshot repository.
     """
     # An engine without services.yml still runs its other playbooks (#296).
     services = playbook_directory(args.engine) / SERVICES_PLAYBOOK
@@ -743,6 +784,7 @@ def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesS
         databases = _rendered_owned_databases(args.inventory)
         clusters = _rendered_elasticsearch_services(args.inventory)
         repositories = _rendered_snapshot_credentials(args.inventory)
+        users = _rendered_elasticsearch_users(args.inventory)
     except (TypeError, ValueError) as error:
         message = f"the inventory declares a malformed service: {error}"
         raise ParseError(message, context={"flag": "inventory"}) from error
@@ -756,6 +798,7 @@ def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesS
             owned_role_passwords(databases, provider),
             elasticsearch_account_passwords(clusters, provider),
             elasticsearch_s3_credentials(repositories, provider),
+            elasticsearch_user_passwords(users, provider),
         )
     except SecretsError as error:
         raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
@@ -796,7 +839,9 @@ def run_playbook(args: RunArgs, ctx: Ctx) -> Played:
     """
     secrets = _services_passwords(args, _playbook_run(args), ctx)
     passwords = secrets.owned_roles
-    with staged_password_files(passwords, secrets.accounts, secrets.s3) as staged:
+    with staged_password_files(
+        passwords, secrets.accounts, secrets.s3, secrets.users
+    ) as staged:
         played = _run_ansible(
             args, ctx, _playbook_run(args, (json.dumps(staged),) if staged else ())
         )
