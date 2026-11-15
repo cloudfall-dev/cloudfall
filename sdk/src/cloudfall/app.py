@@ -3465,7 +3465,9 @@ def operator_approve(
 class MarkProposalInterruptedArgs(ProposalArgs):
     """Arguments of ``operator mark-interrupted``."""
 
-    proposal: ResourceId = Arg(description="Proposal id of a running receipt")
+    proposal: ResourceId = Arg(
+        description="Proposal id of a running or executed receipt"
+    )
     confirm_dead: bool = Flag(default=False, description=_CONFIRM_DEAD_DESCRIPTION)
     by: str | None = Flag(default=None, description=_BY_DESCRIPTION)
 
@@ -3483,9 +3485,9 @@ class MarkProposalInterruptedArgs(ProposalArgs):
     # tool stands in for it, as with approve.
     mcp=False,
     description=(
-        "Close a running proposal as interrupted once you confirmed its "
-        "execution is dead, so the operator may propose it again; nothing on "
-        "the servers changes"
+        "Close a running or executed proposal as interrupted once you "
+        "confirmed its execution is dead, so the operator may propose it "
+        "again; nothing on the servers changes"
     ),
     danger_level="mutating",
     exit_codes=[
@@ -3505,7 +3507,7 @@ class MarkProposalInterruptedArgs(ProposalArgs):
 def operator_mark_interrupted(
     args: MarkProposalInterruptedArgs, ctx: Ctx, fleet: Fleet
 ) -> Approved:
-    """Close a running receipt as interrupted, naming who confirmed it."""
+    """Close a running or executed receipt as interrupted, naming who confirmed it."""
     by = args.by if args.by is not None else ctx.env.get("USER", "")
     try:
         closed = mark_proposal_interrupted(args.store(fleet), args.proposal, by)

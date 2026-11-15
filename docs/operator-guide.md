@@ -176,7 +176,9 @@ stop firing, a drift-triggered proposal must see its drifted checks audit
 compliant again (`--verify-timeout`, default 180 s). The receipt records
 `verified` or `failed` with timestamps either way — the operator never
 reports success it cannot prove. A playbook that ran is not an outcome; the
-verify step is. Gateway TLS flags are only needed when approving
+verify step is. A verify step that cannot check (the alert feed or the
+audit errors) records `failed` with that error, and the command fails with
+it. Gateway TLS flags are only needed when approving
 alert-triggered proposals; drift approvals verify through the audit.
 
 A proposal names one server, and its run touches that server alone: every
@@ -204,8 +206,9 @@ uv run cloudfall operator mark-interrupted op-20260910t150000-abcdef1234567890 \
   --confirm-dead
 ```
 
-Without `--confirm-dead` nothing is written. Only a `running` receipt can be
-closed this way. The receipt turns `interrupted` and records
+Without `--confirm-dead` nothing is written. Only a `running` receipt, or an
+`executed` one whose verification never recorded an outcome, can be closed
+this way. The receipt turns `interrupted` and records
 `interruption.confirmedBy` (`--by`, default the `USER` environment
 variable) and `interruption.confirmedAt`; the approval stays as it was.
 Nothing runs on the servers. On its next pass the operator proposes again

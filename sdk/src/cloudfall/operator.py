@@ -593,18 +593,19 @@ class ProposalStore:
     def interrupt(
         self, proposal_id: ResourceId, interruption: Interruption
     ) -> OperatorProposal:
-        """Close a ``running`` receipt as interrupted, if it is still running.
+        """Close a ``running`` or ``executed`` receipt as interrupted.
 
-        The receipt on disk is read again under the store's lock: an
+        An ``executed`` receipt is one whose verification never recorded an
+        outcome. The receipt on disk is read again under the store's lock: an
         execution that recorded its outcome since keeps that outcome.
         """
         with record_files.locked(self.directory):
             current = self.load(proposal_id)
-            if current.status is not ProposalStatus.RUNNING:
+            if current.status not in _INTERRUPTIBLE_STATUSES:
                 message = (
                     f"proposal {proposal_id.value} is {current.status.value}, not "
-                    "running, so there is no started execution to close as "
-                    "interrupted"
+                    "running or executed, so there is no started execution to "
+                    "close as interrupted"
                 )
                 raise OperatorError(ERROR_PROPOSAL_NOT_RUNNING, message)
             closed = replace(
@@ -1101,13 +1102,15 @@ def mark_interrupted(
     return store.interrupt(proposal_id, interruption)
 
 
-def _execution_failure_detail(error: OperatorError | LifecycleError) -> str:
+def _execution_failure_detail(
+    error: OperatorError | LifecycleError, stage: str = "execution"
+) -> str:
     """Name the failure's code and keep the end of its message within the receipt cap.
 
     An engine failure carries the tail of the Ansible output, and the last
     lines, the failing task and the play recap, are the ones that say why.
     """
-    head = f"execution failed: {error.code}: "
+    head = f"{stage} failed: {error.code}: "
     message = str(error).removeprefix(f"{error.code}: ")
     if len(head) + len(message) <= _OUTCOME_DETAIL_MAX:
         return head + message
@@ -1159,7 +1162,25 @@ def _execute_and_verify(  # noqa: PLR0913 - internal execution contract.
     store.update(executed)
     waited = 0.0
     while True:
-        if verifier(proposal):
+        try:
+            resolved = verifier(proposal)
+        except (OperatorError, LifecycleError) as error:
+            # An error from the verifier is an unverified run: the receipt
+            # settles failed, which suspends autonomy for the kind (#358).
+            failed = replace(
+                executed,
+                status=ProposalStatus.FAILED,
+                outcome=ProposalOutcome(
+                    executed_at=executed_at,
+                    verified_at=None,
+                    result="failed",
+                    detail=_execution_failure_detail(error, "verification"),
+                    owned_roles=owned_roles,
+                ),
+            )
+            store.update(failed)
+            raise
+        if resolved:
             verified = replace(
                 executed,
                 status=ProposalStatus.VERIFIED,
@@ -1219,6 +1240,13 @@ on the server is unknown.
 
 _SETTLED_STATUSES = frozenset({ProposalStatus.VERIFIED}) | _SUSPENDING_STATUSES
 """Receipts whose run is over, the autonomy history of their kind."""
+
+_INTERRUPTIBLE_STATUSES = frozenset({ProposalStatus.RUNNING, ProposalStatus.EXECUTED})
+"""Receipts whose run started and recorded no final outcome a person may close.
+
+An ``executed`` one is left by a verification that never settled, such as one
+an older release did not guard.
+"""
 
 
 def _rate_limit_moment(receipt: OperatorProposal) -> str | None:
