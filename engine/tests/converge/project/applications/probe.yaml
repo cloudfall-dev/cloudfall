@@ -1,0 +1,11 @@
+---
+apiVersion: cloudfall/v1
+kind: Application
+metadata:
+  id: probe
+  description: The one application the CI converge job deploys
+spec:
+  linuxUser: probe
+  approval: automatic
+  components:
+    - probe-web

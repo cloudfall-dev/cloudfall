@@ -1,0 +1,17 @@
+---
+# The converge job's host: a Debian 13 container with systemd as PID 1, its
+# SSH published on the runner's loopback (.github/workflows/converge.yml)
+apiVersion: cloudfall/v1
+kind: Server
+metadata:
+  id: converge
+  description: Disposable Debian 13 systemd container of the CI converge job
+spec:
+  hostname: converge.example.internal
+  address: 127.0.0.1
+  environment: production
+  baseline: debian-container
+  lifecycle: active
+  ssh:
+    user: root
+    port: 2222

@@ -1,0 +1,29 @@
+---
+# Update proposals for the SHA-pinned actions and the locked dependencies
+# (D-17); each one is a pull request that CI checks like any other. A release
+# waits a week before it is proposed, so a yanked one never is.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: uv
+    directories:
+      - /
+      - /demo
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      dependencies:
+        patterns:
+          - "*"
