@@ -50,6 +50,7 @@ from cloudfall.operator import (
 from cloudfall.operator import mark_interrupted as mark_proposal_interrupted
 from cloudfall.secrets import SopsSecretProvider
 from cloudfall.validation import SchemaCatalog, validate_config
+from examples_project import copy_examples
 from jsonschema.exceptions import ValidationError
 from test_decision import _Terminal
 from treaty import CommandPath
@@ -1044,8 +1045,7 @@ def _seed_verified_drift(
 
 def _staging_h3_inventory(tmp_path: Path) -> PlatformInventory:
     """Return the examples plus h3 in staging; only production has a policy."""
-    project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    project = copy_examples(tmp_path / "project")
     staging = (EXAMPLES / "servers" / "h2.yaml").read_text(encoding="utf-8")
     for old, new in (
         ("h2", "h3"),
