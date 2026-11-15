@@ -203,12 +203,18 @@ def prepared_nodes(
     inventory: PlatformInventory,
     store: SecretStore,
     project_directory: Path,
+    server: ResourceId | None = None,
 ) -> Iterator[dict[str, object]]:
     """Meet each node's volume and certificate; yield ``services.yml``'s extra vars.
 
-    Nothing to meet yields no variable, leaving the run as it was.
+    Nothing to meet yields no variable, leaving the run as it was. ``server``
+    meets that one node's alone, for a run limited to it.
     """
-    servers = elasticsearch_requirements(inventory)
+    servers = tuple(
+        found
+        for found in elasticsearch_requirements(inventory)
+        if server is None or found.server_id == server
+    )
     if not servers:
         yield {}
         return
@@ -216,7 +222,11 @@ def prepared_nodes(
         actions = _volume_actions(run, servers)
         files = [
             *_certificates(run, servers, inventory, store),
-            *existing_cluster_ca_files(inventory, project_directory),
+            *(
+                staged
+                for staged in existing_cluster_ca_files(inventory, project_directory)
+                if server is None or staged.server == server
+            ),
         ]
     except VolumeRefusedError as error:
         raise LifecycleError(

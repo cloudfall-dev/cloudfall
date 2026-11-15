@@ -1156,23 +1156,30 @@ def services_passwords(
         raise LifecycleError(ERROR_SERVICES_SECRET, error.message) from error
 
 
-def run_services_playbook(context: EngineContext, secrets: ServicesSecrets) -> None:
+def run_services_playbook(
+    context: EngineContext,
+    secrets: ServicesSecrets,
+    limit: ResourceId | None = None,
+) -> None:
     """Run ``services.yml`` with each password's server form staged in a 0600 file.
 
     Before it, each Elasticsearch node's data volume is decided and its
     transport certificate signed (S-012); a node requirement that can't be
     met stops the run before any host changes. The files live in a private
     temp dir outside the project, removed when the run ends, whether it
-    passed or failed.
+    passed or failed. ``limit`` narrows every playbook of the run, the node
+    preparation's included, to one declared server.
     """
     state = validate_config(context.project_directory, context.schema_directory)
     inventory = PlatformInventory.from_state(state)
 
     def run(name: str, extra_vars: Mapping[str, object]) -> None:
-        run_engine_playbook(context, name, extra_vars)
+        run_engine_playbook(context, name, extra_vars, limit)
 
     nodes: AbstractContextManager[dict[str, object]] = (
-        prepared_nodes(run, inventory, secrets.store, context.project_directory)
+        prepared_nodes(
+            run, inventory, secrets.store, context.project_directory, limit
+        )
         if secrets.store is not None
         else nullcontext({})
     )
@@ -1186,16 +1193,33 @@ def run_services_playbook(context: EngineContext, secrets: ServicesSecrets) -> N
             secrets.elasticsearch_existing,
         ) as extra,
     ):
-        run_engine_playbook(context, "services.yml", {**extra, **provided})
+        run_engine_playbook(context, "services.yml", {**extra, **provided}, limit)
 
 
 def converge_services(
-    context: EngineContext, provider: SopsSecretProvider
+    context: EngineContext,
+    provider: SopsSecretProvider,
+    limit: ResourceId | None = None,
 ) -> tuple[OwnedRolePassword, ...]:
-    """Converge every declared service; return the owner passwords it set, by hash."""
+    """Converge the declared services; return the owner passwords it set, by hash.
+
+    ``limit`` converges one declared server's services alone, and only the
+    owner passwords of the services on it are returned. Every password is
+    still decrypted first, so a missing one fails before any playbook runs.
+    """
     secrets = services_passwords(context, provider)
-    run_services_playbook(context, secrets)
-    return secrets.owned_roles
+    run_services_playbook(context, secrets, limit)
+    if limit is None:
+        return secrets.owned_roles
+    state = validate_config(context.project_directory, context.schema_directory)
+    on_server = {
+        service.resource_id
+        for service in PlatformInventory.from_state(state).services
+        if service.server_id == limit
+    }
+    return tuple(
+        password for password in secrets.owned_roles if password.service in on_server
+    )
 
 
 def build_release_artifact(

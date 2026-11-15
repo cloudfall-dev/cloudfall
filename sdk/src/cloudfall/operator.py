@@ -919,10 +919,14 @@ def engine_executor(
     context: EngineContext,
     secrets: SopsSecretProvider,
 ) -> Executor:
-    """Executor running the proposal's engine entry point.
+    """Executor running the proposal's engine entry point on its server alone.
 
-    ``converge-services`` reads every owner role's password from ``secrets``
-    first, so a missing one fails before any playbook runs.
+    The proposal names one server, and the policy that approved it was
+    chosen by that server's environment, so every playbook of the run is
+    limited to it; an operation kind with no playbook that can be limited
+    is refused before anything runs. ``converge-services`` reads every owner
+    role's password from ``secrets`` first, so a missing one fails before
+    any playbook runs.
     """
 
     def _execute(proposal: OperatorProposal) -> tuple[OwnedRoleRecord, ...]:
@@ -933,10 +937,11 @@ def engine_executor(
                 f"{proposal.operation_kind.value}"
             )
             raise OperatorError(_ERROR_OPERATION_UNSUPPORTED, message)
+        server = proposal.operation_server
         if proposal.operation_kind is OperationKind.CONVERGE_SERVICES:
-            passwords = converge_services(context, secrets)
+            passwords = converge_services(context, secrets, server)
             return tuple(password.record() for password in passwords)
-        run_engine_playbook(context, playbook, {})
+        run_engine_playbook(context, playbook, {}, server)
         return ()
 
     return _execute
@@ -946,8 +951,13 @@ def engine_auditor(
     context: EngineContext,
     inventory: PlatformInventory,
     observation_directory: Path,
+    limit: ResourceId | None = None,
 ) -> Callable[[], AuditReport]:
-    """Auditor refreshing observations through the inspect playbook."""
+    """Auditor refreshing observations through the inspect playbook.
+
+    ``limit`` refreshes one declared server's observation alone, as a
+    proposal's verify step does; the others keep their last one.
+    """
 
     def _audit() -> AuditReport:
         run_engine_playbook(
@@ -958,6 +968,7 @@ def engine_auditor(
                     observation_directory.resolve()
                 )
             },
+            limit,
         )
         observations = load_observations(
             observation_directory, context.schema_directory

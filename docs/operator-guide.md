@@ -179,6 +179,12 @@ reports success it cannot prove. A playbook that ran is not an outcome; the
 verify step is. Gateway TLS flags are only needed when approving
 alert-triggered proposals; drift approvals verify through the audit.
 
+A proposal names one server, and its run touches that server alone: every
+playbook it starts, a converge's Elasticsearch node preparation included,
+runs with `--limit <server>`, and a drift proposal's verify step inspects
+that server only. The receipt names the owner passwords set on that server,
+not those of services elsewhere.
+
 ## A run that died midway
 
 An approval is on the record before anything runs: the receipt turns

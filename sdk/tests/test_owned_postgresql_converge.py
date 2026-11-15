@@ -230,6 +230,27 @@ def test_s006_6_converge_stages_a_verifier_and_answers_the_password_hash(
     assert PASSWORD not in _everything_written(project)
 
 
+@pytest.mark.parametrize(
+    ("server", "owned"), [("h1", 1), ("h2", 0)], ids=["its-server", "another"]
+)
+def test_a_converge_limited_to_one_server_names_its_passwords_alone(
+    tmp_path: Path, server: str, owned: int
+) -> None:
+    """A run limited to one server reports the owner passwords set there (#350)."""
+    project = _project(tmp_path)
+    shutil.copy(EXAMPLES / "servers" / "h2.yaml", project / "servers" / "h2.yaml")
+    secrets = _secrets(project, f"BILLING_PASSWORD={PASSWORD}\n")
+    recorder = Recorder()
+
+    passwords = converge_services(
+        _context(project, recorder), _provider(secrets), ResourceId(server)
+    )
+
+    _, playbook = recorder.steps
+    assert playbook.argv[playbook.argv.index("--limit") + 1] == server
+    assert len(passwords) == owned
+
+
 # proves: S-006-6
 def test_s006_6_the_rendered_inventory_carries_the_reference_only(
     tmp_path: Path,

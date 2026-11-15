@@ -5,24 +5,27 @@ from __future__ import annotations
 import io
 import itertools
 import json
+import shutil
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
 
 import pytest
+import yaml
 from cloudfall.app import app
 from cloudfall.audit import AuditCheck, AuditReport, AuditStatus, ServerAudit
 from cloudfall.cli import main
 from cloudfall.decision import ApprovalChannel
 from cloudfall.domain import ResourceId
 from cloudfall.inventory import PlatformInventory
-from cloudfall.lifecycle import LifecycleError
+from cloudfall.lifecycle import EngineContext, ExecutionStep, LifecycleError
 from cloudfall.operator import (
     ApproveOptions,
     AutonomyReport,
     DriftCheck,
     GatewayAlertFeed,
+    OperationKind,
     OperatorAlert,
     OperatorError,
     OperatorProposal,
@@ -36,12 +39,16 @@ from cloudfall.operator import (
     approve,
     drift_pass,
     drift_resolution_verifier,
+    engine_auditor,
+    engine_executor,
     fingerprint_of,
     parse_prometheus_alerts,
+    propose_for_drift,
     run_once,
     watch,
 )
 from cloudfall.operator import mark_interrupted as mark_proposal_interrupted
+from cloudfall.secrets import SopsSecretProvider
 from cloudfall.validation import SchemaCatalog, validate_config
 from jsonschema.exceptions import ValidationError
 from test_decision import _Terminal
@@ -57,6 +64,7 @@ TERMINAL = ApprovalChannel.TERMINAL
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
 EXAMPLES = ROOT / "config" / "examples"
+ENGINE = ROOT / "engine"
 
 _LABELS = {
     "alertname": "postgresql_down",
@@ -701,6 +709,125 @@ def test_approve_drift_proposal_fails_when_drift_persists(
     )
 
     assert result.status is ProposalStatus.FAILED
+
+
+def _two_environment_project(tmp_path: Path) -> Path:
+    """Declare h1 in production and h2 in staging, each with one service."""
+    project = tmp_path / "project"
+    for kind in ("servers", "baselines", "services"):
+        (project / kind).mkdir(parents=True)
+    shutil.copy(EXAMPLES / "servers" / "h1.yaml", project / "servers" / "h1.yaml")
+    staging = (EXAMPLES / "servers" / "h2.yaml").read_text(encoding="utf-8")
+    (project / "servers" / "h2.yaml").write_text(
+        staging.replace("environment: production", "environment: staging"),
+        encoding="utf-8",
+    )
+    shutil.copy(
+        EXAMPLES / "baselines" / "debian-application.yaml",
+        project / "baselines" / "debian-application.yaml",
+    )
+    for server, environment in (("h1", "production"), ("h2", "staging")):
+        service = {
+            "apiVersion": "cloudfall/v1",
+            "kind": "Service",
+            "metadata": {"id": f"redis-{server}"},
+            "spec": {
+                "serviceKind": "redis",
+                "environment": environment,
+                "server": server,
+                "bind": {"address": "127.0.0.1", "port": 6379},
+                "redis": {"maxmemoryMb": 64, "appendOnly": True},
+                "backup": {
+                    "directory": f"/var/backups/cloudfall/redis-{server}",
+                    "onCalendar": "*-*-* 02:00:00 UTC",
+                    "retentionDays": 7,
+                },
+            },
+        }
+        (project / "services" / f"redis-{server}.yaml").write_text(
+            yaml.safe_dump(service, sort_keys=False), encoding="utf-8"
+        )
+    return project
+
+
+@dataclass
+class _RecordingRunner:
+    """Steps a run started; each exits 0 and prints nothing."""
+
+    steps: list[ExecutionStep] = field(default_factory=list)
+
+    def __call__(self, step: ExecutionStep) -> _Finished:
+        """Record the step."""
+        self.steps.append(step)
+        return _Finished()
+
+
+@dataclass(frozen=True)
+class _Finished:
+    returncode: int = 0
+    stdout: str = ""
+    stderr: str = ""
+
+
+def _playbook_limits(runner: _RecordingRunner) -> dict[str, str | None]:
+    """Name each playbook a run started and the server it was limited to."""
+    limits: dict[str, str | None] = {}
+    for step in runner.steps:
+        if "--extra-vars" not in step.argv:
+            continue
+        argv = list(step.argv)
+        limit = argv[argv.index("--limit") + 1] if "--limit" in argv else None
+        limits[Path(argv[-1]).name] = limit
+    return limits
+
+
+@pytest.mark.parametrize(
+    ("operation_kind", "playbook"),
+    [
+        (OperationKind.CONVERGE_SERVICES, "services.yml"),
+        (OperationKind.CONVERGE_BASELINE, "baseline.yml"),
+    ],
+)
+def test_a_staging_proposal_runs_and_verifies_on_its_server_alone(
+    tmp_path: Path, operation_kind: OperationKind, playbook: str
+) -> None:
+    """A proposal for the staging server leaves production out of the run (#350)."""
+    project = _two_environment_project(tmp_path)
+    runner = _RecordingRunner()
+    context = EngineContext(
+        project_directory=project,
+        schema_directory=SCHEMAS,
+        engine_directory=ENGINE,
+        inventory_file=project / "tmp" / "ansible-inventory.json",
+        run=runner,
+    )
+    observed = project / "tmp" / "observed"
+    observed.mkdir(parents=True)
+    inventory = PlatformInventory.from_state(validate_config(project, SCHEMAS))
+    store = _store(tmp_path)
+    proposal = propose_for_drift(
+        ResourceId("h2"),
+        ("packages.required[curl]",),
+        operation_kind,
+        "2026-11-15T10:00:00Z",
+    )
+    store.save(proposal)
+
+    approve(
+        store,
+        proposal.resource_id,
+        engine_executor(
+            context,
+            SopsSecretProvider(secrets_directory=project / "secrets"),
+        ),
+        drift_resolution_verifier(
+            engine_auditor(context, inventory, observed, proposal.operation_server)
+        ),
+        _FAST_APPROVE,
+        via=TERMINAL,
+    )
+
+    assert _playbook_limits(runner) == {playbook: "h2", "inspect.yml": "h2"}
 
 
 def test_cli_operator_list_emits_structured_output(
