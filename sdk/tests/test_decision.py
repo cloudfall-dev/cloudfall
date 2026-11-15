@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import shutil
+import signal
 import subprocess
+import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -20,6 +24,8 @@ from cloudfall.app import app
 from cloudfall.catalog import RiskLevel, TargetScope, load_catalog
 from cloudfall.cli import main
 from cloudfall.decision import (
+    APPROVED_RUN_TIMEOUT_SECONDS,
+    CHECK_TIMEOUT_SECONDS,
     DECISION_DIRECTORY,
     HOST_STATS_VARIABLE,
     ApprovalChannel,
@@ -32,6 +38,7 @@ from cloudfall.decision import (
     Requirement,
     Targets,
     approve,
+    approved_runner,
     gate,
     mark_interrupted,
     propose,
@@ -48,7 +55,7 @@ from treaty import CommandPath
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
-    from cloudfall.decision import Decision
+    from cloudfall.decision import CheckRunner, Decision
     from cloudfall.record_files import UnreadableRecord
 
 SCHEMAS = default_schema_directory()
@@ -1259,6 +1266,102 @@ def test_a_run_that_verify_rejects_is_not_verified(tmp_path: Path) -> None:
     assert approved.execution.exit_code == 0
     assert approved.verification is not None
     assert approved.verification.exit_code == 1
+
+
+# Prints, starts a child that outlives it unless its process group is
+# stopped, names that child's pid, then sleeps past any limit a test sets.
+_SLOW_PLAYBOOK = """\
+import subprocess, sys, time
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+print(f"started {child.pid}", flush=True)
+time.sleep(60)
+"""
+
+
+# Exits zero when it is told to stop, as a playbook that traps TERM might.
+_ZERO_ON_TERM_PLAYBOOK = """\
+import signal, sys, time
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+print("started", flush=True)
+time.sleep(60)
+"""
+
+
+def _slow_run(limit: int, script: str = _SLOW_PLAYBOOK) -> CheckRunner:
+    """Run the approved runner with a short limit on a script, not on Ansible."""
+    runner = approved_runner(timeout_seconds=limit)
+
+    def run(_: Sequence[str], environment: Mapping[str, str], log: Path) -> int:
+        return runner((sys.executable, "-c", script), environment, log)
+
+    return run
+
+
+def _gone(pid: int) -> bool:
+    """Return whether the process has exited, waiting a moment for it to be reaped."""
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_an_approved_run_past_its_limit_is_stopped_and_settled(
+    tmp_path: Path,
+) -> None:
+    """The record settles as failed and the log keeps what the run printed (#359)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+
+    approved = approve(
+        ApprovalRequest(
+            decision=proposed, approver="roman", repository=repository, via=TERMINAL
+        ),
+        store,
+        lambda: MOMENT,
+        _slow_run(1),
+    )
+
+    assert approved.status is DecisionStatus.FAILED
+    assert approved.verdict == "the run timed out after 1s and was stopped"
+    assert approved.verification is None
+    assert approved.execution is not None
+    assert approved.execution.exit_code == 128 + signal.SIGTERM
+    assert store.load(proposed.decision_id).status is DecisionStatus.FAILED
+    log = repository / approved.execution.log.path
+    started = log.read_text(encoding="utf-8")
+    assert started.startswith("started ")
+    assert approved.execution.log.size == len(started.encode())
+    assert _gone(int(started.split()[1]))
+
+
+def test_a_stopped_run_that_exits_zero_still_fails(tmp_path: Path) -> None:
+    """A run stopped at its limit did not finish, whatever its exit code says."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+
+    approved = approve(
+        ApprovalRequest(
+            decision=proposed, approver="roman", repository=repository, via=TERMINAL
+        ),
+        store,
+        lambda: MOMENT,
+        _slow_run(1, _ZERO_ON_TERM_PLAYBOOK),
+    )
+
+    assert approved.status is DecisionStatus.FAILED
+    assert approved.verdict == "the run timed out after 1s and was stopped"
+    assert approved.verification is None
+
+
+def test_the_approved_run_has_its_own_limit_and_the_check_keeps_its_own() -> None:
+    assert APPROVED_RUN_TIMEOUT_SECONDS == 21600
+    assert CHECK_TIMEOUT_SECONDS == 1800
 
 
 def test_an_operation_without_verify_is_executed_not_verified(

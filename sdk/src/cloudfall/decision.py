@@ -16,10 +16,12 @@ it, and what came of it.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -80,6 +82,14 @@ _DIFF_SUFFIX = ".diff"
 _RESERVATION_SUFFIX = ".reserved"
 _ANSIBLE_CONFIG_FILE = "ansible.cfg"
 CHECK_TIMEOUT_SECONDS = 1800
+APPROVED_RUN_TIMEOUT_SECONDS = 21600
+"""How long an approved run, or its verify step, may take before it is stopped.
+
+A rolling upgrade or a data move can outlast a check, so the limit is its
+own: six hours, where check mode keeps ``CHECK_TIMEOUT_SECONDS`` (#359).
+"""
+_STOP_GRACE_SECONDS = 30
+"""How long a stopped run's process group has to exit before it is killed."""
 _CHANGED_KEY = "changed"
 _OK_KEY = "ok"
 _ERROR_HOST_STATS_INVALID = "decision_host_stats_invalid"
@@ -122,6 +132,16 @@ class DecisionError(RuntimeError):
             "status": "error",
             "error": {"code": self.code, "message": self.detail},
         }
+
+
+class RunTimedOutError(RuntimeError):
+    """A run reached its time limit and was stopped; its log keeps what it printed."""
+
+    def __init__(self, seconds: int, exit_code: int) -> None:
+        """Record the limit it reached and the exit code its stop left."""
+        self.seconds = seconds
+        self.exit_code = exit_code
+        super().__init__(f"the run timed out after {seconds}s and was stopped")
 
 
 class Requirement(StrEnum):
@@ -253,6 +273,8 @@ class RunRecord:
     changed: tuple[str, ...]
     unchanged: tuple[str, ...]
     log: DiffArtifact
+    timed_out_after: int | None = field(default=None, compare=False)
+    """The limit, in seconds, a stopped run reached; the verdict keeps it, not this."""
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the run for the record."""
@@ -943,7 +965,7 @@ def approve(
         raise DecisionError(_ERROR_CHANNEL_UNKNOWN, message)
     refuse_changed(decision, request.repository, store.directory)
     clock = now or _utc_now
-    stage = _Stage(request=request, store=store, runner=run or _run_check)
+    stage = _Stage(request=request, store=store, runner=run or approved_runner())
     moment = clock()
     # Nothing has run yet, so a missing Ansible leaves the decision open.
     _ansible_playbook()
@@ -962,7 +984,7 @@ def approve(
     execution = _run_stage(stage, decision.playbook, "execution", moment)
     verification = (
         _run_stage(stage, decision.verify_playbook, "verify", clock())
-        if decision.verify_playbook is not None and execution.exit_code == 0
+        if decision.verify_playbook is not None and _succeeded(execution)
         else None
     )
     status, verdict = _outcome(
@@ -1144,10 +1166,10 @@ def _outcome(
     enough, and neither is changing nothing: a verify play that matched no
     host, or skipped one the decision targets, observed nothing there.
     """
-    if execution.exit_code != 0:
+    if not _succeeded(execution):
         return (
             DecisionStatus.FAILED,
-            f"the run exited {execution.exit_code}",
+            _exit_reason("the run", execution),
         )
     if verify_playbook is None:
         return (
@@ -1156,10 +1178,10 @@ def _outcome(
         )
     if verification is None:  # pragma: no cover - callers verify after a clean run
         return (DecisionStatus.FAILED, "the verify step did not run")
-    if verification.exit_code != 0:
+    if not _succeeded(verification):
         return (
             DecisionStatus.FAILED,
-            f"the verify step exited {verification.exit_code}",
+            _exit_reason("the verify step", verification),
         )
     if verification.changed:
         changed = ", ".join(verification.changed)
@@ -1230,7 +1252,12 @@ def _run_stage(
     )
     argv, environment = run_command(invocation)
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    exit_code = stage.runner(argv, environment, log_path)
+    timed_out_after: int | None = None
+    try:
+        exit_code = stage.runner(argv, environment, log_path)
+    except RunTimedOutError as stopped:
+        # Settled as failed with what its log and host stats hold so far.
+        exit_code, timed_out_after = stopped.exit_code, stopped.seconds
     preview = _preview(
         exit_code, invocation.host_stats, log_path, stage.request.repository
     )
@@ -1240,6 +1267,7 @@ def _run_stage(
         changed=preview.changed,
         unchanged=preview.unchanged,
         log=preview.diff,
+        timed_out_after=timed_out_after,
     )
 
 
@@ -1505,6 +1533,87 @@ def _run_check(
             timeout=CHECK_TIMEOUT_SECONDS,
         )
     return completed.returncode
+
+
+def approved_runner(
+    cwd: Path | None = None, timeout_seconds: int = APPROVED_RUN_TIMEOUT_SECONDS
+) -> CheckRunner:
+    """Return the runner of an approved run and its verify step.
+
+    The output goes to the log as it comes, so a run cut short keeps what it
+    printed. The playbook runs in its own process group: one that reaches
+    ``timeout_seconds``, or whose caller is interrupted, is stopped with
+    everything it started, and a timeout raises ``RunTimedOutError`` (#359).
+    """
+
+    def run(
+        argv: Sequence[str], environment: Mapping[str, str], log_path: Path
+    ) -> int:
+        with (
+            log_path.open("w", encoding="utf-8") as stream,
+            subprocess.Popen(  # noqa: S603 - resolved binary, built argv.
+                tuple(argv),
+                env={**os.environ, **environment},
+                cwd=cwd,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                process_group=0,
+            ) as process,
+        ):
+            try:
+                return process.wait(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                _stop(process)
+                raise RunTimedOutError(
+                    timeout_seconds, _exit_code(process.returncode)
+                ) from None
+            finally:
+                _stop(process)
+
+    return run
+
+
+def _stop(process: subprocess.Popen[bytes]) -> None:
+    """Stop a run's process group if it still runs: TERM, then KILL after a grace.
+
+    The KILL goes to the group whether or not its leader exited on TERM, so
+    nothing the playbook started outlives it.
+    """
+    if process.poll() is not None:
+        return
+    _signal_group(process.pid, signal.SIGTERM)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=_STOP_GRACE_SECONDS)
+    _signal_group(process.pid, signal.SIGKILL)
+    process.wait()
+
+
+def _signal_group(group: int, number: signal.Signals) -> None:
+    """Signal a process group; one whose processes are all gone needs nothing."""
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(group, number)
+
+
+def _exit_code(returncode: int) -> int:
+    """Return a stopped run's exit code as a shell reports it: 128 + the signal."""
+    return 128 - returncode if returncode < 0 else min(returncode, 255)
+
+
+def _succeeded(run: RunRecord) -> bool:
+    """Return whether a run finished on its own and exited zero.
+
+    A run stopped at its limit did not finish, even when it exited zero on
+    the stop signal.
+    """
+    return run.timed_out_after is None and run.exit_code == 0
+
+
+def _exit_reason(name: str, run: RunRecord) -> str:
+    """Return why a run that did not exit zero failed, for the verdict."""
+    if run.timed_out_after is not None:
+        return f"{name} timed out after {run.timed_out_after}s and was stopped"
+    return f"{name} exited {run.exit_code}"
 
 
 def _run_from_document(recorded: object) -> RunRecord | None:
