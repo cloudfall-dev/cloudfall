@@ -93,6 +93,11 @@ max_wait_minutes = 15 # stop a session that waited this long; 0: never
 app_id = 5209412   # gated sessions write as shipmill-romamo[bot]
 mode = "headless" # nobody attaches: sessions ask on GitHub with needs-decision
 
+# Programs a gate session's `uv run` may start besides python, pytest, ruff and mypy (D-82):
+# implementers lint Ansible changes before pushing, as CI does (#325)
+[hooks]
+uv_run = ["ansible-lint"]
+
 [autonomy]
 triage = "act"
 fix = "act"
