@@ -51,6 +51,12 @@
           ],
           "additionalProperties": false
         },
+        "writerVersion": {
+          "type": "string",
+          "description": "The Cloudfall version that last wrote this receipt. A receipt written before this field names none.",
+          "minLength": 1,
+          "maxLength": 64
+        },
         "trigger": {
           "type": "object",
           "properties": {

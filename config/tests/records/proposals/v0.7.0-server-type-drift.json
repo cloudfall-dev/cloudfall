@@ -1,0 +1,37 @@
+{
+  "apiVersion": "cloudfall/v1",
+  "kind": "OperatorProposal",
+  "metadata": {
+    "id": "op-20261020090000-a1b2c3d4e5f60718",
+    "description": "Audit reports drift on server h1: server_type.id; converging through baseline.yml restores the declared state"
+  },
+  "spec": {
+    "createdAt": "2026-10-20T09:00:00+00:00",
+    "status": "proposed",
+    "trigger": {
+      "kind": "drift",
+      "fingerprint": "a1b2c3d4e5f60718",
+      "drift": {
+        "server": "h1",
+        "checks": [
+          "server_type.id"
+        ]
+      }
+    },
+    "diagnosis": {
+      "summary": "Audit reports drift on server h1: server_type.id; converging through baseline.yml restores the declared state",
+      "evidence": [
+        "audit check drifted: server_type.id"
+      ]
+    },
+    "operation": {
+      "kind": "converge-baseline",
+      "server": "h1",
+      "command": [
+        "cloudfall-engine",
+        "playbook",
+        "baseline.yml"
+      ]
+    }
+  }
+}
