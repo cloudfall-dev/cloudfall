@@ -138,6 +138,7 @@ from cloudfall.decision import (
     Staleness,
     Targets,
     approve,
+    approved_runner,
     mark_interrupted,
     propose,
     refuse_changed,
@@ -2685,7 +2686,8 @@ def decisions_approve(args: ApproveDecisionArgs, ctx: Ctx) -> Decided:
                 via=ApprovalChannel(attestation.channel),
             ),
             store,
-            run=_check_runner(ctx, args.root),
+            # Its own limit, and its log written as it runs (#359).
+            run=approved_runner(cwd=args.root),
         )
     except DecisionError as error:
         raise _decision_failed(error) from error
