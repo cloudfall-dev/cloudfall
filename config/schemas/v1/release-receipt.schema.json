@@ -212,6 +212,14 @@
         },
         "healthCheck": {
           "$ref": "#/$defs/commandHealthCheck"
+        },
+        "removedReleases": {
+          "description": "The releases the deploy removed from this server once its gate passed there, keeping deployment.retainReleases; absent when no cleanup ran.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/releaseId"
+          },
+          "uniqueItems": true
         }
       },
       "required": [
@@ -243,6 +251,25 @@
               "rolledBack": {
                 "const": true
               }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "healthCheckPassed": {
+                "const": false
+              }
+            },
+            "required": [
+              "healthCheckPassed"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "removedReleases"
+              ]
             }
           }
         },
