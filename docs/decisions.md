@@ -140,3 +140,12 @@ entry that supersedes it, never by editing an old one.
 - Why: No job converged a role on a real Debian, so deploy and rollback fixes were proven only by unit tests; loose pins and broad token permissions are the workflows' attack surface; the repo is public, so GitHub-hosted runners are allowed
 - Applies to: .github/workflows/*, .github/dependabot.yml
 - Enforced by: review
+
+## D-18: A mirrored volume meets an expendable requirement
+
+- Decided: 2026-11-15, in cloudfall-dev/cloudfall#323
+- Rule: An existing raid1 volume over its pool's primary and secondary satisfies a volume requirement of placement expendable: the volume provider keeps it, grows it on both physical volumes, and audit checks it as raid1; a linear volume never satisfies a mirrored requirement, and a raid1 volume on other disks is still refused
+- Why: S-012 makes an Elasticsearch node's volume mirrored for a cluster of one and expendable for two or more, while S-014 refused any change of an existing volume's type, so growing a one-node service refused its first node; a mirror is stronger than what an expendable volume asks, nothing on the host has to change when the cluster grows, and converting a raid1 volume to linear in place would mean an lvconvert the provider never runs
+- Applies to: sdk/src/cloudfall/requirements.py (VolumeRequirement.held_as), sdk/src/cloudfall/volumes.py, sdk/src/cloudfall/audit.py; S-012 What each node needs, S-014 Refusals
+- Enforced by: sdk/tests/test_s014_volumes.py
+- Zone: rule-departure (decided by the maintainer on cloudfall-dev/cloudfall#323, option 1)

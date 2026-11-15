@@ -831,6 +831,9 @@ def _audit_volume(
     )
     if held is None:
         return _comparison(check, desired, {"present": False}, matches=False)
+    # D-18: a mirror meets an expendable requirement, as the provider keeps it
+    volume = volume.held_as(held.get("type"))
+    desired = _volume_desired(volume)
     source = mounts.get(volume.path.value)
     lv_path = f"/dev/{volume.pool.volume_group.value}/{volume.logical_volume}"
     size = held.get("sizeBytes")

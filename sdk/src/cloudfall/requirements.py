@@ -14,7 +14,7 @@ Cloudfall provide it describe the same requirement.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from ipaddress import ip_address
 from typing import TYPE_CHECKING
@@ -192,6 +192,22 @@ class VolumeRequirement:
         if self.placement is VolumePlacement.MIRRORED and self.pool.secondary:
             return (self.pool.primary, self.pool.secondary)
         return (self.pool.primary,)
+
+    def held_as(self, segment: object) -> VolumeRequirement:
+        """Return what an existing volume of LVM type ``segment`` is measured against.
+
+        A mirrored volume meets an expendable requirement (D-18): a ``raid1``
+        volume in a pool with a secondary stays the mirror it is, and is
+        checked, grown and audited as one. A linear volume still never meets
+        a mirrored requirement.
+        """
+        if (
+            segment == "raid1"
+            and self.placement is VolumePlacement.EXPENDABLE
+            and self.pool.secondary is not None
+        ):
+            return replace(self, placement=VolumePlacement.MIRRORED)
+        return self
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the volume requirement with where it lives."""
