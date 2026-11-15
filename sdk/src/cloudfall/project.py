@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from cloudfall.commands import CommandEffect, commands_with_effect
 from cloudfall.domain import ResourceKind
+from cloudfall.project_format import SUPPORTED_FORMATS
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -532,6 +533,10 @@ requires-python = ">=3.14"
 # Cloudfall, then run `uv sync`. Add the `mcp` extra (`cloudfall[mcp]`) to run
 # the `cloudfall mcp serve` agent server.
 dependencies = ["cloudfall=={options.version}"]
+
+# The project format this Cloudfall writes; `cloudfall config upgrade` raises it.
+[tool.cloudfall]
+format = {SUPPORTED_FORMATS.current}
 
 [tool.uv]
 package = false

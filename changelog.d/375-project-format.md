@@ -1,0 +1,3 @@
+### Added
+
+- A project states its format as `[tool.cloudfall] format` in its `pyproject.toml`, and `cloudfall init` writes the current one (`format = 1`). `cloudfall config validate` checks it before validating: a project without the key, or without a `pyproject.toml`, reads as format 0 and still validates, with one `PROJECT_FORMAT_OLD` warning naming `cloudfall config upgrade`; a format outside the ones this release reads (0 to 1), or one that is not a non-negative integer, stops with the new exit `PROJECT_FORMAT_UNSUPPORTED` (95) and `error.context.code` `project_format_too_new`, `project_format_too_old` or `project_format_invalid` (#375)
