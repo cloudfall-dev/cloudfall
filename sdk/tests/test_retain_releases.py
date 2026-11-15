@@ -54,8 +54,8 @@ def test_config_validate_accepts_a_count_of_at_least_two(
 
 @pytest.mark.parametrize(
     "retain",
-    [1, 0, -3, 2.5, "5", True],
-    ids=["1", "0", "negative", "float", "string", "boolean"],
+    [1, 0, -3, 2.5, 1.0, "5", True],
+    ids=["1", "0", "negative", "float", "integral-float-1", "string", "boolean"],
 )
 def test_config_validate_refuses_a_count_below_two_or_not_an_integer(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], retain: object
@@ -66,23 +66,32 @@ def test_config_validate_refuses_a_count_below_two_or_not_an_integer(
     assert payload["error"]["context"]["code"] == "schema_validation_failed"
 
 
-@pytest.mark.parametrize(("retain", "expected"), [(None, 5), (2, 2), (9, 9)])
+@pytest.mark.parametrize(
+    ("retain", "expected"), [(None, 5), (2, 2), (9, 9), (2.0, 2), (5.0, 5)]
+)
 def test_the_inventory_carries_the_count_five_when_absent(
-    tmp_path: Path, retain: int | None, expected: int
+    tmp_path: Path, retain: float | None, expected: int
 ) -> None:
+    """``2.0`` is an integer to JSON Schema, so it validates and reads as 2."""
     inventory = PlatformInventory.from_state(
         validate_config(_project(tmp_path, retain), SCHEMAS)
     )
     component = inventory.components[0]
 
     assert component.retain_releases == RetainReleases(expected)
-    assert component.as_dict()["retainReleases"] == expected
+    carried = component.as_dict()["retainReleases"]
+    assert (type(carried), carried) == (int, expected)
 
 
-@pytest.mark.parametrize("value", [1, 0, True, 2.0, "5"])
+@pytest.mark.parametrize("value", [1, 0, True, 1.0, 2.5, "5"])
 def test_the_value_object_refuses_what_the_schema_refuses(value: object) -> None:
     with pytest.raises((ValueError, TypeError)):
         RetainReleases.from_boundary(value)
+
+
+def test_the_value_object_holds_an_integer_only() -> None:
+    with pytest.raises(TypeError):
+        RetainReleases(2.0)  # type: ignore[arg-type]
 
 
 def test_the_value_object_defaults_to_five() -> None:

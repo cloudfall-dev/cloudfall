@@ -109,6 +109,7 @@ class _Host:
 
     tmp_path: Path
     unit_loaded: bool = True
+    retain: int | None = 5
 
     @property
     def install_root(self) -> Path:
@@ -137,6 +138,12 @@ class _Host:
         return directory
 
     def component(self) -> dict[str, object]:
+        component = self._component()
+        if self.retain is None:
+            del component["retainReleases"]
+        return component
+
+    def _component(self) -> dict[str, object]:
         return {
             "id": COMPONENT_ID,
             "application": "crm",
@@ -158,7 +165,7 @@ class _Host:
                 "attempts": 1,
             },
             "retainUntilCleanup": True,
-            "retainReleases": 5,
+            "retainReleases": self.retain,
         }
 
     def run(
@@ -328,6 +335,22 @@ def test_a_rollback_to_a_release_never_redeployed_takes_its_directory(
     tmp_path: Path,
 ) -> None:
     host = _Host(tmp_path)
+    previous = host.release(PREVIOUS)
+    host.current.symlink_to(host.release(RELEASE))
+
+    exit_code, output = _rollback(host, PREVIOUS)
+
+    assert exit_code == 0, output
+    assert host.current.readlink() == previous
+
+
+def test_a_rollback_to_a_kept_release_renders_no_refusal(tmp_path: Path) -> None:
+    """The refusal's message, which names retainReleases, is only for a refusal.
+
+    The rollback role's arguments require only the component, so a rollback
+    to a release still on the server must not template what it would say.
+    """
+    host = _Host(tmp_path, retain=None)
     previous = host.release(PREVIOUS)
     host.current.symlink_to(host.release(RELEASE))
 

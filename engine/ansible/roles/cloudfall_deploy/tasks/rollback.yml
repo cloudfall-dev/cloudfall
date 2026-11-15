@@ -44,7 +44,9 @@
   register: cloudfall_deploy_rollback_target
 
 # A deploy keeps only deployment.retainReleases releases (#224), so a release
-# a rollback asks for may be gone: the refusal names the ones still kept.
+# a rollback asks for may be gone: the refusal names the ones still kept. It
+# is a fail task, not an assert, so its message is rendered only when the
+# target is missing: an assert's arguments are templated before it runs.
 - name: Find the releases kept on the server
   ansible.builtin.find:
     paths: "{{ cloudfall_deploy_component.install_root }}/releases"
@@ -56,11 +58,8 @@
   when: not (cloudfall_deploy_rollback_target.stat.isdir | default(false))
 
 - name: Require the rollback target on the server
-  ansible.builtin.assert:
-    that:
-      - cloudfall_deploy_rollback_target.stat.exists
-      - cloudfall_deploy_rollback_target.stat.isdir
-    fail_msg: >-
+  ansible.builtin.fail:
+    msg: >-
       Release {{ cloudfall_deploy_release }} does not exist under
       {{ cloudfall_deploy_component.install_root }}/releases on {{
         cloudfall_server_id
@@ -72,6 +71,7 @@
         | map('first') | unique | sort | join(', ')
         or 'none'
       }}
+  when: not (cloudfall_deploy_rollback_target.stat.isdir | default(false))
 
 - name: Switch the current release symlink to the rollback target
   ansible.builtin.file:

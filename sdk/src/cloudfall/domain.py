@@ -723,9 +723,15 @@ class RetainReleases:
 
     @classmethod
     def from_boundary(cls, value: object) -> RetainReleases:
-        """Coerce an optional boundary value; absent (None) means 5."""
+        """Coerce an optional boundary value; absent (None) means 5.
+
+        JSON Schema's ``integer`` accepts a number with no fraction, so a
+        validated ``2.0`` reads as 2; ``2.5`` is refused.
+        """
         if value is None:
             return cls(_RETAIN_RELEASES_DEFAULT)
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
         if isinstance(value, bool) or not isinstance(value, int):
             message = f"retain releases must be an integer, got {type(value).__name__}"
             raise TypeError(message)
