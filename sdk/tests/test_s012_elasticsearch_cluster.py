@@ -20,6 +20,7 @@ from typing import Any, cast
 import pytest
 import yaml
 from cloudfall.cli import main
+from cloudfall.domain import ResourceId
 from cloudfall.inventory import PlatformInventory
 from cloudfall.lifecycle import (
     EngineContext,
@@ -315,12 +316,12 @@ def _store(project: Path) -> SecretStore:
     )
 
 
-def _converge(project: Path, secrets: str = ACCOUNTS) -> tuple[Recorder, ProjectCa]:
+def _converge(
+    project: Path, secrets: str = ACCOUNTS, limit: str | None = None
+) -> tuple[Recorder, ProjectCa]:
     accounts = project / "secrets" / "production" / "services" / "search-main.env"
     accounts.parent.mkdir(parents=True)
     accounts.write_text(secrets, encoding="utf-8")
-    from cloudfall.domain import ResourceId  # noqa: PLC0415 - one use
-
     ca, created = load_or_create_ca(
         _store(project), ResourceId("production"), datetime.datetime.now(datetime.UTC)
     )
@@ -335,8 +336,27 @@ def _converge(project: Path, secrets: str = ACCOUNTS) -> tuple[Recorder, Project
             run=recorder,
         ),
         SopsSecretProvider(secrets_directory=project / "secrets", decrypt=_plaintext),
+        None if limit is None else ResourceId(limit),
     )
     return recorder, ca
+
+
+def test_a_converge_limited_to_one_node_prepares_that_node_alone(
+    tmp_path: Path,
+) -> None:
+    """The operator's run for one server reads and signs that node's alone (#350)."""
+    recorder, _ = _converge(_two_nodes(tmp_path), limit="h2")
+
+    assert recorder.nodes.hosts == {
+        "logging-volumes.yml": "h2",
+        "logging-requests.yml": "h2",
+    }
+    assert {key.split(":")[0] for key in recorder.delivered} == {"h2"}
+    assert {
+        step.argv[step.argv.index("--limit") + 1]
+        for step in recorder.steps
+        if "--extra-vars" in step.argv
+    } == {"h2"}
 
 
 # proves: S-012-5

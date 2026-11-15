@@ -3189,23 +3189,37 @@ class OperatorEngineArgs(ProposalArgs):
             run=_step_runner(ctx, fleet.directory),
         )
 
-    def auditor(self, fleet: Fleet, ctx: Ctx) -> Callable[[], AuditReport]:
-        """Return the audited drift check over the operator's observations."""
+    def auditor(
+        self, fleet: Fleet, ctx: Ctx, limit: ResourceId | None = None
+    ) -> Callable[[], AuditReport]:
+        """Return the audited drift check over the operator's observations.
+
+        ``limit`` inspects one declared server alone.
+        """
         return engine_auditor(
-            self.context(fleet, ctx), fleet.inventory, fleet.path(self.observed)
+            self.context(fleet, ctx),
+            fleet.inventory,
+            fleet.path(self.observed),
+            limit,
         )
 
     def verifier_for(
         self, fleet: Fleet, ctx: Ctx, feed: Callable[[], AlertFeed]
     ) -> Callable[[OperatorProposal], Callable[[OperatorProposal], bool]]:
-        """Return how a proposal's resolution is verified, by its trigger."""
+        """Return how a proposal's resolution is verified, by its trigger.
+
+        A drift proposal's verify step inspects the proposal's server alone,
+        the one its execution was limited to.
+        """
 
         def verifier(
             proposal: OperatorProposal,
         ) -> Callable[[OperatorProposal], bool]:
             if proposal.trigger_kind is TriggerKind.ALERT:
                 return alert_resolution_verifier(feed())
-            return drift_resolution_verifier(self.auditor(fleet, ctx))
+            return drift_resolution_verifier(
+                self.auditor(fleet, ctx, proposal.operation_server)
+            )
 
         return verifier
 
