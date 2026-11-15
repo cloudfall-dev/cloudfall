@@ -9,11 +9,14 @@ upgrade`` moves an existing project's receipts and proposals out of
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import shutil
+import stat
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pytest
 from cloudfall import app
 from cloudfall.agent_server import McpServeArgs
 from cloudfall.agent_tools import AgentConfig
@@ -22,12 +25,11 @@ from cloudfall.domain import ResourceId
 from cloudfall.lifecycle import EngineContext
 from cloudfall.project import RECORD_DIRECTORY, RUNTIME_DIRECTORY, RecordStore
 from cloudfall.secrets import SopsSecretProvider, render_environment
+from cloudfall.validation import SchemaCatalog
 from examples_project import copy_examples
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-
-    import pytest
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -249,6 +251,118 @@ def test_an_explicit_proposal_directory_still_reads_tmp(
     data = payload["data"]
     assert isinstance(data, dict)
     assert len(data["proposals"]) == len(PROPOSAL_FIXTURES)
+
+
+RELEASE = "20261027T000000Z-abcdef1"
+SECRET_OUTPUT = f"migrating with DATABASE_URL=postgres://app:{SECRET}@db/app"
+
+
+def _old_release_receipt(component: str) -> str:
+    """Return a release receipt as 0.7.0 wrote it, the command's output in it."""
+    return json.dumps(
+        {
+            "apiVersion": "cloudfall/v1",
+            "kind": "ReleaseReceipt",
+            "metadata": {"id": component, "description": "Release receipt"},
+            "spec": {
+                "component": component,
+                "release": RELEASE,
+                "artifactSha256": "a" * 64,
+                "servers": [
+                    {
+                        "server": "h1",
+                        "release": RELEASE,
+                        "previousRelease": None,
+                        "deployedAt": "2026-10-27T00:00:00Z",
+                        "healthCheckPassed": True,
+                        "rolledBack": False,
+                    }
+                ],
+                "releaseCommand": {
+                    "server": "h1",
+                    "command": ["bin/migrate"],
+                    "workingDirectory": None,
+                    "exitCode": 0,
+                    "outputTail": SECRET_OUTPUT,
+                },
+            },
+        },
+        indent=4,
+    )
+
+
+@pytest.mark.parametrize(
+    "store_directory",
+    [RecordStore.RELEASES.legacy_directory, RecordStore.RELEASES.directory],
+    ids=["moved-from-tmp", "already-in-record"],
+)
+def test_config_upgrade_moves_a_release_command_output_out_of_the_record(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], store_directory: str
+) -> None:
+    project = _project(tmp_path)
+    old = project / store_directory / "crm-backend.json"
+    old.parent.mkdir(parents=True)
+    old.write_text(_old_release_receipt("crm-backend"), encoding="utf-8")
+    output = (
+        project / RecordStore.RELEASES.output_directory / f"crm-backend.{RELEASE}.log"
+    )
+
+    exit_code, payload = _run(capsys, "config", "upgrade", "--project", str(project))
+
+    assert exit_code == 0, payload
+    receipt = project / RecordStore.RELEASES.directory / "crm-backend.json"
+    reference = output.relative_to(project).as_posix()
+    data = payload["data"]
+    assert isinstance(data, dict)
+    [upgraded] = data["upgraded"]
+    assert upgraded["path"] == receipt.relative_to(project).as_posix()
+    assert upgraded["renamed"] == [f"spec.releaseCommand.outputTail -> {reference}"]
+    assert SECRET not in _everything_under(project / RECORD_DIRECTORY)
+    document = json.loads(receipt.read_text(encoding="utf-8"))
+    SchemaCatalog(SCHEMAS).validate_named("release-receipt.schema.json", document)
+    assert document["spec"]["releaseCommand"] == {
+        "server": "h1",
+        "command": ["bin/migrate"],
+        "workingDirectory": None,
+        "exitCode": 0,
+        "output": {
+            "path": reference,
+            "sha256": hashlib.sha256(SECRET_OUTPUT.encode()).hexdigest(),
+        },
+    }
+    assert output.read_text(encoding="utf-8") == SECRET_OUTPUT
+    assert stat.S_IMODE(output.stat().st_mode) == 0o600
+
+    exit_code, payload = _run(capsys, "config", "upgrade", "--project", str(project))
+
+    assert exit_code == 0, payload
+    data = payload["data"]
+    assert isinstance(data, dict)
+    assert data["upgraded"] == []
+
+
+def test_config_upgrade_refuses_to_replace_a_different_kept_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = _project(tmp_path)
+    old = project / RecordStore.RELEASES.legacy_directory / "crm-backend.json"
+    old.parent.mkdir(parents=True)
+    old.write_text(_old_release_receipt("crm-backend"), encoding="utf-8")
+    output = (
+        project / RecordStore.RELEASES.output_directory / f"crm-backend.{RELEASE}.log"
+    )
+    output.parent.mkdir(parents=True)
+    output.write_text("another run's output", encoding="utf-8")
+
+    exit_code, payload = _run(capsys, "config", "upgrade", "--project", str(project))
+
+    assert exit_code == 6
+    error = payload["error"]
+    assert isinstance(error, dict)
+    assert error["context"]["code"] == "upgrade_target_exists"
+    assert output.read_text(encoding="utf-8") == "another run's output"
+    assert SECRET in old.read_text(encoding="utf-8")
+    assert not (project / RECORD_DIRECTORY).exists()
 
 
 def _everything_under(directory: Path) -> str:

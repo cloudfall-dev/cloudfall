@@ -98,14 +98,20 @@ environments in `record/deployments/`, `record/releases/`,
 built artifacts, rendered environment files) and is ignored by git. No
 record holds a secret value: an environment receipt names keys and a hash,
 and a proposal names the hash of an owner password, never the password.
-A release receipt keeps the last lines of the component's release command
-output, so a release command must not print secrets.
+A release command's output is the application's own and may print a
+secret, so its last 2000 characters stay in
+`tmp/output/releases/<component>.<release>.log` (`0600`) and the release
+receipt names that file and its SHA-256 under `releaseCommand.output`. The
+file is not committed: on another host, or after `tmp/` is cleared, it is
+gone, and a file there whose SHA-256 differs is not that run's output.
 
 A project from before 0.8.0 kept its receipts and proposals under `tmp/`.
 Run `cloudfall config upgrade` once: it moves each file into `record/`,
 reports every move, drops a file whose identical copy is already there, and
 refuses, naming both paths and moving nothing, when a different file is.
-A second run changes nothing. A `--proposals`, `--deployments` or other
+An old release receipt that holds `releaseCommand.outputTail` has the tail
+moved to its file under `tmp/output/releases/` on the way, whether it is
+still under `tmp/` or already in `record/`. A second run changes nothing. A `--proposals`, `--deployments` or other
 receipt path you pass explicitly keeps working as before.
 
 Commit `record/` after each run that wrote to it, so the record survives

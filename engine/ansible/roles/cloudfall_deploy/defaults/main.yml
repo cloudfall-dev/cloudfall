@@ -1,6 +1,11 @@
 ---
 cloudfall_deploy_environment_file: ""
 cloudfall_deploy_receipt_directory: ""
+# The release command's output stays here on the controller, outside the
+# committed receipt, which names the file by the reference directory and its
+# SHA-256. Empty keeps no output at all.
+cloudfall_deploy_output_directory: ""
+cloudfall_deploy_output_reference_directory: ""
 # A component without an HTTP health check passes its gate when its unit is
 # active right after the restart and still active this many seconds later.
 cloudfall_deploy_unit_settle_seconds: 10

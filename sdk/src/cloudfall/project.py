@@ -78,6 +78,12 @@ RUNTIME_DIRECTORY = "tmp"
 RECORD_DIRECTORY = "record"
 """Project directory holding receipts and proposals, committed like decisions/."""
 
+OUTPUT_DIRECTORY = "output"
+"""Folder under ``tmp/`` holding raw output a record cites, never committed."""
+
+RELEASE_OUTPUT_SUFFIX = ".log"
+"""A release command's output file is ``<component>.<release>.log``."""
+
 
 class RecordStore(Enum):
     """One store of the record a project commits under ``record/`` (D-16).
@@ -107,6 +113,15 @@ class RecordStore(Enum):
     def legacy_directory(self) -> str:
         """Where the store was kept before it moved into the record."""
         return f"{RUNTIME_DIRECTORY}/{self.value}"
+
+    @property
+    def output_directory(self) -> str:
+        """Where raw output a record of this store cites is kept, uncommitted.
+
+        Raw output is the application's, so it may hold a secret value; a
+        record names the file and its SHA-256 and never holds the text.
+        """
+        return f"{RUNTIME_DIRECTORY}/{OUTPUT_DIRECTORY}/{self.value}"
 
 PROJECT_DIRECTORY_VARIABLE = "CLOUDFALL_PROJECT"
 """Environment variable naming the project when ``--project`` is absent."""
