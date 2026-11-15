@@ -84,6 +84,8 @@ entry that supersedes it, never by editing an old one.
 - Applies to: engine/ansible/roles/cloudfall_deploy/templates/component.service.j2, engine/ansible/roles/cloudfall_access, server placement in plans, runner and CI setup
 - Enforced by: review
 
+Status on 2026-11-15: partly built. component.service.j2 sets only User, Group, NoNewPrivileges=true and PrivateTmp=true, secrets reach the unit through the per-release EnvironmentFile (D-21) rather than systemd credentials, and deploy tasks run as root through become; the rest of the sandbox, the directives listed in docs/decisions/2026-11-02-isolation-without-containers.md, is not built yet and is tracked in cloudfall-dev/cloudfall#362.
+
 ## D-11: The resource every server runs is a Baseline
 
 - Decided: 2026-11-13, in cloudfall-dev/cloudfall#198
