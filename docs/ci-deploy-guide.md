@@ -267,8 +267,10 @@ What each step does:
   writes the release receipt `tmp/releases/<component>.json`. A smoke check
   declared as a `type: command` health check runs on each server after its
   restart, so it gates the deploy and needs no CI step of its own: when it
-  fails, the server goes back to the previous release, the deploy fails, and
-  the receipt records the failure with `healthCheckPassed: false`.
+  fails, the server goes back to the previous release, and so does every
+  server that switched to the release earlier in the deploy; the deploy
+  fails, and the receipt records the failure with `healthCheckPassed: false`
+  in that server's entry and `rolledBack: true` in each entry rolled back.
   `cloudfall restart`, `cloudfall rollback` and `cloudfall health` run the
   same check, so it must be safe to run against the live service at any time
 - **Remove the decrypted files.** GitHub-hosted runners are thrown away
@@ -419,9 +421,9 @@ step keeps, for 90 days:
 
 - `tmp/artifacts/<component>/<release>.json`: the artifact metadata, with the
   commit and the archive's SHA-256
-- `tmp/releases/<component>.json`: the release receipt from `deploy`; after
-  a failed command health check its `previousRelease` names the release that
-  serves again (`null` when a first release was stopped)
+- `tmp/releases/<component>.json`: the release receipt from `deploy`, with
+  one entry per server under `servers`; each entry's `release` names the
+  release that server ended on (`null` when a first release was stopped)
 - `tmp/env-receipts/<component>.json`: the key names and hash of the
   rendered environment file, never the values
 

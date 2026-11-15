@@ -1,0 +1,54 @@
+---
+# Writes <receipts>/<component>.json on the controller from the run's entries,
+# one per server that deployed in this run, in the order they deployed (see
+# release_receipt.yml). The whole file is written again each time, so it
+# always names the release every server of the run ended on so far.
+- name: Ensure the controller receipt directory exists
+  ansible.builtin.file:
+    path: "{{ cloudfall_deploy_receipt_directory }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  become: false
+  when:
+    - not ansible_check_mode
+    - cloudfall_deploy_receipt_directory | length > 0
+
+- name: Write the release receipt on the controller
+  ansible.builtin.copy:
+    content: >-
+      {{
+        {
+          'apiVersion': 'cloudfall/v1',
+          'kind': 'ReleaseReceipt',
+          'metadata': {
+            'id': cloudfall_deploy_component.id,
+            'description': 'Release receipt written by cloudfall_deploy',
+          },
+          'spec': {
+            'component': cloudfall_deploy_component.id,
+            'release': cloudfall_deploy_release,
+            'artifactSha256': cloudfall_deploy_artifact_sha256,
+            'servers': hostvars['localhost'].cloudfall_deploy_run_entries
+            | dict2items | map(attribute='value') | list,
+          } | combine(
+            {
+              'releaseCommand': hostvars[
+                cloudfall_deploy_component.release.server
+              ].cloudfall_deploy_release_command_result,
+            }
+            if cloudfall_deploy_component.release is defined
+            else {}
+          ),
+        } | to_nice_json
+      }}
+    dest: >-
+      {{ cloudfall_deploy_receipt_directory }}/{{
+        cloudfall_deploy_component.id
+      }}.json
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+  when:
+    - not ansible_check_mode
+    - cloudfall_deploy_receipt_directory | length > 0

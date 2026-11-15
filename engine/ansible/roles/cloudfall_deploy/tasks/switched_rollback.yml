@@ -1,0 +1,163 @@
+---
+# Rolls back one server that switched to the release earlier in this run and
+# passed its gate, after a later server failed its own: run from that later
+# server's rescue, each task delegated to cloudfall_deploy_switched_server.
+# What the server ran before comes from the facts its own deploy recorded
+# (cloudfall_deploy_switched holds its hostvars), so it gets back the release
+# and the service unit it had, as the deploy's own rescue restores them, and
+# its restored release is gated again. A server that had no release before is
+# stopped, and a hand-made unit it ran is put back. The release command is not
+# reverted: it ran once for the whole run.
+- name: Read the component's declaration on the switched server
+  ansible.builtin.set_fact:
+    cloudfall_deploy_switched_component: >-
+      {{
+        cloudfall_deploy_switched.cloudfall_components
+        | selectattr('id', 'equalto', cloudfall_deploy_component.id)
+        | first
+      }}
+
+- name: Restore the previous release symlink of the switched server
+  ansible.builtin.file:
+    src: "{{ cloudfall_deploy_switched.cloudfall_deploy_previous_directory }}"
+    dest: "{{ cloudfall_deploy_switched.cloudfall_deploy_current_link }}"
+    state: link
+    force: true
+    follow: false
+  delegate_to: "{{ cloudfall_deploy_switched_server }}"
+  when: cloudfall_deploy_switched.cloudfall_deploy_previous_directory | length > 0
+
+- name: Restore the service unit of the switched server's previous release
+  ansible.builtin.copy:
+    content: >-
+      {{
+        cloudfall_deploy_switched.cloudfall_deploy_unit_existing_content.content
+        | b64decode
+      }}
+    dest: "{{ cloudfall_deploy_switched.cloudfall_deploy_unit_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  delegate_to: "{{ cloudfall_deploy_switched_server }}"
+  when:
+    - cloudfall_deploy_switched.cloudfall_deploy_previous_directory | length > 0
+    - cloudfall_deploy_switched.cloudfall_deploy_unit_managed_before | bool
+
+- name: Restart the switched server's restored release
+  ansible.builtin.systemd_service:
+    name: "{{ cloudfall_deploy_switched_component.service.name }}.service"
+    state: restarted
+    daemon_reload: true
+  delegate_to: "{{ cloudfall_deploy_switched_server }}"
+  when: cloudfall_deploy_switched.cloudfall_deploy_previous_directory | length > 0
+
+# As the deploy's rescue does for a failed one, so a rollback to the release
+# id takes the copy that ran before this run.
+- name: Remove the switched server's redeploy copy of the rolled-back release
+  ansible.builtin.file:
+    path: "{{ cloudfall_deploy_switched.cloudfall_deploy_release_directory }}"
+    state: absent
+  delegate_to: "{{ cloudfall_deploy_switched_server }}"
+  when:
+    - cloudfall_deploy_switched.cloudfall_deploy_previous_directory | length > 0
+    - >-
+      (cloudfall_deploy_switched_copy | basename).startswith(
+        cloudfall_deploy_release ~ '.redeploy-'
+      )
+    - >-
+      cloudfall_deploy_switched_copy
+      != cloudfall_deploy_switched.cloudfall_deploy_previous_directory
+  vars:
+    cloudfall_deploy_switched_copy: >-
+      {{ cloudfall_deploy_switched.cloudfall_deploy_release_directory }}
+
+- name: Stop the switched server's first release
+  ansible.builtin.systemd_service:
+    name: "{{ cloudfall_deploy_switched_component.service.name }}.service"
+    state: stopped
+  delegate_to: "{{ cloudfall_deploy_switched_server }}"
+  when: cloudfall_deploy_switched.cloudfall_deploy_previous_directory | length == 0
+
+- name: Restore the switched server's pre-Cloudfall service unit
+  delegate_to: "{{ cloudfall_deploy_switched_server }}"
+  when:
+    - cloudfall_deploy_switched.cloudfall_deploy_previous_directory | length == 0
+    - cloudfall_deploy_switched.cloudfall_deploy_unit_hand_made | bool
+  block:
+    - name: Copy the kept pre-Cloudfall unit back on the switched server
+      ansible.builtin.copy:
+        src: "{{ cloudfall_deploy_switched.cloudfall_deploy_unit_kept_path }}"
+        dest: "{{ cloudfall_deploy_switched.cloudfall_deploy_unit_path }}"
+        remote_src: true
+        force: true
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Reload systemd for the switched server's pre-Cloudfall unit
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Restore the enabled state of the switched server's pre-Cloudfall unit
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - >-
+            {{
+              'reenable'
+              if cloudfall_deploy_switched.cloudfall_deploy_unit_was_enabled.stdout
+              == 'enabled'
+              else 'disable'
+            }}
+          - "{{ cloudfall_deploy_switched_component.service.name }}.service"
+      changed_when: true
+
+    - name: Start the switched server's pre-Cloudfall unit that was active before
+      ansible.builtin.systemd_service:
+        name: "{{ cloudfall_deploy_switched_component.service.name }}.service"
+        state: started
+      when: cloudfall_deploy_switched.cloudfall_deploy_unit_was_active.rc == 0
+
+- name: Gate the switched server's restored release on its health check
+  when: cloudfall_deploy_switched.cloudfall_deploy_previous_directory | length > 0
+  block:
+    - name: Run the health gate against the switched server's restored release
+      ansible.builtin.include_tasks:
+        file: health_gate.yml
+        apply:
+          delegate_to: "{{ cloudfall_deploy_switched_server }}"
+      vars:
+        cloudfall_deploy_component: "{{ cloudfall_deploy_switched_component }}"
+        cloudfall_server_id: "{{ cloudfall_deploy_switched_server }}"
+  rescue:
+    # The run fails anyway; the other switched servers are still rolled back,
+    # and the failure names this one.
+    - name: Record the switched server whose restored release failed its gate
+      ansible.builtin.set_fact:
+        cloudfall_deploy_switched_unhealthy: >-
+          {{
+            cloudfall_deploy_switched_unhealthy | default([])
+            + [cloudfall_deploy_switched_server]
+          }}
+
+- name: Record the rollback in the run's release receipt
+  ansible.builtin.set_fact:
+    cloudfall_deploy_run_entries: >-
+      {{
+        cloudfall_deploy_switched_entries
+        | combine({
+          cloudfall_deploy_switched_server: cloudfall_deploy_switched_entry
+          | combine({
+            'release': cloudfall_deploy_switched_entry.previousRelease,
+            'rolledBack': true,
+          }),
+        })
+      }}
+  vars:
+    cloudfall_deploy_switched_entries: >-
+      {{ hostvars['localhost'].cloudfall_deploy_run_entries }}
+    cloudfall_deploy_switched_entry: >-
+      {{ cloudfall_deploy_switched_entries[cloudfall_deploy_switched_server] }}
+  delegate_to: localhost
+  delegate_facts: true
+  become: false

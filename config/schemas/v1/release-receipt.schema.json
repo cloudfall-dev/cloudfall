@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cloudfall.internal/schemas/v1/release-receipt.schema.json",
   "title": "Cloudfall component release receipt",
+  "description": "One receipt per component and deploy run, with one entry per server under spec.servers naming the release that server ended on. A receipt written before entries (spec.server, one server) still validates and reads as a one-entry list.",
   "type": "object",
   "properties": {
     "apiVersion": {
@@ -14,145 +15,138 @@
       "$ref": "common.schema.json#/$defs/metadata"
     },
     "spec": {
+      "if": {
+        "required": [
+          "servers"
+        ]
+      },
+      "then": {
+        "$ref": "#/$defs/runSpec"
+      },
+      "else": {
+        "$ref": "#/$defs/singleServerSpec"
+      }
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "releaseId": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,40}$"
+    },
+    "optionalReleaseId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,40}$"
+    },
+    "commandHealthCheck": {
       "type": "object",
       "properties": {
-        "component": {
-          "$ref": "common.schema.json#/$defs/resourceId"
+        "type": {
+          "const": "command"
         },
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "exitCode": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 255
+        },
+        "timedOut": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "command",
+        "attempts",
+        "exitCode",
+        "timedOut"
+      ],
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "timedOut": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "exitCode": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "exitCode": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "releaseCommand": {
+      "type": "object",
+      "properties": {
         "server": {
           "$ref": "common.schema.json#/$defs/resourceId"
         },
-        "release": {
-          "type": "string",
-          "pattern": "^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,40}$"
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
         },
-        "artifactSha256": {
-          "$ref": "common.schema.json#/$defs/sha256"
-        },
-        "deployedAt": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "previousRelease": {
+        "workingDirectory": {
           "type": [
             "string",
             "null"
           ],
-          "pattern": "^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,40}$"
+          "minLength": 1
         },
-        "healthCheckPassed": {
-          "type": "boolean"
+        "exitCode": {
+          "const": 0
         },
-        "healthCheck": {
-          "type": "object",
-          "properties": {
-            "type": {
-              "const": "command"
-            },
-            "command": {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "minLength": 1
-              },
-              "minItems": 1
-            },
-            "attempts": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 20
-            },
-            "exitCode": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "minimum": 0,
-              "maximum": 255
-            },
-            "timedOut": {
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "type",
-            "command",
-            "attempts",
-            "exitCode",
-            "timedOut"
-          ],
-          "additionalProperties": false,
-          "if": {
-            "properties": {
-              "timedOut": {
-                "const": true
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "exitCode": {
-                "type": "null"
-              }
-            }
-          },
-          "else": {
-            "properties": {
-              "exitCode": {
-                "type": "integer"
-              }
-            }
-          }
-        },
-        "releaseCommand": {
-          "type": "object",
-          "properties": {
-            "server": {
-              "$ref": "common.schema.json#/$defs/resourceId"
-            },
-            "command": {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "minLength": 1
-              },
-              "minItems": 1
-            },
-            "workingDirectory": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "minLength": 1
-            },
-            "exitCode": {
-              "const": 0
-            },
-            "outputTail": {
-              "type": "string",
-              "maxLength": 2000
-            }
-          },
-          "required": [
-            "server",
-            "command",
-            "workingDirectory",
-            "exitCode",
-            "outputTail"
-          ],
-          "additionalProperties": false
+        "outputTail": {
+          "type": "string",
+          "maxLength": 2000
         }
       },
       "required": [
-        "component",
         "server",
-        "release",
-        "artifactSha256",
-        "deployedAt",
-        "previousRelease",
-        "healthCheckPassed"
+        "command",
+        "workingDirectory",
+        "exitCode",
+        "outputTail"
       ],
-      "additionalProperties": false,
+      "additionalProperties": false
+    },
+    "gateOutcome": {
       "if": {
         "properties": {
           "healthCheckPassed": {
@@ -193,13 +187,160 @@
           }
         }
       }
+    },
+    "serverEntry": {
+      "type": "object",
+      "properties": {
+        "server": {
+          "$ref": "common.schema.json#/$defs/resourceId"
+        },
+        "release": {
+          "$ref": "#/$defs/optionalReleaseId"
+        },
+        "previousRelease": {
+          "$ref": "#/$defs/optionalReleaseId"
+        },
+        "deployedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "healthCheckPassed": {
+          "type": "boolean"
+        },
+        "rolledBack": {
+          "type": "boolean"
+        },
+        "healthCheck": {
+          "$ref": "#/$defs/commandHealthCheck"
+        }
+      },
+      "required": [
+        "server",
+        "release",
+        "previousRelease",
+        "deployedAt",
+        "healthCheckPassed",
+        "rolledBack"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/$defs/gateOutcome"
+        },
+        {
+          "if": {
+            "properties": {
+              "healthCheckPassed": {
+                "const": false
+              }
+            },
+            "required": [
+              "healthCheckPassed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "rolledBack": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "rolledBack": {
+                "const": false
+              }
+            },
+            "required": [
+              "rolledBack"
+            ]
+          },
+          "then": {
+            "properties": {
+              "release": {
+                "$ref": "#/$defs/releaseId"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "runSpec": {
+      "type": "object",
+      "properties": {
+        "component": {
+          "$ref": "common.schema.json#/$defs/resourceId"
+        },
+        "release": {
+          "$ref": "#/$defs/releaseId"
+        },
+        "artifactSha256": {
+          "$ref": "common.schema.json#/$defs/sha256"
+        },
+        "releaseCommand": {
+          "$ref": "#/$defs/releaseCommand"
+        },
+        "servers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/serverEntry"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "component",
+        "release",
+        "artifactSha256",
+        "servers"
+      ],
+      "additionalProperties": false
+    },
+    "singleServerSpec": {
+      "type": "object",
+      "properties": {
+        "component": {
+          "$ref": "common.schema.json#/$defs/resourceId"
+        },
+        "server": {
+          "$ref": "common.schema.json#/$defs/resourceId"
+        },
+        "release": {
+          "$ref": "#/$defs/releaseId"
+        },
+        "artifactSha256": {
+          "$ref": "common.schema.json#/$defs/sha256"
+        },
+        "deployedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "previousRelease": {
+          "$ref": "#/$defs/optionalReleaseId"
+        },
+        "healthCheckPassed": {
+          "type": "boolean"
+        },
+        "healthCheck": {
+          "$ref": "#/$defs/commandHealthCheck"
+        },
+        "releaseCommand": {
+          "$ref": "#/$defs/releaseCommand"
+        }
+      },
+      "required": [
+        "component",
+        "server",
+        "release",
+        "artifactSha256",
+        "deployedAt",
+        "previousRelease",
+        "healthCheckPassed"
+      ],
+      "additionalProperties": false,
+      "$ref": "#/$defs/gateOutcome"
     }
-  },
-  "required": [
-    "apiVersion",
-    "kind",
-    "metadata",
-    "spec"
-  ],
-  "additionalProperties": false
+  }
 }
