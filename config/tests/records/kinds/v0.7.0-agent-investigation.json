@@ -1,0 +1,73 @@
+{
+  "apiVersion": "cloudfall/v1",
+  "kind": "AgentInvestigation",
+  "metadata": {
+    "id": "investigation-20261115180209"
+  },
+  "spec": {
+    "alert": "ALERT web-1 down",
+    "answer": "ROOT CAUSE: web-1 runs a release with the bug\nPROPOSED: deploy-20260921143012\nWHY: deploying 1.4.0 replaces the faulty release.",
+    "finding": {
+      "proposed": [
+        "deploy-20260921143012"
+      ],
+      "rootCause": "web-1 runs a release with the bug",
+      "unrecorded": [],
+      "why": "deploying 1.4.0 replaces the faulty release."
+    },
+    "finishedAt": "2026-11-15T18:02:10Z",
+    "model": {
+      "endpoint": "https://models.example/v1/",
+      "name": "nemotron"
+    },
+    "startedAt": "2026-11-15T18:02:09Z",
+    "status": "answered",
+    "steps": [
+      {
+        "arguments": {},
+        "decision": "deploy-20260921143012",
+        "outcome": "proposed",
+        "tool": "deploy",
+        "turn": 1
+      }
+    ],
+    "tokens": {
+      "completion": 15,
+      "prompt": 150
+    },
+    "trace": [
+      {
+        "elapsedMs": 0,
+        "reasoning": "",
+        "requestId": "req-test",
+        "text": "",
+        "tokens": {
+          "completion": 10,
+          "prompt": 100,
+          "reasoning": 0
+        },
+        "toolCalls": [
+          {
+            "arguments": "{}",
+            "name": "deploy"
+          }
+        ],
+        "turn": 1
+      },
+      {
+        "elapsedMs": 0,
+        "reasoning": "",
+        "requestId": "req-test",
+        "text": "ROOT CAUSE: web-1 runs a release with the bug\nPROPOSED: deploy-20260921143012\nWHY: deploying 1.4.0 replaces the faulty release.",
+        "tokens": {
+          "completion": 5,
+          "prompt": 50,
+          "reasoning": 0
+        },
+        "toolCalls": [],
+        "turn": 2
+      }
+    ],
+    "turns": 2
+  }
+}

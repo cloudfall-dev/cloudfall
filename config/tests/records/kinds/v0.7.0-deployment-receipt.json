@@ -1,0 +1,15 @@
+{
+    "apiVersion": "cloudfall/v1",
+    "kind": "DeploymentReceipt",
+    "metadata": {
+        "description": "Deployment receipt written by cloudfall_nginx_site",
+        "id": "crm-site"
+    },
+    "spec": {
+        "configurationPath": "/etc/nginx/sites-available/crm.example.test.conf",
+        "configurationSha256": "3f0b2c1e9a8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e4d3c2b",
+        "deployedAt": "2026-11-15T18:10:42Z",
+        "domain": "crm-site",
+        "server": "h2"
+    }
+}

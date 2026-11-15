@@ -1,0 +1,18 @@
+{
+  "apiVersion": "cloudfall/v1",
+  "kind": "Artifact",
+  "metadata": {
+    "description": "Release artifact for crm-backend",
+    "id": "crm-backend"
+  },
+  "spec": {
+    "archive": "20261115T180212Z-4d20124.tar.gz",
+    "archiveSha256": "4c40ede91a214673c5e12bd374792dba25bbe555675b18a48000fc31469c87c5",
+    "builtAt": "2026-11-15T18:02:12Z",
+    "component": "crm-backend",
+    "gitCommit": "4d2012456661533ab6768bb0d11e620ecc57cf00",
+    "gitRef": "main",
+    "release": "20261115T180212Z-4d20124",
+    "sizeBytes": 347
+  }
+}

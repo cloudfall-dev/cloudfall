@@ -1,0 +1,53 @@
+{
+  "apiVersion": "cloudfall/v1",
+  "kind": "OperatorProposal",
+  "metadata": {
+    "id": "op-20260921143100z-0914c0eac3474855",
+    "description": "Declared alert postgresql-down is firing: service postgresql-main on server h1 stopped satisfying its rule; converging declared services restores the declared state"
+  },
+  "spec": {
+    "createdAt": "2026-09-21T14:31:00Z",
+    "status": "verified",
+    "trigger": {
+      "kind": "alert",
+      "fingerprint": "0914c0eac3474855",
+      "alert": {
+        "name": "postgresql_down",
+        "cloudfallRule": "postgresql-down",
+        "severity": "critical",
+        "environment": "production",
+        "server": "h1",
+        "service": "postgresql-main",
+        "activeAt": "2026-09-10T14:45:45Z"
+      }
+    },
+    "diagnosis": {
+      "summary": "Declared alert postgresql-down is firing: service postgresql-main on server h1 stopped satisfying its rule; converging declared services restores the declared state",
+      "evidence": [
+        "alert postgresql_down firing since 2026-09-10T14:45:45Z",
+        "labels: severity=critical environment=production server=h1 service=postgresql-main",
+        "fingerprint 0914c0eac3474855"
+      ]
+    },
+    "operation": {
+      "kind": "converge-services",
+      "server": "h1",
+      "command": [
+        "cloudfall-engine",
+        "playbook",
+        "services.yml"
+      ],
+      "service": "postgresql-main"
+    },
+    "approval": {
+      "mode": "human",
+      "via": "terminal"
+    },
+    "outcome": {
+      "executedAt": "2026-11-15T18:02:10+00:00",
+      "verifiedAt": "2026-11-15T18:02:10+00:00",
+      "result": "verified",
+      "detail": "trigger evidence resolved after convergence; observed outcome matches the declared state"
+    }
+  }
+}
