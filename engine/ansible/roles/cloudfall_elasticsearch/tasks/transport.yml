@@ -16,6 +16,7 @@
 # A node that has not served its cluster yet bootstraps one only when it is
 # the home and no other node of the cluster is already running: a home
 # moved to a new server must join the running cluster, never start a second.
+# A node that joins an existingCluster never bootstraps, so it never looks.
 - name: Look for a running node before the home bootstraps the cluster
   ansible.builtin.wait_for:
     host: "{{ item.rsplit(':', 1)[0] }}"
@@ -33,6 +34,7 @@
   check_mode: false
   when:
     - cloudfall_elasticsearch_service.server == cloudfall_server_id
+    - cloudfall_elasticsearch_service.elasticsearch.existingCluster is not defined
     - not cloudfall_elasticsearch_cluster_formed.stat.exists
 
 - name: Refuse to bootstrap a second cluster beside a running node

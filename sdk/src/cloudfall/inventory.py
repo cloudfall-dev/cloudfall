@@ -1010,17 +1010,26 @@ class ElasticsearchUser:
 
 @dataclass(frozen=True, slots=True)
 class ElasticsearchExistingCluster:
-    """A cluster Cloudfall did not create, which the declared nodes join."""
+    """A cluster Cloudfall did not create, which the declared nodes join.
+
+    ``credentials_ref`` names the login of an account the team already has on
+    that cluster, with the ``monitor`` privilege, which the join check uses;
+    without it the check logs in as Cloudfall's own ``cloudfall`` account.
+    """
 
     seed_hosts: tuple[ElasticsearchSeedHost, ...]
     ca_certificate_file: ProjectFilePath
+    credentials_ref: SecretValueReference | None = None
 
     def as_dict(self) -> dict[str, object]:
-        """Serialize the seed hosts and the project path of the foreign CA."""
-        return {
+        """Serialize the seed hosts, the foreign CA's path and the login reference."""
+        result: dict[str, object] = {
             "seedHosts": [host.value for host in self.seed_hosts],
             "caCertificateFile": self.ca_certificate_file.value,
         }
+        if self.credentials_ref is not None:
+            result["credentialsRef"] = self.credentials_ref.as_dict()
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -2332,6 +2341,11 @@ def _elasticsearch_service(
             ),
             ca_certificate_file=ProjectFilePath.from_boundary(
                 raw_existing.get("caCertificateFile")
+            ),
+            credentials_ref=(
+                _secret_value_reference(_mapping(raw_existing, "credentialsRef"))
+                if "credentialsRef" in raw_existing
+                else None
             ),
         )
     snapshot_repository = None

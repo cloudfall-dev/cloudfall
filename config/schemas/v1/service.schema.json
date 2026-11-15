@@ -140,6 +140,9 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 4096
+            },
+            "credentialsRef": {
+              "$ref": "#/$defs/secretValueReference"
             }
           },
           "required": [

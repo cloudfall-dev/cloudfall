@@ -1314,7 +1314,9 @@ def _validate_elasticsearch_service(
             "repository would have to be one shared mount on every node, which "
             "Cloudfall does not provide",
         )
-    _validate_elasticsearch_node_hosts(document, nodes, index)
+    _validate_elasticsearch_node_hosts(
+        document, nodes, index, joins="existingCluster" in elasticsearch
+    )
     if "remoteAccess" in elasticsearch:
         remote_access = _required_mapping(
             elasticsearch, "remoteAccess", document.source
@@ -1334,15 +1336,19 @@ def _validate_elasticsearch_node_hosts(
     document: ResourceDocument,
     nodes: tuple[ResourceId, ...],
     index: Mapping[ResourceKey, ResourceDocument],
+    *,
+    joins: bool,
 ) -> None:
     """Refuse a node whose server can't hold what the node needs (S-012).
 
     Each node's data volume goes into the only storage pool of its server's
     baseline, on two disks for a cluster of one, the only copy of its data.
-    A node of a cluster of two or more binds its transport to an IPv4 the
-    other nodes reach and their firewalls admit.
+    A node of a cluster of two or more, which a node that ``joins`` an
+    existing cluster is, binds its transport to an IPv4 the other nodes reach
+    and their firewalls admit.
     """
     single = len(nodes) == 1
+    transported = not single or joins
     for position, node in enumerate(nodes):
         server = index[ResourceKey(kind=ResourceKind.SERVER, resource_id=node)]
         server_spec = _required_mapping(server.content, "spec", server.source)
@@ -1393,7 +1399,7 @@ def _validate_elasticsearch_node_hosts(
                 "nodes",
                 position,
             )
-        if not single and not (
+        if transported and not (
             "network" in server_spec or _is_ipv4(server_spec.get("address"))
         ):
             raise _elasticsearch_refusal(
@@ -1406,7 +1412,7 @@ def _validate_elasticsearch_node_hosts(
                 "nodes",
                 position,
             )
-        if not single and "firewall" not in baseline_spec:
+        if transported and "firewall" not in baseline_spec:
             # The S-006 rule remoteAccess follows: a port opened to some
             # sources needs a firewall to keep everyone else out
             raise _elasticsearch_refusal(
@@ -1621,6 +1627,19 @@ def _validate_elasticsearch_existing_cluster(
                     "seedHosts",
                     position,
                 )
+        try:
+            ip_address(seed_host.host)
+        except ValueError as error:
+            raise _elasticsearch_refusal(
+                document,
+                ERROR_ELASTICSEARCH_EXISTING_CLUSTER,
+                f"seed host {seed_host.value} is a name: a joining node's "
+                "firewall admits the existing nodes' transport by address, so "
+                "give each seed host as IP:port",
+                "existingCluster",
+                "seedHosts",
+                position,
+            ) from error
 
 
 def _validate_service_uniqueness(documents: Sequence[ResourceDocument]) -> None:

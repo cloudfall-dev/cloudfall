@@ -8,8 +8,10 @@ argument_specs:
         description: >-
           Controller paths of the staged cloudfallPassword, cloudfallHash and
           elasticHash files, with an S3 snapshotRepository the s3AccessKey
-          and s3SecretKey files, and under users each declared user's bcrypt
-          hash file; cloudfall passes them, never the values
+          and s3SecretKey files, with an existingCluster credentialsRef the
+          existingUsername and existingPassword files, and under users each
+          declared user's bcrypt hash file; cloudfall passes them, never the
+          values
       cloudfall_elasticsearch_service:
         type: dict
         required: true
@@ -63,6 +65,16 @@ argument_specs:
                 required: true
               existingCluster:
                 type: dict
+                options:
+                  seedHosts:
+                    type: list
+                    elements: str
+                    required: true
+                  caCertificateFile:
+                    type: str
+                    required: true
+                  credentialsRef:
+                    type: dict
               remoteAccess:
                 type: dict
               snapshotRepository:
