@@ -298,12 +298,37 @@
   # A dry run unpacks nothing, so the release directory may not exist yet.
   when: not ansible_check_mode
 
+# A redeploy copy whose release command failed goes, as one that failed its
+# gate does (#373), so rollback's newest copy of a release is always one that
+# passed. current has not moved, so the previous copy still runs and is never
+# removed; the copy's environment file goes with it, the previous copy's own
+# file stays. releases/<release> itself is never a redeploy copy.
 - name: Run the release command on the release server
-  ansible.builtin.include_tasks: release_command.yml
   when:
     - not ansible_check_mode
     - cloudfall_deploy_component.release is defined
     - cloudfall_deploy_component.release.server == cloudfall_server_id
+  block:
+    - name: Run the release command against the unpacked release
+      ansible.builtin.include_tasks: release_command.yml
+  rescue:
+    - name: Remove the redeploy copy whose release command failed
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ cloudfall_deploy_release_directory }}"
+        - "{{ cloudfall_deploy_environment_own_path }}"
+      when:
+        - >-
+          (cloudfall_deploy_release_directory | basename).startswith(
+            cloudfall_deploy_release ~ '.redeploy-'
+          )
+        - cloudfall_deploy_release_directory != cloudfall_deploy_previous_directory
+
+    - name: Fail the deployment whose release command failed
+      ansible.builtin.fail:
+        msg: "{{ ansible_failed_result.msg }}"
 
 - name: Require the release command to have passed before switching
   ansible.builtin.assert:
