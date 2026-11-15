@@ -225,7 +225,7 @@ def test_s008_14_migrate_pauses_for_an_approval_and_resumes_without_a_rebuild(
     assert paused["data"]["status"] == "paused"
     assert _step(paused, "deploy:crm-backend")["status"] == "pending"
     assert not _marker(tmp_path, "deploy.yml").exists()
-    assert not (project / "tmp" / "releases").exists()
+    assert not (project / "record" / "releases").exists()
 
     path = _approve_at_terminal(project, release)
     # A second build has nothing to clone from: the resumed run must reuse
@@ -240,7 +240,7 @@ def test_s008_14_migrate_pauses_for_an_approval_and_resumes_without_a_rebuild(
     assert deployed["detail"]["release"] == release
     assert deployed["detail"]["approval"]["path"] == str(path)
     assert _marker(tmp_path, "deploy.yml").read_text(encoding="utf-8") == "ran"
-    assert (project / "tmp" / "releases" / "crm-backend.json").is_file()
+    assert (project / "record" / "releases" / "crm-backend.json").is_file()
     assert sorted((project / "tmp" / "artifacts" / "crm-backend").iterdir()) == archives
 
 

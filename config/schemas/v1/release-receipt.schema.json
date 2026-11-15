@@ -133,16 +133,43 @@
           "const": 0
         },
         "outputTail": {
+          "description": "The end of the command's output, as releases before 0.8.0 wrote it into the receipt. No longer written: the output is raw application output and may hold a secret, so it stays in the project's tmp/ and the receipt names it under output; cloudfall config upgrade moves an old tail there.",
           "type": "string",
           "maxLength": 2000
+        },
+        "output": {
+          "$ref": "#/$defs/outputReference"
         }
       },
       "required": [
         "server",
         "command",
         "workingDirectory",
-        "exitCode",
-        "outputTail"
+        "exitCode"
+      ],
+      "not": {
+        "required": [
+          "outputTail",
+          "output"
+        ]
+      },
+      "additionalProperties": false
+    },
+    "outputReference": {
+      "description": "Where the end of the command's output was kept on the management host, outside the committed record, and the SHA-256 of what was kept. The path is relative to the project unless the output directory was outside it. The file is not committed and may be gone, or replaced by a later run: compare its SHA-256 before treating it as this run's output.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "common.schema.json#/$defs/sha256"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
       ],
       "additionalProperties": false
     },

@@ -57,7 +57,7 @@ line carrying `meta.end`; stopping a watcher (Ctrl-C or SIGTERM) ends it
 with a `CANCELLED` line and exit 130 or 143.
 
 Every proposal is a schema-validated receipt in `--proposals`
-(default `tmp/operator/proposals`): the trigger evidence (alert labels or
+(default `record/operator/proposals`): the trigger evidence (alert labels or
 drifted checks), a diagnosis, the exact operation, and later its outcome.
 An open, running, executed or failed proposal blocks duplicates for the
 same trigger — a failed remediation deliberately stays visible until a
@@ -86,6 +86,47 @@ operation or time window; for a decision an agent asked for through
 `agent investigate`, it also tells the turn and the model's reasoning
 there. The operator's receipts here are the older
 form of the same entry and are not yet read by `cloudfall why`.
+
+### Where the record lives
+
+A project keeps the record in `record/`, which is committed like
+`decisions/`: the operator's proposals in `record/operator/proposals/`, and
+the receipts of deploys, releases, backups, data migrations and rendered
+environments in `record/deployments/`, `record/releases/`,
+`record/backups/`, `record/data-migrations/` and `record/env-receipts/`.
+`tmp/` keeps only what can be rebuilt (observations, rendered inventory,
+built artifacts, rendered environment files) and is ignored by git. No
+record holds a secret value: an environment receipt names keys and a hash,
+and a proposal names the hash of an owner password, never the password.
+A release command's output is the application's own and may print a
+secret, so its last 2000 characters stay in
+`tmp/output/releases/<component>.<release>.log` (`0600`) and the release
+receipt names that file and its SHA-256 under `releaseCommand.output`. The
+file is not committed: on another host, or after `tmp/` is cleared, it is
+gone, and a file there whose SHA-256 differs is not that run's output.
+
+A project from before 0.8.0 kept its receipts and proposals under `tmp/`.
+Run `cloudfall config upgrade` once: it moves each file into `record/`,
+reports every move, drops a file whose identical copy is already there, and
+refuses, naming both paths and moving nothing, when a different file is.
+An old release receipt that holds `releaseCommand.outputTail` has the tail
+moved to its file under `tmp/output/releases/` on the way, whether it is
+still under `tmp/` or already in `record/`. A second run changes nothing. A `--proposals`, `--deployments` or other
+receipt path you pass explicitly keeps working as before.
+
+Commit `record/` after each run that wrote to it, so the record survives
+losing the management host. A management host with no git remote can sync
+the directory to another machine or to object storage instead, for example
+from a systemd timer:
+
+```bash
+rsync -a /opt/my-project/record/ backup-host:/srv/cloudfall-record/my-project/
+# or
+rclone copy /opt/my-project/record remote:cloudfall-record/my-project
+```
+
+Both only add and update files (no `rsync --delete`, no `rclone sync`), so
+a record lost on the host is not deleted from the copy too.
 
 To run persistently, wrap the command in a systemd service on the
 management host:

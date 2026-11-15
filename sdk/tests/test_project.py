@@ -66,8 +66,16 @@ def test_init_lays_out_every_resource_directory_and_pins_cloudfall(
     pyproject = (directory / "pyproject.toml").read_text(encoding="utf-8")
     assert 'name = "acme-fleet"' in pyproject
     assert f'dependencies = ["cloudfall=={VERSION}"]' in pyproject
-    assert "tmp/" in (directory / ".gitignore").read_text(encoding="utf-8")
+    ignored = [
+        line
+        for line in (directory / ".gitignore").read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+    assert "tmp/" in ignored
+    # The record is committed (D-16): nothing in .gitignore names it.
+    assert not any(line.startswith("record") for line in ignored)
     readme = (directory / "README.md").read_text(encoding="utf-8")
+    assert "`record/`" in readme
     assert "# acme-fleet" in readme
     assert "## About" in readme
     assert "--description" in readme
@@ -441,6 +449,8 @@ def test_init_writes_the_agent_contract_and_the_claude_pointer(
     assert "`uv run cloudfall changelog`" in output
     assert "`secretRefs`" in _section(contract, "Secrets")
     assert "`tmp/`" in _section(contract, "Evidence")
+    assert "`record/`" in _section(contract, "Evidence")
+    assert "`record/`" in _section(contract, "Git").split(" are not")[0]
     assert "`.venv/`" in _section(contract, "Git")
     pointer = (directory / "CLAUDE.md").read_text(encoding="utf-8")
     assert pointer.count("\n") <= 2

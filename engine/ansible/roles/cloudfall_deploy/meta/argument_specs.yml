@@ -121,6 +121,12 @@ argument_specs:
       cloudfall_deploy_receipt_directory:
         type: str
         default: ""
+      cloudfall_deploy_output_directory:
+        type: str
+        default: ""
+      cloudfall_deploy_output_reference_directory:
+        type: str
+        default: ""
       cloudfall_deploy_unit_settle_seconds:
         type: int
         default: 10

@@ -41,6 +41,7 @@ from cloudfall.inventory import PlatformInventory
 from cloudfall.lifecycle_error import (
     LifecycleError as LifecycleError,  # noqa: PLC0414 - re-exported for callers
 )
+from cloudfall.project import RecordStore
 from cloudfall.secret_store import SecretStore, sops_encrypt
 from cloudfall.secrets import (
     SecretsError,
@@ -563,6 +564,13 @@ def plan_deploy(
         extra_vars["cloudfall_deploy_receipt_directory"] = str(
             options.receipt_directory.resolve()
         )
+        # The release command's output is the application's and may hold a
+        # secret: it stays under tmp/, and the committed receipt names it.
+        output = RecordStore.RELEASES.output_directory
+        extra_vars["cloudfall_deploy_output_directory"] = str(
+            (context.project_directory / output).resolve()
+        )
+        extra_vars["cloudfall_deploy_output_reference_directory"] = output
     return ExecutionPlan(
         action="deploy",
         component_id=component_id,

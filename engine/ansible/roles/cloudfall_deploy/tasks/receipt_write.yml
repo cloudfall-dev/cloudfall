@@ -3,6 +3,11 @@
 # one per server that deployed in this run, in the order they deployed (see
 # release_receipt.yml). The whole file is written again each time, so it
 # always names the release every server of the run ended on so far.
+#
+# The receipt is committed, and the release command's output is the
+# application's own, which may print a secret. So the output's tail stays in
+# <output>/<component>.<release>.log under the project's tmp/, and the
+# receipt names that file and its SHA-256, never the text.
 - name: Ensure the controller receipt directory exists
   ansible.builtin.file:
     path: "{{ cloudfall_deploy_receipt_directory }}"
@@ -14,9 +19,48 @@
     - not ansible_check_mode
     - cloudfall_deploy_receipt_directory | length > 0
 
+- name: Ensure the controller output directory exists
+  ansible.builtin.file:
+    path: "{{ cloudfall_deploy_output_directory }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+  when:
+    - not ansible_check_mode
+    - cloudfall_deploy_receipt_directory | length > 0
+    - cloudfall_deploy_output_directory | length > 0
+    - cloudfall_deploy_component.release is defined
+
+- name: Keep the release command output on the controller, outside the receipt
+  ansible.builtin.copy:
+    content: >-
+      {{
+        hostvars[cloudfall_deploy_component.release.server]
+        .cloudfall_deploy_release_command_result.outputTail
+      }}
+    dest: >-
+      {{ cloudfall_deploy_output_directory }}/{{
+        cloudfall_deploy_component.id
+      }}.{{ cloudfall_deploy_release }}.log
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when:
+    - not ansible_check_mode
+    - cloudfall_deploy_receipt_directory | length > 0
+    - cloudfall_deploy_output_directory | length > 0
+    - cloudfall_deploy_component.release is defined
+
 - name: Write the release receipt on the controller
   ansible.builtin.copy:
     content: >-
+      {%- set release_command = (
+        hostvars[cloudfall_deploy_component.release.server]
+        .cloudfall_deploy_release_command_result
+        if cloudfall_deploy_component.release is defined
+        else none
+      ) -%}
       {{
         {
           'apiVersion': 'cloudfall/v1',
@@ -33,11 +77,23 @@
             | dict2items | map(attribute='value') | list,
           } | combine(
             {
-              'releaseCommand': hostvars[
-                cloudfall_deploy_component.release.server
-              ].cloudfall_deploy_release_command_result,
+              'releaseCommand': (
+                release_command | dict2items
+                | rejectattr('key', 'equalto', 'outputTail') | items2dict
+              ) | combine(
+                {
+                  'output': {
+                    'path': cloudfall_deploy_output_reference_directory
+                    ~ '/' ~ cloudfall_deploy_component.id
+                    ~ '.' ~ cloudfall_deploy_release ~ '.log',
+                    'sha256': release_command.outputTail | hash('sha256'),
+                  },
+                }
+                if cloudfall_deploy_output_directory | length > 0
+                else {}
+              ),
             }
-            if cloudfall_deploy_component.release is defined
+            if release_command is not none
             else {}
           ),
         } | to_nice_json
