@@ -934,3 +934,73 @@ def test_bootstrap_and_deploy_set_one_mode_on_the_directories_both_create() -> N
         path: bootstrap[path] for path in shared
     }
     assert {deploy[path] for path in shared} == {("crm", "crm", "0750")}
+
+
+# A run with Ansible's --diff prints the old and new content of a file a task
+# writes. An environment file holds secrets, so every task whose destination
+# is under shared/env/ sets diff: false (#374). A task is found by its
+# destination, its path or dest argument (and its loop, when that holds the
+# paths), naming shared/env/ or a variable for an environment path or
+# directory, so a new task writing there can't slip past. Modules that print
+# no file content are out of scope: ansible.builtin.file shows only a path's
+# state (creating the directory, removing a release's file), and stat, find
+# and slurp write nothing.
+
+ROLES = ROOT / "engine" / "ansible" / "roles"
+ENVIRONMENT_DESTINATION = re.compile(
+    r"shared(_directory \}\})?/env\b|environment_\w*(path|directory)\b"
+)
+PRINTS_NO_CONTENT = {
+    "ansible.builtin.file",
+    "ansible.builtin.stat",
+    "ansible.builtin.find",
+    "ansible.builtin.slurp",
+}
+
+
+def _flat(tasks: object) -> list[dict[str, object]]:
+    """Every task of a task file, inside blocks, rescues and always too."""
+    assert isinstance(tasks, list)
+    flat: list[dict[str, object]] = []
+    for task in tasks:
+        flat.append(task)
+        for section in ("block", "rescue", "always"):
+            flat.extend(_flat(task.get(section, [])))
+    return flat
+
+
+def _environment_writers() -> list[tuple[str, dict[str, object]]]:
+    """List the tasks, by file, that may write file content under shared/env/."""
+    writers: list[tuple[str, dict[str, object]]] = []
+    for path in sorted(ROLES.glob("*/tasks/*.yml")):
+        for task in _flat(_load(path)):
+            modules = [
+                (key, value)
+                for key, value in task.items()
+                if key.startswith("ansible.") and isinstance(value, dict)
+            ]
+            for key, module in modules:
+                arguments = (module.get("dest"), module.get("path"), task.get("loop"))
+                destination = " ".join(str(argument) for argument in arguments)
+                if key not in PRINTS_NO_CONTENT and ENVIRONMENT_DESTINATION.search(
+                    destination
+                ):
+                    writers.append((path.relative_to(ROLES).as_posix(), task))
+    return writers
+
+
+def test_every_task_writing_an_environment_file_prints_no_diff() -> None:
+    writers = _environment_writers()
+
+    found = {(path, task["name"]) for path, task in writers}
+    # The test finds the deploy's own copies, so it can't pass on no task.
+    assert {
+        ("cloudfall_deploy/tasks/main.yml", "Install the release's environment file"),
+        (
+            "cloudfall_deploy/tasks/main.yml",
+            "Carry the previous release's environment over to the release",
+        ),
+    } <= found
+    assert [
+        (path, task["name"]) for path, task in writers if task.get("diff") is not False
+    ] == []

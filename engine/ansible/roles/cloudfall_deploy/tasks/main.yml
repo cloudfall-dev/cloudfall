@@ -247,6 +247,8 @@
     path: "{{ cloudfall_deploy_staging_archive }}"
     state: absent
 
+# An environment file holds secrets: a run with --diff prints no content of
+# it (#374).
 - name: Install the release's environment file
   ansible.builtin.copy:
     src: "{{ cloudfall_deploy_environment_file }}"
@@ -254,6 +256,7 @@
     owner: root
     group: "{{ cloudfall_deploy_component.application_user }}"
     mode: "0640"
+  diff: false
   when: cloudfall_deploy_environment_file | length > 0
 
 - name: Carry the previous release's environment over to the release
@@ -264,6 +267,7 @@
     owner: root
     group: "{{ cloudfall_deploy_component.application_user }}"
     mode: "0640"
+  diff: false
   when:
     - cloudfall_deploy_environment_file | length == 0
     - cloudfall_deploy_environment_inherited | length > 0
