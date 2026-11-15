@@ -858,3 +858,73 @@ def test_s009_1_the_role_argument_spec_accepts_every_declared_check(
     result = validator.validate(dict(health_check))
 
     assert result.error_messages == []
+
+
+# Bootstrap and deploy agree on the directories both create, so a bootstrap
+# or baseline after a deploy changes nothing (#341).
+
+BOOTSTRAP = ROOT / "engine" / "ansible" / "roles" / "cloudfall_bootstrap"
+INSTALL_ROOT = "/srv/apps/crm/backend"
+
+
+def _directories(
+    tasks: object, variables: dict[str, object]
+) -> dict[str, tuple[str, str, str]]:
+    """Map each directory a role's file tasks create to its owner, group, mode."""
+    assert isinstance(tasks, list)
+    created: dict[str, tuple[str, str, str]] = {}
+    for task in tasks:
+        module = task.get("ansible.builtin.file")
+        if not isinstance(module, dict) or module.get("state") != "directory":
+            continue
+        loop = task.get("loop", [None])
+        items = (
+            _templar(variables).template(trust_as_template(loop))
+            if isinstance(loop, str)
+            else [
+                None if item is None else _templar(variables).template(
+                    trust_as_template(item)
+                )
+                for item in loop
+            ]
+        )
+        for item in items:
+            scope = {**variables, "item": item}
+            path, owner, group = (
+                str(_templar(scope).template(trust_as_template(module[key])))
+                for key in ("path", "owner", "group")
+            )
+            created[path] = (owner, group, str(module["mode"]))
+    return created
+
+
+def test_bootstrap_and_deploy_set_one_mode_on_the_directories_both_create() -> None:
+    component = {
+        "id": "crm-backend",
+        "install_root": INSTALL_ROOT,
+        "application_user": "crm",
+    }
+    bootstrap = _directories(
+        _load(BOOTSTRAP / "tasks" / "main.yml"),
+        {
+            "cloudfall_bootstrap_apps_root": "/srv/apps",
+            "cloudfall_bootstrap_applications": [{"id": "crm", "user": "crm"}],
+            "cloudfall_bootstrap_components": [component],
+        },
+    )
+    deploy = _directories(
+        _main(),
+        {
+            "cloudfall_deploy_component": component,
+            "cloudfall_deploy_release_directory": f"{INSTALL_ROOT}/releases/r1",
+            "cloudfall_deploy_shared_directory": f"{INSTALL_ROOT}/shared",
+        },
+    )
+
+    shared = bootstrap.keys() & deploy.keys()
+
+    assert shared == {f"{INSTALL_ROOT}/releases", f"{INSTALL_ROOT}/shared"}
+    assert {path: deploy[path] for path in shared} == {
+        path: bootstrap[path] for path in shared
+    }
+    assert {deploy[path] for path in shared} == {("crm", "crm", "0750")}

@@ -606,6 +606,7 @@ DEPLOY_TASKS = (
     "Inspect the currently active release",
     "Record the rollback candidate",
     "Compute release paths",
+    "Create the releases and shared roots",
     "Create release and shared directories",
     "Verify the transferred artifact digest",
     "Refuse a release whose digest does not match its metadata",
