@@ -356,6 +356,7 @@ FAILED_REDEPLOY_TASKS = (
     "Inspect the currently active release",
     "Record the rollback candidate",
     "Compute release paths",
+    "Create the releases and shared roots",
     "Create release and shared directories",
     "Switch the current release symlink",
 )

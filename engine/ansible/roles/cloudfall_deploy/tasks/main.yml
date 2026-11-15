@@ -109,6 +109,21 @@
         group: root
         mode: "0755"
 
+# Bootstrap creates these two 0750 as well: the same mode here keeps a
+# bootstrap or baseline after a deploy at zero changes. The Nginx worker
+# reaches a static route's release through releases/ by its own ACL entry
+# (cloudfall_nginx_site).
+- name: Create the releases and shared roots
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ cloudfall_deploy_component.application_user }}"
+    group: "{{ cloudfall_deploy_component.application_user }}"
+    mode: "0750"
+  loop:
+    - "{{ cloudfall_deploy_component.install_root }}/releases"
+    - "{{ cloudfall_deploy_shared_directory }}"
+
 - name: Create release and shared directories
   ansible.builtin.file:
     path: "{{ item }}"
@@ -117,9 +132,7 @@
     group: "{{ cloudfall_deploy_component.application_user }}"
     mode: "0755"
   loop:
-    - "{{ cloudfall_deploy_component.install_root }}/releases"
     - "{{ cloudfall_deploy_release_directory }}"
-    - "{{ cloudfall_deploy_shared_directory }}"
     - "{{ cloudfall_deploy_shared_directory }}/env"
     - "{{ cloudfall_deploy_shared_directory }}/uv"
 
