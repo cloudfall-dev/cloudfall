@@ -100,3 +100,11 @@ entry that supersedes it, never by editing an old one.
 - Applies to: sdk/src/cloudfall/elasticsearch.py; elasticsearch; audit
 - Enforced by: sdk/tests/test_s012_elasticsearch.py
 - Zone: interpretation (notify, veto until 2026-11-15T12:29:00Z)
+
+## D-13: A component's deployment receipt has one entry per server
+
+- Decided: 2026-11-15, in cloudfall-dev/cloudfall#222
+- Rule: A deploy writes one receipt per component, <receipts>/<component>.json, holding one entry per server with the release that server ended on; readers (cloudfall why, the operator) read that one file per component, and an older receipt that holds a single server reads as a one-entry list
+- Why: With serial deploys each server overwrote the previous server's receipt, so a partial failure left no record of which servers run which release; one file per component keeps every reader on one path, while a file per server would change the file names and make every reader collect several files
+- Applies to: engine/ansible/roles/cloudfall_deploy/tasks/release_receipt.yml, the receipt readers in sdk/src/cloudfall/*, cloudfall why, the operator
+- Enforced by: review
