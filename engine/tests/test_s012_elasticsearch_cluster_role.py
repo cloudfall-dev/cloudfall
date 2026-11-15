@@ -412,12 +412,14 @@ def test_s012_6_a_restarted_node_rejoins_on_the_new_version_before_the_next(
 ) -> None:
     hosts = _hosts(_rendered(tmp_path))
     tasks = _load("node-start.yml")
-    (block,) = [task for task in tasks if "block" in task]
-    steps = block["block"]
+    guarded, back = tasks
+    start, rejoining = guarded["block"]
+    steps = [*rejoining["block"], *guarded["always"], *back["block"]]
     rolling = {"cloudfall_elasticsearch_rolling": {"status": "green", "nodes": "2"}}
     variables = _variables(hosts["h2"], **rolling)
 
-    assert tasks[0]["ansible.builtin.systemd_service"]["state"] == "restarted"
+    assert start["ansible.builtin.systemd_service"]["state"] == "restarted"
+    assert "when" not in start
     assert [step["name"] for step in steps] == [
         "Wait for the node to rejoin its cluster",
         "Read the version the node reports",
@@ -448,6 +450,39 @@ def test_s012_6_a_restarted_node_rejoins_on_the_new_version_before_the_next(
 
     assert reports("9.2.4")
     assert not reports("9.2.3")
+
+
+def _names(tasks: list[dict[str, Any]]) -> list[str]:
+    """Return every task name, the tasks of nested blocks included."""
+    found: list[str] = []
+    for task in tasks:
+        found.append(str(task.get("name")))
+        for section in ("block", "rescue", "always"):
+            found.extend(_names(task.get(section, [])))
+    return found
+
+
+# proves: S-012-6
+def test_s012_6_replicas_move_again_even_when_the_node_does_not_come_back(
+    tmp_path: Path,
+) -> None:
+    """A failed restart, rejoin or version check must not leave allocation held."""
+    hosts = _hosts(_rendered(tmp_path))
+    tasks = _load("node-start.yml")
+    (guarded,) = [task for task in tasks if "always" in task]
+    rolling = {"cloudfall_elasticsearch_rolling": {"status": "green", "nodes": "2"}}
+
+    assert {
+        "Start Elasticsearch on its new package or configuration",
+        "Wait for the node to rejoin its cluster",
+        "Refuse a node that came back on another version",
+    } <= set(_names(guarded["block"]))
+    (allocation,) = guarded["always"]
+    assert allocation["name"] == "Let replicas move again"
+    assert _true(allocation["when"], _variables(hosts["h2"], **rolling))
+    one = {"cloudfall_elasticsearch_rolling": {"status": "yellow", "nodes": "1"}}
+    assert not _true(allocation["when"], _variables(hosts["h2"], **one))
+    assert not _true(allocation["when"], _variables(hosts["h2"]))
 
 
 # proves: S-012-6
