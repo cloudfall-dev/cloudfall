@@ -35,7 +35,7 @@ Render and Cloudfall describe the same things with different words:
 | Custom domain | `Domain` resource: Nginx virtual host plus Let's Encrypt TLS |
 | Environment variables and env groups | Environment files under the project's `tmp/`, never in a resource; the config never contains secret values |
 | Instance type / plan | Your server (VPS or bare metal) plus its baseline (`Baseline`) |
-| Deploy from GitHub | `cloudfall deploy`: artifact built from a git ref, health-check gate, symlink switch, automatic rollback |
+| Deploy from GitHub | `cloudfall deploy`: artifact built from a git ref, symlink switch, health-check gate, automatic rollback |
 | Render dashboard | Local read-only operations dashboard (`task dashboard`), rendered from receipts and observations; it shows the record, it does not act |
 | Deploy log | Receipts: every deploy, data migration, backup and operator decision writes a schema-validated record of what it saw, did and verified |
 | Service (Render's umbrella term) | Split into two concepts: infrastructure **services** (PostgreSQL, Nginx) and application **components** |
@@ -196,6 +196,10 @@ DNS moved and what was verified before and after.
 - `cloudfall deploy` / `rollback` / `restart` / `health` replace Render's
   deploy buttons, with structured JSON results; the first three show a
   validated plan and change servers only with `--yes`
+- A component's `release.command` (database migrations, say) runs once per
+  deploy, before any server switches; a rollback, automatic or `cloudfall
+  rollback`, does not undo it, so keep each migration compatible with the
+  release before it
 - The always-on operator replaces the pager: it watches declared alerts
   and audited drift, proposes remediations with the evidence attached,
   runs them after approval or under a declared policy, and verifies the

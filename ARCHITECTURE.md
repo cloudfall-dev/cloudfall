@@ -162,7 +162,9 @@ rather than by path, and each may deploy to one or more servers.
 On disk, each application owns a Linux user and a `/srv/apps/<application>/`
 directory with one subdirectory per component. Releases unpack into
 `releases/` and a `current` symlink points at the active release, which is
-what makes rollback a symlink switch.
+what makes rollback a symlink switch. A rollback switches code, unit and
+environment back; it does not undo the release command (see Deployment
+strategy).
 
 Components come from one repository each by preference, with monorepos also
 supported.
@@ -175,11 +177,23 @@ once the operator runs persistently — never on production servers:
 
 ```text
 Git ref → build artifact (hashed tarball + release metadata) → digest-verified
-transfer → unpack into releases/ → locked dependency materialization →
-environment file → systemd unit → health-check gate → symlink switch
+transfer → unpack into releases/ → environment file → locked dependency
+materialization → release command (once per deploy) → systemd unit →
+symlink switch → service restart → health-check gate
 ```
 
-A failed health check triggers automatic rollback to the previous release.
+The gate runs on the live release: `current` already points at the new
+release and its service has restarted, so the new release serves traffic
+while the gate runs. A failed health check triggers automatic rollback:
+`current` goes back to the previous release, which restarts under its own
+unit and is gated again.
+
+The release command (database migrations, say) runs once per deploy, on the
+component's first server, before any server switches. A rollback, the
+automatic one or `cloudfall rollback`, does not undo it: nothing reverts what
+the command changed, and the previous release runs against it. A migration
+must therefore stay compatible with the release before it.
+
 Each release reads its own environment file,
 `shared/env/<component>.<release>.env`, named by its systemd unit, so a
 rollback (the automatic one or `cloudfall rollback`) restores the previous

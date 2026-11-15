@@ -245,6 +245,10 @@ frozen until the app is verified against the new database.
 - The backup timer, restore drill, and `BackupReceipt` replace Neon's
   managed backups; PITR arrives with roadmap M13 and a standby with the
   demand-gated M14
+- Schema migrations that ran as the application's `release.command` stay
+  applied when a deploy rolls back (automatically or through `cloudfall
+  rollback`): a rollback switches the code, not the database, so keep each
+  migration compatible with the release before it
 
 What you hold at the end is not just a database on your own server but
 its record: the migration receipt, every backup and drill receipt, and
