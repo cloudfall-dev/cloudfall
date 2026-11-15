@@ -1270,12 +1270,21 @@ time.sleep(60)
 """
 
 
-def _slow_run(limit: int) -> CheckRunner:
+# Exits zero when it is told to stop, as a playbook that traps TERM might.
+_ZERO_ON_TERM_PLAYBOOK = """\
+import signal, sys, time
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+print("started", flush=True)
+time.sleep(60)
+"""
+
+
+def _slow_run(limit: int, script: str = _SLOW_PLAYBOOK) -> CheckRunner:
     """Run the approved runner with a short limit on a script, not on Ansible."""
     runner = approved_runner(timeout_seconds=limit)
 
     def run(_: Sequence[str], environment: Mapping[str, str], log: Path) -> int:
-        return runner((sys.executable, "-c", _SLOW_PLAYBOOK), environment, log)
+        return runner((sys.executable, "-c", script), environment, log)
 
     return run
 
@@ -1320,6 +1329,26 @@ def test_an_approved_run_past_its_limit_is_stopped_and_settled(
     assert started.startswith("started ")
     assert approved.execution.log.size == len(started.encode())
     assert _gone(int(started.split()[1]))
+
+
+def test_a_stopped_run_that_exits_zero_still_fails(tmp_path: Path) -> None:
+    """A run stopped at its limit did not finish, whatever its exit code says."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+
+    approved = approve(
+        ApprovalRequest(
+            decision=proposed, approver="roman", repository=repository, via=TERMINAL
+        ),
+        store,
+        lambda: MOMENT,
+        _slow_run(1, _ZERO_ON_TERM_PLAYBOOK),
+    )
+
+    assert approved.status is DecisionStatus.FAILED
+    assert approved.verdict == "the run timed out after 1s and was stopped"
+    assert approved.verification is None
 
 
 def test_the_approved_run_has_its_own_limit_and_the_check_keeps_its_own() -> None:

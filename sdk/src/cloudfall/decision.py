@@ -983,7 +983,7 @@ def approve(
     execution = _run_stage(stage, decision.playbook, "execution", moment)
     verification = (
         _run_stage(stage, decision.verify_playbook, "verify", clock())
-        if decision.verify_playbook is not None and execution.exit_code == 0
+        if decision.verify_playbook is not None and _succeeded(execution)
         else None
     )
     status, verdict = _outcome(execution, verification, decision.verify_playbook)
@@ -1156,7 +1156,7 @@ def _outcome(
     the operation left it and converged it further. Exiting zero is not
     enough.
     """
-    if execution.exit_code != 0:
+    if not _succeeded(execution):
         return (
             DecisionStatus.FAILED,
             _exit_reason("the run", execution),
@@ -1168,7 +1168,7 @@ def _outcome(
         )
     if verification is None:  # pragma: no cover - callers verify after a clean run
         return (DecisionStatus.FAILED, "the verify step did not run")
-    if verification.exit_code != 0:
+    if not _succeeded(verification):
         return (
             DecisionStatus.FAILED,
             _exit_reason("the verify step", verification),
@@ -1524,6 +1524,15 @@ def _signal_group(group: int, number: signal.Signals) -> None:
 def _exit_code(returncode: int) -> int:
     """Return a stopped run's exit code as a shell reports it: 128 + the signal."""
     return 128 - returncode if returncode < 0 else min(returncode, 255)
+
+
+def _succeeded(run: RunRecord) -> bool:
+    """Return whether a run finished on its own and exited zero.
+
+    A run stopped at its limit did not finish, even when it exited zero on
+    the stop signal.
+    """
+    return run.timed_out_after is None and run.exit_code == 0
 
 
 def _exit_reason(name: str, run: RunRecord) -> str:
