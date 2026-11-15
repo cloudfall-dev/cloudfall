@@ -2131,6 +2131,35 @@ def test_a_verify_step_that_did_not_observe_a_target_did_not_verify_it(
     assert store.load(proposed.decision_id).status is DecisionStatus.FAILED
 
 
+def test_a_run_that_observed_no_host_left_nothing_to_verify(tmp_path: Path) -> None:
+    """The callback wrote nothing for the run, so no host was verified (#360)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+
+    def silent(
+        argv: Sequence[str], environment: Mapping[str, str], diff_path: Path
+    ) -> int:
+        del argv, environment
+        diff_path.write_text("", encoding="utf-8")
+        return 0
+
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, silent)
+    approved = approve(
+        ApprovalRequest(
+            decision=proposed, approver="roman", repository=repository, via=TERMINAL
+        ),
+        store,
+        lambda: MOMENT,
+        silent,
+    )
+
+    assert approved.status is DecisionStatus.FAILED
+    assert approved.verdict == (
+        "neither the check nor the run observed any host, so the verify step "
+        "had nothing to verify"
+    )
+
+
 def test_every_outcome_says_why_in_the_record(tmp_path: Path) -> None:
     repository = _repository(tmp_path, deploy=DEPLOY, facts=FACTS)
     store = _store(repository)

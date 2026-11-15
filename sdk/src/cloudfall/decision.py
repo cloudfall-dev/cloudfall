@@ -81,6 +81,7 @@ _RESERVATION_SUFFIX = ".reserved"
 _ANSIBLE_CONFIG_FILE = "ansible.cfg"
 CHECK_TIMEOUT_SECONDS = 1800
 _CHANGED_KEY = "changed"
+_OK_KEY = "ok"
 _ERROR_HOST_STATS_INVALID = "decision_host_stats_invalid"
 
 _ERROR_ANSIBLE_MISSING = "decision_ansible_missing"
@@ -965,7 +966,11 @@ def approve(
         else None
     )
     status, verdict = _outcome(
-        execution, verification, decision.verify_playbook, decision.check
+        execution,
+        verification,
+        decision.verify_playbook,
+        decision.check,
+        _ran_on(_stage_host_stats(stage, "verify")),
     )
     approved = replace(
         running,
@@ -1129,6 +1134,7 @@ def _outcome(
     verification: RunRecord | None,
     verify_playbook: Path | None,
     check: CheckPreview,
+    verify_ran_on: frozenset[str],
 ) -> tuple[DecisionStatus, str]:
     """Return the status one run earned, and why, for the record.
 
@@ -1162,7 +1168,7 @@ def _outcome(
             "the verify step changed "
             f"{changed}, so the fleet was not in the state the run claimed",
         )
-    unobserved = _unobserved(check, execution, verification)
+    unobserved = _unobserved(check, execution, verify_ran_on)
     return (
         (DecisionStatus.FAILED, unobserved)
         if unobserved is not None
@@ -1179,23 +1185,28 @@ def _observed(run: CheckPreview | RunRecord) -> frozenset[str]:
 
 
 def _unobserved(
-    check: CheckPreview, execution: RunRecord, verification: RunRecord
+    check: CheckPreview, execution: RunRecord, verify_ran_on: frozenset[str]
 ) -> str | None:
     """Return why the run or its verify step did not observe the targets, if so.
 
     The targeted hosts are the ones the check run and the approved run left
     recap counts for: the pattern alone names no host without the inventory.
-    Each must have counts from the run and from the verify step (#360).
+    Each must have counts from the run, and the verify step must have run a
+    task on it: a host whose every verify task was skipped is in the recap
+    with nothing observed (#360).
     """
     targeted = _observed(check) | _observed(execution)
     if not targeted:
         return (
-            "neither the check, the run nor the verify step observed any host, "
-            "so the verify step verified nothing"
+            "neither the check nor the run observed any host, so the verify "
+            "step had nothing to verify"
         )
     missed: list[str] = []
-    for name, run in (("the run", execution), ("the verify step", verification)):
-        hosts = sorted(targeted - _observed(run))
+    for name, seen in (
+        ("the run", _observed(execution)),
+        ("the verify step", verify_ran_on),
+    ):
+        hosts = sorted(targeted - seen)
         if hosts:
             missed.append(f"{name} did not observe {', '.join(hosts)}")
     if not missed:
@@ -1213,9 +1224,7 @@ def _run_stage(
     invocation = PlaybookInvocation(
         playbook=playbook,
         repository=stage.request.repository,
-        host_stats=(
-            stage.store.directory / _HOST_STATS_DIRECTORY / f"{identifier}-{name}"
-        ),
+        host_stats=_stage_host_stats(stage, name),
         pattern=decision.targets.pattern,
         inputs=decision.inputs,
     )
@@ -1350,12 +1359,38 @@ def _preview(
 
 def _changed_count(path: Path) -> int:
     """Return how many tasks changed the host one recap file names."""
+    return _recap_count(path, _CHANGED_KEY)
+
+
+def _recap_count(path: Path, key: str) -> int:
+    """Return one count of the host's recap one file holds."""
     document = cast("object", json.loads(path.read_text(encoding="utf-8")))
-    count = document.get(_CHANGED_KEY) if isinstance(document, dict) else None
+    count = document.get(key) if isinstance(document, dict) else None
     if not isinstance(count, int) or isinstance(count, bool):
-        message = f"{path} holds no {_CHANGED_KEY} count of a host's recap"
+        message = f"{path} holds no {key} count of a host's recap"
         raise DecisionError(_ERROR_HOST_STATS_INVALID, message)
     return count
+
+
+def _stage_host_stats(stage: _Stage, name: str) -> Path:
+    """Return where one stage of an approved decision leaves its recap counts."""
+    identifier = stage.request.decision.decision_id.value
+    return stage.store.directory / _HOST_STATS_DIRECTORY / f"{identifier}-{name}"
+
+
+def _ran_on(host_stats: Path) -> frozenset[str]:
+    """Return the hosts a run completed a task on, from their recap counts.
+
+    Ansible counts a changed task as ok too, so a host with no ok count had
+    every task skipped, failed or unreachable: the run observed nothing there.
+    """
+    if not host_stats.is_dir():
+        return frozenset()
+    return frozenset(
+        path.name
+        for path in host_stats.iterdir()
+        if path.is_file() and _recap_count(path, _OK_KEY) > 0
+    )
 
 
 def _validated_targets(operation: Operation, targets: Targets) -> str | None:
