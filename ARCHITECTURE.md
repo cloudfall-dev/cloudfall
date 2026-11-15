@@ -36,10 +36,26 @@ directly, the CLI validates and reads it, and the engine converges servers
 to it. The agent operates through a stable CLI, the `cloudfall mcp serve` server
 and a Python API instead of inventing shell commands or discovering
 infrastructure over SSH. Every mutating operation goes through the engine's
-explicit playbook contracts, waits behind a gate the agent does not control
-(a confirmation handshake, or an `OperatorPolicy` that licenses the
-operation class), and produces receipts. Status is derived from validated
-observations, never inferred.
+explicit playbook contracts, previews its plan first, and produces receipts.
+Status is derived from validated observations, never inferred.
+
+Where the gate holds depends on the path. A declared operation in fleet
+mode changes a host only once a person approves its recorded diff at a
+terminal. The operator runs a proposal only when a person approves it at a
+terminal or an `OperatorPolicy` grant licenses its operation class. The
+terminal check stops an agent's tool call, not a process running as the
+same OS user (see the [operator guide](docs/operator-guide.md)).
+
+In project mode the gate is the agent's own. The `cloudfall mcp serve`
+tools that change servers return their plan first, but the confirmation
+that runs it (`yes: true`, or `confirm_destructive: true` for the
+`converge_*` tools) comes from the agent: nothing it does not control
+stands between the plan and the run. The exception is a release whose
+application declares `approval: manual`, which `deploy` and `migrate` run
+only after a person's `cloudfall release approve`. Letting an
+`OperatorPolicy` decide which of these confirmations an agent may give
+itself is planned
+([#391](https://github.com/cloudfall-dev/cloudfall/issues/391)).
 
 The record is the durable output. Every operator decision is written as a
 schema-validated receipt that holds the evidence it was based on, the

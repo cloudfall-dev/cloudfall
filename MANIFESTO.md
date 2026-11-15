@@ -35,7 +35,7 @@ agent's own log says a tool was called; that is not a record. Cloudfall
 writes an audit entry for every decision: what the fleet looked like, what
 the agent proposed, the diff it previewed, who approved, and what verify
 reported. The agent acts only through declared operations, each with a risk
-level it cannot change, and every server-changing action waits behind a
+level it cannot change, and each one that changes a server waits behind a
 gate the agent does not control. Autonomy is earned from that record, per
 operation class, never switched on globally. The same evidence rules bind
 the agent that bind a human: it cannot claim an outcome the receipts do not
