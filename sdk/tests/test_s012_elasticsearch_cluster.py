@@ -51,8 +51,11 @@ from elasticsearch_project import (
 
 ROOT = Path(__file__).parents[2]
 ENGINE = ROOT / "engine"
+S3_ACCESS_KEY = "SYNTHETICACCESSKEY"
+S3_SECRET_KEY = "synthetic/secret+key"  # noqa: S105 - a test value
 ACCOUNTS = (
     "CLOUDFALL_PASSWORD=synthetic-cloudfall\nELASTIC_PASSWORD=synthetic-elastic\n"
+    f"S3={S3_ACCESS_KEY}:{S3_SECRET_KEY}\n"
 )
 GIBIBYTE = 1024**3
 
@@ -268,6 +271,7 @@ class Recorder:
     nodes: FakeNodes = field(default_factory=FakeNodes)
     services: dict[str, Any] = field(default_factory=dict)
     delivered: dict[str, str] = field(default_factory=dict)
+    staged: dict[str, str] = field(default_factory=dict)
     steps: list[ExecutionStep] = field(default_factory=list)
 
     def __call__(self, step: ExecutionStep) -> Finished:
@@ -288,6 +292,15 @@ class Recorder:
                     self.delivered[f"{server}:{item['path']}"] = source.read_text(
                         encoding="utf-8"
                     )
+            for service, files in extra.get(
+                "cloudfall_services_elasticsearch_files", {}
+            ).items():
+                for name, staged in files.items():
+                    source = Path(staged)
+                    assert stat.S_IMODE(source.stat().st_mode) == 0o600
+                    self.staged[f"{service}:{name}"] = source.read_text(
+                        encoding="utf-8"
+                    )
         return Finished()
 
 
@@ -302,10 +315,10 @@ def _store(project: Path) -> SecretStore:
     )
 
 
-def _converge(project: Path) -> tuple[Recorder, ProjectCa]:
+def _converge(project: Path, secrets: str = ACCOUNTS) -> tuple[Recorder, ProjectCa]:
     accounts = project / "secrets" / "production" / "services" / "search-main.env"
     accounts.parent.mkdir(parents=True)
-    accounts.write_text(ACCOUNTS, encoding="utf-8")
+    accounts.write_text(secrets, encoding="utf-8")
     from cloudfall.domain import ResourceId  # noqa: PLC0415 - one use
 
     ca, created = load_or_create_ca(
@@ -415,3 +428,89 @@ def test_a_volume_the_provider_refuses_stops_before_services(tmp_path: Path) -> 
 
     assert error.value.code == "volume_refused"
     assert "h1 wrote no volume report" in error.value.detail
+
+
+# proves: S-012-5
+def test_s012_5_the_s3_keys_reach_services_yml_as_staged_files_only(
+    tmp_path: Path,
+) -> None:
+    """The two keys of credentialsRef are staged 0600 and named in no command."""
+    project = _two_nodes(tmp_path)
+
+    recorder, _ = _converge(project)
+
+    assert recorder.staged["search-main:s3AccessKey"] == S3_ACCESS_KEY
+    assert recorder.staged["search-main:s3SecretKey"] == S3_SECRET_KEY
+    # Every command the converge ran, the services.yml one included
+    commands = json.dumps([step.argv for step in recorder.steps])
+    assert "--extra-vars" in commands
+    assert S3_SECRET_KEY not in commands
+    assert S3_ACCESS_KEY not in commands
+    files = recorder.services["cloudfall_services_elasticsearch_files"]["search-main"]
+    assert not Path(files["s3SecretKey"]).exists()
+    assert not Path(files["s3AccessKey"]).exists()
+
+
+def test_a_missing_s3_key_stops_the_converge_before_any_playbook(
+    tmp_path: Path,
+) -> None:
+    project = _two_nodes(tmp_path)
+
+    without = ACCOUNTS.replace(f"S3={S3_ACCESS_KEY}:{S3_SECRET_KEY}\n", "")
+
+    with pytest.raises(LifecycleError) as error:
+        _converge(project, without)
+
+    assert error.value.code == "lifecycle_services_secret_unavailable"
+    assert "secret key S3 is missing" in error.value.detail
+    assert "snapshotRepository of Elasticsearch service search-main" in (
+        error.value.detail
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["LONEVALUEX9", ":LONEVALUEX9", "LONEVALUEX9:", "LONEVALUEX9: LONEVALUEY7"],
+)
+def test_an_s3_value_that_is_not_two_keys_is_refused_naming_no_value(
+    tmp_path: Path, value: str
+) -> None:
+    project = _two_nodes(tmp_path)
+    secrets = ACCOUNTS.replace(f"{S3_ACCESS_KEY}:{S3_SECRET_KEY}", value)
+
+    with pytest.raises(LifecycleError) as error:
+        _converge(project, secrets)
+
+    assert "is not <access key id>:<secret access key>" in error.value.detail
+    assert "LONEVALUE" not in error.value.detail
+
+
+def test_a_cluster_on_a_baseline_without_a_firewall_fails_validation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Without a firewall nothing narrows 9300 to the other nodes."""
+    project = _two_nodes(tmp_path)
+    path = project / "baselines" / "debian-application.yaml"
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    del document["spec"]["firewall"]
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    context = _validate(project, capsys)
+
+    assert context["code"] == "service_elasticsearch_cluster_firewall_missing"
+    assert "node Server/h1 opens its transport (tcp 9300)" in context["message"]
+    assert "Baseline/debian-application declares no firewall" in context["message"]
+
+
+def test_a_cluster_of_one_needs_no_firewall(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = write_project(tmp_path / "project", elasticsearch_service())
+    path = project / "baselines" / "debian-application.yaml"
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    del document["spec"]["firewall"]
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    assert main(
+        ["config", "validate", "--project", str(project), "--schemas", str(SCHEMAS)]
+    ) == 0, capsys.readouterr().out

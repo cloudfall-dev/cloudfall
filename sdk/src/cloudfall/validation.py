@@ -1240,6 +1240,9 @@ ERROR_ELASTICSEARCH_USER_RESERVED = "service_elasticsearch_user_reserved"
 ERROR_ELASTICSEARCH_USER_DUPLICATE = "service_elasticsearch_user_duplicate"
 ERROR_ELASTICSEARCH_PATTERN = "service_elasticsearch_pattern"
 ERROR_ELASTICSEARCH_NODE_UNADDRESSED = "service_elasticsearch_node_unaddressed"
+ERROR_ELASTICSEARCH_CLUSTER_FIREWALL_MISSING = (
+    "service_elasticsearch_cluster_firewall_missing"
+)
 _ELASTICSEARCH_PATH = ("spec", "elasticsearch")
 _IPV4 = 4
 
@@ -1400,6 +1403,19 @@ def _validate_elasticsearch_node_hosts(
                 "network, so the other nodes have no IPv4 to reach its transport "
                 "at and their firewalls none to admit; give it an IPv4 address "
                 "or a network block",
+                "nodes",
+                position,
+            )
+        if not single and "firewall" not in baseline_spec:
+            # The S-006 rule remoteAccess follows: a port opened to some
+            # sources needs a firewall to keep everyone else out
+            raise _elasticsearch_refusal(
+                document,
+                ERROR_ELASTICSEARCH_CLUSTER_FIREWALL_MISSING,
+                f"node Server/{node} opens its transport (tcp 9300) to the "
+                f"other nodes only, but Baseline/{baseline_id} declares no "
+                "firewall to keep every other address out; declare a firewall "
+                "on the baseline",
                 "nodes",
                 position,
             )

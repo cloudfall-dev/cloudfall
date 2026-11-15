@@ -326,6 +326,12 @@ def _host_firewall(
                 f"{server.resource_id.value}"
             )
             raise ValueError(message)
+        if transport:
+            message = (
+                "an Elasticsearch transport needs a firewall on its server: "
+                f"{server.resource_id.value}"
+            )
+            raise ValueError(message)
         return {}
     rules = firewall_rules_for_server(baseline.firewall, server.ssh_port)
     gateway = logging_gateway_rules_for_server(

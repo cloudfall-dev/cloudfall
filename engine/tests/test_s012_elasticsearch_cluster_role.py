@@ -9,25 +9,42 @@ Ansible's inventory manager.
 
 from __future__ import annotations
 
+import dataclasses
+import datetime
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
+import pytest
 import yaml
 from ansible.inventory.manager import InventoryManager
 from ansible.parsing.dataloader import DataLoader
 from ansible.template import Templar, trust_as_template
 from cloudfall.ansible_data import as_ansible_data
+from cloudfall.cli import main
+from cloudfall.domain import ResourceId
 from cloudfall.inventory import PlatformInventory
+from cloudfall.lifecycle import EngineContext, converge_services
+from cloudfall.pki import load_or_create_ca
+from cloudfall.secret_store import SecretStore
+from cloudfall.secrets import SopsSecretProvider
 from cloudfall.validation import validate_config
-from cloudfall_engine.ansible_inventory import render_ansible_inventory
+from cloudfall_engine.ansible_inventory import (
+    _host_firewall,
+    render_ansible_inventory,
+)
 from cloudfall_engine.cli import _rendered_elasticsearch_services
+from elasticsearch_hosts import FakeNodes
 from elasticsearch_project import (
     SCHEMAS,
     SNAPSHOT_REPOSITORY,
     elasticsearch_service,
     write_project,
 )
+
+if TYPE_CHECKING:
+    from cloudfall.lifecycle import ExecutionStep
 
 ROOT = Path(__file__).parents[2]
 ROLES = ROOT / "engine" / "ansible" / "roles"
@@ -36,15 +53,20 @@ SERVICES = ROOT / "engine" / "ansible" / "playbooks" / "services.yml"
 FIREWALL = ROLES / "cloudfall_firewall" / "templates" / "nftables.conf.j2"
 
 
-def _rendered(tmp_path: Path, *, server: str = "h1") -> dict[str, Any]:
-    """Render the inventory of S-012-5: the service grown to h1 and h2."""
-    project = write_project(
+def _rendered_project(tmp_path: Path, *, server: str = "h1") -> Path:
+    """Write the project of S-012-5: the service grown to h1 and h2."""
+    return write_project(
         tmp_path / "project",
         elasticsearch_service(
             server=server, nodes=["h1", "h2"], snapshotRepository=SNAPSHOT_REPOSITORY
         ),
         servers=("h1", "h2"),
     )
+
+
+def _rendered(tmp_path: Path, *, server: str = "h1") -> dict[str, Any]:
+    """Render the inventory of S-012-5: the service grown to h1 and h2."""
+    project = _rendered_project(tmp_path, server=server)
     inventory = PlatformInventory.from_state(validate_config(project, SCHEMAS))
     return cast("dict[str, Any]", render_ansible_inventory(inventory))
 
@@ -510,7 +532,7 @@ def test_s012_6_a_patch_stops_the_node_before_apt_and_a_major_is_refused(
     assert (
         names.index(str(refuse["name"]))
         < names.index(str(stop["name"]))
-        < names.index("Install the declared Elasticsearch version")
+        < names.index("Install the declared version, or put a stopped node back")
     )
     assert _true(stop["when"], installed("installed 9.2.4"))
     assert not _true(stop["when"], installed("installed 9.2.5"))
@@ -534,3 +556,225 @@ def test_only_the_home_node_sets_the_elastic_password(tmp_path: Path) -> None:
 
     assert _true(block["when"], _variables(hosts["h1"]))
     assert not _true(block["when"], _variables(hosts["h2"]))
+
+
+def test_the_inventory_refuses_a_transport_on_a_server_without_a_firewall(
+    tmp_path: Path,
+) -> None:
+    """Validation refuses it first; the render never drops 9300's rule silently."""
+    project = _rendered_project(tmp_path)
+    inventory = PlatformInventory.from_state(validate_config(project, SCHEMAS))
+    (server, _) = inventory.servers
+    baseline = dataclasses.replace(
+        inventory.baseline(server.baseline_id), firewall=None
+    )
+
+    with pytest.raises(ValueError, match="an Elasticsearch transport needs a firewall"):
+        _host_firewall(server, baseline, inventory)
+
+
+# proves: S-012-6
+def test_s012_6_a_failed_install_starts_the_stopped_node_and_frees_allocation(
+    tmp_path: Path,
+) -> None:
+    """APT failing after node-stop.yml must not leave a node down and replicas held."""
+    hosts = _hosts(_rendered(tmp_path))
+    guarded = _task(
+        _load("main.yml"), "Install the declared version, or put a stopped node back"
+    )
+    (install,) = guarded["block"]
+    put_back, stop = guarded["rescue"]
+    (start,) = put_back["block"]
+    (allocation,) = put_back["always"]
+    rolling = {"cloudfall_elasticsearch_rolling": {"status": "green", "nodes": "2"}}
+
+    assert install["name"] == "Install the declared Elasticsearch version"
+    assert install["notify"] == "Restart Elasticsearch"
+    # Only a node this run stopped is started again
+    assert _true(put_back["when"], _variables(hosts["h1"], **rolling))
+    assert not _true(put_back["when"], _variables(hosts["h1"]))
+    assert start["ansible.builtin.systemd_service"] == {
+        "name": "elasticsearch.service",
+        "state": "started",
+    }
+    # Allocation is let go even when the start fails, once the node answers
+    assert allocation["ansible.builtin.uri"]["body"] == {
+        "persistent": {"cluster.routing.allocation.enable": None}
+    }
+    assert allocation["until"] == (
+        "cloudfall_elasticsearch_allocation_back.status == 200"
+    )
+    assert allocation["no_log"] is True
+    assert _true(allocation["when"], _variables(hosts["h1"], **rolling))
+    one = {"cloudfall_elasticsearch_rolling": {"status": "yellow", "nodes": "1"}}
+    assert not _true(allocation["when"], _variables(hosts["h1"], **one))
+    # The converge still stops, naming the failed install
+    assert "ansible.builtin.fail" in stop
+    message = _value(
+        stop["ansible.builtin.fail"]["msg"],
+        _variables(
+            hosts["h1"], **rolling, ansible_failed_result={"msg": "no such version"}
+        ),
+    )
+    said = " ".join(str(message).split())
+    assert "Installing elasticsearch=9.2.4 failed on h1: no such version" in said
+    assert "started again on the package it had" in said
+
+
+ACCOUNTS = (
+    "CLOUDFALL_PASSWORD=synthetic-cloudfall\nELASTIC_PASSWORD=synthetic-elastic\n"
+    "S3=SYNTHETICACCESSKEY:synthetic/secret+key\n"
+)
+FACTS = {
+    "distribution": "Debian",
+    "distribution_major_version": "13",
+    "service_mgr": "systemd",
+    "memtotal_mb": 16384,
+}
+
+
+def _guards(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return the top-level refusals before the package install, in order.
+
+    The later ones read what the running node answers.
+    """
+    names = [task["name"] for task in tasks]
+    install = "Install the declared version, or put a stopped node back"
+    before = tasks[: names.index(install)] if install in names else tasks
+    return [task for task in before if "ansible.builtin.assert" in task]
+
+
+@dataclass
+class _Services:
+    """Run the converge's steps against fake nodes; check the role at services.yml."""
+
+    rendered: dict[str, Any]
+    nodes: FakeNodes = field(default_factory=FakeNodes)
+    passed: dict[str, list[str]] = field(default_factory=dict)
+    keystore: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
+
+    def __call__(self, step: ExecutionStep) -> _Finished:
+        if "--extra-vars" not in step.argv:
+            return _Finished()
+        extra = json.loads(step.argv[step.argv.index("--extra-vars") + 1])
+        self.nodes.answer(Path(step.argv[-1]).name, extra)
+        if step.argv[-1].endswith("services.yml"):
+            self._role(extra)
+        return _Finished()
+
+    def _role(self, extra: dict[str, Any]) -> None:
+        """Evaluate each node's guards with what services.yml was handed."""
+        main = _load("main.yml")
+        transport = _load("transport.yml")
+        keystore = _load("keystore.yml")[0]["block"]
+        add = _task(keystore, "Put each S3 key in the node's keystore")
+        for node, host in _hosts(self.rendered).items():
+            files = extra["cloudfall_services_elasticsearch_files"]["search-main"]
+            # What main.yml copied from the converge's delivered files
+            copied = extra["cloudfall_services_delivered_files"][node]
+            delivered = {item["path"] for item in copied}
+            paths = host["cloudfall_elasticsearch_transport"]["search-main"]
+            variables = _variables(
+                {**host, **extra},
+                ansible_facts=FACTS,
+                cloudfall_elasticsearch_account_files=files,
+                cloudfall_elasticsearch_installed={"rc": 1, "stdout": ""},
+                cloudfall_elasticsearch_peers={"results": []},
+                cloudfall_elasticsearch_transport_files={
+                    # The key the node made in logging-requests.yml never left it
+                    "results": [
+                        {"stat": {"exists": paths["certificatePath"] in delivered}},
+                        {"stat": {"exists": True}},
+                        {"stat": {"exists": paths["caPath"] in delivered}},
+                    ]
+                },
+                **_formed(exists=False),
+            )
+            passed: list[str] = []
+            for guard in [*_guards(main), *_guards(transport)]:
+                if "when" in guard and not _true(guard["when"], variables):
+                    continue
+                assert _holds(guard, variables), (node, guard["name"])
+                passed.append(str(guard["name"]))
+            self.passed[node] = passed
+            # The keystore reads each key from its staged file, by stdin
+            self.keystore[node] = [
+                (
+                    str(item["setting"]),
+                    Path(str(_value(item["source"], variables))).read_text("utf-8"),
+                )
+                for item in add["loop"]
+            ]
+
+
+@dataclass(frozen=True)
+class _Finished:
+    returncode: int = 0
+    stdout: str = ""
+    stderr: str = ""
+
+
+# proves: S-012-5
+def test_s012_5_a_two_node_s3_project_validates_renders_and_passes_the_guards(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The project S-012-5 converges: no guard of the role stops either node."""
+    project = _rendered_project(tmp_path)
+    assert main(
+        ["config", "validate", "--project", str(project), "--schemas", str(SCHEMAS)]
+    ) == 0, capsys.readouterr().out
+    rendered = cast(
+        "dict[str, Any]",
+        render_ansible_inventory(
+            PlatformInventory.from_state(validate_config(project, SCHEMAS))
+        ),
+    )
+    text = json.dumps(as_ansible_data(rendered))
+    assert "SYNTHETICACCESSKEY" not in text
+    assert "synthetic/secret+key" not in text
+    for host in _hosts(rendered).values():
+        (service,) = host["cloudfall_services"]
+        assert service["elasticsearch"]["snapshotRepository"] == SNAPSHOT_REPOSITORY
+    secrets = project / "secrets" / "production" / "services" / "search-main.env"
+    secrets.parent.mkdir(parents=True)
+    secrets.write_text(ACCOUNTS, encoding="utf-8")
+    store = SecretStore(
+        project / "secrets", decrypt=_plaintext, encrypt=lambda _, value: value
+    )
+    now = datetime.datetime.now(datetime.UTC)
+    load_or_create_ca(store, ResourceId("production"), now)
+    services = _Services(rendered)
+
+    converge_services(
+        EngineContext(
+            project_directory=project,
+            schema_directory=SCHEMAS,
+            engine_directory=ROOT / "engine",
+            inventory_file=project / "tmp" / "ansible-inventory.json",
+            run=services,
+        ),
+        SopsSecretProvider(secrets_directory=project / "secrets", decrypt=_plaintext),
+    )
+
+    assert services.nodes.playbooks[-1] == "services.yml"
+    assert set(services.passed) == {"h1", "h2"}
+    for node in ("h1", "h2"):
+        assert {
+            "Refuse a heap above half of the host's memory",
+            "Validate Elasticsearch service target and declaration",
+            "Require the staged S3 keys of a snapshot repository",
+            "Refuse remote access on a cluster of two or more",
+            "Require the staged account files of the service",
+            "Refuse a version the installed node can't move to",
+            "Require the node's rendered transport",
+            "Refuse to bootstrap a second cluster beside a running node",
+        } <= set(services.passed[node])
+        assert services.keystore[node] == [
+            ("s3.client.default.access_key", "SYNTHETICACCESSKEY"),
+            ("s3.client.default.secret_key", "synthetic/secret+key"),
+        ]
+
+
+def _plaintext(source: Path) -> str:
+    """Stand in for sops: the test's secret files are not encrypted."""
+    return source.read_text(encoding="utf-8")

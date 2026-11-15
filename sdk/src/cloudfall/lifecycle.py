@@ -45,7 +45,9 @@ from cloudfall.secret_store import SecretStore, sops_encrypt
 from cloudfall.secrets import (
     SecretsError,
     elasticsearch_account_passwords,
+    elasticsearch_s3_credentials,
     elasticsearch_services,
+    elasticsearch_snapshot_credentials,
     owned_databases,
     owned_role_passwords,
     sops_decrypt,
@@ -72,6 +74,7 @@ if TYPE_CHECKING:
     )
     from cloudfall.secrets import (
         ElasticsearchAccountPassword,
+        ElasticsearchS3Credentials,
         OwnedRolePassword,
         SopsSecretProvider,
     )
@@ -1097,6 +1100,7 @@ class ServicesSecrets:
     elasticsearch: tuple[ElasticsearchAccountPassword, ...] = ()
     store: SecretStore | None = None
     """Where the project CA lives, which signs the nodes' transport certificates."""
+    elasticsearch_s3: tuple[ElasticsearchS3Credentials, ...] = ()
 
 
 def services_passwords(
@@ -1104,10 +1108,10 @@ def services_passwords(
 ) -> ServicesSecrets:
     """Decrypt every password ``services.yml`` sets before it may run.
 
-    Those are each owner role's, and the ``cloudfall`` and ``elastic``
-    passwords of each Elasticsearch service. A missing file or key fails
-    here, naming the expected path and key, so the converge stops before any
-    playbook starts.
+    Those are each owner role's, the ``cloudfall`` and ``elastic``
+    passwords of each Elasticsearch service, and the S3 keys of each S3
+    snapshot repository. A missing file or key fails here, naming the
+    expected path and key, so the converge stops before any playbook starts.
     """
     state = validate_config(context.project_directory, context.schema_directory)
     inventory = PlatformInventory.from_state(state)
@@ -1121,6 +1125,9 @@ def services_passwords(
                 provider.secrets_directory,
                 decrypt=provider.decrypt or sops_decrypt,
                 encrypt=sops_encrypt,
+            ),
+            elasticsearch_s3_credentials(
+                elasticsearch_snapshot_credentials(inventory), provider
             ),
         )
     except SecretsError as error:
@@ -1149,7 +1156,9 @@ def run_services_playbook(context: EngineContext, secrets: ServicesSecrets) -> N
     )
     with (
         nodes as provided,
-        staged_password_files(secrets.owned_roles, secrets.elasticsearch) as extra,
+        staged_password_files(
+            secrets.owned_roles, secrets.elasticsearch, secrets.elasticsearch_s3
+        ) as extra,
     ):
         run_engine_playbook(context, "services.yml", {**extra, **provided})
 

@@ -35,20 +35,20 @@
       bind address; this release converges no declared users or
       existingCluster yet
 
-# Snapshots (S-012, #313): S-012 declares an S3 snapshotRepository, but
-# registering it (its keys in the keystore of every node, the repository
-# itself) is not built yet, so the converge stops before it changes the host
-# rather than leave the service without snapshots.
-- name: Refuse a snapshot repository this release does not converge
+# An S3 snapshotRepository's client keys come from its credentialsRef,
+# staged by the services converge like the account files; without them the
+# keystore of this node would stay empty and the repository unreadable.
+- name: Require the staged S3 keys of a snapshot repository
   ansible.builtin.assert:
     that:
-      - cloudfall_elasticsearch_service.elasticsearch.snapshotRepository is not defined
+      - "'s3AccessKey' in cloudfall_elasticsearch_account_files"
+      - "'s3SecretKey' in cloudfall_elasticsearch_account_files"
     fail_msg: >-
-      Service {{ cloudfall_elasticsearch_service.id }} declares an S3
-      snapshotRepository, which S-012 specifies but Cloudfall does not build
-      yet: S3 repository registration (the keystore keys from credentialsRef
-      and the repository) is not implemented. Remove snapshotRepository to
-      use the filesystem repository in backup.directory
+      The S3 keys of the snapshotRepository of service
+      {{ cloudfall_elasticsearch_service.id }} are not staged; run
+      services.yml through cloudfall, which reads them from --secrets-dir at
+      the snapshotRepository's credentialsRef
+  when: cloudfall_elasticsearch_service.elasticsearch.snapshotRepository is defined
 
 # The same refusals as validation's and the PostgreSQL role's (S-006): the
 # HTTP port opens on one address, to declared sources only.
@@ -374,19 +374,77 @@
       != cloudfall_elasticsearch_service.elasticsearch.version
 
 # The package is held, so the pinned install may move it to a new declared
-# version; an unattended upgrade never does.
-- name: Install the declared Elasticsearch version
-  ansible.builtin.apt:
-    name: "elasticsearch={{ cloudfall_elasticsearch_service.elasticsearch.version }}"
-    state: present
-    allow_change_held_packages: true
-    policy_rc_d: 101
-  notify: Restart Elasticsearch
+# version; an unattended upgrade never does. When the install fails after
+# node-stop.yml took the node out, the node starts again on the package it
+# had and its cluster's allocation is let go before the converge stops: a
+# failed install never leaves a node stopped and replicas held.
+- name: Install the declared version, or put a stopped node back
+  block:
+    - name: Install the declared Elasticsearch version
+      ansible.builtin.apt:
+        name: "elasticsearch={{ cloudfall_elasticsearch_service.elasticsearch.version }}"
+        state: present
+        allow_change_held_packages: true
+        policy_rc_d: 101
+      notify: Restart Elasticsearch
+  rescue:
+    - name: Put the node stopped for the install back into its cluster
+      when:
+        - cloudfall_elasticsearch_rolling | default({}) | length > 0
+        - not ansible_check_mode
+      block:
+        - name: Start Elasticsearch again on the package it had
+          ansible.builtin.systemd_service:
+            name: elasticsearch.service
+            state: started
+      always:
+        # The node's own API answers once it is up again, so this waits for it.
+        - name: Let replicas move again after the failed install
+          ansible.builtin.uri:
+            url: >-
+              {{ cloudfall_elasticsearch_api_url }}/_cluster/settings
+            method: PUT
+            ca_path: "{{ cloudfall_elasticsearch_api_ca or omit }}"
+            url_username: cloudfall
+            url_password: >-
+              {{ lookup('ansible.builtin.file',
+                        cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+            force_basic_auth: true
+            body_format: json
+            body:
+              persistent:
+                cluster.routing.allocation.enable: null
+            status_code: 200
+          register: cloudfall_elasticsearch_allocation_back
+          retries: "{{ cloudfall_elasticsearch_rejoin_retries }}"
+          delay: 10
+          until: cloudfall_elasticsearch_allocation_back.status == 200
+          changed_when: true
+          no_log: true
+          when: cloudfall_elasticsearch_rolling.nodes | int > 1
+
+    - name: Stop the converge after the failed install
+      ansible.builtin.fail:
+        msg: >-
+          Installing elasticsearch={{
+            cloudfall_elasticsearch_service.elasticsearch.version }} failed on
+          {{ cloudfall_server_id }}: {{ ansible_failed_result.msg
+          | default('see the failed task above') }}.
+          {{ 'The node was started again on the package it had and its
+          cluster may move replicas again; '
+          if cloudfall_elasticsearch_rolling | default({}) | length > 0
+          else '' }}fix the package source, then converge again
 
 - name: Hold the Elasticsearch package at the declared version
   ansible.builtin.dpkg_selections:
     name: elasticsearch
     selection: hold
+
+# An S3 snapshotRepository's client keys go into this node's keystore, which
+# the package created; the restart flushed below, or a reload, reads them.
+- name: Put the S3 keys of the snapshot repository in the node's keystore
+  ansible.builtin.include_tasks: keystore.yml
+  when: cloudfall_elasticsearch_service.elasticsearch.snapshotRepository is defined
 
 # The volume role keeps the mount path 0755; the node owns its data,
 # whatever the package's scripts set, so the next converge finds both agree.
@@ -427,6 +485,31 @@
   until: cloudfall_elasticsearch_health.status == 200
   no_log: true
   when: not ansible_check_mode
+
+# New S3 keys reach a node that kept running only through a reload of its
+# secure settings; after a restart the reload finds them loaded already.
+- name: Reload the node's secure settings for its new S3 keys
+  ansible.builtin.uri:
+    url: >-
+      {{ cloudfall_elasticsearch_api_url }}/_nodes/_local/reload_secure_settings
+    method: POST
+    ca_path: "{{ cloudfall_elasticsearch_api_ca or omit }}"
+    url_username: cloudfall
+    url_password: >-
+      {{ lookup('ansible.builtin.file',
+                cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+    force_basic_auth: true
+    status_code: 200
+  register: cloudfall_elasticsearch_reloaded
+  changed_when: true
+  failed_when: >-
+    cloudfall_elasticsearch_reloaded.status != 200
+    or cloudfall_elasticsearch_reloaded.json.nodes.values()
+    | selectattr('reload_exception', 'defined') | list | length > 0
+  no_log: true
+  when:
+    - not ansible_check_mode
+    - cloudfall_elasticsearch_keystore_changed | default(false) | bool
 
 - name: Create the Elasticsearch role state directory
   ansible.builtin.file:
