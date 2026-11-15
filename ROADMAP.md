@@ -99,7 +99,7 @@ role's webroot flow; see the
   schema-valid release metadata) ✔ (`task artifact:build`)
 - Deploy role: digest-verified transfer, `releases/` unpacking, locked
   dependency materialization via pinned uv, environment-file installation,
-  systemd unit from `Component.service`, health-check gate, symlink switch,
+  systemd unit from `Component.service`, symlink switch, health-check gate,
   automatic rollback on failed health checks, and release receipts ✔
   (`task deploy`)
 - CLI and Python API operations `deploy()`, `rollback()`, `restart()`,

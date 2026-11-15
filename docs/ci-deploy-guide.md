@@ -271,6 +271,11 @@ What each step does:
   server that switched to the release earlier in the deploy; the deploy
   fails, and the receipt records the failure with `healthCheckPassed: false`
   in that server's entry and `rolledBack: true` in each entry rolled back.
+  The release already serves traffic while its check runs, since the check
+  comes after the switch and the restart. A rollback, this automatic one or
+  a later `cloudfall rollback`, does not undo the component's release
+  command (database migrations, say), which ran before any server switched,
+  so a migration must stay compatible with the release before it.
   `cloudfall restart`, `cloudfall rollback` and `cloudfall health` run the
   same check, so it must be safe to run against the live service at any time
 - **Remove the decrypted files.** GitHub-hosted runners are thrown away
