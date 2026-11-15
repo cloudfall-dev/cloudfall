@@ -374,6 +374,33 @@ def test_add_server_takes_type_as_a_deprecated_name_of_baseline(
     assert payload["ok"] is False
 
 
+def test_s017_14_add_server_type_writes_what_baseline_writes_and_names_0_9_0(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    written: dict[str, str] = {}
+    answers: dict[str, dict[str, object]] = {}
+    for flag in ("--type", "--baseline"):
+        project = tmp_path / flag.removeprefix("--")
+        shutil.copytree(DEPRECATED, project)
+
+        exit_code, answers[flag] = _run(
+            capsys,
+            *("add", "server", "h2", "--address", "10.0.0.2"),
+            *(flag, "debian-application", "--project", str(project)),
+        )
+
+        assert exit_code == 0, answers[flag]
+        written[flag] = (project / "servers" / "h2.yaml").read_text(encoding="utf-8")
+
+    assert written["--type"] == written["--baseline"]
+    assert answers["--baseline"]["warnings"] == []
+    warnings = answers["--type"]["warnings"]
+    assert isinstance(warnings, list)
+    assert [warning["code"] for warning in warnings] == ["DEPRECATED_FLAG"]
+    assert warnings[0]["context"]["replacement"] == "--baseline"
+    assert warnings[0]["context"]["removed_in"] == "0.9.0"
+
+
 def _old_observations(tmp_path: Path) -> Path:
     """h1 recorded before 0.8.0, with spec.serverType, beside a current h2."""
     observed = tmp_path / "observed"

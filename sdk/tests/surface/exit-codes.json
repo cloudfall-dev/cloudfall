@@ -1,0 +1,53 @@
+{
+  "cloudfall": {
+    "codes": {
+      "SUCCESS": 0,
+      "GENERAL_ERROR": 1,
+      "ARG_ERROR": 2,
+      "PARTIAL_FAILURE": 3,
+      "PRECONDITION": 4,
+      "NOT_FOUND": 5,
+      "CONFLICT": 6,
+      "PERMISSION_DENIED": 7,
+      "TIMEOUT": 10,
+      "UNAVAILABLE": 12,
+      "PROJECT_INVALID": 79,
+      "CONFIG_INVALID": 80,
+      "DRIFT": 83,
+      "UNKNOWN": 84,
+      "INVENTORY_UNREADABLE": 85,
+      "RECORD_INVALID": 86,
+      "ENGINE_STEP_FAILED": 87,
+      "UNHEALTHY": 88,
+      "CHECK_FAILED": 89,
+      "NOT_VERIFIED": 90,
+      "INCOMPLETE": 91,
+      "MODEL_UNAVAILABLE": 92,
+      "INVESTIGATION_INCOMPLETE": 93,
+      "INVESTIGATION_STOPPED": 94,
+      "CANCELLED_SIGINT": 130,
+      "OUTPUT_CLOSED": 141,
+      "CANCELLED_SIGTERM": 143
+    },
+    "deprecated": {}
+  },
+  "cloudfall-engine": {
+    "codes": {
+      "SUCCESS": 0,
+      "GENERAL_ERROR": 1,
+      "ARG_ERROR": 2,
+      "PRECONDITION": 4,
+      "NOT_FOUND": 5,
+      "CONFLICT": 6,
+      "TIMEOUT": 10,
+      "PROJECT_INVALID": 79,
+      "CONFIG_INVALID": 80,
+      "ARTIFACT_BUILD_FAILED": 81,
+      "PLAYBOOK_FAILED": 82,
+      "CANCELLED_SIGINT": 130,
+      "OUTPUT_CLOSED": 141,
+      "CANCELLED_SIGTERM": 143
+    },
+    "deprecated": {}
+  }
+}

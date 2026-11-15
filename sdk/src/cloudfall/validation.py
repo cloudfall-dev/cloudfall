@@ -84,6 +84,12 @@ LEGACY_BASELINE_DIRECTORY = "server-types"
 """Deprecated folder of ``Baseline`` resources."""
 LEGACY_BASELINE_FIELD = "serverType"
 """Deprecated name of ``Server.spec.baseline``."""
+DEPRECATED_NAMES_REMOVED_IN: Mapping[str, str] = {
+    LEGACY_BASELINE_KIND: "0.9.0",
+    LEGACY_BASELINE_DIRECTORY: "0.9.0",
+    LEGACY_BASELINE_FIELD: "0.9.0",
+}
+"""The release that stops reading each deprecated name above (S-017-13)."""
 BASELINE_FIELD = "baseline"
 """The ``Server`` spec field naming the server's ``Baseline``."""
 UPGRADE_COMMAND = "cloudfall config upgrade"
