@@ -1,0 +1,186 @@
+{
+    "apiVersion": "cloudfall/v1",
+    "kind": "ObservedServer",
+    "metadata": {
+        "description": "Read-only server evidence collected by Cloudfall",
+        "id": "h1"
+    },
+    "spec": {
+        "alerting": {
+            "alertsJson": "{\"status\":\"success\",\"data\":{\"alerts\":[]}}",
+            "prometheusAvailable": true,
+            "rulesJson": "{\"status\":\"success\",\"data\":{\"groups\":[]}}"
+        },
+        "collectorVersion": "0.4.0",
+        "componentEnvironment": [],
+        "configuration": [
+            {
+                "capture": "hash",
+                "exists": true,
+                "group": "root",
+                "mode": "0644",
+                "owner": "root",
+                "path": "/etc/ssh/sshd_config",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "size": 3223
+            },
+            {
+                "capture": "metadata",
+                "exists": false,
+                "group": null,
+                "mode": null,
+                "owner": null,
+                "path": "/etc/nginx/nginx.conf",
+                "sha256": null,
+                "size": null
+            }
+        ],
+        "firewall": {
+            "managedTableJson": null,
+            "nftAvailable": true
+        },
+        "hardware": {
+            "memoryBytes": 68719476736,
+            "processorCores": 8,
+            "processorCount": 1,
+            "processorVcpus": 16
+        },
+        "network": {
+            "listeningSockets": "tcp   LISTEN 0 128    0.0.0.0:22      0.0.0.0:*\ntcp   LISTEN 0 244    127.0.0.1:5432  0.0.0.0:*"
+        },
+        "observedAt": "2026-11-15T18:10:42Z",
+        "os": {
+            "architecture": "x86_64",
+            "distribution": "Debian",
+            "kernel": "6.1.0-37-amd64",
+            "majorVersion": "12",
+            "release": "bookworm",
+            "serviceManager": "systemd",
+            "version": "12.10"
+        },
+        "packages": [
+            {
+                "arch": "amd64",
+                "name": "base-files",
+                "source": "dpkg-query",
+                "version": "12.10"
+            },
+            {
+                "arch": "all",
+                "name": "ca-certificates",
+                "source": "dpkg-query",
+                "version": "20230311"
+            },
+            {
+                "arch": "amd64",
+                "name": "curl",
+                "source": "dpkg-query",
+                "version": "7.88.1-10+deb12u12"
+            }
+        ],
+        "server": "h1",
+        "serverType": "debian-application",
+        "services": {
+            "ssh.service": {
+                "name": "ssh.service",
+                "source": "systemd",
+                "state": "running",
+                "status": "enabled"
+            }
+        },
+        "storage": {
+            "blockDevices": [
+                {
+                    "children": [
+                        {
+                            "children": [
+                                {
+                                    "fstype": "ext4",
+                                    "model": null,
+                                    "mountpoint": "/",
+                                    "name": "md0",
+                                    "path": "/dev/md0",
+                                    "pkname": "nvme0n1p1",
+                                    "rota": false,
+                                    "serial": null,
+                                    "size": 1024073228288,
+                                    "type": "raid1"
+                                }
+                            ],
+                            "fstype": "linux_raid_member",
+                            "model": null,
+                            "mountpoint": null,
+                            "name": "nvme0n1p1",
+                            "path": "/dev/nvme0n1p1",
+                            "pkname": "nvme0n1",
+                            "rota": false,
+                            "serial": null,
+                            "size": 1024208494592,
+                            "type": "part"
+                        }
+                    ],
+                    "fstype": null,
+                    "model": "SAMSUNG MZVL21T0HCLR-00B00",
+                    "mountpoint": null,
+                    "name": "nvme0n1",
+                    "path": "/dev/nvme0n1",
+                    "pkname": null,
+                    "rota": false,
+                    "serial": "S676NF0R000001",
+                    "size": 1024209543168,
+                    "type": "disk"
+                }
+            ],
+            "filesystems": [
+                {
+                    "avail": 706435235840,
+                    "fstype": "ext4",
+                    "options": "rw,relatime",
+                    "size": 1007627673600,
+                    "source": "/dev/md0",
+                    "target": "/",
+                    "used": 250000000000
+                }
+            ],
+            "smart": {
+                "available": true,
+                "devices": [
+                    {
+                        "availableSparePercent": 100,
+                        "availableSpareThresholdPercent": 10,
+                        "criticalWarning": "0x00",
+                        "dataUnitsRead": 51230412,
+                        "dataUnitsWritten": 80412311,
+                        "errorInformationLogEntries": 0,
+                        "firmware": "GXA7801Q",
+                        "mediaAndDataIntegrityErrors": 0,
+                        "model": "SAMSUNG MZVL21T0HCLR-00B00",
+                        "overallHealth": "passed",
+                        "path": "/dev/nvme0n1",
+                        "percentageUsed": 3,
+                        "powerCycles": 21,
+                        "powerOnHours": 9120,
+                        "reliabilityDegraded": false,
+                        "serial": "S676NF0R000001",
+                        "smartctlExitCode": 0,
+                        "temperatureCelsius": 38,
+                        "unsafeShutdowns": 7
+                    }
+                ],
+                "smartctlVersion": "7.3"
+            },
+            "softwareRaid": {
+                "mdadmScan": "ARRAY /dev/md0 level=raid1 num-devices=2 metadata=1.2 UUID=0b1c2d3e:4f5a6b7c:8d9e0f1a:2b3c4d5e\n   devices=/dev/nvme0n1p1,/dev/nvme1n1p1",
+                "mdstat": "Personalities : [raid1]\nmd0 : active raid1 nvme0n1p1[0] nvme1n1p1[1]\n      1000071512 blocks super 1.2 [2/2] [UU]\n\nunused devices: <none>\n"
+            }
+        },
+        "timers": {
+            "cloudfall-postgresql-backup.timer": {
+                "name": "cloudfall-postgresql-backup.timer",
+                "source": "systemd",
+                "state": "running",
+                "status": "enabled"
+            }
+        }
+    }
+}

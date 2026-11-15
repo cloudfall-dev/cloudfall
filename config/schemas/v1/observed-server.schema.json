@@ -254,6 +254,10 @@
         "baseline": {
           "$ref": "common.schema.json#/$defs/resourceId"
         },
+        "serverType": {
+          "description": "The baseline, as snapshots written before 0.8.0 name it; a record keeps the field it was written with",
+          "$ref": "common.schema.json#/$defs/resourceId"
+        },
         "observedAt": {
           "type": "string",
           "format": "date-time"
@@ -958,9 +962,20 @@
           }
         }
       },
+      "oneOf": [
+        {
+          "required": [
+            "baseline"
+          ]
+        },
+        {
+          "required": [
+            "serverType"
+          ]
+        }
+      ],
       "required": [
         "server",
-        "baseline",
         "observedAt",
         "collectorVersion",
         "os",

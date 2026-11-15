@@ -28,6 +28,7 @@ from cloudfall.service_evidence import (
     load_domain_observations,
 )
 from cloudfall.validation import SchemaCatalog
+from jsonschema.exceptions import ValidationError
 from test_catalog import _repository
 from test_operator import EXAMPLES, ROOT, SCHEMAS
 
@@ -36,27 +37,13 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 KINDS = ROOT / "config" / "tests" / "records" / "kinds"
-
-AWAITING_DECISION = {"ObservedServer"}
-"""Kinds whose fixture today's code refuses, held out until that is decided (#376).
-
-v0.7.0's inspect role writes ``spec.serverType``; since #198 the schema
-requires ``spec.baseline`` and refuses ``serverType``, so a v0.7.0 snapshot
-no longer validates. The fixture is not edited to pass: it joins this set's
-tests once a reader or schema decision lets it.
-"""
+FIXTURES = sorted(KINDS.glob("*.json"))
 
 
 def _document(path: Path) -> dict[str, object]:
     document: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
     return document
 
-
-FIXTURES = [
-    path
-    for path in sorted(KINDS.glob("*.json"))
-    if _document(path)["kind"] not in AWAITING_DECISION
-]
 
 SCHEMA_OF_KIND = {
     "DeploymentReceipt": "deployment-receipt.schema.json",
@@ -100,7 +87,7 @@ def _placed(kind: str, directory: Path) -> Path:
 def test_s017_11_there_is_one_fixture_of_every_record_kind() -> None:
     kinds = [str(_document(path)["kind"]) for path in FIXTURES]
 
-    assert sorted(kinds) == sorted(set(SCHEMA_OF_KIND) - AWAITING_DECISION)
+    assert sorted(kinds) == sorted(SCHEMA_OF_KIND)
     for path in FIXTURES:
         kind = str(_document(path)["kind"])
         assert path.name.startswith(f"{FIRST_WRITTEN_BY.get(kind, 'v0.7.0')}-")
@@ -112,6 +99,24 @@ def test_s017_11_every_fixture_validates_against_todays_schema(fixture: Path) ->
     schema = SCHEMA_OF_KIND[str(document["kind"])]
 
     SchemaCatalog(SCHEMAS).validate_named(schema, document)
+
+
+def test_s017_11_a_snapshot_names_its_baseline_by_one_field_only() -> None:
+    """v0.7.0 wrote ``serverType``, today writes ``baseline``; never both (D-11)."""
+    catalog = SchemaCatalog(SCHEMAS)
+    old = _document(_fixture("ObservedServer"))
+    spec = old["spec"]
+    assert isinstance(spec, dict)
+    rest = {key: value for key, value in spec.items() if key != "serverType"}
+    current = {**old, "spec": {**rest, "baseline": spec["serverType"]}}
+    both = {**old, "spec": {**spec, "baseline": spec["serverType"]}}
+    neither = {**old, "spec": rest}
+
+    catalog.validate_named("observed-server.schema.json", old)
+    catalog.validate_named("observed-server.schema.json", current)
+    for refused in (both, neither):
+        with pytest.raises(ValidationError):
+            catalog.validate_named("observed-server.schema.json", refused)
 
 
 def _deployment_receipts(directory: Path) -> int:
@@ -141,11 +146,10 @@ READERS: dict[str, Callable[[Path], int]] = {
     "ObservedServer": _server_observations,
     "ReleaseApproval": _release_approvals,
 }
-READ_NOW = sorted(set(READERS) - AWAITING_DECISION)
 """The kinds a reader of their own loads from a directory, beside the CLI ones."""
 
 
-@pytest.mark.parametrize("kind", READ_NOW)
+@pytest.mark.parametrize("kind", sorted(READERS))
 def test_s017_11_todays_reader_loads_the_fixture(tmp_path: Path, kind: str) -> None:
     _placed(kind, tmp_path / "records")
 
