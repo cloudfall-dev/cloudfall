@@ -148,3 +148,39 @@ entry that supersedes it, never by editing an old one.
 - Why: S-012 makes an Elasticsearch node's volume mirrored for a cluster of one and expendable for two or more, while S-014 refused any change of an existing volume's type, so growing a one-node service refused its first node; a mirror is stronger than what an expendable volume asks, nothing on the host has to change when the cluster grows, and converting a raid1 volume to linear in place would mean an lvconvert the provider never runs
 - Applies to: sdk/src/cloudfall/requirements.py (VolumeRequirement.held_as), sdk/src/cloudfall/volumes.py, sdk/src/cloudfall/audit.py; S-012 What each node needs, S-014 Refusals
 - Enforced by: sdk/tests/test_s014_volumes.py
+
+## D-19: Operator autonomy is earned per environment
+
+- Decided: 2026-11-15, in cloudfall-dev/cloudfall#351
+- Rule: The history an autonomy grant is judged on, and the suspension rule, count only settled receipts whose operation_server is in the same environment as the proposal's server; a receipt of an undeclared server counts for no environment
+- Why: The grant lives in the policy chosen by the server's environment; servers of one environment run the same declarations, so per-server history would make each new server start from zero
+- Applies to: sdk/src/cloudfall/operator.py, operator autonomy
+- Enforced by: review
+- Zone: interpretation (notify, veto until 2026-11-16T16:10:00Z)
+
+## D-20: An approval is bound to what was proposed
+
+- Decided: 2026-11-15, in cloudfall-dev/cloudfall#352
+- Rule: A decision record binds the sha256 of its playbook and verify playbook and, in a git project, the HEAD commit and a digest of uncommitted changes outside the decisions, record/ and tmp/ directories; approve recomputes them and the diff's sha256 before anything runs and refuses any difference, and refuses a record with no binding, asking for a new proposal; a dirty tree at propose time is allowed
+- Why: The approval must be of what the approver read; only a change after the proposal breaks that, and an agent usually proposes right after editing
+- Applies to: sdk/src/cloudfall/decision.py, decisions approve, decision record
+- Enforced by: review
+- Zone: contract-change (notify, veto until 2026-11-16T16:10:00Z)
+
+## D-21: Each release has its own environment file
+
+- Decided: 2026-11-15, in cloudfall-dev/cloudfall#353
+- Rule: A deploy writes the component's environment to shared/env/<component>.<release>.env and the release's unit, release command and health check read that file, so a rescue or rollback that restores the previous unit restores the previous environment; a redeploy copy of the same release gets its own file, shared/env/<component>.<release>.redeploy-<time>.env, and a deploy without --env-file copies in the file the previous release reads; the legacy shared/env/<component>.env is never written or removed by a deploy, and retention removes a removed release's file
+- Why: Code, unit and environment must move together, or a rollback after a bad environment starts the previous release on the bad one
+- Applies to: engine/ansible/roles/cloudfall_deploy/*, deploy, rollback
+- Enforced by: review
+- Zone: contract-change (notify, veto until 2026-11-16T16:10:00Z)
+
+## D-22: Root's authorized_keys is shared, not exclusive
+
+- Decided: 2026-11-15, in cloudfall-dev/cloudfall#354
+- Rule: The baseline adds declared active keys and removes declared revoked keys from root's authorized_keys, and leaves undeclared keys in place
+- Why: Brownfield servers carry keys Cloudfall never declared (a provider's rescue key, a team member's); an exclusive file would lock them out on adoption
+- Applies to: engine/ansible/roles/cloudfall_access/*, SshPublicKey lifecycle
+- Enforced by: review
+- Zone: interpretation (notify, veto until 2026-11-16T16:10:00Z)
