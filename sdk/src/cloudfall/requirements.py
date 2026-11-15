@@ -468,8 +468,9 @@ def _elasticsearch_requirements(
     password; the role writes the password on the node and only its bcrypt
     hash into the file realm. A node of a cluster of two or more also needs
     the transport port, open to the other nodes only; one node keeps its
-    transport on loopback. A node of a cluster, or of a service with
-    ``remoteAccess``, needs its one certificate from the project CA, which
+    transport on loopback, unless it joins an ``existingCluster``. A node of a
+    cluster, or of a service with ``remoteAccess``, needs its one certificate
+    from the project CA, which
     the transport and HTTP over TLS share: the other nodes verify it at its
     IPv4, a client at the listen address.
     """
@@ -479,7 +480,13 @@ def _elasticsearch_requirements(
     owner = RequirementOwner(ResourceKind.SERVICE, service.resource_id)
     servers = {server.resource_id: server for server in inventory.servers}
     nodes = cluster_nodes(service, inventory.servers)
-    placement = VolumePlacement.EXPENDABLE if nodes else VolumePlacement.MIRRORED
+    # One Cloudfall node keeps the only copy it will hold once an existing
+    # cluster it joined is drained, so it stays mirrored.
+    placement = (
+        VolumePlacement.EXPENDABLE
+        if len(elasticsearch.nodes) > 1
+        else VolumePlacement.MIRRORED
+    )
     placed: list[tuple[ResourceId, Requirement]] = []
     for node_id in elasticsearch.nodes:
         baseline = inventory.baseline(servers[node_id].baseline_id)
@@ -503,6 +510,10 @@ def _elasticsearch_requirements(
         others = tuple(
             item.server_id for item in nodes if item.server_id != node.server_id
         )
+        if not others:
+            # The only Cloudfall node of a joined cluster: its peers are the
+            # existing cluster's nodes, which are no declared servers.
+            continue
         placed.append(
             (
                 node.server_id,

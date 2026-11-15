@@ -1,0 +1,139 @@
+---
+# A node that joins an existingCluster (S-012, #315) asks a seed host, before
+# its data volume and its package, for the cluster's name and the version of
+# every node (S-012-18), and stops on a cluster it can't join safely: another
+# name, a node of another major, or a node newer than the declared version.
+# It asks over HTTPS at the seed host's address, verified against the existing
+# cluster's CA, as Cloudfall's own cloudfall account: the team grants that
+# account the monitor privilege on the existing cluster, the way it admits
+# the new nodes, so no credential of that cluster enters Cloudfall. The
+# existing nodes are only read: nothing here restarts or reconfigures them.
+- name: Read whether the existing cluster's CA is on the node
+  ansible.builtin.stat:
+    path: "{{ cloudfall_elasticsearch_existing_ca_path }}"
+  register: cloudfall_elasticsearch_existing_ca
+
+# A dry run on a node the CA never reached has nothing to verify with.
+- name: Ask the existing cluster, and refuse one the node can't join
+  when: >-
+    not ansible_check_mode
+    or cloudfall_elasticsearch_existing_ca.stat.exists
+  block:
+    - name: Refuse a joining node without the existing cluster's CA
+      ansible.builtin.assert:
+        that:
+          - cloudfall_elasticsearch_existing_ca.stat.exists
+        fail_msg: >-
+          {{ cloudfall_server_id }} has no CA of the existing cluster at
+          {{ cloudfall_elasticsearch_existing_ca_path }}; converge the service
+          through cloudfall, which delivers existingCluster.caCertificateFile
+
+    - name: Ask each seed host for the cluster's name and node versions
+      ansible.builtin.uri:
+        url: >-
+          https://{{ item.rsplit(':', 1)[0] }}:{{
+          cloudfall_elasticsearch_existing_http_port
+          }}/_nodes?filter_path=cluster_name,nodes.*.name,nodes.*.version
+        ca_path: "{{ cloudfall_elasticsearch_existing_ca_path }}"
+        url_username: cloudfall
+        url_password: >-
+          {{ lookup('ansible.builtin.file',
+                    cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+        force_basic_auth: true
+        status_code: 200
+        timeout: 10
+      loop: >-
+        {{ cloudfall_elasticsearch_service.elasticsearch.existingCluster.seedHosts }}
+      register: cloudfall_elasticsearch_existing_answers
+      # Every seed host is asked; one answer is enough, and the next task
+      # names what each other one said.
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Refuse an existing cluster that no seed host answered for
+      ansible.builtin.assert:
+        that:
+          - cloudfall_elasticsearch_existing_answered | length > 0
+        fail_msg: >-
+          No seed host of the existing cluster of service
+          {{ cloudfall_elasticsearch_service.id }} answered
+          GET /_nodes on port {{ cloudfall_elasticsearch_existing_http_port }}
+          ({% for answer in cloudfall_elasticsearch_existing_answers.results %}{{
+          answer.item }}: {{ answer.status | default('no answer') }}{{
+          '' if loop.last else ', ' }}{% endfor %}): the node can't check the
+          cluster it would join. A 401 or 403 means the existing cluster has no
+          cloudfall account with the monitor privilege yet; grant it, with the
+          password the project's store keeps for this service, then converge
+          again
+
+    - name: Refuse an existing cluster of another name
+      ansible.builtin.assert:
+        that:
+          - >-
+            cloudfall_elasticsearch_existing.cluster_name
+            == cloudfall_elasticsearch_service.elasticsearch.clusterName
+        fail_msg: >-
+          Seed host {{ cloudfall_elasticsearch_existing_seed }} belongs to
+          cluster {{ cloudfall_elasticsearch_existing.cluster_name }}, not to
+          clusterName {{ cloudfall_elasticsearch_service.elasticsearch.clusterName }}
+          of service {{ cloudfall_elasticsearch_service.id }}; the node joins
+          no cluster of another name
+
+    - name: Refuse an existing cluster with a node of another major
+      ansible.builtin.assert:
+        that:
+          - cloudfall_elasticsearch_existing_other_major | length == 0
+        fail_msg: >-
+          {% for node in cloudfall_elasticsearch_existing_other_major %}Node
+          {{ node.name }} runs {{ node.version }}{{ '' if loop.last else ', ' }}{%
+          endfor %}: cluster {{ cloudfall_elasticsearch_existing.cluster_name }}
+          has a node of another major than the declared
+          {{ cloudfall_elasticsearch_service.elasticsearch.version }}, and a
+          node joins only a cluster of its own major; upgrade the existing
+          cluster first, by its own means
+      vars:
+        cloudfall_elasticsearch_existing_other_major: >-
+          {{
+            cloudfall_elasticsearch_existing_nodes
+            | rejectattr('version', 'match',
+                         cloudfall_elasticsearch_declared_major ~ '\.')
+            | list
+          }}
+
+    - name: Refuse an existing cluster with a node newer than the declared version
+      ansible.builtin.assert:
+        that:
+          - cloudfall_elasticsearch_existing_newer | length == 0
+        fail_msg: >-
+          {% for node in cloudfall_elasticsearch_existing_newer %}Node
+          {{ node.name }} runs {{ node.version }}{{ '' if loop.last else ', ' }}{%
+          endfor %}: newer than the declared
+          {{ cloudfall_elasticsearch_service.elasticsearch.version }} of service
+          {{ cloudfall_elasticsearch_service.id }}, so the new node could not
+          hold the shards those nodes write; declare that version or a later one
+      vars:
+        cloudfall_elasticsearch_existing_newer: >-
+          {{
+            cloudfall_elasticsearch_existing_nodes
+            | selectattr('version', 'version',
+                         cloudfall_elasticsearch_service.elasticsearch.version, '>')
+            | list
+          }}
+  vars:
+    cloudfall_elasticsearch_existing_answered: >-
+      {{
+        cloudfall_elasticsearch_existing_answers.results | default([])
+        | selectattr('status', 'defined')
+        | selectattr('status', 'equalto', 200)
+        | list
+      }}
+    cloudfall_elasticsearch_existing_seed: >-
+      {{ (cloudfall_elasticsearch_existing_answered | first).item }}
+    cloudfall_elasticsearch_existing: >-
+      {{ (cloudfall_elasticsearch_existing_answered | first).json }}
+    cloudfall_elasticsearch_existing_nodes: >-
+      {{ cloudfall_elasticsearch_existing.nodes.values() | list }}
+    cloudfall_elasticsearch_declared_major: >-
+      {{ cloudfall_elasticsearch_service.elasticsearch.version.split('.')[0] }}

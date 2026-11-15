@@ -1164,7 +1164,7 @@ def run_services_playbook(context: EngineContext, secrets: ServicesSecrets) -> N
         run_engine_playbook(context, name, extra_vars)
 
     nodes: AbstractContextManager[dict[str, object]] = (
-        prepared_nodes(run, inventory, secrets.store)
+        prepared_nodes(run, inventory, secrets.store, context.project_directory)
         if secrets.store is not None
         else nullcontext({})
     )

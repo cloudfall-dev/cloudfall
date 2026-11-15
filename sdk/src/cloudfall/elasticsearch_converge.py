@@ -8,7 +8,9 @@ action, or refuses before any host changes; each node makes its own key and
 a signing request, and the CA of the service's environment signs those whose
 certificate is missing or due, so a private key never leaves its host. The
 signed certificates and the CA are staged in a private temp dir, removed
-when the run ends, and the role copies them.
+when the run ends, and the role copies them. A service that joins an
+``existingCluster`` also stages that cluster's CA certificate, read from the
+project, for each of its nodes.
 """
 
 from __future__ import annotations
@@ -20,11 +22,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from cloudfall.domain import ResourceKind
+from cloudfall.elasticsearch_cluster import EXISTING_CLUSTER_CA_PATH
 from cloudfall.lifecycle_error import LifecycleError
 from cloudfall.logging_deploy import (
     DELIVERED_FILES_VARIABLE,
     REQUESTS_DIRECTORY_VARIABLE,
     REQUESTS_PLAYBOOK,
+    DeliveryRole,
     LoggingDeployError,
     StagedFile,
     certificate_files,
@@ -160,9 +164,45 @@ def _certificates(
     return files
 
 
+EXISTING_CLUSTER_CA_NAME = "elasticsearch-existing-cluster-ca"
+"""How the staged CA of an existing cluster is named; the role copies it 0644."""
+
+
+def existing_cluster_ca_files(
+    inventory: PlatformInventory, project_directory: Path
+) -> list[StagedFile]:
+    """Stage the CA of each joined existing cluster for every node of its service.
+
+    Validation checked the file is CA certificates only, inside the project.
+    """
+    files: list[StagedFile] = []
+    for service in inventory.services:
+        elasticsearch = service.elasticsearch
+        if elasticsearch is None or elasticsearch.existing_cluster is None:
+            continue
+        relative = elasticsearch.existing_cluster.ca_certificate_file.value
+        content = (project_directory / relative).read_text(encoding="utf-8")
+        files.extend(
+            StagedFile(
+                node,
+                DeliveryRole.COLLECTOR,
+                EXISTING_CLUSTER_CA_NAME,
+                EXISTING_CLUSTER_CA_PATH.value,
+                content,
+                "0644",
+                force=True,
+            )
+            for node in elasticsearch.nodes
+        )
+    return files
+
+
 @contextmanager
 def prepared_nodes(
-    run: PlaybookRunner, inventory: PlatformInventory, store: SecretStore
+    run: PlaybookRunner,
+    inventory: PlatformInventory,
+    store: SecretStore,
+    project_directory: Path,
 ) -> Iterator[dict[str, object]]:
     """Meet each node's volume and certificate; yield ``services.yml``'s extra vars.
 
@@ -174,7 +214,10 @@ def prepared_nodes(
         return
     try:
         actions = _volume_actions(run, servers)
-        files = _certificates(run, servers, inventory, store)
+        files = [
+            *_certificates(run, servers, inventory, store),
+            *existing_cluster_ca_files(inventory, project_directory),
+        ]
     except VolumeRefusedError as error:
         raise LifecycleError(
             error.code,

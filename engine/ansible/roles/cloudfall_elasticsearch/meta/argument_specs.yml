@@ -63,6 +63,14 @@ argument_specs:
                 required: true
               existingCluster:
                 type: dict
+                options:
+                  seedHosts:
+                    type: list
+                    elements: str
+                    required: true
+                  caCertificateFile:
+                    type: str
+                    required: true
               remoteAccess:
                 type: dict
               snapshotRepository:

@@ -719,9 +719,9 @@ def test_s012_14_the_role_calls_its_api_over_https_verifying_the_project_ca(
         if "ansible.builtin.uri" in task
     ]
 
-    # The health wait, the secure settings reload, the memory lock read and
-    # the elastic password
-    assert len(calls) == 4
+    # The health wait, the secure settings reload, the green wait once an
+    # existing cluster left, the memory lock read and the elastic password
+    assert len(calls) == 5
     for task in calls:
         uri = cast("dict[str, str]", task["ansible.builtin.uri"])
         assert uri["url"].strip().startswith("{{ cloudfall_elasticsearch_api_url")

@@ -14,10 +14,9 @@
       {{ ansible_facts['memtotal_mb'] }} MB of {{ cloudfall_server_id }}:
       lower heapMb, or move the service to a server with more memory
 
-# This release converges the nodes of a cluster Cloudfall forms, HTTP on
-# loopback, with Cloudfall's own account and the declared users, optionally
-# opened by remoteAccess on a cluster of one; joining an existing cluster
-# (#315) comes later, so it stops here, not half-done.
+# This release converges the nodes of a cluster Cloudfall forms or joins
+# (existingCluster), HTTP on loopback, with Cloudfall's own account and the
+# declared users, optionally opened by remoteAccess on a cluster of one.
 - name: Validate Elasticsearch service target and declaration
   ansible.builtin.assert:
     that:
@@ -27,11 +26,10 @@
       - cloudfall_elasticsearch_service.serviceKind == "elasticsearch"
       - cloudfall_server_id in cloudfall_elasticsearch_service.elasticsearch.nodes
       - cloudfall_elasticsearch_service.bind.address == "127.0.0.1"
-      - cloudfall_elasticsearch_service.elasticsearch.existingCluster is not defined
     fail_msg: >-
       Elasticsearch service {{ cloudfall_elasticsearch_service.id }} needs a
       Debian 13 server with systemd that is one of its nodes, and a loopback
-      bind address; this release converges no existingCluster yet
+      bind address
 
 # An S3 snapshotRepository's client keys come from its credentialsRef,
 # staged by the services converge like the account files; without them the
@@ -194,6 +192,13 @@
   loop_control:
     label: "{{ item.path }}"
 
+# A node that joins a cluster Cloudfall did not create asks it first, with the
+# CA the copy above just delivered: a cluster of another name, major or a
+# newer version stops the converge before the data volume and the package.
+- name: Ask the existing cluster before the node joins it
+  ansible.builtin.include_tasks: existing-cluster.yml
+  when: cloudfall_elasticsearch_service.elasticsearch.existingCluster is defined
+
 # With remoteAccess, HTTP uses TLS with the node's certificate: it is checked
 # and made readable before a configuration that names it is written.
 - name: Prepare the node certificate for HTTP over TLS
@@ -214,7 +219,9 @@
 
 - name: Open the transport to the other nodes, with its certificate
   ansible.builtin.include_tasks: transport.yml
-  when: cloudfall_elasticsearch_service.elasticsearch.nodes | length > 1
+  when: >-
+    cloudfall_elasticsearch_service.elasticsearch.nodes | length > 1
+    or cloudfall_elasticsearch_service.elasticsearch.existingCluster is defined
 
 - name: Install the managed Elasticsearch configuration
   ansible.builtin.template:
@@ -554,6 +561,42 @@
     - not cloudfall_elasticsearch_cluster_formed.stat.exists
     - cloudfall_elasticsearch_health is succeeded
 
+# Once existingCluster is removed (S-012-19), the configuration above names
+# neither its seed hosts nor its CA, and the restart it notified brought the
+# node up without them: only now does the CA leave the node. The cluster is
+# then green before the next node moves (yellow on a cluster of one, whose
+# replicas have nowhere to go, as for any restart).
+- name: Remove the existing cluster's CA once existingCluster is gone
+  ansible.builtin.file:
+    path: "{{ cloudfall_elasticsearch_existing_ca_path }}"
+    state: absent
+  register: cloudfall_elasticsearch_existing_ca_removed
+  when: cloudfall_elasticsearch_service.elasticsearch.existingCluster is not defined
+
+- name: Wait for the cluster to be green without the existing cluster
+  ansible.builtin.uri:
+    url: >-
+      {{ cloudfall_elasticsearch_api_url
+      }}/_cluster/health?wait_for_status={{
+        'green' if cloudfall_elasticsearch_service.elasticsearch.nodes | length > 1
+        else 'yellow'
+      }}&timeout=10s
+    ca_path: "{{ cloudfall_elasticsearch_api_ca or omit }}"
+    url_username: cloudfall
+    url_password: >-
+      {{ lookup('ansible.builtin.file',
+                cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+    force_basic_auth: true
+    status_code: 200
+  register: cloudfall_elasticsearch_without_existing
+  retries: "{{ cloudfall_elasticsearch_rejoin_retries }}"
+  delay: 10
+  until: cloudfall_elasticsearch_without_existing.status == 200
+  no_log: true
+  when:
+    - not ansible_check_mode
+    - cloudfall_elasticsearch_existing_ca_removed is changed
+
 # Outside production mode (a loopback transport) Elasticsearch only warns
 # when it can't lock its memory; the converge stops instead.
 - name: Read whether the node locked its memory
@@ -585,7 +628,9 @@
 
 # elastic is a person's break-glass account: set once, as the hash computed
 # on the controller (D-9), and never used by Cloudfall afterwards. It lives
-# in the cluster, so only the home node sets it.
+# in the cluster, so only the home node sets it. A cluster the nodes joined
+# (existingCluster) has its own: the marker is written without setting it,
+# so removing existingCluster later never sets it either.
 - name: Set the elastic password once
   vars:
     cloudfall_elasticsearch_elastic_marker: >-
@@ -620,17 +665,26 @@
         status_code: 200
       changed_when: true
       no_log: true
-      when: not cloudfall_elasticsearch_elastic_set.stat.exists
+      when:
+        - not cloudfall_elasticsearch_elastic_set.stat.exists
+        - cloudfall_elasticsearch_service.elasticsearch.existingCluster is not defined
 
-    # The state directory was created with the cluster-formed marker.
+    # The state directory was created with the cluster-formed marker. A
+    # marker already there is left as it is: it says how elastic got its
+    # password.
     - name: Record that the elastic password was set
       ansible.builtin.copy:
         dest: "{{ cloudfall_elasticsearch_elastic_marker }}"
         content: |
-          {{ cloudfall_elasticsearch_service.id }}: elastic password set from its hash
+          {{ cloudfall_elasticsearch_service.id }}: {{
+            'elastic password left to the existing cluster'
+            if cloudfall_elasticsearch_service.elasticsearch.existingCluster is defined
+            else 'elastic password set from its hash'
+          }}
         owner: root
         group: root
         mode: "0600"
+        force: false
 
 # Users and roles are the cluster's, so its home server converges them once.
 - name: Converge the declared users and their roles
