@@ -14,8 +14,9 @@ port="5432"
 
 # One "schema.table<TAB>rows" line per data block of a dump, the name quoted
 # as pg_dump quotes it. Every table the dump holds has a block, empty or not.
+# pg_restore writes the script to stdout only with --file=- (PostgreSQL 12+).
 dump_counts() {
-  pg_restore --data-only "$1" | awk '
+  pg_restore --data-only --file=- "$1" | awk '
     copying && $0 == "\\." { print table "\t" rows; copying = 0; next }
     copying { rows++; next }
     /^COPY / {

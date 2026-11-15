@@ -117,11 +117,18 @@ def _drill(
         restored if restored_with_children is None else restored_with_children
     )
     log = tmp_path / "calls.log"
+    # Since PostgreSQL 12, pg_restore writes the script to stdout only when
+    # asked to with --file=-, and refuses to run without a target (#340).
     _stand_in(
         tools,
         "pg_restore",
         f'echo "pg_restore $*" >> "{log}"\n'
-        'case " $* " in *" --dbname "*) exit 0 ;; esac\n'
+        'case " $* " in\n'
+        '  *" --dbname "*) exit 0 ;;\n'
+        '  *" --file=- "*) ;;\n'
+        '  *) echo "pg_restore: error: one of -d/--dbname and -f/--file'
+        ' must be specified" >&2; exit 1 ;;\n'
+        "esac\n"
         f'cat "{tmp_path / "dump.sql"}"',
     )
     _stand_in(
