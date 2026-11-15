@@ -59,7 +59,7 @@ agent can already call `ansible-playbook`. What nobody has given it is a
 reason to stop.
 
 The agent decides well enough. What it lacks is a contract: a list of what
-it may run, a gate it cannot bypass, and a record of why it did what it
+it may run, a gate it does not control, and a record of why it did what it
 did. Today that contract is a human reading over its shoulder, and the job
 is manual.
 
@@ -86,7 +86,7 @@ Cloudfall is the harness an agent is missing:
 | Agent needs | Ansible gives | Cloudfall adds |
 | --- | --- | --- |
 | Know what it may do | Any playbook, any host | A catalog of declared operations with risk levels |
-| Be stopped before harm | `--check` if remembered | A gate it cannot bypass |
+| Be stopped before harm | `--check` if remembered | Check mode first, then a person approves the recorded diff at a terminal |
 | Explain itself | Job history: a job ran | Audit log with the snapshot, diff and approver behind each decision |
 | Know the fleet | Inventory, facts | One structured snapshot per host |
 | See the result | Verbose text, JSON callback | Per-host outcome, diff, evidence |
@@ -96,6 +96,17 @@ The defensible part is the contract: an agent acts only through declared
 operations and safe edits, on a fleet it can observe, behind a gate it does
 not control. The intelligence is the model's. Cloudfall does not compete
 with it and should not pretend to.
+
+That gate holds for declared operations, where a person approves at a
+terminal, and for the operator, where a person approves at a terminal or an
+`OperatorPolicy` grant licenses the operation class. It does not hold for
+the project-mode tools of `cloudfall mcp serve` (`deploy`, `converge_*`
+and the rest): there the confirmation, `yes: true` or
+`confirm_destructive: true`, is the agent's own. The terminal check itself
+stops an agent's tool call, not a process running as the same OS user (see
+the [operator guide](operator-guide.md)). Letting an `OperatorPolicy`
+decide which confirmations an agent may give itself is planned
+([#391](https://github.com/cloudfall-dev/cloudfall/issues/391)).
 
 ## Priority
 
