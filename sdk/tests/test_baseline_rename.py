@@ -312,7 +312,8 @@ def test_add_server_type_is_a_deprecated_name_of_add_baseline(
     ]
     warnings = payload["warnings"]
     assert isinstance(warnings, list)
-    assert warnings, "a deprecated command warns"
+    # PROJECT_FORMAT_OLD alone would make the list non-empty (S-017).
+    assert "DEPRECATED" in [warning["code"] for warning in warnings]
 
 
 def test_add_server_reuses_a_baseline_still_in_the_old_folder(
@@ -350,7 +351,7 @@ def test_add_server_takes_type_as_a_deprecated_name_of_baseline(
     )
 
     assert exit_code == 0
-    assert payload["warnings"]
+    assert "DEPRECATED_FLAG" in [warning["code"] for warning in payload["warnings"]]
     text = (project / "servers" / "h3.yaml").read_text(encoding="utf-8")
     assert "baseline: debian-minimal" in text
     assert "serverType" not in text
