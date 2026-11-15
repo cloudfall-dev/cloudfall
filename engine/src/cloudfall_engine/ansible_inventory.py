@@ -137,10 +137,11 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
             "cloudfall_labels": {
                 label.key.value: label.value for label in server.labels
             },
+            # Revoked keys ride along so the baseline can remove them (D-22)
             "cloudfall_ssh_public_keys": [
                 key.as_dict()
                 for key in inventory.ssh_public_keys
-                if key.environment == server.environment and key.is_active
+                if key.environment == server.environment
             ],
             **_host_infrastructure(server),
             **_host_firewall(

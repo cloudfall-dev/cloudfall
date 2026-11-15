@@ -90,6 +90,27 @@ jobs:
       - name: Baseline
         run: uv run cloudfall baseline converge --project . --yes
 
+      # A key that goes from active to revoked is gone after the next
+      # baseline run, and the declared active key still logs in (#354, D-22)
+      - name: Revoke a key, which the baseline removes
+        run: |
+          ssh-keygen -q -t ed25519 -N '' -C spare -f ~/.ssh/spare
+          spare="$(cut -d ' ' -f 2 ~/.ssh/spare.pub)"
+          uv run cloudfall add ssh-key ~/.ssh/spare.pub --owner spare --project .
+          uv run cloudfall-engine inventory render --project . --output tmp/ansible-inventory.json
+          uv run cloudfall baseline converge --project . --yes
+          ssh 127.0.0.1 grep --quiet --fixed-strings "${spare}" /root/.ssh/authorized_keys
+          sed -i 's/^  lifecycle: active$/  lifecycle: revoked/' ssh-public-keys/spare.yaml
+          grep --quiet '^  lifecycle: revoked$' ssh-public-keys/spare.yaml
+          uv run cloudfall config validate --project .
+          uv run cloudfall-engine inventory render --project . --output tmp/ansible-inventory.json
+          uv run cloudfall baseline converge --project . --yes
+          if ssh 127.0.0.1 grep --quiet --fixed-strings "${spare}" /root/.ssh/authorized_keys; then
+            echo "::error::the revoked key is still in root's authorized_keys"
+            exit 1
+          fi
+          ssh 127.0.0.1 true
+
       - name: Services
         run: uv run cloudfall-engine playbook run services
 

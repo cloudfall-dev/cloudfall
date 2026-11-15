@@ -33,6 +33,7 @@ from cloudfall.domain import (
     RuntimePackageManager,
     RuntimeType,
     SourceLocation,
+    SshPublicKeyLifecycle,
     TelegramChatId,
 )
 from cloudfall.elasticsearch import (
@@ -630,9 +631,78 @@ def _validate_application_references(
 def _validate_ssh_public_key_references(
     document: ResourceDocument,
     spec: Mapping[str, object],
-    _index: Mapping[ResourceKey, ResourceDocument],
+    index: Mapping[ResourceKey, ResourceDocument],
 ) -> None:
     _validate_ssh_public_key(document, spec)
+    _validate_ssh_public_key_lifecycle(document, index)
+
+
+def _ssh_key_declaration(
+    document: ResourceDocument,
+) -> tuple[tuple[str, str, str], str]:
+    """Return a key's identity (environment, type, base64 body) and lifecycle.
+
+    The comment after the body is not part of the key.
+    """
+    spec = _required_mapping(document.content, "spec", document.source)
+    environment = spec.get("environment")
+    public_key = spec.get("publicKey")
+    lifecycle = spec.get("lifecycle")
+    if (
+        not isinstance(environment, str)
+        or not isinstance(public_key, str)
+        or not isinstance(lifecycle, str)
+    ):
+        issue = ValidationIssue(
+            code="internal_state_shape_invalid",
+            message="validated SSH public key has an invalid shape",
+            source=document.source,
+            field_path=("spec",),
+        )
+        raise ConfigValidationError(issue)
+    algorithm, body = public_key.split()[:2]
+    return (environment, algorithm, body), lifecycle
+
+
+def _validate_ssh_public_key_lifecycle(
+    document: ResourceDocument,
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> None:
+    """Refuse one key declared active and revoked in the same environment.
+
+    The baseline would install it and remove it on every run (D-22).
+    """
+    identity, lifecycle = _ssh_key_declaration(document)
+    conflict = next(
+        (
+            other
+            for key, other in index.items()
+            if key.kind is ResourceKind.SSH_PUBLIC_KEY
+            and other is not document
+            and _ssh_key_declaration(other) == (identity, _other_lifecycle(lifecycle))
+        ),
+        None,
+    )
+    if conflict is not None:
+        issue = ValidationIssue(
+            code="ssh_public_key_lifecycle_conflict",
+            message=(
+                f"this SSH public key is declared {lifecycle} here and "
+                f"{_other_lifecycle(lifecycle)} at {conflict.source.display()}; "
+                "declare it once"
+            ),
+            source=document.source,
+            field_path=("spec", "lifecycle"),
+        )
+        raise ConfigValidationError(issue)
+
+
+def _other_lifecycle(lifecycle: str) -> str:
+    other = {
+        SshPublicKeyLifecycle.ACTIVE.value: SshPublicKeyLifecycle.REVOKED.value,
+        SshPublicKeyLifecycle.REVOKED.value: SshPublicKeyLifecycle.ACTIVE.value,
+    }
+    return other[lifecycle]
 
 
 def _validate_ssh_public_key(
