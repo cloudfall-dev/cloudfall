@@ -304,7 +304,9 @@ def test_the_role_converges_every_node_of_the_service(tmp_path: Path) -> None:
 
 def test_remote_access_is_refused_on_a_cluster_of_two_or_more(tmp_path: Path) -> None:
     hosts = _hosts(_rendered(tmp_path))
-    refuse = _task(_load("main.yml"), "Refuse remote access on a cluster of two or more")
+    refuse = _task(
+        _load("main.yml"), "Refuse remote access on a cluster of two or more"
+    )
     remote = {"listenAddress": "203.0.113.11", "allowedSources": ["10.0.0.0/24"]}
 
     def holds(nodes: list[str], **elasticsearch: object) -> bool:

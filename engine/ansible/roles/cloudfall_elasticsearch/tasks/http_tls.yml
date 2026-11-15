@@ -52,4 +52,5 @@
   loop_control:
     label: "{{ item.path }}"
   notify: Restart Elasticsearch
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
