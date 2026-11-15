@@ -6,5 +6,5 @@
 
 ### Changed
 
-- A `mirrored` volume now meets an `expendable` requirement (D-14): when a one-node Elasticsearch service grows, its first node keeps its raid1 data volume, and the volume provider keeps and grows it, and `audit` checks it, as the mirror it is; a linear volume still never meets a `mirrored` requirement (#312)
+- A `mirrored` volume now meets an `expendable` requirement (D-18): when a one-node Elasticsearch service grows, its first node keeps its raid1 data volume, and the volume provider keeps and grows it, and `audit` checks it, as the mirror it is; a linear volume still never meets a `mirrored` requirement (#312)
 - When installing a new Elasticsearch version fails after the node was stopped for it, the role starts the node again on the package it had and lets its cluster move replicas again before the converge stops (#312)

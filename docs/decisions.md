@@ -148,4 +148,3 @@ entry that supersedes it, never by editing an old one.
 - Why: S-012 makes an Elasticsearch node's volume mirrored for a cluster of one and expendable for two or more, while S-014 refused any change of an existing volume's type, so growing a one-node service refused its first node; a mirror is stronger than what an expendable volume asks, nothing on the host has to change when the cluster grows, and converting a raid1 volume to linear in place would mean an lvconvert the provider never runs
 - Applies to: sdk/src/cloudfall/requirements.py (VolumeRequirement.held_as), sdk/src/cloudfall/volumes.py, sdk/src/cloudfall/audit.py; S-012 What each node needs, S-014 Refusals
 - Enforced by: sdk/tests/test_s014_volumes.py
-- Zone: rule-departure (decided by the maintainer on cloudfall-dev/cloudfall#323, option 1)

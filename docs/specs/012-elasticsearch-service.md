@@ -146,7 +146,7 @@ The kind yields S-011 requirements per node, so nothing below is prepared by han
 | Requirement | Value |
 |---|---|
 | `package` | `elasticsearch=<version>` from the declared major's repository |
-| `volume` | `elasticsearch`, 10G unless overridden, `mirrored` for one node and `expendable` for two or more (the replica is on another server), mounted at `/var/lib/elasticsearch`, needed by `elasticsearch.service`. A node that was a cluster of one keeps its mirrored volume when the cluster grows: a mirror meets the expendable requirement (D-14) |
+| `volume` | `elasticsearch`, 10G unless overridden, `mirrored` for one node and `expendable` for two or more (the replica is on another server), mounted at `/var/lib/elasticsearch`, needed by `elasticsearch.service`. A node that was a cluster of one keeps its mirrored volume when the cluster grows: a mirror meets the expendable requirement (D-18) |
 | `port` | 9300/tcp from the other node servers only; with `remoteAccess`, `bind.port` from `allowedSources` only |
 | `certificate` | one per node from the project CA, usage server and client, names: the server's hostname and addresses; used for transport TLS with `verification_mode: full`, and for HTTP when `remoteAccess` is declared |
 | `secret` | `generate`: the password of Cloudfall's own account (below) |
@@ -354,7 +354,7 @@ Touches `config/schemas/v1/service.schema.json`, `config/examples/services/`,
 ## Decisions relied on
 
 - D-9: a password reaches the service only as a hash computed on the controller
-- D-14: a mirrored volume meets an expendable requirement
+- D-18: a mirrored volume meets an expendable requirement
 
 ## Issues
 
