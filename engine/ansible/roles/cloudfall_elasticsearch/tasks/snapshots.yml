@@ -17,6 +17,20 @@
   changed_when: false
   check_mode: false
 
+# Every service's backup directory sits in the shared backup root, so the
+# root is created root-owned 0755 first: left to the leaf's task, it would
+# take the first service's owner and lock the others out (#342).
+- name: Create the backup root
+  ansible.builtin.file:
+    path: "{{ cloudfall_elasticsearch_backup_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: >-
+    cloudfall_elasticsearch_service.backup.directory
+    .startswith(cloudfall_elasticsearch_backup_root ~ '/')
+
 - name: Create the snapshot repository directory
   ansible.builtin.file:
     path: "{{ cloudfall_elasticsearch_service.backup.directory }}"

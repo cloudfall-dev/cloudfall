@@ -1,2 +1,4 @@
 ---
 cloudfall_redis_service: {}
+# The backup root every service's backup directory shares, root-owned 0755.
+cloudfall_redis_backup_root: /var/backups/cloudfall

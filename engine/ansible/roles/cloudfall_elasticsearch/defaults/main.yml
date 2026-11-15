@@ -48,6 +48,8 @@ cloudfall_elasticsearch_formed_marker: >-
 # Snapshots and the restore drill (S-012): the repository the converge
 # registers, and how often and how long the scripts wait for Elasticsearch.
 cloudfall_elasticsearch_snapshot_repository: cloudfall
+# The backup root every service's backup directory shares, root-owned 0755.
+cloudfall_elasticsearch_backup_root: /var/backups/cloudfall
 # Cloudfall's own index: one document per snapshot with the document counts
 # the restore drill compares, taken into the snapshot it describes.
 cloudfall_elasticsearch_snapshot_counts_index: cloudfall-snapshot-counts
