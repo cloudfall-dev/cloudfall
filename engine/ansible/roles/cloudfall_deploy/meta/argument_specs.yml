@@ -84,6 +84,13 @@ argument_specs:
           retainUntilCleanup:
             type: bool
             required: true
+          retainReleases:
+            description:
+              - How many releases a deploy keeps on each server once its gate
+                passed, at least 2; current and the release before it always
+                stay
+            type: int
+            required: true
           release:
             type: dict
             options:

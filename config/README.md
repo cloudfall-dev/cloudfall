@@ -56,7 +56,9 @@ deploy writes per component, with one entry per server under `servers`: the
 release that server ended on, whether its gate passed, and whether it was
 rolled back. A failed entry is a failed command health check
 (`healthCheckPassed: false`, with the check's attempts, exit code and timeout
-under `healthCheck`, never its output). A receipt from before entries, with
+under `healthCheck`, never its output). An entry whose gate passed names the
+releases the deploy removed from that server under `removedReleases`, keeping
+the component's `deployment.retainReleases`. A receipt from before entries, with
 one `server`, still validates. Together with server observations, these inputs derive planned,
 ready-to-deploy, deployed, configured, and healthy service states.
 

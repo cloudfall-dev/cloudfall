@@ -414,6 +414,7 @@ def _host_component(
         "service": component.service.as_dict(),
         "healthCheck": component.health_check.as_dict(),
         "retainUntilCleanup": component.retain_until_cleanup,
+        "retainReleases": component.retain_releases.value,
     }
     if component.release is not None:
         variables["release"] = {

@@ -119,6 +119,7 @@ def test_inventory_renders_ansible_host_variables() -> None:
                     "attempts": 5,
                 },
                 "retainUntilCleanup": True,
+                "retainReleases": 5,
             }
         ],
         "cloudfall_services": [

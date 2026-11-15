@@ -66,6 +66,7 @@ from cloudfall.domain import (
     ResourceDocument,
     ResourceId,
     ResourceKind,
+    RetainReleases,
     RuntimePackageManager,
     RuntimeType,
     RuntimeVersion,
@@ -686,6 +687,7 @@ class ComponentInventory:
     server_ids: tuple[ResourceId, ...]
     install_root: AbsolutePath
     retain_until_cleanup: bool
+    retain_releases: RetainReleases
     repository: ComponentRepository
     runtime: ComponentRuntime
     service: ComponentService
@@ -716,6 +718,7 @@ class ComponentInventory:
             "servers": [server.value for server in self.server_ids],
             "installRoot": self.install_root.value,
             "retainUntilCleanup": self.retain_until_cleanup,
+            "retainReleases": self.retain_releases.value,
             "repository": self.repository.as_dict(),
             "runtime": self.runtime.as_dict(),
             "service": self.service.as_dict(),
@@ -1953,6 +1956,9 @@ def _component_inventory(document: ResourceDocument) -> ComponentInventory:
         install_root=AbsolutePath.from_boundary(deployment.get("installRoot")),
         retain_until_cleanup=_boolean(
             deployment.get("retainUntilCleanup"), "retain until cleanup"
+        ),
+        retain_releases=RetainReleases.from_boundary(
+            deployment.get("retainReleases")
         ),
         repository=ComponentRepository(
             url=RepositoryUrl.from_boundary(repository.get("url")),

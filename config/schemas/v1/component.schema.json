@@ -89,6 +89,12 @@
             },
             "retainUntilCleanup": {
               "const": true
+            },
+            "retainReleases": {
+              "description": "How many releases a deploy keeps on each server: once a deploy passes its gate there, it removes the older ones, always keeping current and the release before it.",
+              "type": "integer",
+              "minimum": 2,
+              "default": 5
             }
           },
           "required": [

@@ -241,7 +241,9 @@ server), `null` for a component without one. Rollback never runs the release
 command, and its plan says so with `release_command_skipped: true`. Rollback activates an already-retained
 release without re-transferring an artifact and requires the declared health
 check to pass; it deliberately does not auto-restore on failure, because a
-failed rollback is an incident, not a deployment.
+failed rollback is an incident, not a deployment. A rollback to a release that
+is no longer on the server (never deployed there, or removed by a deploy's
+cleanup) is refused with a message naming the releases still kept there.
 
 The deploy role transfers the artifact and refuses it if the digest does not
 match the build metadata, unpacks it under `releases/<release-id>/` (or,
@@ -283,6 +285,20 @@ and one entry per server under `servers`, in the order they deployed: the
 again after each server, so the receipt always names every server of the run;
 a receipt written before entries, with one `server`, still validates and
 reads as a one-entry list.
+
+Once a server passes its health gate, the deploy keeps the component's
+`deployment.retainReleases` releases under its `releases/` (an integer, at
+least 2, 5 when absent; `retainUntilCleanup: true` means this cleanup is on)
+and removes the older ones. A release is a release id: `releases/<id>` and its
+redeploy copies stay or go together. The deployed release, the one `current`
+points to and the one before it (what `current` pointed to before this deploy,
+which a rollback of that server takes) always stay, whatever the count and
+whatever their order, since after a rollback `current` need not be the newest;
+the other releases stay newest first by release id until the count is
+reached. A directory under `releases/` whose name is not a release id is
+never touched. The removed ids are that server's `removedReleases` in the
+receipt (an empty list when nothing was removed). A failed gate removes
+nothing, and check mode only reports what a deploy would remove.
 
 A `healthCheck` of `type: command` (a smoke check, say) is the gate's last
 step: after the switch and the restart, the command runs in a transient

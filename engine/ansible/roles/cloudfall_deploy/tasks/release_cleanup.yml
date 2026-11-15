@@ -1,0 +1,118 @@
+---
+# Once a deploy passed its gate on this server (#224, D-15), it keeps
+# retainReleases releases under releases/ and removes the older ones. A
+# release is a release id: releases/<id> and its releases/<id>.redeploy-<UTC
+# time> copies stay or go together. Three releases always stay, whatever the
+# count and whatever their order (after a rollback, current need not be the
+# newest): the deployed one, the one current points to, and the one before
+# it, which current pointed to before this deploy and which a rollback of
+# this server takes. The other releases stay newest first, by release id,
+# which starts with its UTC time, until the count is reached. A directory
+# whose name is not a release id is never touched, and releases/ itself, the
+# 0750 root "Create the releases and shared roots" keeps, is never removed or
+# changed: only its direct children are found. The removed release ids go
+# into this server's entry of the run's release receipt as removedReleases.
+- name: Inspect the release current points to after the gate
+  ansible.builtin.stat:
+    path: "{{ cloudfall_deploy_current_link }}"
+    follow: false
+    get_checksum: false
+  register: cloudfall_deploy_cleanup_current
+
+- name: Find the release directories on the server
+  ansible.builtin.find:
+    paths: "{{ cloudfall_deploy_component.install_root }}/releases"
+    patterns:
+      - '^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,40}(\.redeploy-[0-9]{8}T[0-9]{6,12}Z)?$'
+    use_regex: true
+    file_type: directory
+    recurse: false
+  register: cloudfall_deploy_cleanup_found
+
+- name: Select the releases beyond the declared count
+  ansible.builtin.set_fact:
+    cloudfall_deploy_removed_releases: >-
+      {{
+        cloudfall_deploy_cleanup_ids
+        | reject('in', cloudfall_deploy_cleanup_kept) | list
+      }}
+  vars:
+    cloudfall_deploy_cleanup_ids: >-
+      {{
+        cloudfall_deploy_cleanup_found.files | map(attribute='path')
+        | map('basename') | map('split', '.') | map('first')
+        | unique | sort | list
+      }}
+    cloudfall_deploy_cleanup_protected: >-
+      {{
+        [
+          cloudfall_deploy_release,
+          (cloudfall_deploy_previous_directory | basename).split('.') | first,
+          (
+            (cloudfall_deploy_cleanup_current.stat.lnk_source | basename)
+            .split('.') | first
+            if cloudfall_deploy_cleanup_current.stat.islnk | default(false)
+            else ''
+          ),
+        ] | select | unique | list
+      }}
+    cloudfall_deploy_cleanup_newest_others: >-
+      {{
+        cloudfall_deploy_cleanup_ids
+        | reject('in', cloudfall_deploy_cleanup_protected) | reverse | list
+      }}
+    cloudfall_deploy_cleanup_kept: >-
+      {{
+        cloudfall_deploy_cleanup_protected
+        + cloudfall_deploy_cleanup_newest_others[
+          :[
+            0,
+            cloudfall_deploy_component.retainReleases | int
+            - cloudfall_deploy_cleanup_protected | length,
+          ] | max
+        ]
+      }}
+
+- name: Report the releases a deploy would remove
+  ansible.builtin.debug:
+    msg: >-
+      A deploy keeps {{ cloudfall_deploy_component.retainReleases }} releases
+      of {{ cloudfall_deploy_component.id }} on {{ cloudfall_server_id }} and
+      would remove {{ cloudfall_deploy_removed_releases | join(', ') }}
+  when:
+    - ansible_check_mode
+    - cloudfall_deploy_removed_releases | length > 0
+
+- name: Remove the release directories beyond the declared count
+  ansible.builtin.file:
+    path: "{{ cloudfall_deploy_cleanup_directory.path }}"
+    state: absent
+  loop: "{{ cloudfall_deploy_cleanup_found.files }}"
+  loop_control:
+    loop_var: cloudfall_deploy_cleanup_directory
+    label: "{{ cloudfall_deploy_cleanup_directory.path | basename }}"
+  when:
+    - not ansible_check_mode
+    - >-
+      (cloudfall_deploy_cleanup_directory.path | basename).split('.') | first
+      in cloudfall_deploy_removed_releases
+
+- name: Record the removed releases in the run's release receipt
+  ansible.builtin.set_fact:
+    cloudfall_deploy_run_entries: >-
+      {{
+        hostvars['localhost'].cloudfall_deploy_run_entries
+        | combine({
+          cloudfall_server_id: hostvars['localhost'].cloudfall_deploy_run_entries[
+            cloudfall_server_id
+          ] | combine({'removedReleases': cloudfall_deploy_removed_releases}),
+        })
+      }}
+  delegate_to: localhost
+  delegate_facts: true
+  become: false
+  when: not ansible_check_mode
+
+- name: Write the run's release receipt with the removed releases
+  ansible.builtin.include_tasks: receipt_write.yml
+  when: not ansible_check_mode

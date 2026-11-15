@@ -163,8 +163,11 @@ environment file → systemd unit → health-check gate → symlink switch
 ```
 
 A failed health check triggers automatic rollback to the previous release.
-Releases are retained until a cleanup policy removes them, so explicit
-rollback to any retained release stays available. Deployment approval is
+Once a deploy passes its health gate on a server, it keeps the component's
+`deployment.retainReleases` releases there (5 unless declared, at least 2)
+and removes the older ones, always keeping `current` and the release before
+it, so explicit rollback to any retained release stays available and the
+disk does not fill with deploys. Deployment approval is
 automatic or manual per application.
 
 ## Supported workloads

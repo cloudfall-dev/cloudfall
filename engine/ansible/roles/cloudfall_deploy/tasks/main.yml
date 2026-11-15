@@ -14,6 +14,15 @@
       The first deploy slice supports Debian x86_64 hosts and Python
       components managed by uv under systemd
 
+- name: Require a release count that keeps current and the release before it
+  ansible.builtin.assert:
+    that:
+      - cloudfall_deploy_component.retainReleases | int >= 2
+    fail_msg: >-
+      deployment.retainReleases of {{ cloudfall_deploy_component.id }} is {{
+        cloudfall_deploy_component.retainReleases
+      }}; a deploy keeps at least 2 releases, current and the release before it
+
 - name: Inspect the currently active release
   ansible.builtin.stat:
     path: "{{ cloudfall_deploy_component.install_root }}/current"
@@ -704,3 +713,9 @@
   ansible.builtin.include_tasks: release_receipt.yml
   vars:
     cloudfall_deploy_receipt_passed: true
+
+# Only once the gate passed: a failed gate leaves the rescue above, which
+# fails the deploy before this task, so it removes nothing.
+- name: Remove the releases beyond the declared count
+  ansible.builtin.include_tasks: release_cleanup.yml
+  when: cloudfall_deploy_component.retainUntilCleanup | bool

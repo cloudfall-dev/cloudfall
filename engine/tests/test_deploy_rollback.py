@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -109,6 +110,7 @@ class _Host:
 
     tmp_path: Path
     unit_loaded: bool = True
+    retain: int | None = 5
 
     @property
     def install_root(self) -> Path:
@@ -137,6 +139,12 @@ class _Host:
         return directory
 
     def component(self) -> dict[str, object]:
+        component = self._component()
+        if self.retain is None:
+            del component["retainReleases"]
+        return component
+
+    def _component(self) -> dict[str, object]:
         return {
             "id": COMPONENT_ID,
             "application": "crm",
@@ -158,6 +166,7 @@ class _Host:
                 "attempts": 1,
             },
             "retainUntilCleanup": True,
+            "retainReleases": self.retain,
         }
 
     def run(
@@ -336,6 +345,22 @@ def test_a_rollback_to_a_release_never_redeployed_takes_its_directory(
     assert host.current.readlink() == previous
 
 
+def test_a_rollback_to_a_kept_release_renders_no_refusal(tmp_path: Path) -> None:
+    """The refusal's message, which names retainReleases, is only for a refusal.
+
+    The rollback role's arguments require only the component, so a rollback
+    to a release still on the server must not template what it would say.
+    """
+    host = _Host(tmp_path, retain=None)
+    previous = host.release(PREVIOUS)
+    host.current.symlink_to(host.release(RELEASE))
+
+    exit_code, output = _rollback(host, PREVIOUS)
+
+    assert exit_code == 0, output
+    assert host.current.readlink() == previous
+
+
 def test_a_rollback_to_a_missing_release_is_refused(tmp_path: Path) -> None:
     host = _Host(tmp_path)
     host.release(f"{PREVIOUS}0")
@@ -346,6 +371,11 @@ def test_a_rollback_to_a_missing_release_is_refused(tmp_path: Path) -> None:
 
     assert exit_code != 0
     assert f"Release {PREVIOUS} does not exist under" in output
+    # A release a deploy's cleanup removed is refused naming the kept ones.
+    assert (
+        "or a deploy removed it, keeping 5 releases (deployment.retainReleases);"
+        f" the releases kept there are {PREVIOUS}0, {RELEASE}"
+    ) in " ".join(output.split())
     assert host.current.readlink() == live
 
 
@@ -515,12 +545,14 @@ DEPLOY_REPLAY_TASKS = (
     "Inspect the currently active release",
     "Record the rollback candidate",
     "Compute release paths",
+    "Create the releases and shared roots",
     "Compute service unit paths",
     "Inspect the existing service unit",
     "Read the existing service unit",
     "Recognize a hand-made service unit",
     "Activate the release behind the health gate",
     "Receipt the release that passed its health gate",
+    "Remove the releases beyond the declared count",
 )
 
 
@@ -550,6 +582,7 @@ class _Fleet:
 
     tmp_path: Path
     servers: tuple[str, ...]
+    retain: int = 5
 
     def install_root(self, server: str) -> Path:
         return self.tmp_path / server / "app"
@@ -621,6 +654,7 @@ class _Fleet:
                     {
                         **_Host(self.tmp_path).component(),
                         "install_root": str(self.install_root(server)),
+                        "retainReleases": self.retain,
                     }
                 ],
             }
@@ -1091,3 +1125,185 @@ def test_a_single_server_receipt_from_before_entries_still_validates() -> None:
     _validate(receipt)
     with pytest.raises(ValidationError):
         _validate({**receipt, "spec": {**spec, "rolledBack": False}})
+
+
+# A deploy that passed its gate keeps retainReleases releases (#224, D-15).
+
+OLDER = tuple(f"2026101{day}T000000Z-abcdef{day}" for day in range(5))
+SELECT = "Select the releases beyond the declared count"
+
+
+def _selected_for_removal(
+    directories: list[str], *, retain: int, previous: str, current: str
+) -> list[str]:
+    """Evaluate the cleanup's selection on directory names under releases/."""
+    tasks = DataLoader().load_from_file(str(ROLE / "tasks" / "release_cleanup.yml"))
+    assert isinstance(tasks, list)
+    task = next(t for t in tasks if t["name"] == SELECT)
+    releases = "/srv/app/releases"
+    variables: dict[str, object] = {
+        "cloudfall_deploy_release": RELEASE,
+        "cloudfall_deploy_component": {"retainReleases": retain},
+        "cloudfall_deploy_previous_directory": (
+            f"{releases}/{previous}" if previous else ""
+        ),
+        "cloudfall_deploy_cleanup_current": {
+            "stat": {
+                "exists": True,
+                "islnk": True,
+                "lnk_source": f"{releases}/{current}",
+            }
+        },
+        "cloudfall_deploy_cleanup_found": {
+            "files": [{"path": f"{releases}/{name}"} for name in directories]
+        },
+        **{name: trust_as_template(value) for name, value in task["vars"].items()},
+    }
+    templar = Templar(loader=DataLoader(), variables=variables)
+    selected = templar.template(
+        trust_as_template(
+            task["ansible.builtin.set_fact"]["cloudfall_deploy_removed_releases"]
+        )
+    )
+    assert isinstance(selected, list)
+    return [str(name) for name in selected]
+
+
+@pytest.mark.parametrize(
+    ("directories", "retain", "previous", "current", "removed"),
+    [
+        # The newest stay: the deployed one, the one before it, then by id.
+        ([*OLDER, RELEASE], 3, OLDER[4], RELEASE, list(OLDER[:3])),
+        ([*OLDER, RELEASE], 5, OLDER[4], RELEASE, [OLDER[0]]),
+        ([*OLDER, RELEASE], 6, OLDER[4], RELEASE, []),
+        # After a rollback, the release before the deployed one is the oldest.
+        ([*OLDER, RELEASE], 2, OLDER[0], RELEASE, list(OLDER[1:])),
+        ([*OLDER, RELEASE], 3, OLDER[0], RELEASE, list(OLDER[1:4])),
+        # A redeploy: both copies of the deployed release are one release.
+        (
+            [*OLDER, RELEASE, REDEPLOYED],
+            2,
+            RELEASE,
+            REDEPLOYED,
+            list(OLDER[:4]),
+        ),
+        # A first deploy has no release before it.
+        ([RELEASE], 2, "", RELEASE, []),
+        # A copy of a removed release goes with it.
+        (
+            [OLDER[0], f"{OLDER[0]}.redeploy-20261010T000000Z", OLDER[1], RELEASE],
+            2,
+            OLDER[1],
+            RELEASE,
+            [OLDER[0]],
+        ),
+    ],
+    ids=[
+        "keep-3",
+        "keep-5",
+        "fewer-than-the-count",
+        "after-a-rollback-keep-2",
+        "after-a-rollback-keep-3",
+        "redeploy",
+        "first-deploy",
+        "copies-go-together",
+    ],
+)
+def test_the_cleanup_keeps_current_the_release_before_it_and_the_newest(
+    directories: list[str], retain: int, previous: str, current: str, removed: list[str]
+) -> None:
+    assert (
+        _selected_for_removal(
+            directories, retain=retain, previous=previous, current=current
+        )
+        == removed
+    )
+
+
+def _names(fleet: _Fleet, server: str) -> list[str]:
+    releases = fleet.install_root(server) / "releases"
+    return sorted(path.name for path in releases.iterdir())
+
+
+def test_a_passed_deploy_removes_the_releases_beyond_the_count(tmp_path: Path) -> None:
+    fleet = _Fleet(tmp_path, ("h1",), retain=3)
+    for name in OLDER:
+        fleet.release("h1", name, healthy=True)
+    fleet.current("h1").symlink_to(fleet.release("h1", PREVIOUS, healthy=True))
+    fleet.release("h1", RELEASE, healthy=True)
+    (fleet.install_root("h1") / "releases" / "hand-made").mkdir()
+
+    exit_code, output = fleet.deploy()
+
+    assert exit_code == 0, output
+    assert _names(fleet, "h1") == sorted([OLDER[4], PREVIOUS, RELEASE, "hand-made"])
+    # The cleanup removes inside releases/, never the 0750 root itself.
+    releases = fleet.install_root("h1") / "releases"
+    assert stat.S_IMODE(releases.stat().st_mode) == 0o750
+    (entry,) = _entries(fleet.receipt)
+    assert entry["removedReleases"] == list(OLDER[:4])
+
+
+def test_a_deploy_after_a_rollback_keeps_the_release_it_rolled_back_to(
+    tmp_path: Path,
+) -> None:
+    """The oldest release is current: it stays with the deployed one."""
+    fleet = _Fleet(tmp_path, ("h1",), retain=2)
+    for name in OLDER[1:]:
+        fleet.release("h1", name, healthy=True)
+    fleet.current("h1").parent.mkdir(parents=True, exist_ok=True)
+    fleet.current("h1").symlink_to(fleet.release("h1", OLDER[0], healthy=True))
+    fleet.release("h1", RELEASE, healthy=True)
+
+    exit_code, output = fleet.deploy()
+
+    assert exit_code == 0, output
+    assert _names(fleet, "h1") == [OLDER[0], RELEASE]
+    assert _entries(fleet.receipt)[0]["removedReleases"] == list(OLDER[1:])
+
+
+def test_a_failed_gate_removes_no_release(tmp_path: Path) -> None:
+    fleet = _Fleet(tmp_path, ("h1",), retain=2)
+    for name in OLDER:
+        fleet.release("h1", name, healthy=True)
+    fleet.current("h1").symlink_to(fleet.release("h1", PREVIOUS, healthy=True))
+    fleet.release("h1", RELEASE, healthy=False)
+
+    exit_code, output = fleet.deploy()
+
+    assert exit_code != 0, output
+    assert _names(fleet, "h1") == sorted([*OLDER, PREVIOUS, RELEASE])
+    assert "removedReleases" not in _entries(fleet.receipt)[0]
+
+
+def test_a_server_that_cleaned_up_still_rolls_back_when_a_later_one_fails(
+    tmp_path: Path,
+) -> None:
+    fleet = _Fleet(tmp_path, ("h1", "h2"), retain=2)
+    for server in fleet.servers:
+        fleet.release(server, OLDER[0], healthy=True)
+        fleet.current(server).symlink_to(
+            fleet.release(server, PREVIOUS, healthy=True)
+        )
+    fleet.release("h1", RELEASE, healthy=True)
+    fleet.release("h2", RELEASE, healthy=False)
+
+    exit_code, output = fleet.deploy()
+
+    assert exit_code != 0, output
+    assert fleet.current("h1").readlink() == (
+        fleet.install_root("h1") / "releases" / PREVIOUS
+    )
+    assert _names(fleet, "h1") == [PREVIOUS, RELEASE]
+    assert _names(fleet, "h2") == [OLDER[0], PREVIOUS, RELEASE]
+    h1, h2 = _entries(fleet.receipt)
+    assert (h1["rolledBack"], h1["removedReleases"]) == (True, [OLDER[0]])
+    assert "removedReleases" not in h2
+
+
+def test_the_receipt_schema_refuses_removed_releases_on_a_failed_gate() -> None:
+    _validate(_run_receipt({**PASSED_ENTRY, "removedReleases": [OLDER[0]]}))
+    with pytest.raises(ValidationError):
+        _validate(_run_receipt({**FAILED_ENTRY, "removedReleases": [OLDER[0]]}))
+    with pytest.raises(ValidationError):
+        _validate(_run_receipt({**PASSED_ENTRY, "removedReleases": ["old"]}))

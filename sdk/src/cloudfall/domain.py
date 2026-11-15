@@ -693,6 +693,51 @@ class HealthCheckAttempts:
         )
 
 
+_RETAIN_RELEASES_MINIMUM = 2
+_RETAIN_RELEASES_DEFAULT = 5
+
+
+@dataclass(frozen=True, slots=True)
+class RetainReleases:
+    """How many releases a deploy keeps on each server: at least 2.
+
+    Current and the release before it always stay, so a count below 2 would
+    promise a cleanup the deploy never does.
+    """
+
+    value: int
+
+    def __post_init__(self) -> None:
+        """Reject booleans, non-integers and counts below 2."""
+        if isinstance(self.value, bool) or not isinstance(self.value, int):
+            message = (
+                f"retain releases must be an integer, got {type(self.value).__name__}"
+            )
+            raise TypeError(message)
+        if self.value < _RETAIN_RELEASES_MINIMUM:
+            message = (
+                f"retain releases must be at least {_RETAIN_RELEASES_MINIMUM}, "
+                f"got {self.value}"
+            )
+            raise ValueError(message)
+
+    @classmethod
+    def from_boundary(cls, value: object) -> RetainReleases:
+        """Coerce an optional boundary value; absent (None) means 5.
+
+        JSON Schema's ``integer`` accepts a number with no fraction, so a
+        validated ``2.0`` reads as 2; ``2.5`` is refused.
+        """
+        if value is None:
+            return cls(_RETAIN_RELEASES_DEFAULT)
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        if isinstance(value, bool) or not isinstance(value, int):
+            message = f"retain releases must be an integer, got {type(value).__name__}"
+            raise TypeError(message)
+        return cls(value)
+
+
 class RuntimeType(StrEnum):
     """Component runtimes supported by the v1 contract."""
 
