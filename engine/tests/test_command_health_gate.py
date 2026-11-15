@@ -235,6 +235,7 @@ def _check(  # noqa: PLR0913 - one knob per criterion.
     timed_out: bool = False,
     absolute: bool = False,
     verbose: bool = False,
+    own_environment: bool = False,
 ) -> _Run:
     """Run the role's command check, receipting it as the gate and rescue do.
 
@@ -247,6 +248,10 @@ def _check(  # noqa: PLR0913 - one knob per criterion.
     if not first_release:
         (install_root / "releases" / PREVIOUS).mkdir()
     (install_root / "current").symlink_to(release_directory)
+    if own_environment:
+        environment = install_root / "shared" / "env" / f"{COMPONENT_ID}.{RELEASE}.env"
+        environment.parent.mkdir(parents=True)
+        environment.write_text("KEY=value\n", encoding="utf-8")
     if absolute:
         executable = tmp_path / "checks" / "smoke"
         _executable(executable, SMOKE)
@@ -414,10 +419,23 @@ def test_s009_2_the_check_runs_after_the_restart_inside_the_rescued_block() -> N
     assert not _runs(gate, {**variables, "ansible_check_mode": True})
 
 
+@pytest.mark.parametrize(
+    ("own_environment", "environment_name"),
+    [
+        # A release deployed with an environment file reads its own (D-21).
+        (True, f"{COMPONENT_ID}.{RELEASE}.env"),
+        # One deployed without, or before per-release files, reads the legacy.
+        (False, f"{COMPONENT_ID}.env"),
+    ],
+    ids=["own", "legacy"],
+)
 def test_s009_2_the_check_runs_as_the_user_in_current_with_the_unit_environment(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    own_environment: bool,  # noqa: FBT001 - a parametrized case
+    environment_name: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    run = _check(tmp_path, capsys)
+    run = _check(tmp_path, capsys, own_environment=own_environment)
 
     assert run.exit_code == 0, run.output
     argv = run.argv
@@ -432,7 +450,12 @@ def test_s009_2_the_check_runs_as_the_user_in_current_with_the_unit_environment(
     assert "--property=NoNewPrivileges=true" in options
     assert "--property=PrivateTmp=true" in options
     unit = _templar(
-        {"cloudfall_deploy_component": _component(NO_CHECK, run.install_root)}
+        {
+            "cloudfall_deploy_component": _component(NO_CHECK, run.install_root),
+            "cloudfall_deploy_environment_path": (
+                f"{run.install_root}/shared/env/{environment_name}"
+            ),
+        }
     ).template(
         trust_as_template(
             (ROLE / "templates" / "component.service.j2").read_text(encoding="utf-8")

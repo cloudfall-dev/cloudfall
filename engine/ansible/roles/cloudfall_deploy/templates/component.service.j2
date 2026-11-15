@@ -12,7 +12,7 @@ Type=exec
 User={{ cloudfall_deploy_component.application_user }}
 Group={{ cloudfall_deploy_component.application_user }}
 WorkingDirectory={{ cloudfall_deploy_component.install_root }}/current
-EnvironmentFile=-{{ cloudfall_deploy_component.install_root }}/shared/env/{{ cloudfall_deploy_component.id }}.env
+EnvironmentFile=-{{ cloudfall_deploy_environment_path }}
 ExecStart={{ executable }}{% for argument in command[1:] %} "{{ argument }}"{% endfor %}
 
 Restart=on-failure

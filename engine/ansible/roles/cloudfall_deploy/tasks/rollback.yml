@@ -36,6 +36,8 @@
       }}
     cloudfall_deploy_current_link: >-
       {{ cloudfall_deploy_component.install_root }}/current
+    cloudfall_deploy_rollback_environment_directory: >-
+      {{ cloudfall_deploy_component.install_root }}/shared/env
 
 - name: Inspect the rollback target release
   ansible.builtin.stat:
@@ -72,6 +74,38 @@
         or 'none'
       }}
   when: not (cloudfall_deploy_rollback_target.stat.isdir | default(false))
+
+# Each release reads its own environment file (D-21), or the legacy
+# shared/env/<component>.env when its deploy wrote none for it. The unit names
+# the file of the release it runs, so a rollback points it at the target's
+# before the restart; only the EnvironmentFile= line a deploy writes changes.
+- name: Inspect the rollback target's own environment file
+  ansible.builtin.stat:
+    path: >-
+      {{ cloudfall_deploy_rollback_environment_directory }}/{{
+        cloudfall_deploy_component.id
+      }}.{{ cloudfall_deploy_release_directory | basename }}.env
+    get_checksum: false
+  register: cloudfall_deploy_rollback_environment
+
+- name: Point the service unit at the rollback target's environment file
+  ansible.builtin.replace:
+    path: >-
+      {{ cloudfall_deploy_unit_directory }}/{{
+        cloudfall_deploy_component.service.name
+      }}.service
+    regexp: >-
+      ^EnvironmentFile=-{{
+        cloudfall_deploy_rollback_environment_directory | regex_escape
+      }}/{{ cloudfall_deploy_component.id | regex_escape }}(\.[^/]+)?\.env$
+    replace: >-
+      EnvironmentFile=-{{ cloudfall_deploy_rollback_environment_directory }}/{{
+        cloudfall_deploy_component.id
+      }}{{
+        '.' ~ (cloudfall_deploy_release_directory | basename)
+        if cloudfall_deploy_rollback_environment.stat.exists
+        else ''
+      }}.env
 
 - name: Switch the current release symlink to the rollback target
   ansible.builtin.file:

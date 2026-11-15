@@ -365,8 +365,11 @@ def test_the_kept_copy_is_root_owned_beside_the_unit_and_never_overwritten() -> 
     assert isinstance(copy, dict)
     paths = _task("Compute service unit paths", _main())["ansible.builtin.set_fact"]
     assert isinstance(paths, dict)
+    defaults = DataLoader().load_from_file(str(ROLE / "defaults" / "main.yml"))
+    assert isinstance(defaults, dict)
     variables: dict[str, object] = {
-        "cloudfall_deploy_component": {"service": {"name": "asrest"}}
+        "cloudfall_deploy_component": {"service": {"name": "asrest"}},
+        "cloudfall_deploy_unit_directory": defaults["cloudfall_deploy_unit_directory"],
     }
 
     kept = _templar(variables).template(
@@ -629,16 +632,19 @@ def test_check_mode_removes_no_redeploy_copy() -> None:
 
 def test_the_failed_copy_goes_after_the_previous_release_runs_again() -> None:
     names = [str(task["name"]) for task in _section("rescue")]
-    remove = _task(REMOVE_FAILED_COPY, _section("rescue"))["ansible.builtin.file"]
+    task = _task(REMOVE_FAILED_COPY, _section("rescue"))
+    remove = task["ansible.builtin.file"]
     assert isinstance(remove, dict)
 
     assert names.index(RESTORE) < names.index(RESTART_RESTORED)
     assert names.index(RESTART_RESTORED) < names.index(REMOVE_FAILED_COPY)
     assert names.index(REMOVE_FAILED_COPY) < names.index(GATE_RESTORED)
-    assert remove == {
-        "path": "{{ cloudfall_deploy_release_directory }}",
-        "state": "absent",
-    }
+    assert remove == {"path": "{{ item }}", "state": "absent"}
+    # The copy and its own environment file (D-21).
+    loop = task["loop"]
+    assert isinstance(loop, list)
+    assert loop[0] == "{{ cloudfall_deploy_release_directory }}"
+    assert "cloudfall_deploy_release_directory | basename }}.env" in loop[1]
 
 
 def test_the_release_directory_is_chosen_after_reading_current() -> None:

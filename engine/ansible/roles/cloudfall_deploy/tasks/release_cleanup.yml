@@ -97,6 +97,37 @@
       (cloudfall_deploy_cleanup_directory.path | basename).split('.') | first
       in cloudfall_deploy_removed_releases
 
+# A removed release's environment files go with it (D-21): the one of each of
+# its directories, shared/env/<component>.<release directory>.env. The legacy
+# shared/env/<component>.env, which names no release, is never touched.
+- name: Find the release environment files on the server
+  ansible.builtin.find:
+    paths: "{{ cloudfall_deploy_component.install_root }}/shared/env"
+    patterns:
+      - >-
+        ^{{ cloudfall_deploy_component.id | regex_escape }}\.[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,40}(\.redeploy-[0-9]{8}T[0-9]{6,12}Z)?\.env$
+    use_regex: true
+    file_type: file
+    recurse: false
+  register: cloudfall_deploy_cleanup_environment_found
+  when: cloudfall_deploy_removed_releases | length > 0
+
+- name: Remove the environment files of the removed releases
+  ansible.builtin.file:
+    path: "{{ cloudfall_deploy_cleanup_environment.path }}"
+    state: absent
+  loop: "{{ cloudfall_deploy_cleanup_environment_found.files | default([]) }}"
+  loop_control:
+    loop_var: cloudfall_deploy_cleanup_environment
+    label: "{{ cloudfall_deploy_cleanup_environment.path | basename }}"
+  when:
+    - not ansible_check_mode
+    - >-
+      (
+        cloudfall_deploy_cleanup_environment.path | basename
+      )[cloudfall_deploy_component.id | length + 1:].split('.') | first
+      in cloudfall_deploy_removed_releases
+
 - name: Record the removed releases in the run's release receipt
   ansible.builtin.set_fact:
     cloudfall_deploy_run_entries: >-
