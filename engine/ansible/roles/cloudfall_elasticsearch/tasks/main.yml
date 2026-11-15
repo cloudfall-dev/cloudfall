@@ -35,20 +35,6 @@
       bind address; this release converges no declared users or
       existingCluster yet
 
-# remoteAccess names one listenAddress, which exists on one server only: on a
-# cluster of two or more, every other node would fail to bind it.
-- name: Refuse remote access on a cluster of two or more
-  ansible.builtin.assert:
-    that:
-      - >-
-        cloudfall_elasticsearch_service.elasticsearch.remoteAccess is not defined
-        or cloudfall_elasticsearch_service.elasticsearch.nodes | length == 1
-    fail_msg: >-
-      remoteAccess of service {{ cloudfall_elasticsearch_service.id }} names
-      one listenAddress, which only one of its
-      {{ cloudfall_elasticsearch_service.elasticsearch.nodes | length }} nodes
-      has; this release opens HTTP on a cluster of one only
-
 # Snapshots (S-012, #313): S-012 declares an S3 snapshotRepository, but
 # registering it (its keys in the keystore of every node, the repository
 # itself) is not built yet, so the converge stops before it changes the host
@@ -87,6 +73,20 @@
     cloudfall_elasticsearch_remote_access: >-
       {{ cloudfall_elasticsearch_service.elasticsearch.remoteAccess }}
   when: cloudfall_elasticsearch_service.elasticsearch.remoteAccess is defined
+
+# remoteAccess names one listenAddress, which exists on one server only: on a
+# cluster of two or more, every other node would fail to bind it.
+- name: Refuse remote access on a cluster of two or more
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudfall_elasticsearch_service.elasticsearch.remoteAccess is not defined
+        or cloudfall_elasticsearch_service.elasticsearch.nodes | length == 1
+    fail_msg: >-
+      remoteAccess of service {{ cloudfall_elasticsearch_service.id }} names
+      one listenAddress, which only one of its
+      {{ cloudfall_elasticsearch_service.elasticsearch.nodes | length }} nodes
+      has; this release opens HTTP on a cluster of one only
 
 - name: Require the staged account files of the service
   ansible.builtin.assert:

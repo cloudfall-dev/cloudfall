@@ -115,6 +115,32 @@ def test_s012_5_each_node_needs_a_transport_certificate_for_its_names(
         }
 
 
+def test_a_cluster_with_remote_access_needs_one_certificate_per_node(
+    tmp_path: Path,
+) -> None:
+    """The transport and HTTP share the node's one certificate: never two."""
+    project = write_project(
+        tmp_path / "project",
+        elasticsearch_service(
+            nodes=["h1", "h2"],
+            snapshotRepository=SNAPSHOT_REPOSITORY,
+            remoteAccess={
+                "listenAddress": "10.0.0.2",
+                "allowedSources": ["10.0.0.0/24"],
+            },
+        ),
+        servers=("h1", "h2"),
+    )
+
+    for server in requirements_of(_inventory(project)):
+        (certificate,) = [
+            item.spec
+            for item in server.requirements
+            if isinstance(item.spec, CertificateRequirement)
+        ]
+        assert [name.value for name in certificate.subject_names][-1] == "10.0.0.2"
+
+
 def test_each_node_has_its_data_volume_mirrored_only_as_a_cluster_of_one(
     tmp_path: Path,
 ) -> None:

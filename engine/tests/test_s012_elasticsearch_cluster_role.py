@@ -302,6 +302,26 @@ def test_the_role_converges_every_node_of_the_service(tmp_path: Path) -> None:
     assert not _holds(validate, stranger)
 
 
+def test_remote_access_is_refused_on_a_cluster_of_two_or_more(tmp_path: Path) -> None:
+    hosts = _hosts(_rendered(tmp_path))
+    refuse = _task(_load("main.yml"), "Refuse remote access on a cluster of two or more")
+    remote = {"listenAddress": "203.0.113.11", "allowedSources": ["10.0.0.0/24"]}
+
+    def holds(nodes: list[str], **elasticsearch: object) -> bool:
+        variables = _variables(hosts["h1"])
+        service = dict(variables["cloudfall_elasticsearch_service"])
+        service["elasticsearch"] = {
+            **service["elasticsearch"],
+            "nodes": nodes,
+            **elasticsearch,
+        }
+        return _holds(refuse, {**variables, "cloudfall_elasticsearch_service": service})
+
+    assert holds(["h1", "h2"])
+    assert holds(["h1"], remoteAccess=remote)
+    assert not holds(["h1", "h2"], remoteAccess=remote)
+
+
 def test_the_transport_is_opened_and_its_certificate_in_place_before_the_config(
 ) -> None:
     names = [task["name"] for task in _load("main.yml")]
@@ -316,9 +336,13 @@ def test_the_transport_is_opened_and_its_certificate_in_place_before_the_config(
     assert transport.index(
         "Refuse to bootstrap a second cluster beside a running node"
     ) < transport.index("Enforce the declared firewall with the transport rule")
-    assert transport.index(
-        "Enforce the declared firewall with the transport rule"
-    ) < transport.index("Install the transport certificate and the project CA")
+    # One certificate serves the transport and remoteAccess's HTTP: it is
+    # installed before either checks it.
+    install = names.index("Install the node certificate and the project CA")
+    assert install < names.index("Prepare the node certificate for HTTP over TLS")
+    assert install < names.index(
+        "Open the transport to the other nodes, with its certificate"
+    )
     key = _task(_load("transport.yml"), "Let the node read its transport key")
     assert key["ansible.builtin.file"]["group"] == "elasticsearch"
     assert key["ansible.builtin.file"]["mode"] == "0640"
