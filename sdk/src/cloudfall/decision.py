@@ -69,6 +69,7 @@ HOST_STATS_VARIABLE = "CLOUDFALL_HOST_STATS_DIR"
 
 _CALLBACK_PLUGIN_DIRECTORY = Path(__file__).parent / "callback_plugins"
 _DIFF_SUFFIX = ".diff"
+_RESERVATION_SUFFIX = ".reserved"
 _ANSIBLE_CONFIG_FILE = "ansible.cfg"
 CHECK_TIMEOUT_SECONDS = 1800
 _CHANGED_KEY = "changed"
@@ -562,6 +563,35 @@ class DecisionStore:
                 raise DecisionError(_ERROR_DECISION_EXISTS, message) from error
         return path
 
+    def reserve(self, operation_id: ResourceId, moment: datetime) -> ResourceId:
+        """Take a decision id no record or other proposal holds, before any file.
+
+        The id is ``<operation>-<stamp>``; a second proposal of the same
+        operation in the same second takes ``<operation>-<stamp>-2``, then
+        ``-3``. The reservation is a dot file no listing reads as a record,
+        so the diff and host stats written under the id are this proposal's
+        alone. ``release`` removes it once the record is saved or the
+        proposal failed.
+        """
+        stamp = moment.strftime("%Y%m%d%H%M%S")
+        attempt = 1
+        with record_files.locked(self.directory):
+            while True:
+                decision_id = _decision_identifier(operation_id, stamp, attempt)
+                attempt += 1
+                if self._path(decision_id).exists():
+                    continue
+                try:
+                    self._reservation(decision_id).touch(exist_ok=False)
+                except FileExistsError:
+                    continue
+                return decision_id
+
+    def release(self, decision_id: ResourceId) -> None:
+        """Remove the reservation of one id; the record, if saved, keeps it taken."""
+        with record_files.locked(self.directory):
+            self._reservation(decision_id).unlink(missing_ok=True)
+
     def update(self, decision: Decision) -> Path:
         """Persist a state change of an existing decision."""
         with record_files.locked(self.directory):
@@ -676,6 +706,9 @@ class DecisionStore:
     def _path(self, decision_id: ResourceId) -> Path:
         return self.directory / f"{decision_id.value}.json"
 
+    def _reservation(self, decision_id: ResourceId) -> Path:
+        return self.directory / f".{decision_id.value}{_RESERVATION_SUFFIX}"
+
     def _replace(self, decision: Decision) -> Path:
         """Replace one existing record; the caller holds the store's lock."""
         path = self._path(decision.decision_id)
@@ -738,44 +771,50 @@ def propose(
             skipped(unreadable)
     recorded = listing.records
     moment = (now or _utc_now)()
-    decision_id = _decision_identifier(operation.operation_id, moment)
-    diff_path = store.directory / f"{decision_id.value}{_DIFF_SUFFIX}"
-    host_stats = store.directory / _HOST_STATS_DIRECTORY / decision_id.value
-    argv, environment = run_command(
-        PlaybookInvocation(
+    # The id is taken before the check run writes its diff under it, so two
+    # proposals in one second never share a diff (#356).
+    decision_id = store.reserve(operation.operation_id, moment)
+    try:
+        diff_path = store.directory / f"{decision_id.value}{_DIFF_SUFFIX}"
+        host_stats = store.directory / _HOST_STATS_DIRECTORY / decision_id.value
+        argv, environment = run_command(
+            PlaybookInvocation(
+                playbook=operation.playbook,
+                repository=request.repository,
+                host_stats=host_stats,
+                pattern=pattern,
+                inputs=declared,
+            ),
+            check=True,
+        )
+        exit_code = (run or _run_check)(argv, environment, diff_path)
+        requirement, reason = gate(operation.risk)
+        ran = requirement is Requirement.RUNS_FREELY
+        decision = Decision(
+            decision_id=decision_id,
+            proposed_at=_timestamp(moment),
+            operation_id=operation.operation_id,
             playbook=operation.playbook,
-            repository=request.repository,
-            host_stats=host_stats,
-            pattern=pattern,
+            risk=operation.risk,
+            verify_playbook=(
+                operation.verify.playbook if operation.verify is not None else None
+            ),
+            targets=Targets(scope=request.targets.scope, pattern=pattern),
             inputs=declared,
-        ),
-        check=True,
-    )
-    diff_path.parent.mkdir(parents=True, exist_ok=True)
-    exit_code = (run or _run_check)(argv, environment, diff_path)
-    requirement, reason = gate(operation.risk)
-    ran = requirement is Requirement.RUNS_FREELY
-    decision = Decision(
-        decision_id=decision_id,
-        proposed_at=_timestamp(moment),
-        operation_id=operation.operation_id,
-        playbook=operation.playbook,
-        risk=operation.risk,
-        verify_playbook=(
-            operation.verify.playbook if operation.verify is not None else None
-        ),
-        targets=Targets(scope=request.targets.scope, pattern=pattern),
-        inputs=declared,
-        requirement=requirement,
-        reason=reason,
-        basis=read_basis(request.observations, request.repository),
-        check=_preview(exit_code, host_stats, diff_path, request.repository),
-        status=DecisionStatus.RAN if ran else DecisionStatus.PROPOSED,
-        verdict=_ran_verdict(exit_code, request.replay) if ran else None,
-        ran_exit_code=exit_code if ran else None,
-        replay=request.replay,
-    )
-    store.save(decision)
+            requirement=requirement,
+            reason=reason,
+            basis=read_basis(request.observations, request.repository),
+            check=_preview(exit_code, host_stats, diff_path, request.repository),
+            status=DecisionStatus.RAN if ran else DecisionStatus.PROPOSED,
+            verdict=_ran_verdict(exit_code, request.replay) if ran else None,
+            ran_exit_code=exit_code if ran else None,
+            replay=request.replay,
+        )
+        store.save(decision)
+    finally:
+        # Saved or failed, the reservation goes: a failed proposal leaves
+        # no record, and a saved one is held by its record.
+        store.release(decision_id)
     for older in recorded:
         # A replay never closes a live proposal and a live run never closes
         # a replayed one: only a record of the same replay value is replaced.
@@ -1273,9 +1312,12 @@ def _canonical(inputs: Mapping[str, object]) -> str:
     return json.dumps(dict(inputs), sort_keys=True)
 
 
-def _decision_identifier(operation_id: ResourceId, moment: datetime) -> ResourceId:
-    stamp = moment.strftime("%Y%m%d%H%M%S")
-    return ResourceId.from_boundary(f"{operation_id.value}-{stamp}")
+def _decision_identifier(
+    operation_id: ResourceId, stamp: str, attempt: int
+) -> ResourceId:
+    """Return ``<operation>-<stamp>``, suffixed ``-<attempt>`` past the first."""
+    suffix = "" if attempt == 1 else f"-{attempt}"
+    return ResourceId.from_boundary(f"{operation_id.value}-{stamp}{suffix}")
 
 
 def _timestamp(moment: datetime) -> str:
