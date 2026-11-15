@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -544,6 +545,7 @@ DEPLOY_REPLAY_TASKS = (
     "Inspect the currently active release",
     "Record the rollback candidate",
     "Compute release paths",
+    "Create the releases and shared roots",
     "Compute service unit paths",
     "Inspect the existing service unit",
     "Read the existing service unit",
@@ -1235,6 +1237,9 @@ def test_a_passed_deploy_removes_the_releases_beyond_the_count(tmp_path: Path) -
 
     assert exit_code == 0, output
     assert _names(fleet, "h1") == sorted([OLDER[4], PREVIOUS, RELEASE, "hand-made"])
+    # The cleanup removes inside releases/, never the 0750 root itself.
+    releases = fleet.install_root("h1") / "releases"
+    assert stat.S_IMODE(releases.stat().st_mode) == 0o750
     (entry,) = _entries(fleet.receipt)
     assert entry["removedReleases"] == list(OLDER[:4])
 

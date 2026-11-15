@@ -8,7 +8,9 @@
 # it, which current pointed to before this deploy and which a rollback of
 # this server takes. The other releases stay newest first, by release id,
 # which starts with its UTC time, until the count is reached. A directory
-# whose name is not a release id is never touched. The removed release ids go
+# whose name is not a release id is never touched, and releases/ itself, the
+# 0750 root "Create the releases and shared roots" keeps, is never removed or
+# changed: only its direct children are found. The removed release ids go
 # into this server's entry of the run's release receipt as removedReleases.
 - name: Inspect the release current points to after the gate
   ansible.builtin.stat:
@@ -24,6 +26,7 @@
       - '^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,40}(\.redeploy-[0-9]{8}T[0-9]{6,12}Z)?$'
     use_regex: true
     file_type: directory
+    recurse: false
   register: cloudfall_deploy_cleanup_found
 
 - name: Select the releases beyond the declared count
