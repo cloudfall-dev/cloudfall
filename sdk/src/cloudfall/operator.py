@@ -145,8 +145,10 @@ _BLOCKING_STATUSES = frozenset(
 )
 
 # The audit check ``server_type.id`` is ``baseline.id`` since 0.8.0 (D-11). A
-# proposal recorded before names the old id; until 0.9.0 its verifier and the
-# drift pass's duplicate check read it as the new one.
+# proposal recorded before names the old id; its verifier and the drift pass's
+# duplicate check read it as the new one. This read has no ``removed_in``: a
+# proposal is a record, and a record's fields are never deprecated within
+# ``cloudfall/v1`` (spec 017, S-017-11).
 _RENAMED_CHECKS: Mapping[str, str] = {"server_type.id": "baseline.id"}
 
 
