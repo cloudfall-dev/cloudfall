@@ -287,6 +287,14 @@ Each needs the maintainer; the recommendation is what the text above assumes.
 
 ## Issues
 
+- cloudfall-dev/cloudfall#375: S-017-2, S-017-3, S-017-6, S-017-7, S-017-10
+- cloudfall-dev/cloudfall#379: S-017-4, S-017-5
+- cloudfall-dev/cloudfall#380: S-017-8, S-017-9
+- cloudfall-dev/cloudfall#376: S-017-11
+- cloudfall-dev/cloudfall#377: S-017-12, S-017-13, S-017-14
+- cloudfall-dev/cloudfall#378: S-017-15
+- cloudfall-dev/cloudfall#381: S-017-1
+
 ## Verification
 
 No criterion is verified yet.
