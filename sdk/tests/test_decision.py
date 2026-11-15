@@ -338,15 +338,63 @@ def test_a_recorded_decision_round_trips_through_the_store(
     ]
 
 
-def test_the_same_decision_is_never_overwritten(tmp_path: Path) -> None:
+def _target_diff(
+    argv: Sequence[str], environment: Mapping[str, str], diff_path: Path
+) -> int:
+    """Write a diff naming the run's target, so each proposal's diff is its own."""
+    Path(environment[HOST_STATS_VARIABLE]).mkdir(parents=True, exist_ok=True)
+    target = argv[list(argv).index("--limit") + 1]
+    diff_path.write_text(f"+++ {target}\n", encoding="utf-8")
+    return 0
+
+
+def test_two_proposals_in_one_second_each_keep_their_own_diff(
+    tmp_path: Path,
+) -> None:
+    """Two proposals of one operation in one second are two records (#356)."""
     repository = _repository(tmp_path)
     store = _store(repository)
-    propose(_proposal(repository), store, lambda: MOMENT, _Runner())
 
-    with pytest.raises(DecisionError) as error:
-        propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    first = propose(
+        _proposal(repository, target="web-1"), store, lambda: MOMENT, _target_diff
+    )
+    second = propose(
+        _proposal(repository, target="web-2"), store, lambda: MOMENT, _target_diff
+    )
 
-    assert error.value.code == "decision_exists"
+    assert first.decision_id.value == "deploy-20260921143012"
+    assert second.decision_id.value == "deploy-20260921143012-2"
+    assert {entry.decision_id for entry in store.list().records} == {
+        first.decision_id,
+        second.decision_id,
+    }
+    for decision, target in ((first, "web-1"), (second, "web-2")):
+        diff = repository / store.load(decision.decision_id).check.diff.path
+        assert diff.read_text(encoding="utf-8") == f"+++ {target}\n"
+    # No reservation outlives its proposal.
+    assert not list(store.directory.glob(".*.reserved"))
+
+
+def test_a_failed_proposal_leaves_no_record_and_frees_its_id(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+
+    def broken(
+        _argv: Sequence[str], _environment: Mapping[str, str], diff_path: Path
+    ) -> int:
+        diff_path.write_text("--- half\n", encoding="utf-8")
+        message = "the check run broke"
+        raise OSError(message)
+
+    with pytest.raises(OSError, match="the check run broke"):
+        propose(_proposal(repository), store, lambda: MOMENT, broken)
+
+    assert store.list().records == ()
+    assert not list(store.directory.glob(".*.reserved"))
+    retried = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    assert retried.decision_id.value == "deploy-20260921143012"
 
 
 def test_a_fleet_operation_takes_no_target(tmp_path: Path) -> None:
