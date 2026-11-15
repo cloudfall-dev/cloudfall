@@ -596,7 +596,7 @@ def test_s003_14_the_worker_may_only_traverse_to_the_release(tmp_path: Path) -> 
     # env file stays root:<application> 0640, which www-data cannot read.
     deploy = yaml.safe_load((DEPLOY_TASKS / "main.yml").read_text(encoding="utf-8"))
     (env,) = (
-        t for t in deploy if t["name"] == "Install the component environment file"
+        t for t in deploy if t["name"] == "Install the release's environment file"
     )
     assert env["ansible.builtin.copy"]["mode"] == "0640"
     assert env["ansible.builtin.copy"]["owner"] == "root"

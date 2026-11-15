@@ -1,9 +1,12 @@
 """The component the CI converge job deploys: 200 on ``/health``, 404 elsewhere.
 
 Standard library only, so the release's ``uv sync`` installs nothing and the
-deploy depends on no package index.
+deploy depends on no package index. It starts only when its environment file
+sets ``PROBE_START=serve``, so a deploy with a wrong environment fails its
+health gate with code that passes it otherwise.
 """
 
+import os
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -21,4 +24,6 @@ class Health(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if os.environ.get("PROBE_START") != "serve":
+        raise SystemExit(1)
     HTTPServer(ADDRESS, Health).serve_forever()

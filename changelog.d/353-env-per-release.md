@@ -1,0 +1,3 @@
+### Fixed
+
+- A failed deploy or a rollback brings the previous environment back with the previous release: each release now reads its own environment file, `shared/env/<component>.<release>.env` (a redeploy copy gets one of its own), named by its unit and read by its release command and command health check, so a deploy that fails only because of a bad environment value leaves the previous release running, and restarting, on the environment it had; `rollback` points the unit at the target release's file. A deploy without `--env-file` copies in the file the previous release reads, a component with no environment still names `shared/env/<component>.env`, which no deploy writes or removes any more, and retention removes a removed release's environment files (#353)

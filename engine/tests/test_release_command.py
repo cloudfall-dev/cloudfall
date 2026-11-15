@@ -138,6 +138,11 @@ def _local_inventory(tmp_path: Path) -> Path:
     return inventory
 
 
+def _environment_path(tmp_path: Path) -> Path:
+    """Name the new release's own environment file as the deploy does (D-21)."""
+    return tmp_path / "shared" / "env" / "crm-backend.20261027T000000Z-abcdef1.env"
+
+
 def _run_release_command(
     tmp_path: Path,
     arguments: list[str],
@@ -157,6 +162,7 @@ def _run_release_command(
         "cloudfall_deploy_release": release_directory.name,
         "cloudfall_deploy_release_directory": str(release_directory),
         "cloudfall_deploy_shared_directory": str(tmp_path / "shared"),
+        "cloudfall_deploy_environment_path": str(_environment_path(tmp_path)),
         "cloudfall_deploy_systemd_run": str(systemd_run),
         "cloudfall_deploy_component": _component(
             {
@@ -260,17 +266,25 @@ def test_s005_2_the_command_runs_in_its_working_directory_as_the_user(
 def test_s005_3_the_command_loads_the_unit_environment_file(
     tmp_path: Path,
 ) -> None:
-    """The transient unit gets the ``EnvironmentFile=-`` line the unit names."""
+    """The transient unit gets the ``EnvironmentFile=-`` line the unit names.
+
+    Both name the new release's own environment file (D-21).
+    """
     exit_code, _ = _run_release_command(tmp_path, ["0"])
 
     assert exit_code == 0
+    assert (
+        f"--property=EnvironmentFile=-{_environment_path(tmp_path)}"
+        in _argv(tmp_path)
+    )
     unit = Templar(
         loader=DataLoader(),
         variables={
             "cloudfall_deploy_component": {
                 **_component(None),
                 "install_root": str(tmp_path),
-            }
+            },
+            "cloudfall_deploy_environment_path": str(_environment_path(tmp_path)),
         },
     ).template(
         trust_as_template(

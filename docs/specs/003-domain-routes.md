@@ -89,7 +89,7 @@ application root, the install root and `releases/` with mode `0750` owned by the
 user, so `www-data` can't reach them. The domain role grants the nginx worker user traverse-only
 access along the path to each static route's directory (a POSIX ACL `u:www-data:x` on
 those directories is the recommended way). It never adds the worker to the application's
-group, because `shared/env/<component>.env` is group-readable.
+group, because the environment files under `shared/env/` are group-readable.
 
 `healthCheck` stays one per Domain. Its path may fall on any route.
 
@@ -113,7 +113,7 @@ Touches `config/schemas/v1/domain.schema.json`, `sdk/src/cloudfall/inventory.py`
 - S-003-11: A static route naming a missing component fails with `resource_reference_missing`, and one whose component doesn't list the Domain's `proxy.server` fails with `domain_route_component_not_on_proxy`
 - S-003-12: A static route whose `directory` or `spaFallback` contains a `..` segment or is absolute, or whose `directory` is `.`, fails `cloudfall config validate`
 - S-003-13: Locations in the rendered vhost appear longest path first, and two Domains with the same routes in different declared order render identical bytes
-- S-003-14: After the domains playbook runs, the `www-data` user can read `<installRoot>/current/web/dist/index.html` and cannot read `<installRoot>/shared/env/<component>.env`
+- S-003-14: After the domains playbook runs, the `www-data` user can read `<installRoot>/current/web/dist/index.html` and cannot read the environment files under `<installRoot>/shared/env/` (`<component>.<release>.env`, D-21, and the legacy `<component>.env`)
 - S-003-15: The ACME challenge location still renders and serves `/.well-known/acme-challenge/` from the webroot on a Domain with routes
 
 ## Out of scope

@@ -47,7 +47,7 @@ service`, on each server as that server's gate (the play stays `serial: 1`,
 
 - `--uid` and `--gid` of the application's `linuxUser` (`application_user`)
 - working directory `<installRoot>/current`
-- `EnvironmentFile=-<installRoot>/shared/env/<component>.env`, the line the service unit carries, so the command sees the variables the service sees, parsed by systemd's rules; a missing file gives no extra variables
+- `EnvironmentFile=-` naming the environment file of the release `current` points to: its own `<installRoot>/shared/env/<component>.<release>.env` (D-21), or the legacy `<installRoot>/shared/env/<component>.env` when its deploy wrote none; the line the service unit carries, so the command sees the variables the service sees, parsed by systemd's rules; a missing file gives no extra variables
 - `RuntimeMaxSec=` set to `timeoutSeconds`, `TimeoutStopSec=10`, `NoNewPrivileges=true` and `PrivateTmp=true`, as for the release command
 
 It runs up to `attempts` times, 3 seconds apart, the delay the `http` check uses, and stops

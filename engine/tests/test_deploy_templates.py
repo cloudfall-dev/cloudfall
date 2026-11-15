@@ -42,6 +42,9 @@ def _render() -> str:
     )
     return environment.get_template("component.service.j2").render(
         cloudfall_deploy_component=_component(),
+        cloudfall_deploy_environment_path=(
+            "/srv/apps/crm/backend/shared/env/crm-backend.20261028T000000Z-abcdef2.env"
+        ),
     )
 
 
@@ -55,10 +58,11 @@ def test_unit_runs_the_release_command_as_the_application_user() -> None:
         ' "crm.asgi:application" "--host" "127.0.0.1" "--port" "8100"'
         in rendered
     )
+    # The release's own environment file (D-21), as the deploy computes it.
     assert (
-        "EnvironmentFile=-/srv/apps/crm/backend/shared/env/crm-backend.env"
-        in rendered
-    )
+        "EnvironmentFile=-/srv/apps/crm/backend/shared/env/"
+        "crm-backend.20261028T000000Z-abcdef2.env"
+    ) in rendered
     assert "Restart=on-failure" in rendered
     assert "NoNewPrivileges=true" in rendered
     assert "WantedBy=multi-user.target" in rendered

@@ -3,7 +3,8 @@
 # 0750 for the application user, so the Nginx worker cannot reach a static
 # route's release. It gets traverse-only access (`x`, never `r`) along that
 # path by a POSIX ACL entry for its own user; it never joins the
-# application's group, which can read `shared/env/<component>.env`. The
+# application's group, which can read the environment files under
+# `shared/env/`. The
 # release directories below `releases/` keep their archived modes, and
 # `current` is followed on every request, so a deploy or a rollback needs no
 # second grant.

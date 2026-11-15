@@ -2,7 +2,8 @@
 # Runs the component's release command once against the unpacked release,
 # before the unit file changes and before current moves. A transient systemd
 # unit runs it, so the application user, the working directory, and the
-# EnvironmentFile= parsing are the ones the service unit gets.
+# EnvironmentFile= parsing are the ones the service unit gets, with the new
+# release's own environment file (D-21).
 - name: Compute the release command invocation
   ansible.builtin.set_fact:
     cloudfall_deploy_release_working_directory: >-
@@ -35,8 +36,7 @@
           '--uid=' ~ cloudfall_deploy_component.application_user,
           '--gid=' ~ cloudfall_deploy_component.application_user,
           '--working-directory=' ~ cloudfall_deploy_release_working_directory,
-          '--property=EnvironmentFile=-' ~ cloudfall_deploy_shared_directory
-          ~ '/env/' ~ cloudfall_deploy_component.id ~ '.env',
+          '--property=EnvironmentFile=-' ~ cloudfall_deploy_environment_path,
           '--property=RuntimeMaxSec=' ~ cloudfall_deploy_release_timeout,
           '--property=TimeoutStopSec=10',
           '--property=NoNewPrivileges=true',
