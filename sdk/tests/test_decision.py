@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
+import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -954,6 +956,203 @@ def test_an_approved_run_is_not_check_mode(tmp_path: Path) -> None:
     )
 
     assert all("--check" not in argv for argv in run.recorded)
+
+
+def _approved(
+    repository: Path, store: DecisionStore, proposed: Decision, run: _Runner
+) -> Decision:
+    return approve(
+        ApprovalRequest(
+            decision=proposed, approver="roman", repository=repository, via=TERMINAL
+        ),
+        store,
+        lambda: MOMENT,
+        run,
+    )
+
+
+def _refused_as_changed(
+    repository: Path, store: DecisionStore, proposed: Decision
+) -> str:
+    """Approve, expecting a refusal before anything runs; return its message."""
+    run = _Runner()
+    with pytest.raises(DecisionError) as error:
+        _approved(repository, store, proposed, run)
+    assert error.value.code == "decision_binding_changed"
+    assert run.recorded == []
+    assert store.load(proposed.decision_id).status is DecisionStatus.PROPOSED
+    return error.value.detail
+
+
+def _git(repository: Path, *arguments: str) -> None:
+    git = shutil.which("git")
+    assert git is not None
+    subprocess.run(  # noqa: S603 - resolved binary, fixed arguments.
+        (
+            git,
+            *("-c", "user.name=Test", "-c", "user.email=test@example.invalid"),
+            *("-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"),
+            "-C",
+            str(repository),
+            *arguments,
+        ),
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+    )
+
+
+def _git_project(tmp_path: Path) -> Path:
+    """Return a project committed to git, with a role its playbook reads."""
+    repository = _repository(tmp_path)
+    role = repository / "roles" / "web" / "tasks"
+    role.mkdir(parents=True)
+    (role / "main.yml").write_text("---\n[]\n", encoding="utf-8")
+    _git(repository, "init", "--quiet")
+    _git(repository, "add", "--all")
+    _git(repository, "commit", "--quiet", "--message", "fleet")
+    return repository
+
+
+@pytest.mark.parametrize(
+    ("edited", "named"),
+    [
+        ("playbooks/deploy.yml", "the playbook playbooks/deploy.yml"),
+        ("playbooks/health.yml", "the verify playbook playbooks/health.yml"),
+        ("decisions/deploy-20260921143012.diff", "the diff file decisions/"),
+    ],
+    ids=["playbook", "verify-playbook", "diff"],
+)
+def test_an_edit_after_the_proposal_refuses_its_approval(
+    tmp_path: Path, edited: str, named: str
+) -> None:
+    """The approval is of what was checked: an edit since is refused (#352)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    assert proposed.binding is not None
+    assert proposed.binding.commit is None
+    assert proposed.binding.worktree_sha256 is None
+
+    (repository / edited).write_text("--- edited\n", encoding="utf-8")
+
+    message = _refused_as_changed(repository, store, proposed)
+    assert named in message
+    assert "propose it again" in message
+
+
+def test_a_role_edited_in_a_git_project_refuses_the_approval(
+    tmp_path: Path,
+) -> None:
+    """Roles, templates and inventory are bound through git (#352)."""
+    repository = _git_project(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    assert proposed.binding is not None
+    assert proposed.binding.commit is not None
+    assert proposed.binding.worktree_sha256 is not None
+
+    (repository / "roles" / "web" / "tasks" / "main.yml").write_text(
+        "---\n- name: Something else\n", encoding="utf-8"
+    )
+
+    message = _refused_as_changed(repository, store, proposed)
+    assert "the uncommitted changes in the project" in message
+
+
+def test_a_commit_after_the_proposal_refuses_the_approval(tmp_path: Path) -> None:
+    repository = _git_project(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+
+    (repository / "inventory.yml").write_text("all: {}\n", encoding="utf-8")
+    _git(repository, "add", "inventory.yml")
+    _git(repository, "commit", "--quiet", "--message", "inventory")
+
+    message = _refused_as_changed(repository, store, proposed)
+    assert "the git commit" in message
+
+
+def test_an_untouched_git_project_approves_as_before(tmp_path: Path) -> None:
+    """What propose writes itself, the record, diff and observations, is not a change.
+
+    The tree was dirty when the proposal was made, which is allowed: only a
+    change after it refuses the approval.
+    """
+    repository = _git_project(tmp_path)
+    (repository / "playbooks" / "uncommitted.yml").write_text(
+        "---\n[]\n", encoding="utf-8"
+    )
+    (repository / "record").mkdir()
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    (repository / "record" / "receipt.json").write_text("{}\n", encoding="utf-8")
+    (repository / "tmp" / "observed" / "web-2.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+
+    approved = _approved(repository, store, proposed, _Runner())
+
+    assert approved.status is DecisionStatus.VERIFIED
+    assert store.load(proposed.decision_id).binding == proposed.binding
+
+
+def test_a_git_project_with_no_commit_yet_binds_its_files(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _git(repository, "init", "--quiet")
+    _git(repository, "add", "--all")
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    assert proposed.binding is not None
+    assert proposed.binding.commit is None
+    assert proposed.binding.worktree_sha256 is not None
+
+    (repository / "operations" / "deploy.yml").write_text(
+        DEPLOY + "# edited\n", encoding="utf-8"
+    )
+
+    message = _refused_as_changed(repository, store, proposed)
+    assert "the uncommitted changes in the project" in message
+
+
+def test_a_proposal_recorded_before_bindings_is_refused(tmp_path: Path) -> None:
+    """Nothing says what an older proposal was checked against (#352)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    path = repository / DECISION_DIRECTORY / f"{proposed.decision_id.value}.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    del document["spec"]["binding"]
+    path.write_text(json.dumps(document), encoding="utf-8")
+    older = store.load(proposed.decision_id)
+    assert older.binding is None
+
+    message = _refused_as_changed(repository, store, older)
+    assert "proposed before Cloudfall recorded" in message
+
+
+def test_the_cli_refuses_a_changed_proposal_before_asking_for_its_id(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    (repository / "playbooks" / "deploy.yml").write_text(
+        "--- edited\n", encoding="utf-8"
+    )
+
+    exit_code = main(
+        [
+            *("decisions", "approve", proposed.decision_id.value),
+            *("--repository", str(repository), "--approver", "roman"),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 4
+    assert payload["error"]["code"] == "PRECONDITION"
+    assert payload["error"]["context"]["code"] == "decision_binding_changed"
+    assert store.load(proposed.decision_id).status is DecisionStatus.PROPOSED
 
 
 def test_a_failed_run_is_recorded_as_failed_and_skips_verify(
