@@ -230,8 +230,12 @@ new release directory (or its `workingDirectory`), with the component's
 `shared/env/<component>.env` loaded by the unit's own `EnvironmentFile=`
 rules, and is stopped after `timeoutSeconds`. A failure or a timeout fails the
 deploy before any server's `current` moves; a success is recorded under
-`releaseCommand` in every release receipt of that deploy. The command must be
-safe while the old release still serves traffic. `deploy` without `--yes` shows
+`releaseCommand` in the release receipt of that deploy. The command must be
+safe while the old release still serves traffic, and it must work with the
+previous release too: nothing reverts it, so when a server's health gate fails
+later in the deploy, every server goes back to its previous release against
+what the command changed, and the failure message says the command already
+ran. `deploy` without `--yes` shows
 it as `release_command` (command, resolved working directory, timeout and
 server), `null` for a component without one. Rollback never runs the release
 command, and its plan says so with `release_command_skipped: true`. Rollback activates an already-retained
@@ -255,7 +259,12 @@ health gate: symlink switch, restart, and the declared HTTP health check. If
 the health check fails, the previous release is restored with the service unit
 it ran under, restarted, and gated on its own health check, and the run fails;
 a restored release that fails that check fails the run with its own message. A
-first release with no predecessor is stopped instead. A unit of the same name that Cloudfall did not render (no
+first release with no predecessor is stopped instead. A component on several
+servers deploys one server at a time; when a later server fails its gate, the
+servers that switched to the release earlier in the run go back the same way,
+last one first, each with the unit it ran under and gated again, and the
+failure names them (and any whose restored release failed its gate again). A
+server the run never switched is left alone. A unit of the same name that Cloudfall did not render (no
 `# Managed by Cloudfall` header, such as a hand-made unit adopted on a
 brownfield move) is kept at `/etc/systemd/system/<name>.service.pre-cloudfall`
 before the managed unit replaces it, together with whether it was enabled and
@@ -265,9 +274,15 @@ running. The kept copy stays after a successful deploy and is never
 overwritten; a later hand-made unit that differs from it refuses the deploy.
 Check mode only reports the unit it would keep, and the uv release it would
 install; it transfers and unpacks nothing, so it skips the digest check and
-`uv sync`. Successful runs write a
-schema-valid release receipt on the
-controller.
+`uv sync`. A deploy writes one schema-valid release receipt per component
+on the controller, `<receipts>/<component>.json`, with the deployed `release`
+and one entry per server under `servers`, in the order they deployed: the
+`release` that server ended on (`null` for a stopped first release), its
+`previousRelease`, whether its `healthCheckPassed`, and whether it was
+`rolledBack`. The controller keeps the run's entries and writes the whole file
+again after each server, so the receipt always names every server of the run;
+a receipt written before entries, with one `server`, still validates and
+reads as a one-entry list.
 
 A `healthCheck` of `type: command` (a smoke check, say) is the gate's last
 step: after the switch and the restart, the command runs in a transient
@@ -278,10 +293,10 @@ after `timeoutSeconds`. It runs up to `attempts` times, 3 seconds apart, and
 passes at the first exit 0. Its stdout and stderr stay in the server's
 journal (`journalctl -u cloudfall-health-<component>`) and never reach the
 receipt or the Ansible output. When every attempt fails, the rescue above
-restores the previous release (or stops a first one), writes the receipt with
-`healthCheckPassed: false`, the last exit code or the timeout, and
-`previousRelease` naming the release that serves again, and fails the run.
-The receipt of a passing command check records it under `healthCheck` too;
+restores the previous release (or stops a first one), writes the server's
+receipt entry with `healthCheckPassed: false`, the last exit code or the
+timeout, and `release` naming the release that serves again, and fails the
+run. The entry of a passing command check records it under `healthCheck` too;
 `http` and `none` checks keep their receipts and their gate as before.
 `restart`, `rollback` and `health` run the same command check through
 `health_gate.yml`, with the same unit, limits and redaction, and write no

@@ -165,8 +165,19 @@ class _Run:
         return spec
 
     @property
+    def entry(self) -> dict[str, object]:
+        """The receipt's entry of its only server (#222)."""
+        servers = self.spec["servers"]
+        assert isinstance(servers, list)
+        assert len(servers) == 1
+        entry = servers[0]
+        assert isinstance(entry, dict)
+        assert entry["server"] == "h1"
+        return entry
+
+    @property
     def health_check(self) -> dict[str, object]:
-        health_check = self.spec["healthCheck"]
+        health_check = self.entry["healthCheck"]
         assert isinstance(health_check, dict)
         return health_check
 
@@ -469,11 +480,13 @@ def test_s009_4_a_passing_check_receipts_its_run(
     run = _check(tmp_path, capsys)
 
     assert run.exit_code == 0, run.output
-    spec = run.spec
-    assert spec["healthCheckPassed"] is True
-    assert spec["release"] == RELEASE
-    assert spec["previousRelease"] == PREVIOUS
-    assert spec["healthCheck"] == {
+    assert run.spec["release"] == RELEASE
+    entry = run.entry
+    assert entry["healthCheckPassed"] is True
+    assert entry["rolledBack"] is False
+    assert entry["release"] == RELEASE
+    assert entry["previousRelease"] == PREVIOUS
+    assert entry["healthCheck"] == {
         "type": "command",
         "command": ["bin/smoke", "0", "0"],
         "attempts": 1,
@@ -492,11 +505,13 @@ def test_s009_5_a_check_exiting_3_fails_and_receipts_the_failed_release(
         "The command health check of crm-backend failed on h1: bin/smoke 3 0"
         " exited with code 3 on the last of 2 attempts"
     ) in run.output
-    spec = run.spec
-    assert spec["healthCheckPassed"] is False
-    assert spec["release"] == RELEASE
-    assert spec["previousRelease"] == PREVIOUS
-    assert spec["healthCheck"] == {
+    assert run.spec["release"] == RELEASE
+    entry = run.entry
+    assert entry["healthCheckPassed"] is False
+    assert entry["rolledBack"] is True
+    assert entry["release"] == PREVIOUS
+    assert entry["previousRelease"] == PREVIOUS
+    assert entry["healthCheck"] == {
         "type": "command",
         "command": ["bin/smoke", "3", "0"],
         "attempts": 2,
@@ -511,9 +526,10 @@ def test_s009_6_a_failed_first_release_receipts_no_previous_release(
     run = _check(tmp_path, capsys, exit_code=3, first_release=True)
 
     assert run.exit_code == 82
-    spec = run.spec
-    assert spec["healthCheckPassed"] is False
-    assert spec["previousRelease"] is None
+    entry = run.entry
+    assert entry["healthCheckPassed"] is False
+    assert entry["previousRelease"] is None
+    assert entry["release"] is None
     assert run.health_check["exitCode"] == 3
 
 
@@ -524,7 +540,7 @@ def test_s009_7_a_timed_out_check_fails_naming_the_timeout(
 
     assert run.exit_code == 82
     assert "timed out after 60 seconds and was stopped" in run.output
-    assert run.spec["healthCheckPassed"] is False
+    assert run.entry["healthCheckPassed"] is False
     assert run.health_check["timedOut"] is True
     assert run.health_check["exitCode"] is None
 
@@ -546,7 +562,7 @@ def test_s009_8_a_check_failing_twice_then_passing_records_three_attempts(
 
     assert run.exit_code == 0, run.output
     assert run.attempts == 3
-    assert run.spec["healthCheckPassed"] is True
+    assert run.entry["healthCheckPassed"] is True
     assert run.health_check["attempts"] == 3
     assert run.health_check["exitCode"] == 0
 
@@ -906,8 +922,8 @@ def test_s009_12_http_and_none_receipts_have_no_health_check(
 
     assert exit_code == 0, capsys.readouterr()
     run = _Run(tmp_path, exit_code, "")
-    assert run.spec["healthCheckPassed"] is True
-    assert "healthCheck" not in run.spec
+    assert run.entry["healthCheckPassed"] is True
+    assert "healthCheck" not in run.entry
 
 
 def test_s009_12_the_pass_receipt_is_written_where_it_was() -> None:

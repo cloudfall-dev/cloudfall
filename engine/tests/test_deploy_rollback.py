@@ -21,11 +21,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+import pytest
 import yaml
 from ansible.parsing.dataloader import DataLoader
 from ansible.template import Templar, trust_as_template
 from cloudfall.validation import SchemaCatalog
 from cloudfall_engine.playbook import PlaybookRun, playbook_command, resolve_playbook
+from jsonschema.exceptions import ValidationError
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
@@ -36,6 +38,7 @@ PREVIOUS = "20261027T000000Z-abcdef1"
 RELEASE = "20261028T000000Z-abcdef2"
 REDEPLOYED = f"{RELEASE}.redeploy-20261113T101500Z"
 RECEIPT = "Write the release receipt on the controller"
+RECORD_ENTRY = "Record the server's entry in the run's release receipt"
 
 FACTS_MODULE = """#!/usr/bin/python
 # Stand-in fact gathering: the host the role validates against.
@@ -459,10 +462,15 @@ def test_a_failed_redeploy_copy_is_removed_and_rollback_takes_the_passing_one(
 def test_a_receipt_names_the_release_of_a_redeployed_previous_directory() -> None:
     tasks = DataLoader().load_from_file(str(ROLE / "tasks" / "release_receipt.yml"))
     assert isinstance(tasks, list)
-    copy = next(t for t in tasks if t["name"] == RECEIPT)["ansible.builtin.copy"]
+    record = next(t for t in tasks if t["name"] == RECORD_ENTRY)
+    written = DataLoader().load_from_file(str(ROLE / "tasks" / "receipt_write.yml"))
+    assert isinstance(written, list)
+    copy = next(t for t in written if t["name"] == RECEIPT)["ansible.builtin.copy"]
+    controller: dict[str, object] = {}
     variables: dict[str, object] = {
         "cloudfall_deploy_receipt_passed": True,
         "cloudfall_server_id": "h1",
+        "hostvars": {"localhost": controller},
         "cloudfall_deploy_component": {
             "id": COMPONENT_ID,
             "healthCheck": {"type": "http"},
@@ -472,13 +480,613 @@ def test_a_receipt_names_the_release_of_a_redeployed_previous_directory() -> Non
         "cloudfall_deploy_previous_directory": f"/srv/app/releases/{REDEPLOYED}",
         "ansible_facts": {"date_time": {"iso8601": "2026-11-13T10:15:00Z"}},
     }
-
-    rendered = Templar(loader=DataLoader(), variables=variables).template(
-        trust_as_template(copy["content"])
+    templar = Templar(loader=DataLoader(), variables=variables)
+    variables["cloudfall_deploy_receipt_previous_release"] = templar.template(
+        trust_as_template(record["vars"]["cloudfall_deploy_receipt_previous_release"])
     )
+    controller["cloudfall_deploy_run_entries"] = templar.template(
+        trust_as_template(
+            record["ansible.builtin.set_fact"]["cloudfall_deploy_run_entries"]
+        )
+    )
+
+    rendered = templar.template(trust_as_template(copy["content"]))
 
     receipt = cast("dict[str, object]", json.loads(str(rendered)))
     SchemaCatalog(SCHEMAS).validate_named("release-receipt.schema.json", receipt)
+    assert _entries(receipt)[0]["previousRelease"] == RELEASE
+
+
+# A deploy that fails on a later server rolls back the servers that switched
+# before it, and its receipt names where every server ended (#222).
+
+SWITCHED_SMOKE = """#!/bin/sh
+# Passes in a release directory that holds a "healthy" file, and counts its
+# runs there.
+echo run >> runs
+[ -f healthy ]
+"""
+
+# main.yml's own tasks a deploy runs on a server with no unit file yet,
+# around the activation block, without the transfer, uv and the unit install,
+# which need root and a real Debian server.
+DEPLOY_REPLAY_TASKS = (
+    "Inspect the currently active release",
+    "Record the rollback candidate",
+    "Compute release paths",
+    "Compute service unit paths",
+    "Inspect the existing service unit",
+    "Read the existing service unit",
+    "Recognize a hand-made service unit",
+    "Activate the release behind the health gate",
+    "Receipt the release that passed its health gate",
+)
+
+
+def _strip_ownership(task: object) -> object:
+    """Drop owner and group from every module of a task, nested ones too."""
+    if isinstance(task, list):
+        return [_strip_ownership(item) for item in task]
+    if not isinstance(task, dict):
+        return task
+    stripped: dict[str, object] = {}
+    for key, value in task.items():
+        if key in {"owner", "group"}:
+            continue
+        stripped[key] = _strip_ownership(value)
+    return stripped
+
+
+@dataclass(frozen=True, slots=True)
+class _Fleet:
+    """Stand-in servers on this controller, one install root each.
+
+    The deploy role runs as a replay role: main.yml's tasks of
+    ``DEPLOY_REPLAY_TASKS`` with the role's other task files unchanged, so
+    the gate, its rescue, the rollback of the servers that switched and the
+    receipt are the role's own.
+    """
+
+    tmp_path: Path
+    servers: tuple[str, ...]
+
+    def install_root(self, server: str) -> Path:
+        return self.tmp_path / server / "app"
+
+    def current(self, server: str) -> Path:
+        return self.install_root(server) / "current"
+
+    def release(self, server: str, name: str, *, healthy: bool) -> Path:
+        directory = self.install_root(server) / "releases" / name
+        _executable(directory / "bin" / "smoke", SWITCHED_SMOKE)
+        if healthy:
+            (directory / "healthy").write_text("", encoding="utf-8")
+        return directory
+
+    def runs(self, server: str, name: str) -> int:
+        path = self.install_root(server) / "releases" / name / "runs"
+        if not path.exists():
+            return 0
+        return len(path.read_text(encoding="utf-8").splitlines())
+
+    @property
+    def receipt(self) -> dict[str, object]:
+        path = self.tmp_path / "receipts" / f"{COMPONENT_ID}.json"
+        receipt = cast("dict[str, object]", json.loads(path.read_text("utf-8")))
+        SchemaCatalog(SCHEMAS).validate_named("release-receipt.schema.json", receipt)
+        return receipt
+
+    def _role(self) -> None:
+        role = self.tmp_path / "roles" / "cloudfall_deploy_replay"
+        (role / "tasks").mkdir(parents=True)
+        for directory in ("defaults", "vars"):
+            (role / directory).mkdir()
+            (role / directory / "main.yml").write_text(
+                (ROLE / directory / "main.yml").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+        for path in (ROLE / "tasks").glob("*.yml"):
+            if path.name != "main.yml":
+                (role / "tasks" / path.name).write_text(
+                    path.read_text(encoding="utf-8"), encoding="utf-8"
+                )
+        loaded = DataLoader().load_from_file(str(ROLE / "tasks" / "main.yml"))
+        assert isinstance(loaded, list)
+        # A JSON round trip drops Ansible's tagged types, which YAML can't dump.
+        tasks = [
+            _strip_ownership(json.loads(json.dumps(task)))
+            for task in loaded
+            if task["name"] in DEPLOY_REPLAY_TASKS
+        ]
+        assert len(tasks) == len(DEPLOY_REPLAY_TASKS)
+        (role / "tasks" / "main.yml").write_text(
+            yaml.safe_dump(tasks), encoding="utf-8"
+        )
+
+    def deploy(self) -> tuple[int, str]:
+        """Deploy RELEASE one server at a time, as deploy.yml's plays do."""
+        self._role()
+        _executable(self.tmp_path / "bin" / "systemctl", SYSTEMCTL)
+        (self.tmp_path / "bin" / "systemctl.loaded").write_text("", "utf-8")
+        systemd_run = self.tmp_path / "bin" / "systemd-run"
+        _executable(systemd_run, SYSTEMD_RUN)
+        hosts = {
+            server: {
+                "ansible_connection": "local",
+                "ansible_python_interpreter": sys.executable,
+                "ansible_become": False,
+                "cloudfall_server_id": server,
+                "cloudfall_components": [
+                    {
+                        **_Host(self.tmp_path).component(),
+                        "install_root": str(self.install_root(server)),
+                    }
+                ],
+            }
+            for server in self.servers
+        }
+        inventory = self.tmp_path / "inventory.json"
+        inventory.write_text(
+            json.dumps(
+                {"all": {"children": {"cloudfall_servers": {"hosts": hosts}}}}
+            ),
+            encoding="utf-8",
+        )
+        playbook = self.tmp_path / "deploy.yml"
+        playbook.write_text(
+            yaml.safe_dump(
+                [
+                    {
+                        "name": "Deploy one server at a time",
+                        "hosts": "cloudfall_servers",
+                        "gather_facts": True,
+                        "any_errors_fatal": True,
+                        "serial": 1,
+                        "tasks": [
+                            {
+                                "name": "Deploy as the role does",
+                                "ansible.builtin.include_role": {
+                                    "name": "cloudfall_deploy_replay"
+                                },
+                                "vars": {
+                                    "cloudfall_deploy_component": (
+                                        "{{ cloudfall_components | first }}"
+                                    ),
+                                },
+                            }
+                        ],
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        variables = {
+            "cloudfall_deploy_release": RELEASE,
+            "cloudfall_deploy_artifact_sha256": "a" * 64,
+            "cloudfall_deploy_receipt_directory": str(self.tmp_path / "receipts"),
+            "cloudfall_deploy_systemd_run": str(systemd_run),
+        }
+        command = playbook_command(
+            PlaybookRun(playbook, inventory, extra_vars=(json.dumps(variables),)),
+            ENGINE,
+        )
+        done = subprocess.run(  # noqa: S603 - the engine's own argv
+            command.argv,
+            env={
+                **os.environ,
+                **command.environment,
+                "PATH": f"{self.tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return done.returncode, f"{done.stdout}\n{done.stderr}"
+
+
+def _entries(receipt: dict[str, object]) -> list[dict[str, object]]:
     spec = receipt["spec"]
     assert isinstance(spec, dict)
-    assert spec["previousRelease"] == RELEASE
+    servers = spec["servers"]
+    assert isinstance(servers, list)
+    return cast("list[dict[str, object]]", servers)
+
+
+def test_a_later_server_failing_its_gate_rolls_back_the_earlier_one(
+    tmp_path: Path,
+) -> None:
+    fleet = _Fleet(tmp_path, ("h1", "h2"))
+    for server in fleet.servers:
+        fleet.current(server).parent.mkdir(parents=True)
+        fleet.current(server).symlink_to(
+            fleet.release(server, PREVIOUS, healthy=True)
+        )
+    fleet.release("h1", RELEASE, healthy=True)
+    fleet.release("h2", RELEASE, healthy=False)
+
+    exit_code, output = fleet.deploy()
+
+    assert exit_code != 0, output
+    for server in fleet.servers:
+        assert fleet.current(server).readlink() == (
+            fleet.install_root(server) / "releases" / PREVIOUS
+        ), output
+    # h1's release passed its gate, then its previous release was gated again.
+    assert fleet.runs("h1", RELEASE) == 1
+    assert fleet.runs("h1", PREVIOUS) == 1
+    assert (
+        f"Release {RELEASE} failed the command health check of {COMPONENT_ID} on h2"
+    ) in output
+    assert "h1 had switched to it earlier in this run and was rolled back" in output
+    receipt = fleet.receipt
+    spec = receipt["spec"]
+    assert isinstance(spec, dict)
+    assert spec["release"] == RELEASE
+    assert [
+        (e["server"], e["release"], e["healthCheckPassed"], e["rolledBack"])
+        for e in _entries(receipt)
+    ] == [("h1", PREVIOUS, True, True), ("h2", PREVIOUS, False, True)]
+
+
+def test_a_deploy_that_passes_everywhere_receipts_every_server(
+    tmp_path: Path,
+) -> None:
+    fleet = _Fleet(tmp_path, ("h1", "h2"))
+    for server in fleet.servers:
+        fleet.current(server).parent.mkdir(parents=True)
+        fleet.current(server).symlink_to(
+            fleet.release(server, PREVIOUS, healthy=True)
+        )
+        fleet.release(server, RELEASE, healthy=True)
+
+    exit_code, output = fleet.deploy()
+
+    assert exit_code == 0, output
+    for server in fleet.servers:
+        assert fleet.current(server).readlink() == (
+            fleet.install_root(server) / "releases" / RELEASE
+        )
+    assert [
+        (e["server"], e["release"], e["previousRelease"], e["rolledBack"])
+        for e in _entries(fleet.receipt)
+    ] == [("h1", RELEASE, PREVIOUS, False), ("h2", RELEASE, PREVIOUS, False)]
+
+
+def test_a_single_server_deploy_receipts_one_entry(tmp_path: Path) -> None:
+    fleet = _Fleet(tmp_path, ("h1",))
+    fleet.current("h1").parent.mkdir(parents=True)
+    fleet.current("h1").symlink_to(fleet.release("h1", PREVIOUS, healthy=True))
+    fleet.release("h1", RELEASE, healthy=False)
+
+    exit_code, output = fleet.deploy()
+
+    assert exit_code != 0, output
+    assert fleet.current("h1").readlink() == (
+        fleet.install_root("h1") / "releases" / PREVIOUS
+    )
+    assert "had switched to it earlier" not in output
+    assert [
+        (e["server"], e["release"], e["healthCheckPassed"], e["rolledBack"])
+        for e in _entries(fleet.receipt)
+    ] == [("h1", PREVIOUS, False, True)]
+
+
+def test_every_earlier_server_is_rolled_back_a_first_release_is_stopped(
+    tmp_path: Path,
+) -> None:
+    """h1 had no release before this run, h2 had one; h3 fails its gate."""
+    fleet = _Fleet(tmp_path, ("h1", "h2", "h3"))
+    first = fleet.release("h1", RELEASE, healthy=True)
+    for server in ("h2", "h3"):
+        fleet.current(server).symlink_to(
+            fleet.release(server, PREVIOUS, healthy=True)
+        )
+    fleet.release("h2", RELEASE, healthy=True)
+    fleet.release("h3", RELEASE, healthy=False)
+
+    exit_code, output = fleet.deploy()
+
+    assert exit_code != 0, output
+    # A first release has nothing to go back to: it is stopped where it is.
+    assert fleet.current("h1").readlink() == first
+    for server in ("h2", "h3"):
+        assert fleet.current(server).readlink() == (
+            fleet.install_root(server) / "releases" / PREVIOUS
+        )
+    assert "h1, h2 had switched to it earlier in this run and were rolled back" in (
+        output
+    )
+    # The last server that switched goes back first.
+    assert output.index("[h3 -> h2]") < output.index("[h3 -> h1]")
+    assert [
+        (e["server"], e["release"], e["previousRelease"], e["rolledBack"])
+        for e in _entries(fleet.receipt)
+    ] == [
+        ("h1", None, None, True),
+        ("h2", PREVIOUS, PREVIOUS, True),
+        ("h3", PREVIOUS, PREVIOUS, True),
+    ]
+
+
+def test_an_earlier_server_whose_restored_release_fails_is_named(
+    tmp_path: Path,
+) -> None:
+    fleet = _Fleet(tmp_path, ("h1", "h2"))
+    fleet.current("h1").symlink_to(fleet.release("h1", PREVIOUS, healthy=False))
+    fleet.current("h2").symlink_to(fleet.release("h2", PREVIOUS, healthy=True))
+    fleet.release("h1", RELEASE, healthy=True)
+    fleet.release("h2", RELEASE, healthy=False)
+
+    exit_code, output = fleet.deploy()
+
+    assert exit_code != 0, output
+    assert fleet.current("h1").readlink() == (
+        fleet.install_root("h1") / "releases" / PREVIOUS
+    )
+    assert (
+        "h1 had switched to it earlier in this run and was rolled back, but the"
+        " restored release failed its health check again on h1"
+    ) in output
+    assert [e["release"] for e in _entries(fleet.receipt)] == [PREVIOUS, PREVIOUS]
+
+
+# What the rollback of a switched server runs, and the failure's last words.
+
+SWITCHED_ROLLBACK = "switched_rollback.yml"
+
+
+def _switched_tasks() -> list[dict[str, object]]:
+    tasks = DataLoader().load_from_file(str(ROLE / "tasks" / SWITCHED_ROLLBACK))
+    assert isinstance(tasks, list)
+    return tasks
+
+
+def _switched_rollback(switched: dict[str, object]) -> list[str]:
+    """Name, in order, every top-level step whose ``when`` holds."""
+    variables: dict[str, object] = {
+        "cloudfall_deploy_release": RELEASE,
+        "cloudfall_deploy_switched": {
+            "cloudfall_deploy_unit_managed_before": False,
+            "cloudfall_deploy_unit_hand_made": False,
+            "cloudfall_deploy_release_directory": f"/srv/app/releases/{RELEASE}",
+            **switched,
+        },
+    }
+
+    def runs(task: dict[str, object]) -> bool:
+        value = task.get("when", [])
+        conditions = value if isinstance(value, list) else [value]
+        task_vars = task.get("vars", {})
+        assert isinstance(task_vars, dict)
+        templar = Templar(
+            loader=DataLoader(),
+            variables={
+                **variables,
+                **{name: trust_as_template(v) for name, v in task_vars.items()},
+            },
+        )
+        return all(
+            templar.evaluate_conditional(trust_as_template(str(condition)))
+            for condition in conditions
+        )
+
+    return [str(task["name"]) for task in _switched_tasks() if runs(task)]
+
+
+def test_a_switched_server_gets_its_previous_release_and_unit_back() -> None:
+    assert _switched_rollback(
+        {
+            "cloudfall_deploy_previous_directory": f"/srv/app/releases/{PREVIOUS}",
+            "cloudfall_deploy_unit_managed_before": True,
+        }
+    ) == [
+        "Read the component's declaration on the switched server",
+        "Restore the previous release symlink of the switched server",
+        "Restore the service unit of the switched server's previous release",
+        "Restart the switched server's restored release",
+        "Gate the switched server's restored release on its health check",
+        "Record the rollback in the run's release receipt",
+    ]
+
+
+def test_a_switched_redeploy_copy_goes_with_the_rollback() -> None:
+    names = _switched_rollback(
+        {
+            "cloudfall_deploy_previous_directory": f"/srv/app/releases/{RELEASE}",
+            "cloudfall_deploy_release_directory": f"/srv/app/releases/{REDEPLOYED}",
+        }
+    )
+
+    assert "Remove the switched server's redeploy copy of the rolled-back release" in (
+        names
+    )
+
+
+def test_a_switched_first_release_is_stopped_and_a_kept_unit_put_back() -> None:
+    assert _switched_rollback(
+        {
+            "cloudfall_deploy_previous_directory": "",
+            "cloudfall_deploy_unit_hand_made": True,
+        }
+    ) == [
+        "Read the component's declaration on the switched server",
+        "Stop the switched server's first release",
+        "Restore the switched server's pre-Cloudfall service unit",
+        "Record the rollback in the run's release receipt",
+    ]
+
+
+SWITCHED_GATE = "Gate the switched server's restored release on its health check"
+
+
+def test_every_server_step_of_the_switched_rollback_is_delegated() -> None:
+    local = {
+        "Read the component's declaration on the switched server",
+        SWITCHED_GATE,
+        "Record the rollback in the run's release receipt",
+    }
+    for task in _switched_tasks():
+        if task["name"] in local:
+            continue
+        assert task["delegate_to"] == "{{ cloudfall_deploy_switched_server }}"
+    gate = next(t for t in _switched_tasks() if t["name"] == SWITCHED_GATE)
+    block = gate["block"]
+    assert isinstance(block, list)
+    include = block[0]["ansible.builtin.include_tasks"]
+    assert include == {
+        "file": "health_gate.yml",
+        "apply": {"delegate_to": "{{ cloudfall_deploy_switched_server }}"},
+    }
+    record = next(
+        t
+        for t in _switched_tasks()
+        if t["name"] == "Record the rollback in the run's release receipt"
+    )
+    assert (record["delegate_to"], record["delegate_facts"]) == ("localhost", True)
+
+
+def _aftermath(variables: dict[str, object]) -> str:
+    role_vars = DataLoader().load_from_file(str(ROLE / "vars" / "main.yml"))
+    assert isinstance(role_vars, dict)
+    trusted = {name: trust_as_template(value) for name, value in role_vars.items()}
+    templar = Templar(loader=DataLoader(), variables={**trusted, **variables})
+    return str(
+        templar.template(trust_as_template("{{ cloudfall_deploy_failure_aftermath }}"))
+    )
+
+
+def test_a_failure_says_its_release_command_already_ran() -> None:
+    component = {
+        "id": COMPONENT_ID,
+        "release": {"command": ["bin/migrate", "--up"], "server": "h1"},
+    }
+
+    message = _aftermath(
+        {
+            "cloudfall_deploy_component": component,
+            "hostvars": {
+                "h1": {"cloudfall_deploy_release_command_result": {"exitCode": 0}},
+                "localhost": {
+                    "cloudfall_deploy_run_entries": {
+                        "h1": {**PASSED_ENTRY, "rolledBack": True},
+                        "h2": FAILED_ENTRY,
+                    }
+                },
+            },
+        }
+    )
+
+    assert message == (
+        "; h1 had switched to it earlier in this run and was rolled back; its"
+        " release command bin/migrate --up already ran on h1 and is not reverted,"
+        " so the release that serves again runs against what it changed"
+    )
+
+
+def test_a_failure_without_switched_servers_or_release_command_adds_nothing() -> None:
+    assert _aftermath({"cloudfall_deploy_component": {"id": COMPONENT_ID}}) == ""
+
+
+# The receipt's entries (#222).
+
+
+def _run_receipt(*entries: dict[str, object]) -> dict[str, object]:
+    return {
+        "apiVersion": "cloudfall/v1",
+        "kind": "ReleaseReceipt",
+        "metadata": {
+            "id": COMPONENT_ID,
+            "description": "Release receipt written by cloudfall_deploy",
+        },
+        "spec": {
+            "component": COMPONENT_ID,
+            "release": RELEASE,
+            "artifactSha256": "a" * 64,
+            "servers": list(entries),
+        },
+    }
+
+
+PASSED_ENTRY: dict[str, object] = {
+    "server": "h1",
+    "release": RELEASE,
+    "previousRelease": PREVIOUS,
+    "deployedAt": "2026-11-15T00:00:00Z",
+    "healthCheckPassed": True,
+    "rolledBack": False,
+}
+FAILED_ENTRY: dict[str, object] = {
+    **PASSED_ENTRY,
+    "server": "h2",
+    "release": PREVIOUS,
+    "healthCheckPassed": False,
+    "rolledBack": True,
+    "healthCheck": {
+        "type": "command",
+        "command": ["bin/smoke"],
+        "attempts": 1,
+        "exitCode": 1,
+        "timedOut": False,
+    },
+}
+
+
+def _validate(receipt: dict[str, object]) -> None:
+    SchemaCatalog(SCHEMAS).validate_named("release-receipt.schema.json", receipt)
+
+
+def test_a_receipt_of_a_run_holds_every_servers_entry() -> None:
+    _validate(_run_receipt(PASSED_ENTRY, FAILED_ENTRY))
+    _validate(
+        _run_receipt({**PASSED_ENTRY, "release": PREVIOUS, "rolledBack": True})
+    )
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {**FAILED_ENTRY, "healthCheck": None},
+        {**FAILED_ENTRY, "rolledBack": False},
+        {**PASSED_ENTRY, "release": None},
+        {**PASSED_ENTRY, "output": "secret"},
+    ],
+    ids=[
+        "failed-without-a-command-check",
+        "failed-but-still-switched",
+        "still-switched-to-no-release",
+        "another-key",
+    ],
+)
+def test_the_receipt_schema_refuses_an_incoherent_entry(
+    entry: dict[str, object],
+) -> None:
+    if entry.get("healthCheck", ()) is None:
+        entry = {key: value for key, value in entry.items() if key != "healthCheck"}
+
+    with pytest.raises(ValidationError):
+        _validate(_run_receipt(entry))
+
+
+def test_the_receipt_schema_refuses_a_run_without_servers() -> None:
+    with pytest.raises(ValidationError):
+        _validate(_run_receipt())
+
+
+def test_a_single_server_receipt_from_before_entries_still_validates() -> None:
+    """Read as a one-entry list: spec.server and its outcome, no servers."""
+    receipt = _run_receipt()
+    spec = receipt["spec"]
+    assert isinstance(spec, dict)
+    del spec["servers"]
+    spec.update(
+        {
+            "server": "h1",
+            "deployedAt": "2026-11-15T00:00:00Z",
+            "previousRelease": PREVIOUS,
+            "healthCheckPassed": True,
+        }
+    )
+
+    _validate(receipt)
+    with pytest.raises(ValidationError):
+        _validate({**receipt, "spec": {**spec, "rolledBack": False}})

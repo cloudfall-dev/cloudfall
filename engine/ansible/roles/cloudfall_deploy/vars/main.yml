@@ -1,0 +1,41 @@
+---
+# The servers that switched to the release earlier in this run, passed their
+# gate, and were rolled back when a later server failed its own (#222).
+cloudfall_deploy_rolled_back_servers: >-
+  {{
+    hostvars['localhost'].cloudfall_deploy_run_entries | default({})
+    | dict2items | map(attribute='value')
+    | selectattr('healthCheckPassed') | selectattr('rolledBack')
+    | map(attribute='server') | list
+  }}
+# The end of a failed deploy's message: those servers, any of them whose
+# restored release failed its gate again, and the release command, which ran
+# once for the whole run and is not reverted. Empty for a server with neither.
+cloudfall_deploy_failure_aftermath: >-
+  {{
+    (
+      '; ' ~ cloudfall_deploy_rolled_back_servers | join(', ')
+      ~ ' had switched to it earlier in this run and '
+      ~ ('was' if cloudfall_deploy_rolled_back_servers | length == 1 else 'were')
+      ~ ' rolled back'
+      ~ (
+        ', but the restored release failed its health check again on '
+        ~ cloudfall_deploy_switched_unhealthy | join(', ')
+        if cloudfall_deploy_switched_unhealthy | default([]) | length > 0
+        else ''
+      )
+      if cloudfall_deploy_rolled_back_servers | length > 0
+      else ''
+    )
+    ~ (
+      '; its release command '
+      ~ cloudfall_deploy_component.release.command | join(' ')
+      ~ ' already ran on ' ~ cloudfall_deploy_component.release.server
+      ~ ' and is not reverted, so the release that serves again runs against'
+      ~ ' what it changed'
+      if cloudfall_deploy_component.release is defined
+      and hostvars[cloudfall_deploy_component.release.server]
+      .cloudfall_deploy_release_command_result is defined
+      else ''
+    )
+  }}

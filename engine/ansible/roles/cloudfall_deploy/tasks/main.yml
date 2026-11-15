@@ -583,6 +583,44 @@
         - cloudfall_deploy_command_health_result.timedOut
           or cloudfall_deploy_command_health_result.exitCode != 0
 
+    # A component on several servers deploys one server at a time; the
+    # servers that switched to the release earlier in this run and passed
+    # their gate go back to what they ran before too, last one first, each
+    # gated again. A server that never switched has no entry in the run's
+    # receipt, so nothing is rolled back there.
+    - name: Roll back the servers that switched to the release earlier in this run
+      ansible.builtin.include_tasks: switched_rollback.yml
+      vars:
+        cloudfall_deploy_switched: "{{ hostvars[cloudfall_deploy_switched_server] }}"
+      loop: >-
+        {{
+          hostvars['localhost'].cloudfall_deploy_run_entries | default({})
+          | dict2items | map(attribute='value')
+          | rejectattr('rolledBack')
+          | rejectattr('server', 'equalto', cloudfall_server_id)
+          | map(attribute='server') | reverse | list
+        }}
+      loop_control:
+        loop_var: cloudfall_deploy_switched_server
+      when:
+        - not ansible_check_mode
+        - >-
+          hostvars['localhost'].cloudfall_deploy_run_entries | default({})
+          | dict2items | map(attribute='value')
+          | rejectattr('rolledBack')
+          | rejectattr('server', 'equalto', cloudfall_server_id)
+          | list | length > 0
+
+    - name: Receipt the servers rolled back after switching earlier in this run
+      ansible.builtin.include_tasks: receipt_write.yml
+      when:
+        - not ansible_check_mode
+        - >-
+          hostvars['localhost'].cloudfall_deploy_run_entries | default({})
+          | dict2items | map(attribute='value')
+          | selectattr('healthCheckPassed') | selectattr('rolledBack')
+          | list | length > 0
+
     - name: Gate the restored release on its health check
       when:
         - cloudfall_deploy_previous_directory | length > 0
@@ -600,7 +638,9 @@
                 | first
               }}, but the restored release failed its health check too, so
               {{ cloudfall_deploy_component.id }} has no healthy release
-              there: {{ ansible_failed_result.msg | default('no detail') }}
+              there: {{ ansible_failed_result.msg | default('no detail') }}{{
+                cloudfall_deploy_failure_aftermath | default('')
+              }}
 
     - name: Fail the deployment after rolling back
       ansible.builtin.fail:
@@ -645,7 +685,7 @@
             and not ansible_check_mode
             and cloudfall_deploy_unit_hand_made | bool
             else ''
-          }}
+          }}{{ cloudfall_deploy_failure_aftermath | default('') }}
 
 - name: Receipt the release that passed its health gate
   ansible.builtin.include_tasks: release_receipt.yml

@@ -40,6 +40,7 @@ INSTALL_UNIT = "Install the managed service unit"
 ACTIVATE = "Activate the release behind the health gate"
 SWITCH = "Switch the current release symlink"
 RECEIPT = "Write the release receipt on the controller"
+RECORD_ENTRY = "Record the server's entry in the run's release receipt"
 TIMEOUT_MARKER = "cloudfall-test-timeout"
 REFUSED_MARKER = "cloudfall-test-refused"
 
@@ -447,28 +448,41 @@ def test_s005_6_a_server_whose_release_server_has_not_passed_does_not_switch() -
 
 
 def _receipt(
-    component: dict[str, object], server: str, hostvars: dict[str, object]
+    component: dict[str, object], servers: tuple[str, ...], hostvars: dict[str, object]
 ) -> dict[str, object]:
+    """Receipt a passed gate on each server in turn, as one deploy run does."""
     tasks = DataLoader().load_from_file(str(ROLE / "tasks" / "release_receipt.yml"))
     assert isinstance(tasks, list)
-    task = next(t for t in tasks if t["name"] == RECEIPT)
-    copy = task["ansible.builtin.copy"]
+    record = next(t for t in tasks if t["name"] == RECORD_ENTRY)
+    written = DataLoader().load_from_file(str(ROLE / "tasks" / "receipt_write.yml"))
+    assert isinstance(written, list)
+    copy = next(t for t in written if t["name"] == RECEIPT)["ansible.builtin.copy"]
     assert isinstance(copy, dict)
-    variables: dict[str, object] = {
-        "cloudfall_deploy_receipt_passed": True,
-        "hostvars": hostvars,
-        "cloudfall_server_id": server,
-        "cloudfall_deploy_component": component,
-        "cloudfall_deploy_release": "20261027T000000Z-abcdef1",
-        "cloudfall_deploy_artifact_sha256": "a" * 64,
-        "cloudfall_deploy_previous_directory": "",
-        "ansible_facts": {"date_time": {"iso8601": "2026-10-27T00:00:00Z"}},
-    }
-    rendered = Templar(loader=DataLoader(), variables=variables).template(
-        trust_as_template(copy["content"])
-    )
-    receipt = cast("dict[str, object]", json.loads(str(rendered)))
-    _validate_receipt(receipt)
+    controller: dict[str, object] = {}
+    receipt: dict[str, object] = {}
+    for server in servers:
+        variables: dict[str, object] = {
+            "cloudfall_deploy_receipt_passed": True,
+            "hostvars": {**hostvars, "localhost": controller},
+            "cloudfall_server_id": server,
+            "cloudfall_deploy_component": component,
+            "cloudfall_deploy_release": "20261027T000000Z-abcdef1",
+            "cloudfall_deploy_artifact_sha256": "a" * 64,
+            "cloudfall_deploy_previous_directory": "",
+            "ansible_facts": {"date_time": {"iso8601": "2026-10-27T00:00:00Z"}},
+        }
+        templar = Templar(loader=DataLoader(), variables=variables)
+        variables["cloudfall_deploy_receipt_previous_release"] = templar.template(
+            trust_as_template(record["vars"]["cloudfall_deploy_receipt_previous_release"])
+        )
+        controller["cloudfall_deploy_run_entries"] = templar.template(
+            trust_as_template(
+                record["ansible.builtin.set_fact"]["cloudfall_deploy_run_entries"]
+            )
+        )
+        rendered = templar.template(trust_as_template(copy["content"]))
+        receipt = cast("dict[str, object]", json.loads(str(rendered)))
+        _validate_receipt(receipt)
     return receipt
 
 
@@ -492,27 +506,29 @@ def test_s005_6_every_receipt_names_the_release_server() -> None:
         "b": {"cloudfall_deploy_release_command_result": RESULT_ON_B},
     }
 
-    for server in ("b", "a"):
-        spec = _receipt(component, server, hostvars)["spec"]
-        assert isinstance(spec, dict)
-        assert spec["server"] == server
-        assert spec["releaseCommand"] == RESULT_ON_B
+    spec = _receipt(component, ("b", "a"), hostvars)["spec"]
+
+    assert isinstance(spec, dict)
+    assert [entry["server"] for entry in spec["servers"]] == ["b", "a"]
+    assert spec["releaseCommand"] == RESULT_ON_B
 
 
 def test_s005_10_a_receipt_without_release_has_no_release_command() -> None:
-    spec = _receipt(_component(None), "a", {"a": {}})["spec"]
+    spec = _receipt(_component(None), ("a",), {"a": {}})["spec"]
 
     assert isinstance(spec, dict)
     assert "releaseCommand" not in spec
-    assert set(spec) == {
-        "component",
-        "server",
-        "release",
-        "artifactSha256",
-        "deployedAt",
-        "previousRelease",
-        "healthCheckPassed",
-    }
+    assert set(spec) == {"component", "release", "artifactSha256", "servers"}
+    assert [set(entry) for entry in spec["servers"]] == [
+        {
+            "server",
+            "release",
+            "previousRelease",
+            "deployedAt",
+            "healthCheckPassed",
+            "rolledBack",
+        }
+    ]
 
 
 def test_s005_7_a_receipt_refuses_an_output_tail_over_2000_characters() -> None:
@@ -527,7 +543,7 @@ def test_s005_7_a_receipt_refuses_an_output_tail_over_2000_characters() -> None:
     }
 
     with pytest.raises(ValidationError, match="too long"):
-        _receipt(component, "b", hostvars)
+        _receipt(component, ("b",), hostvars)
 
 
 # deploy.yml's host order, run for real against two local hosts.
