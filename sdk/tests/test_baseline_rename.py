@@ -351,7 +351,10 @@ def test_add_server_takes_type_as_a_deprecated_name_of_baseline(
     )
 
     assert exit_code == 0
-    assert "DEPRECATED_FLAG" in [warning["code"] for warning in payload["warnings"]]
+    warnings = payload["warnings"]
+    assert isinstance(warnings, list)
+    # PROJECT_FORMAT_OLD alone would make the list non-empty (S-017).
+    assert "DEPRECATED_FLAG" in [warning["code"] for warning in warnings]
     text = (project / "servers" / "h3.yaml").read_text(encoding="utf-8")
     assert "baseline: debian-minimal" in text
     assert "serverType" not in text
