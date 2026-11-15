@@ -28,9 +28,10 @@ from cloudfall.service_evidence import (
     load_domain_observations,
 )
 from cloudfall.validation import SchemaCatalog
+from examples_project import copy_examples
 from jsonschema.exceptions import ValidationError
 from test_catalog import _repository
-from test_operator import EXAMPLES, ROOT, SCHEMAS
+from test_operator import ROOT, SCHEMAS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -188,7 +189,7 @@ def test_s017_11_operator_show_reads_the_fixture_proposal(
 ) -> None:
     """The proposal lies where ``config upgrade`` moves it: ``record/`` (D-16)."""
     project = tmp_path / "project"
-    shutil.copytree(EXAMPLES, project)
+    copy_examples(project)
     _placed("OperatorProposal", project / RecordStore.PROPOSALS.directory)
     proposal = _identifier(_fixture("OperatorProposal"))
 
