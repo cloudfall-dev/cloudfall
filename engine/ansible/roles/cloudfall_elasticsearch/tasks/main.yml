@@ -182,7 +182,8 @@
     src: "{{ item.source }}"
     dest: "{{ item.path }}"
     owner: root
-    group: root
+    # The owner http_tls.yml checks, so a renewal never flips it back.
+    group: elasticsearch
     mode: "{{ item.mode }}"
     force: "{{ item.force }}"
   loop: "{{ cloudfall_elasticsearch_delivered_files }}"

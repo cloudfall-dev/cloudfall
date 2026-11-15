@@ -812,6 +812,10 @@ def test_the_certificate_is_checked_before_a_configuration_names_it() -> None:
     assert {"path": "{{ cloudfall_elasticsearch_key_path }}", "mode": "0640"} in cast(
         "list[dict[str, str]]", readable
     )
+    # The services converge issues the certificate only in a real run, so a
+    # dry run of a new node must not stop at its absence (Q-2).
+    for task in tls[1:]:
+        assert "not ansible_check_mode" in task.get("when", [])
 
 
 def _nft_rule(port: int, source: str | None = None) -> dict[str, object]:

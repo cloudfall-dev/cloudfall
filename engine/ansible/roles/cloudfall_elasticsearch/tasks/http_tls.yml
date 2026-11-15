@@ -31,6 +31,9 @@
   loop: "{{ cloudfall_elasticsearch_tls_files.results }}"
   loop_control:
     label: "{{ item.item }}"
+  # A dry run does not issue the certificate, so only a real run can tell.
+  when:
+    - not ansible_check_mode
 
 - name: Let Elasticsearch read the node certificate and the project CA
   ansible.builtin.file:
@@ -49,3 +52,4 @@
   loop_control:
     label: "{{ item.path }}"
   notify: Restart Elasticsearch
+  when: not ansible_check_mode
