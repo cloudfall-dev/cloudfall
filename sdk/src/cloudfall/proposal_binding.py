@@ -240,6 +240,7 @@ def _worktree_digest(git: str, project: BoundProject, base: str) -> Sha256Digest
         "--no-renames",
         "--binary",
         "--full-index",
+        "--submodule=diff",
         base,
         *pathspec,
     )
@@ -284,11 +285,14 @@ def _git(
     """Run one git command in the project, with empty input.
 
     Its output is kept as bytes: a diff or an untracked path need not be
-    UTF-8, and each text answer is decoded as UTF-8 where it is read.
+    UTF-8, and each text answer is decoded as UTF-8 where it is read. The
+    project's own git config does not get to run a command here: its
+    ``core.fsmonitor`` hook is turned off, as are external diff and
+    textconv drivers in the diff itself.
     """
     try:
         return subprocess.run(  # noqa: S603 - resolved binary, built argv.
-            (git, "-C", str(repository), *arguments),
+            (git, "-c", "core.fsmonitor=false", "-C", str(repository), *arguments),
             check=False,
             capture_output=True,
             input=b"",

@@ -1115,6 +1115,49 @@ def test_a_git_project_with_no_commit_yet_binds_its_files(tmp_path: Path) -> Non
     assert "the uncommitted changes in the project" in message
 
 
+def test_an_edit_inside_a_dirty_submodule_refuses_the_approval(
+    tmp_path: Path,
+) -> None:
+    """A role kept as a submodule is bound by its content, not its dirty flag."""
+    role = tmp_path / "role"
+    (role / "tasks").mkdir(parents=True)
+    (role / "tasks" / "main.yml").write_text("---\n[]\n", encoding="utf-8")
+    _git(role, "init", "--quiet")
+    _git(role, "add", "--all")
+    _git(role, "commit", "--quiet", "--message", "role")
+    repository = _git_project(tmp_path)
+    _git(
+        repository,
+        *("-c", "protocol.file.allow=always", "submodule", "add", "--quiet"),
+        *(str(role), "roles/db"),
+    )
+    _git(repository, "commit", "--quiet", "--message", "db role")
+    task = repository / "roles" / "db" / "tasks" / "main.yml"
+    task.write_text("---\n- name: Reviewed\n", encoding="utf-8")
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+
+    task.write_text("---\n- name: Not what was reviewed\n", encoding="utf-8")
+
+    message = _refused_as_changed(repository, store, proposed)
+    assert "the uncommitted changes in the project" in message
+
+
+def test_binding_does_not_run_the_projects_fsmonitor_hook(tmp_path: Path) -> None:
+    """The project's git config runs no command while a proposal is bound."""
+    repository = _git_project(tmp_path)
+    marker = tmp_path / "fsmonitor-ran"
+    hook = tmp_path / "fsmonitor.sh"
+    hook.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    _git(repository, "config", "core.fsmonitor", str(hook))
+    store = _store(repository)
+
+    propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+
+    assert not marker.exists()
+
+
 def test_a_proposal_recorded_before_bindings_is_refused(tmp_path: Path) -> None:
     """Nothing says what an older proposal was checked against (#352)."""
     repository = _repository(tmp_path)
