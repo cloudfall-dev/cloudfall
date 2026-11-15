@@ -155,7 +155,9 @@ class _Runner:
     """A runner that writes what Ansible would write, stage by stage.
 
     An idempotent fleet changes on the run and changes nothing on the
-    verify that follows, so the two stages are modelled separately.
+    verify that follows, so the two stages are modelled separately. Every
+    stage observes the hosts the play touched, unless ``verify_observed``
+    names the only hosts the verify step observed.
     """
 
     def __init__(
@@ -163,10 +165,12 @@ class _Runner:
         exit_code: int = 0,
         changed: tuple[str, ...] = ("web-1",),
         verify_changed: tuple[str, ...] = (),
+        verify_observed: tuple[str, ...] | None = None,
     ) -> None:
         self.exit_code = exit_code
         self.changed = changed
         self.verify_changed = verify_changed
+        self.verify_observed = verify_observed
         self.recorded: list[tuple[str, ...]] = []
 
     def __call__(
@@ -178,11 +182,15 @@ class _Runner:
         host_stats = Path(environment[HOST_STATS_VARIABLE])
         verifying = self._verifying(host_stats)
         changed = self.verify_changed if verifying else self.changed
+        observed = (*self.changed, "web-2")
+        if verifying and self.verify_observed is not None:
+            observed = self.verify_observed
         self.recorded.append(tuple(argv))
         host_stats.mkdir(parents=True, exist_ok=True)
-        for host in changed:
-            _write_recap(host_stats / host, ok=3, changed=1)
-        _write_recap(host_stats / "web-2", ok=3, changed=0)
+        for host in dict.fromkeys((*observed, *changed)):
+            _write_recap(
+                host_stats / host, ok=3, changed=1 if host in changed else 0
+            )
         diff_path.write_text("--- before\n+++ after\n", encoding="utf-8")
         return self.exit_code
 
@@ -2093,6 +2101,34 @@ def test_a_verify_step_that_changes_the_fleet_did_not_verify_it(
     assert approved.verification.changed == ("web-1",)
     assert approved.verdict is not None
     assert "the verify step changed web-1" in approved.verdict
+
+
+@pytest.mark.parametrize(
+    ("observed", "unobserved"),
+    [((), "web-1, web-2"), (("web-1",), "web-2")],
+    ids=["no-host", "one-host-skipped"],
+)
+def test_a_verify_step_that_did_not_observe_a_target_did_not_verify_it(
+    tmp_path: Path, observed: tuple[str, ...], unobserved: str
+) -> None:
+    """A verify play that matched no host, or skipped one, proves nothing (#360)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+
+    approved = _approved(
+        repository, store, proposed, _Runner(verify_observed=observed)
+    )
+
+    assert approved.status is DecisionStatus.FAILED
+    assert approved.verification is not None
+    assert approved.verification.exit_code == 0
+    assert approved.verification.changed == ()
+    assert approved.verdict == (
+        f"the verify step did not observe {unobserved}, so nothing verified "
+        "those hosts"
+    )
+    assert store.load(proposed.decision_id).status is DecisionStatus.FAILED
 
 
 def test_every_outcome_says_why_in_the_record(tmp_path: Path) -> None:

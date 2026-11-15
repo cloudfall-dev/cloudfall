@@ -964,7 +964,9 @@ def approve(
         if decision.verify_playbook is not None and execution.exit_code == 0
         else None
     )
-    status, verdict = _outcome(execution, verification, decision.verify_playbook)
+    status, verdict = _outcome(
+        execution, verification, decision.verify_playbook, decision.check
+    )
     approved = replace(
         running,
         execution=execution,
@@ -1126,13 +1128,15 @@ def _outcome(
     execution: RunRecord,
     verification: RunRecord | None,
     verify_playbook: Path | None,
+    check: CheckPreview,
 ) -> tuple[DecisionStatus, str]:
     """Return the status one run earned, and why, for the record.
 
     Verification is a claim about the fleet's state, so a verify run that
     changed something did not verify anything: it found the fleet not as
     the operation left it and converged it further. Exiting zero is not
-    enough.
+    enough, and neither is changing nothing: a verify play that matched no
+    host, or skipped one the decision targets, observed nothing there.
     """
     if execution.exit_code != 0:
         return (
@@ -1158,10 +1162,45 @@ def _outcome(
             "the verify step changed "
             f"{changed}, so the fleet was not in the state the run claimed",
         )
+    unobserved = _unobserved(check, execution, verification)
     return (
-        DecisionStatus.VERIFIED,
-        "the run succeeded and the verify step changed nothing",
+        (DecisionStatus.FAILED, unobserved)
+        if unobserved is not None
+        else (
+            DecisionStatus.VERIFIED,
+            "the run succeeded and the verify step changed nothing",
+        )
     )
+
+
+def _observed(run: CheckPreview | RunRecord) -> frozenset[str]:
+    """Return every host one run left recap counts for."""
+    return frozenset((*run.changed, *run.unchanged))
+
+
+def _unobserved(
+    check: CheckPreview, execution: RunRecord, verification: RunRecord
+) -> str | None:
+    """Return why the run or its verify step did not observe the targets, if so.
+
+    The targeted hosts are the ones the check run and the approved run left
+    recap counts for: the pattern alone names no host without the inventory.
+    Each must have counts from the run and from the verify step (#360).
+    """
+    targeted = _observed(check) | _observed(execution)
+    if not targeted:
+        return (
+            "neither the check, the run nor the verify step observed any host, "
+            "so the verify step verified nothing"
+        )
+    missed: list[str] = []
+    for name, run in (("the run", execution), ("the verify step", verification)):
+        hosts = sorted(targeted - _observed(run))
+        if hosts:
+            missed.append(f"{name} did not observe {', '.join(hosts)}")
+    if not missed:
+        return None
+    return f"{'; '.join(missed)}, so nothing verified those hosts"
 
 
 def _run_stage(
