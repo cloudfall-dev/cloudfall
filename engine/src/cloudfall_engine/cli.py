@@ -32,6 +32,7 @@ from cloudfall.elasticsearch import (
     ElasticsearchIndexPattern,
     ElasticsearchUserName,
 )
+from cloudfall.format_check import check_format, declare_format_exit
 from cloudfall.inventory import (
     ElasticsearchUser,
     OwnedPostgresDatabase,
@@ -133,6 +134,7 @@ app.exit_code(
     side_effects="none",
     suggestion="fix the resource error.context names, then run the command again",
 )
+declare_format_exit(app)
 app.exit_code(
     "ARTIFACT_BUILD_FAILED",
     81,
@@ -178,8 +180,8 @@ class Project:
     inventory: PlatformInventory
 
     @classmethod
-    def acquire(cls, args: ProjectArgs, _ctx: Ctx) -> Self:
-        """Resolve and validate the project before the handler runs."""
+    def acquire(cls, args: ProjectArgs, ctx: Ctx) -> Self:
+        """Resolve the project, check its format, then validate it (S-017)."""
         try:
             directory = resolve_project_directory(
                 args.project, os.environ, Path.cwd()
@@ -188,6 +190,7 @@ class Project:
             raise Exit.PROJECT_INVALID(
                 error.detail, context={"code": error.code}
             ) from error
+        check_format(ctx, directory)
         try:
             state = validate_config(directory, args.schemas)
         except ConfigValidationError as error:
@@ -232,7 +235,7 @@ class RenderedInventory:
     "render",
     description="Render the validated config as Ansible JSON inventory",
     danger_level="safe",
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID"],
+    exit_codes=["PROJECT_INVALID", "PROJECT_FORMAT_UNSUPPORTED", "CONFIG_INVALID"],
     examples=[
         (
             "Write the inventory Ansible reads",
@@ -319,7 +322,12 @@ class BuiltRelease:
         "one component release"
     ),
     danger_level="mutating",
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "ARTIFACT_BUILD_FAILED"],
+    exit_codes=[
+        "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
+        "CONFIG_INVALID",
+        "ARTIFACT_BUILD_FAILED",
+    ],
     # The limit depends on the component: BuildBudget applies the clone time
     # plus every declared step's timeout, or BuildArgs.timeout when passed.
     timeout=None,

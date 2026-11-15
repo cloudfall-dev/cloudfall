@@ -11,8 +11,8 @@ import tomllib
 from pathlib import Path
 
 import pytest
-from cloudfall.app import project_format_unsupported
 from cloudfall.cli import main
+from cloudfall.format_check import project_format_unsupported
 from cloudfall.project_format import (
     PROJECT_FORMAT_UNSUPPORTED_EXIT,
     SUPPORTED_FORMATS,

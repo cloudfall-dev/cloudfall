@@ -154,6 +154,7 @@ from cloudfall.domain import (
     TcpPort,
 )
 from cloudfall.elasticsearch import WARNING_VERSION_ENDING, ElasticsearchAccount
+from cloudfall.format_check import check_format, declare_format_exit
 from cloudfall.importer import (
     ImportTargets,
     RenderImportError,
@@ -297,16 +298,6 @@ from cloudfall.project import (
     resolve_installed_version,
     resolve_project_directory,
 )
-from cloudfall.project_format import (
-    PROJECT_FORMAT_UNSUPPORTED_EXIT,
-    SUPPORTED_FORMATS,
-    UPGRADE_FIX,
-    WARNING_PROJECT_FORMAT_OLD,
-    FormatRange,
-    ProjectFormatError,
-    check_project_format,
-    old_format_message,
-)
 from cloudfall.recording import Recording, RecordingError
 from cloudfall.release_approval import (
     APPROVALS_DIRECTORY,
@@ -448,7 +439,12 @@ app = App(
         commands=served_commands,
         bind=bound_arguments,
         instructions=server_instructions,
-        exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "INVENTORY_UNREADABLE"],
+        exit_codes=[
+            "PROJECT_INVALID",
+            "PROJECT_FORMAT_UNSUPPORTED",
+            "CONFIG_INVALID",
+            "INVENTORY_UNREADABLE",
+        ],
     ),
 )
 app.scalar(
@@ -509,21 +505,7 @@ app.exit_code(
     retryable=False,
     side_effects="none",
 )
-app.exit_code(
-    "PROJECT_FORMAT_UNSUPPORTED",
-    PROJECT_FORMAT_UNSUPPORTED_EXIT,
-    description=(
-        "The project's [tool.cloudfall] format is outside the formats this "
-        "Cloudfall reads, or malformed"
-    ),
-    retryable=False,
-    side_effects="none",
-    suggestion=(
-        "read error.context.code: project_format_too_new, raise the cloudfall== "
-        "pin and run uv sync; project_format_too_old, run `cloudfall config "
-        "upgrade`; project_format_invalid, fix [tool.cloudfall] format"
-    ),
-)
+declare_format_exit(app)
 app.exit_code(
     "RECORD_INVALID",
     86,
@@ -701,13 +683,18 @@ class Fleet:
     """The team's Ansible inventory the fleet was read from, if any."""
 
     @classmethod
-    def acquire(cls, args: ProjectArgs, _ctx: Ctx) -> Self:
-        """Resolve and validate the project before the handler runs."""
-        return cls._project(args)
+    def acquire(cls, args: ProjectArgs, ctx: Ctx) -> Self:
+        """Resolve the project, check its format, then validate it (S-017).
+
+        A format outside the supported range stops the command before any
+        resource is read; a format below the current one adds one
+        ``PROJECT_FORMAT_OLD`` warning.
+        """
+        return cls._project(args, ctx)
 
     @classmethod
-    def _project(cls, args: ProjectArgs) -> Self:
-        return cls._validated(_project_directory(args), args)
+    def _project(cls, args: ProjectArgs, ctx: Ctx) -> Self:
+        return cls._validated(_checked_project_directory(args, ctx), args)
 
     @classmethod
     def _validated(cls, directory: Path, args: ProjectArgs) -> Self:
@@ -726,23 +713,6 @@ class Fleet:
         return PlatformInventory.from_state(self.state)
 
 
-@dataclass(frozen=True, slots=True)
-class FormattedFleet(Fleet):
-    """A project whose format is checked before it is validated (S-017).
-
-    A format outside the supported range stops the command before any
-    resource is read; a format below the current one adds one
-    ``PROJECT_FORMAT_OLD`` warning.
-    """
-
-    @classmethod
-    def acquire(cls, args: ProjectArgs, ctx: Ctx) -> Self:
-        """Resolve the project, check its format, then validate it."""
-        directory = _project_directory(args)
-        check_format(ctx, directory, SUPPORTED_FORMATS)
-        return cls._validated(directory, args)
-
-
 def _project_directory(args: ProjectArgs) -> Path:
     """Return the project directory the command runs in."""
     try:
@@ -753,29 +723,15 @@ def _project_directory(args: ProjectArgs) -> Path:
         ) from error
 
 
-def check_format(ctx: Ctx, directory: Path, supported: FormatRange) -> None:
-    """Stop on a project format ``supported`` does not read; warn on an old one.
+def _checked_project_directory(args: ProjectArgs, ctx: Ctx) -> Path:
+    """Return the project directory once its format is one this release reads.
 
-    The range is a parameter so a caller, or a test, can check a project
-    against another range than the one this release reads.
+    Every command that reads a project starts here (S-017): the format is
+    checked before anything else reads or writes the project.
     """
-    try:
-        project_format = check_project_format(directory, supported)
-    except ProjectFormatError as error:
-        raise project_format_unsupported(error) from error
-    if project_format < supported.current:
-        ctx.warn(
-            WARNING_PROJECT_FORMAT_OLD,
-            old_format_message(project_format, supported),
-            projectFormat=project_format.value,
-            current=supported.current.value,
-            fix=UPGRADE_FIX,
-        )
-
-
-def project_format_unsupported(error: ProjectFormatError) -> CliExit:
-    """Return the ``PROJECT_FORMAT_UNSUPPORTED`` exit for a refused format."""
-    return Exit.PROJECT_FORMAT_UNSUPPORTED(error.detail, context=error.context)
+    directory = _project_directory(args)
+    check_format(ctx, directory)
+    return directory
 
 
 @dataclass(frozen=True, slots=True)
@@ -789,13 +745,13 @@ class InventoryFleet(Fleet):
     @classmethod
     # Narrower than Fleet.acquire on purpose: only --inventory commands take it.
     def acquire(  # type: ignore[override]
-        cls, args: FleetArgs, _ctx: Ctx
+        cls, args: FleetArgs, ctx: Ctx
     ) -> Self:
         """Read the team's inventory when one applies, else the project."""
         try:
             source = _inventory_source(args)
             if source is None:
-                return cls._project(args)
+                return cls._project(args, ctx)
             read = read_fleet(read_inventory(source), args.schemas)
         except AnsibleReadError as error:
             raise Exit.INVENTORY_UNREADABLE(
@@ -856,7 +812,7 @@ class ValidatedPayload(Payload):
     examples=[("Validate the project in this directory", "cloudfall config validate")],
 )
 def config_validate(
-    _args: ProjectArgs, ctx: Ctx, fleet: FormattedFleet
+    _args: ProjectArgs, ctx: Ctx, fleet: Fleet
 ) -> ValidatedPayload:
     """Answer the validation summary of the resolved project.
 
@@ -930,7 +886,12 @@ class UpgradedPayload(Payload):
     danger_level="mutating",
     timeout=60,
     idempotent=True,
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "CONFLICT"],
+    exit_codes=[
+        "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
+        "CONFIG_INVALID",
+        "CONFLICT",
+    ],
     examples=[("Rewrite the project in this directory", "cloudfall config upgrade")],
 )
 def config_upgrade(args: ProjectArgs, _ctx: Ctx, fleet: Fleet) -> UpgradedPayload:
@@ -962,6 +923,7 @@ class InventoryPayload(Payload):
     danger_level="safe",
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "INVENTORY_UNREADABLE",
     ],
@@ -1026,7 +988,12 @@ class RequirementsPayload(Payload):
         "the project only: secret states come from key names, never values"
     ),
     danger_level="safe",
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PRECONDITION"],
+    exit_codes=[
+        "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
+        "CONFIG_INVALID",
+        "PRECONDITION",
+    ],
     examples=[
         ("Show the project's host requirements", "cloudfall requirements show")
     ],
@@ -1362,7 +1329,13 @@ class ProposalPayload(Payload):
     "list",
     description="List proposal receipts, oldest first",
     danger_level="safe",
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "RECORD_INVALID", "NOT_FOUND"],
+    exit_codes=[
+        "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
+        "CONFIG_INVALID",
+        "RECORD_INVALID",
+        "NOT_FOUND",
+    ],
     examples=[("List the operator's proposals", "cloudfall operator list")],
 )
 def operator_list(args: ProposalArgs, ctx: Ctx, fleet: Fleet) -> ProposalsPayload:
@@ -1384,7 +1357,13 @@ def operator_list(args: ProposalArgs, ctx: Ctx, fleet: Fleet) -> ProposalsPayloa
     "show",
     description="Show one proposal receipt",
     danger_level="safe",
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "RECORD_INVALID", "NOT_FOUND"],
+    exit_codes=[
+        "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
+        "CONFIG_INVALID",
+        "RECORD_INVALID",
+        "NOT_FOUND",
+    ],
     examples=[("Show one proposal", "cloudfall operator show nginx-down-20260101")],
 )
 def operator_show(args: ShowProposalArgs, _ctx: Ctx, fleet: Fleet) -> ProposalPayload:
@@ -1438,6 +1417,7 @@ class AuditPayload(Payload):
     danger_level="safe",
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "INVENTORY_UNREADABLE",
         "DRIFT",
@@ -1534,7 +1514,7 @@ class ServicesPayload(Payload):
     "status",
     description="Derive service lifecycle status from current evidence",
     danger_level="safe",
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID"],
+    exit_codes=["PROJECT_INVALID", "PROJECT_FORMAT_UNSUPPORTED", "CONFIG_INVALID"],
     examples=[
         (
             "Report each service from fresh snapshots",
@@ -1679,14 +1659,9 @@ class ProjectDirectory:
     path: Path
 
     @classmethod
-    def acquire(cls, args: ProjectArgs, _ctx: Ctx) -> Self:
-        """Resolve the project directory before the handler runs."""
-        try:
-            return cls(resolve_project_directory(args.project, os.environ, Path.cwd()))
-        except ProjectError as error:
-            raise Exit.PROJECT_INVALID(
-                error.detail, context={"code": error.code}
-            ) from error
+    def acquire(cls, args: ProjectArgs, ctx: Ctx) -> Self:
+        """Resolve the project directory and check its format (S-017)."""
+        return cls(_checked_project_directory(args, ctx))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -1830,6 +1805,7 @@ def _authoring_failed(error: AuthoringError) -> Exception:
 
 _ADD_EXIT_CODES = [
     "PROJECT_INVALID",
+    "PROJECT_FORMAT_UNSUPPORTED",
     "CONFIG_INVALID",
     "CONFLICT",
     "PERMISSION_DENIED",
@@ -1973,7 +1949,12 @@ class DashboardPayload(Payload):
     supports_raw_payload=True,
     project_root=PROJECT_MARKERS,
     filesystem_side_effects=[SideEffect("{project_root}/tmp/dashboard/", "output")],
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PERMISSION_DENIED"],
+    exit_codes=[
+        "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
+        "CONFIG_INVALID",
+        "PERMISSION_DENIED",
+    ],
     examples=[
         (
             "Build the dashboard from fresh snapshots",
@@ -2057,7 +2038,12 @@ class ServingPayload(Payload):
     danger_level="safe",
     streaming=True,
     timeout=None,
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PRECONDITION"],
+    exit_codes=[
+        "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
+        "CONFIG_INVALID",
+        "PRECONDITION",
+    ],
     examples=[
         (
             "Serve the dashboard on the default port",
@@ -2140,7 +2126,12 @@ class InspectedPayload(Payload):
     filesystem_side_effects=[
         SideEffect("{project_root}/tmp/observed-services/", "output")
     ],
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PERMISSION_DENIED"],
+    exit_codes=[
+        "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
+        "CONFIG_INVALID",
+        "PERMISSION_DENIED",
+    ],
     examples=[("Probe every declared domain", "cloudfall services observe")],
 )
 def services_observe(
@@ -2308,6 +2299,7 @@ class HealthPayload(Payload):
     danger_level="safe",
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "PRECONDITION",
         "ENGINE_STEP_FAILED",
@@ -2376,6 +2368,7 @@ def _backed_up(body: Mapping[str, object]) -> BackedUp:
 
 _BACKUP_EXIT_CODES = [
     "PROJECT_INVALID",
+    "PROJECT_FORMAT_UNSUPPORTED",
     "CONFIG_INVALID",
     "PRECONDITION",
     "ENGINE_STEP_FAILED",
@@ -3401,6 +3394,7 @@ class Approved:
     danger_level="mutating",
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "NOT_FOUND",
         "PRECONDITION",
@@ -3490,6 +3484,7 @@ class MarkProposalInterruptedArgs(ProposalArgs):
     danger_level="mutating",
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "NOT_FOUND",
         "PRECONDITION",
@@ -3581,6 +3576,7 @@ class OperatorPassPayload(Payload):
     supports_raw_payload=True,
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "NOT_FOUND",
         "PRECONDITION",
@@ -3854,6 +3850,7 @@ class Migration:
     danger_level="mutating",
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "PRECONDITION",
         "PARTIAL_FAILURE",
@@ -4105,6 +4102,7 @@ def _playbook_runner(
     ],
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "INVENTORY_UNREADABLE",
         "PRECONDITION",
@@ -4257,7 +4255,12 @@ class SecretsInputPayload(SecretsWrittenPayload):
         "never overwritten. The answer names references and hashes, never values"
     ),
     danger_level="mutating",
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PRECONDITION"],
+    exit_codes=[
+        "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
+        "CONFIG_INVALID",
+        "PRECONDITION",
+    ],
     timeout=120,
     subprocess=Subprocess("sops"),
     examples=[("Generate the missing secrets", "cloudfall secrets generate")],
@@ -4336,6 +4339,7 @@ class SecretsInputArgs(SecretsDirArgs):
     interactive=True,
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "PRECONDITION",
         "NOT_FOUND",
@@ -4416,7 +4420,12 @@ def _input_secret(
         "file; the answer names keys and hashes, never values"
     ),
     danger_level="mutating",
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PRECONDITION"],
+    exit_codes=[
+        "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
+        "CONFIG_INVALID",
+        "PRECONDITION",
+    ],
     timeout=120,
     subprocess=Subprocess("sops"),
     required_tools={"sops": "3.8.0"},
@@ -4527,6 +4536,7 @@ class ImportedApiPayload(Payload):
 
 _IMPORT_EXIT_CODES = [
     "PROJECT_INVALID",
+    "PROJECT_FORMAT_UNSUPPORTED",
     "CONFIG_INVALID",
     "PRECONDITION",
     "PERMISSION_DENIED",
@@ -4792,6 +4802,7 @@ def _plan(preview: LifecyclePreview) -> dict[str, object]:
 
 _LIFECYCLE_EXIT_CODES = [
     "PROJECT_INVALID",
+    "PROJECT_FORMAT_UNSUPPORTED",
     "CONFIG_INVALID",
     "PRECONDITION",
     "ENGINE_STEP_FAILED",
@@ -5007,6 +5018,7 @@ class LockClearPayload(Payload):
     danger_level="mutating",
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "CONFLICT",
         "RECORD_INVALID",
@@ -5412,6 +5424,7 @@ def _logging_open_failed(error: LoggingOpenError) -> Exception:
     timeout=None,
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "PRECONDITION",
         "NOT_FOUND",
@@ -5626,6 +5639,7 @@ class ReleaseApproved:
     danger_level="mutating",
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "PRECONDITION",
         "PERMISSION_DENIED",

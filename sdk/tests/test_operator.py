@@ -850,11 +850,11 @@ def test_cli_operator_list_emits_structured_output(
     captured = capsys.readouterr()
     document = json.loads(captured.out)
     assert exit_code == 0
-    assert (document["ok"], document["error"], document["warnings"]) == (
-        True,
-        None,
-        [],
-    )
+    assert (document["ok"], document["error"]) == (True, None)
+    # The examples carry no [tool.cloudfall] format, so they read as format 0.
+    assert [warning["code"] for warning in document["warnings"]] == [
+        "PROJECT_FORMAT_OLD"
+    ]
     assert document["data"] == {"status": "ok", "proposals": []}
 
 
