@@ -37,7 +37,7 @@ The renderer consumes the SDK's typed inventory and creates host variables plus
 environment, application, and component groups. It never includes secret values or
 secret references.
 
-Active environment-scoped SSH public keys are rendered as
+Environment-scoped SSH public keys, active and revoked, are rendered as
 `cloudfall_ssh_public_keys`. Rendering alone does not change authorized keys.
 
 ## Running playbooks
@@ -120,7 +120,8 @@ service's `remoteAccess`) renders one `ip saddr`/`ip6 saddr` rule per source
 and never counts as the SSH port.
 
 The access role installs active environment-scoped `SshPublicKey` resources
-for root, validates the complete OpenSSH configuration, and only then
+for root, then removes the revoked ones (undeclared keys stay), validates the
+complete OpenSSH configuration, and only then
 disables password and keyboard-interactive authentication.
 
 ## Bootstrap role
