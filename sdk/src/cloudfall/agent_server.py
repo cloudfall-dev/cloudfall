@@ -33,6 +33,7 @@ from cloudfall.ansible_api import (
 )
 from cloudfall.catalog import CATALOG_DIRECTORY, RiskLevel
 from cloudfall.decision import DECISION_DIRECTORY
+from cloudfall.format_check import refuse_unsupported_format
 from cloudfall.investigation import INVESTIGATION_DIRECTORY
 from cloudfall.project import (
     PROJECT_DIRECTORY_VARIABLE,
@@ -206,6 +207,8 @@ def resolve_root(args: McpServeArgs) -> ServerRoot:
     Precedence: ``--repository``, then a project named by ``--project`` or
     the environment, then the current directory when it is a project, then
     the current directory when an ``ansible.cfg`` there names an inventory.
+    A project whose format this release does not read stops the server
+    before it accepts a client (S-017).
     """
     current = Path.cwd()
     if args.repository is not None:
@@ -223,6 +226,7 @@ def resolve_root(args: McpServeArgs) -> ServerRoot:
         raise Exit.PROJECT_INVALID(
             error.detail, context={"code": error.code}
         ) from error
+    refuse_unsupported_format(directory)
     return ServerRoot(ServerMode.PROJECT, directory.resolve())
 
 
