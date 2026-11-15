@@ -157,12 +157,18 @@
       cloudfall_deploy_uv_installed.rc != 0
       or cloudfall_deploy_uv_version not in cloudfall_deploy_uv_installed.stdout
   block:
+    # One slow GitHub download must not fail the deploy: retry a few times,
+    # then fail (#372).
     - name: Download the pinned uv archive
       ansible.builtin.get_url:
         url: "{{ cloudfall_deploy_uv_url }}"
         dest: /tmp/cloudfall-uv.tar.gz
         checksum: "sha256:{{ cloudfall_deploy_uv_sha256 }}"
         mode: "0644"
+      register: cloudfall_deploy_uv_download
+      until: cloudfall_deploy_uv_download is succeeded
+      retries: 5
+      delay: 10
 
     - name: Unpack the uv archive
       ansible.builtin.unarchive:
