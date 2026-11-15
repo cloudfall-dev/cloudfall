@@ -1923,6 +1923,7 @@ def _record_pre_baseline_proposal(tmp_path: Path) -> ResourceId:
     return ResourceId.from_boundary(proposal_id)
 
 
+# proves: S-017-11
 @pytest.mark.parametrize(
     ("baseline_status", "expected"),
     [
@@ -1933,7 +1934,10 @@ def _record_pre_baseline_proposal(tmp_path: Path) -> ResourceId:
 def test_a_proposal_naming_server_type_id_verifies_on_baseline_id(
     tmp_path: Path, baseline_status: AuditStatus, expected: ProposalStatus
 ) -> None:
-    """`server_type.id` became `baseline.id`; an old proposal waits on it (D-11)."""
+    """`server_type.id` became `baseline.id`; an old proposal waits on it (D-11).
+
+    A recorded proposal is a record, read with no removal date (S-017-11).
+    """
     proposal_id = _record_pre_baseline_proposal(tmp_path)
     auditor = lambda: _audit_report(  # noqa: E731
         ("baseline.id", baseline_status),
