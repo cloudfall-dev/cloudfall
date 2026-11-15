@@ -427,13 +427,86 @@ def elasticsearch_account_passwords(
     return tuple(found)
 
 
+@dataclass(frozen=True, slots=True)
+class ElasticsearchS3Credentials:
+    """The S3 client keys of one service's snapshot repository, in memory only.
+
+    ``credentialsRef`` names one key of the store; its value is the access
+    key id and the secret access key joined by the first ``:``, so a
+    reference stays one key, as everywhere else (S-012, Snapshots).
+    """
+
+    service: ResourceId
+    reference: SecretValueReference
+    access_key: str = field(repr=False)
+    secret_key: str = field(repr=False)
+
+
+def elasticsearch_snapshot_credentials(
+    inventory: PlatformInventory,
+) -> tuple[tuple[ResourceId, SecretValueReference], ...]:
+    """Return each service's id with its S3 snapshot repository's ``credentialsRef``."""
+    return tuple(
+        (service.resource_id, service.elasticsearch.snapshot_repository.credentials_ref)
+        for service in inventory.services
+        if service.elasticsearch is not None
+        and service.elasticsearch.snapshot_repository is not None
+    )
+
+
+def elasticsearch_s3_credentials(
+    repositories: Iterable[tuple[ResourceId, SecretValueReference]],
+    provider: SopsSecretProvider,
+) -> tuple[ElasticsearchS3Credentials, ...]:
+    """Decrypt the S3 client keys each service's snapshot repository names.
+
+    A missing file or key, or a value that is not ``<access key>:<secret
+    key>`` on one line, fails naming the file and the key, never the value,
+    before any playbook.
+    """
+    found: list[ElasticsearchS3Credentials] = []
+    for service_id, reference in repositories:
+        try:
+            value = provider.fetch_value(reference)
+        except SecretsError as error:
+            message = (
+                f"{error.message}; it holds the S3 keys of the snapshotRepository "
+                f"of Elasticsearch service {service_id.value}, as "
+                "<access key id>:<secret access key>"
+            )
+            raise SecretsError(error.code, message) from error
+        access_key, separator, secret_key = value.partition(":")
+        if (
+            not separator
+            or not access_key
+            or not secret_key
+            or any(char in value for char in "\r\n")
+            or access_key.strip() != access_key
+            or secret_key.strip() != secret_key
+        ):
+            message = (
+                f"secret key {reference.key.value} in "
+                f"{provider.source_path(reference)} is not "
+                "<access key id>:<secret access key> on one line, the form the "
+                f"snapshotRepository of Elasticsearch service {service_id.value} "
+                "reads"
+            )
+            raise SecretsError(_ERROR_SOURCE_INVALID, message)
+        found.append(
+            ElasticsearchS3Credentials(service_id, reference, access_key, secret_key)
+        )
+    return tuple(found)
+
+
 PASSWORD_FILES_VARIABLE = "cloudfall_services_password_files"  # noqa: S105 - a name
 """The ``services.yml`` variable mapping service, then owner, to a staged file."""
 ELASTICSEARCH_FILES_VARIABLE = "cloudfall_services_elasticsearch_files"
 """The ``services.yml`` variable mapping an Elasticsearch service to its staged files.
 
 Each service maps ``cloudfallPassword`` (the password the node keeps in its
-0600 file), ``cloudfallHash`` and ``elasticHash`` (bcrypt hashes only).
+0600 file), ``cloudfallHash`` and ``elasticHash`` (bcrypt hashes only), and,
+with an S3 ``snapshotRepository``, ``s3AccessKey`` and ``s3SecretKey`` (the
+client keys every node puts in its keystore).
 """
 
 
@@ -441,18 +514,20 @@ Each service maps ``cloudfallPassword`` (the password the node keeps in its
 def staged_password_files(
     passwords: tuple[OwnedRolePassword, ...],
     accounts: tuple[ElasticsearchAccountPassword, ...] = (),
+    s3: tuple[ElasticsearchS3Credentials, ...] = (),
 ) -> Iterator[dict[str, object]]:
     """Write each password's server form to a 0600 file, then remove it.
 
     The files sit in a private temp dir. An owner role's file holds its SCRAM
     verifier, never the password (D-9); an Elasticsearch account's files hold
     its bcrypt hash, and for ``cloudfall`` also the password the spec puts in
-    a 0600 file on each node. Yields the extra vars ``services.yml`` reads:
-    the controller paths only, so neither crosses a command line, the
-    inventory, or the project. Nothing to stage yields no variable, leaving
-    the run as it was.
+    a 0600 file on each node; an S3 snapshot repository's two files hold the
+    client keys the keystore of each node takes. Yields the extra vars
+    ``services.yml`` reads: the controller paths only, so neither crosses a
+    command line, the inventory, or the project. Nothing to stage yields no
+    variable, leaving the run as it was.
     """
-    if not passwords and not accounts:
+    if not passwords and not accounts and not s3:
         yield {}
         return
     with tempfile.TemporaryDirectory(prefix="cloudfall-passwords-") as directory:
@@ -468,15 +543,17 @@ def staged_password_files(
         extra_vars: dict[str, object] = {}
         if files:
             extra_vars[PASSWORD_FILES_VARIABLE] = files
-        if accounts:
+        if accounts or s3:
             extra_vars[ELASTICSEARCH_FILES_VARIABLE] = _stage_accounts(
-                root / "elasticsearch", accounts
+                root / "elasticsearch", accounts, s3
             )
         yield extra_vars
 
 
 def _stage_accounts(
-    root: Path, accounts: tuple[ElasticsearchAccountPassword, ...]
+    root: Path,
+    accounts: tuple[ElasticsearchAccountPassword, ...],
+    s3: tuple[ElasticsearchS3Credentials, ...],
 ) -> dict[str, dict[str, str]]:
     root.mkdir(mode=0o700)
     staged: dict[str, dict[str, str]] = {}
@@ -490,6 +567,16 @@ def _stage_accounts(
             plain = root / f"{prefix}.password"
             _write_private(plain, account.value)
             service["cloudfallPassword"] = str(plain)
+    for credentials in s3:
+        service = staged.setdefault(credentials.service.value, {})
+        prefix = f"{credentials.service.value}-s3"
+        for name, suffix, value in (
+            ("s3AccessKey", "access", credentials.access_key),
+            ("s3SecretKey", "secret", credentials.secret_key),
+        ):
+            path = root / f"{prefix}.{suffix}"
+            _write_private(path, value)
+            service[name] = str(path)
     return staged
 
 

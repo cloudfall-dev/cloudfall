@@ -14,7 +14,7 @@ Cloudfall provide it describe the same requirement.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from ipaddress import ip_address
 from typing import TYPE_CHECKING
@@ -36,9 +36,12 @@ from cloudfall.domain import (
 )
 from cloudfall.elasticsearch import ElasticsearchAccount
 from cloudfall.elasticsearch_cluster import (
+    DATA_PATH,
     TRANSPORT_CA_PATH,
     TRANSPORT_CERTIFICATE_PATH,
     TRANSPORT_KEY_PATH,
+    TRANSPORT_PORT,
+    cluster_nodes,
     transport_address,
 )
 from cloudfall.inventory import SecretValueReference, StoragePool
@@ -189,6 +192,22 @@ class VolumeRequirement:
         if self.placement is VolumePlacement.MIRRORED and self.pool.secondary:
             return (self.pool.primary, self.pool.secondary)
         return (self.pool.primary,)
+
+    def held_as(self, segment: object) -> VolumeRequirement:
+        """Return what an existing volume of LVM type ``segment`` is measured against.
+
+        A mirrored volume meets an expendable requirement (D-18): a ``raid1``
+        volume in a pool with a secondary stays the mirror it is, and is
+        checked, grown and audited as one. A linear volume still never meets
+        a mirrored requirement.
+        """
+        if (
+            segment == "raid1"
+            and self.placement is VolumePlacement.EXPENDABLE
+            and self.pool.secondary is not None
+        ):
+            return replace(self, placement=VolumePlacement.MIRRORED)
+        return self
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the volume requirement with where it lives."""
@@ -396,7 +415,7 @@ def requirements_of(inventory: PlatformInventory) -> tuple[ServerRequirements, .
         if requirement not in held:
             held.append(requirement)
     for service in inventory.services:
-        for server_id, requirement in _elasticsearch_requirements(service, servers):
+        for server_id, requirement in _elasticsearch_requirements(service, inventory):
             by_server.setdefault(server_id.value, []).append(requirement)
     return tuple(
         ServerRequirements(
@@ -414,10 +433,13 @@ def requirements_of(inventory: PlatformInventory) -> tuple[ServerRequirements, .
 
 
 ELASTICSEARCH_PACKAGE = PackageName("elasticsearch")
+ELASTICSEARCH_VOLUME_NAME = RequirementName("elasticsearch")
+ELASTICSEARCH_VOLUME_SIZE = ByteSize(10 * GIBIBYTE)
+"""The starting size of each node's data volume; it grows, never shrinks."""
+ELASTICSEARCH_TRANSPORT_NAME = RequirementName("elasticsearch-transport")
 ELASTICSEARCH_PASSWORD_NAME = RequirementName("elasticsearch-cloudfall-password")
 ELASTICSEARCH_PASSWORD_PATH = AbsolutePath("/etc/elasticsearch/cloudfall-password")
 """Where each node keeps the ``cloudfall`` account's password, 0600 elasticsearch."""
-ELASTICSEARCH_TRANSPORT_NAME = RequirementName("elasticsearch-transport")
 ELASTIC_PASSWORD_NAME = "elasticsearch-elastic-password"  # noqa: S105 - a name
 """How ``secrets generate`` names the ``elastic`` password; no host keeps it."""
 _ELASTICSEARCH_ACCOUNT_KEYS = {
@@ -438,20 +460,83 @@ def elasticsearch_account_reference(
 
 
 def _elasticsearch_requirements(
-    service: ServiceInventory, servers: dict[str, ServerInventory]
+    service: ServiceInventory, inventory: PlatformInventory
 ) -> list[tuple[ResourceId, Requirement]]:
-    """Each node of an Elasticsearch service needs its package and Cloudfall's password.
+    """Place what each node of an Elasticsearch service needs (S-012).
 
-    The password is generated (S-012, What each node needs); the role writes
-    it on the node and only its bcrypt hash into the file realm. With
-    ``remoteAccess``, each node also needs its one certificate from the
-    project CA, which HTTP uses for TLS: a client verifies it at the listen
-    address. The same certificate serves the transport of a cluster (#312).
+    Every node needs its data volume, its package and Cloudfall's generated
+    password; the role writes the password on the node and only its bcrypt
+    hash into the file realm. A node of a cluster of two or more also needs
+    the transport port, open to the other nodes only; one node keeps its
+    transport on loopback. A node of a cluster, or of a service with
+    ``remoteAccess``, needs its one certificate from the project CA, which
+    the transport and HTTP over TLS share: the other nodes verify it at its
+    IPv4, a client at the listen address.
     """
     elasticsearch = service.elasticsearch
     if elasticsearch is None:
         return []
     owner = RequirementOwner(ResourceKind.SERVICE, service.resource_id)
+    servers = {server.resource_id: server for server in inventory.servers}
+    nodes = cluster_nodes(service, inventory.servers)
+    placement = VolumePlacement.EXPENDABLE if nodes else VolumePlacement.MIRRORED
+    placed: list[tuple[ResourceId, Requirement]] = []
+    for node_id in elasticsearch.nodes:
+        baseline = inventory.baseline(servers[node_id].baseline_id)
+        placed.append(
+            (
+                node_id,
+                Requirement(
+                    owner,
+                    VolumeRequirement(
+                        ELASTICSEARCH_VOLUME_NAME,
+                        DATA_PATH,
+                        ELASTICSEARCH_VOLUME_SIZE,
+                        placement,
+                        (SystemdUnitName("elasticsearch.service"),),
+                        _pool(baseline, None, ELASTICSEARCH_VOLUME_NAME.value),
+                    ),
+                ),
+            )
+        )
+    for node in nodes:
+        others = tuple(
+            item.server_id for item in nodes if item.server_id != node.server_id
+        )
+        placed.append(
+            (
+                node.server_id,
+                Requirement(
+                    owner,
+                    PortRequirement(
+                        ELASTICSEARCH_TRANSPORT_NAME,
+                        TRANSPORT_PORT,
+                        NetworkProtocol.TCP,
+                        others,
+                    ),
+                ),
+            )
+        )
+    remote_access = elasticsearch.remote_access
+    if nodes or remote_access is not None:
+        listen_address = None if remote_access is None else remote_access.listen_address
+        placed.extend(
+            (
+                node_id,
+                Requirement(
+                    owner,
+                    CertificateRequirement(
+                        ELASTICSEARCH_TRANSPORT_NAME,
+                        CertificateUsage.SERVER_AND_CLIENT,
+                        elasticsearch_node_names(servers[node_id], listen_address),
+                        TRANSPORT_CERTIFICATE_PATH,
+                        TRANSPORT_KEY_PATH,
+                        TRANSPORT_CA_PATH,
+                    ),
+                ),
+            )
+            for node_id in elasticsearch.nodes
+        )
     password = SecretRequirement(
         ELASTICSEARCH_PASSWORD_NAME,
         SecretSource.GENERATE,
@@ -465,33 +550,11 @@ def _elasticsearch_requirements(
         ELASTICSEARCH_PACKAGE,
         PackageVersion(elasticsearch.version.value),
     )
-    placed = [
-        (node, Requirement(owner, spec))
-        for node in elasticsearch.nodes
+    return placed + [
+        (node_id, Requirement(owner, spec))
+        for node_id in elasticsearch.nodes
         for spec in (password, package)
     ]
-    remote_access = elasticsearch.remote_access
-    if remote_access is not None:
-        placed.extend(
-            (
-                node,
-                Requirement(
-                    owner,
-                    CertificateRequirement(
-                        ELASTICSEARCH_TRANSPORT_NAME,
-                        CertificateUsage.SERVER_AND_CLIENT,
-                        elasticsearch_node_names(
-                            servers[node.value], remote_access.listen_address
-                        ),
-                        TRANSPORT_CERTIFICATE_PATH,
-                        TRANSPORT_KEY_PATH,
-                        TRANSPORT_CA_PATH,
-                    ),
-                ),
-            )
-            for node in elasticsearch.nodes
-        )
-    return placed
 
 
 def elasticsearch_node_names(

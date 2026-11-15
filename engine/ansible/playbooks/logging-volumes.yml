@@ -5,8 +5,12 @@
 # device each declared pool path and each physical volume resolves to, so a
 # stable /dev/disk/by-id path matches the name LVM reports (#293).
 # The controller decides from this report; nothing here changes the host.
+# The services converge reads its Elasticsearch nodes the same way, naming
+# them in cloudfall_provider_hosts (S-012).
 - name: Report volume facts from logging hosts
-  hosts: cloudfall_logging_backends:cloudfall_logging_collectors
+  hosts: >-
+    {{ cloudfall_provider_hosts
+       | default('cloudfall_logging_backends:cloudfall_logging_collectors') }}
   become: true
   gather_facts: false
   vars:

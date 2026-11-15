@@ -31,6 +31,7 @@ from cloudfall.requirements import (
     PackageRequirement,
     SecretRequirement,
     SecretSource,
+    VolumeRequirement,
     requirements_of,
 )
 from cloudfall.secrets import (
@@ -41,6 +42,7 @@ from cloudfall.secrets import (
 )
 from cloudfall.validation import validate_config
 from cloudfall_engine.ansible_inventory import render_ansible_inventory
+from elasticsearch_hosts import FakeNodes
 from elasticsearch_project import SCHEMAS, elasticsearch_service, write_project
 
 ROOT = Path(__file__).parents[2]
@@ -85,12 +87,18 @@ class Recorder:
     extra: dict[str, object] = field(default_factory=dict)
     staged: dict[str, tuple[str, int, int]] = field(default_factory=dict)
     paths: list[Path] = field(default_factory=list)
+    nodes: FakeNodes = field(default_factory=FakeNodes)
 
     def __call__(self, step: ExecutionStep) -> Finished:
         """Record the step and read every account file it was handed."""
         self.steps.append(step)
         if "--extra-vars" in step.argv:
-            self.extra = json.loads(step.argv[step.argv.index("--extra-vars") + 1])
+            extra = json.loads(step.argv[step.argv.index("--extra-vars") + 1])
+            # The data volume's facts come from the node first (#312).
+            self.nodes.answer(Path(step.argv[-1]).name, extra)
+            if not step.argv[-1].endswith("services.yml"):
+                return Finished()
+            self.extra = extra
             services = cast(
                 "dict[str, dict[str, str]]",
                 self.extra.get(ELASTICSEARCH_FILES_VARIABLE, {}),
@@ -145,7 +153,8 @@ def test_s012_3_converge_stages_the_cloudfall_password_and_hashes_only(
     passwords = converge_services(_context(project, recorder), _provider(secrets))
 
     assert passwords == ()
-    render, playbook = recorder.steps
+    *_, playbook = recorder.steps
+    assert recorder.nodes.playbooks == ["logging-volumes.yml", "services.yml"]
     assert playbook.argv[-1].endswith("services.yml")
     assert PASSWORD_FILES_VARIABLE not in recorder.extra
     assert set(recorder.staged) == {
@@ -168,7 +177,7 @@ def test_s012_3_converge_stages_the_cloudfall_password_and_hashes_only(
     assert CLOUDFALL_PASSWORD not in cloudfall_hash + elastic_hash
     assert all(not path.exists() for path in recorder.paths)
     assert all(project not in path.parents for path in recorder.paths)
-    for step in (render, playbook):
+    for step in recorder.steps:
         for secret in (CLOUDFALL_PASSWORD, ELASTIC_PASSWORD):
             assert secret not in " ".join(step.argv)
             assert secret not in json.dumps(dict(step.environment))
@@ -231,9 +240,11 @@ def test_each_node_needs_the_package_and_the_generated_cloudfall_password(
         },
     }
     assert package.spec.as_dict() == {"package": "elasticsearch", "version": "9.2.4"}
+    # One node keeps its transport on loopback: no port, no certificate (#312).
+    assert set(by_type) == {VolumeRequirement, SecretRequirement, PackageRequirement}
     rendered = json.dumps(render_ansible_inventory(inventory))
     assert "cloudfall_certificates" not in rendered
-    assert "cloudfall_volumes" not in rendered
+    assert "cloudfall_elasticsearch_transport" not in rendered
 
 
 FAKE_SOPS = f"""#!{sys.executable}

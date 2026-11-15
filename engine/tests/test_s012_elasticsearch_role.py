@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import yaml
 from ansible.parsing.dataloader import DataLoader
@@ -24,7 +24,15 @@ from cloudfall.ansible_data import as_ansible_data
 from cloudfall.inventory import PlatformInventory
 from cloudfall.validation import validate_config
 from cloudfall_engine.ansible_inventory import render_ansible_inventory
-from elasticsearch_project import SCHEMAS, elasticsearch_service, write_project
+from elasticsearch_project import (
+    SCHEMAS,
+    SNAPSHOT_REPOSITORY,
+    elasticsearch_service,
+    write_project,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 ROOT = Path(__file__).parents[2]
 ROLES = ROOT / "engine" / "ansible" / "roles"
@@ -81,8 +89,18 @@ def _tasks() -> list[dict[str, object]]:
     return tasks
 
 
+def _flat(tasks: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Return every task, those of blocks, rescues and always sections included."""
+    found: list[dict[str, object]] = []
+    for task in tasks:
+        found.append(task)
+        for section in ("block", "rescue", "always"):
+            found.extend(_flat(cast("list[dict[str, object]]", task.get(section, []))))
+    return found
+
+
 def _task(name: str) -> dict[str, object]:
-    return next(task for task in _tasks() if task["name"] == name)
+    return next(task for task in _flat(_tasks()) if task["name"] == name)
 
 
 def _module(task: dict[str, object]) -> str:
@@ -455,7 +473,9 @@ def test_s012_4_a_formed_cluster_is_marked_and_a_second_converge_changes_nothing
 
 # proves: S-012-4
 def test_s012_4_only_a_package_or_configuration_change_restarts_the_node() -> None:
-    notifying = sorted(str(task["name"]) for task in _tasks() if task.get("notify"))
+    notifying = sorted(
+        str(task["name"]) for task in _flat(_tasks()) if task.get("notify")
+    )
 
     assert notifying == [
         "Install the declared Elasticsearch version",
@@ -601,7 +621,7 @@ def test_this_release_refuses_what_later_slices_converge() -> None:
 
     assert _holds(validate, _variables())
     for service in (
-        _service(nodes=["h1", "h2"]),
+        _service(nodes=["h2", "h3"]),
         _service(users=[user]),
         _service(existingCluster={"seedHosts": ["10.0.0.11:9300"]}),
     ):
@@ -613,13 +633,9 @@ def test_this_release_refuses_what_later_slices_converge() -> None:
 
 
 def test_every_task_that_sees_a_password_or_its_hash_is_no_log() -> None:
-    tasks = _tasks()
-    block = cast(
-        "list[dict[str, object]]", _task("Set the elastic password once")["block"]
-    )
     seeing = [
         task
-        for task in (*tasks, *block)
+        for task in _flat(_tasks())
         if _module(task) != "block"
         and "cloudfall_elasticsearch_account_files." in str(task)
     ]
@@ -627,7 +643,9 @@ def test_every_task_that_sees_a_password_or_its_hash_is_no_log() -> None:
     assert [task["name"] for task in seeing] == [
         "Install the cloudfall account password",
         "Put the cloudfall account in the file realm",
+        "Let replicas move again after the failed install",
         "Wait for the node to serve the cluster",
+        "Reload the node's secure settings for its new S3 keys",
         "Read whether the node locked its memory",
         "Set the elastic password from its hash",
     ]
@@ -645,14 +663,21 @@ ELASTIC_PASSWORD = "synthetic-elastic-value"  # noqa: S105 - grepped for
 
 
 def _engine_run(
-    tmp_path: Path, secrets: str | None
+    tmp_path: Path,
+    secrets: str | None,
+    snapshot_repository: Mapping[str, object] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run ``cloudfall-engine playbook run services`` on the S-012-1 inventory.
 
     The host is reached locally and a tag no task carries keeps Ansible from
     changing anything; ``--secrets-dir`` holds plain files for a fake sops.
     """
-    project = write_project(tmp_path / "project", elasticsearch_service())
+    service = (
+        elasticsearch_service()
+        if snapshot_repository is None
+        else elasticsearch_service(snapshotRepository=snapshot_repository)
+    )
+    project = write_project(tmp_path / "project", service)
     rendered = cast(
         "dict[str, Any]",
         as_ansible_data(
@@ -729,6 +754,50 @@ def test_s012_3_the_engine_stages_the_account_files_and_removes_them(
     for secret in (CLOUDFALL_PASSWORD, ELASTIC_PASSWORD):
         assert secret not in done.stdout + done.stderr
     assert json.loads(done.stdout)["data"]["owned_roles"] == []
+
+
+S3_ACCESS_KEY = "SYNTHETICENGINEACCESS"
+S3_SECRET_KEY = "synthetic-engine-secret"  # noqa: S105 - grepped for
+
+
+# proves: S-012-8
+def test_the_engine_stages_the_s3_keys_of_the_snapshot_repository(
+    tmp_path: Path,
+) -> None:
+    done = _engine_run(
+        tmp_path,
+        f"CLOUDFALL_PASSWORD={CLOUDFALL_PASSWORD}\nELASTIC_PASSWORD={ELASTIC_PASSWORD}\n"
+        f"S3={S3_ACCESS_KEY}:{S3_SECRET_KEY}\n",
+        SNAPSHOT_REPOSITORY,
+    )
+
+    assert done.returncode == 0, done.stdout + done.stderr
+    staged = re.findall(
+        r"cloudfall-passwords-[^/\"']+/elasticsearch/search-main-s3\.[a-z]+",
+        done.stderr,
+    )
+    assert {path.rsplit("/", 1)[1] for path in staged} == {
+        "search-main-s3.access",
+        "search-main-s3.secret",
+    }
+    for secret in (S3_ACCESS_KEY, S3_SECRET_KEY, CLOUDFALL_PASSWORD):
+        assert secret not in done.stdout + done.stderr
+
+
+def test_the_engine_stops_before_ansible_without_the_s3_keys(tmp_path: Path) -> None:
+    done = _engine_run(
+        tmp_path,
+        f"CLOUDFALL_PASSWORD={CLOUDFALL_PASSWORD}\nELASTIC_PASSWORD={ELASTIC_PASSWORD}\n",
+        SNAPSHOT_REPOSITORY,
+    )
+
+    payload = json.loads(done.stdout)
+    assert payload["error"]["code"] == "PRECONDITION", done.stdout
+    assert "key S3 is missing from" in payload["error"]["message"]
+    assert "snapshotRepository of Elasticsearch service search-main" in (
+        payload["error"]["message"]
+    )
+    assert "PLAY [" not in done.stderr
 
 
 def test_the_engine_stops_before_ansible_without_the_account_passwords(

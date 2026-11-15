@@ -69,8 +69,10 @@ The provider changes nothing and stops, naming the server, the pool and the reas
 
 - the volume group or a named physical volume does not exist on the server
 - the free extents on the physical volumes a placement needs are fewer than the volume needs
-- `lv_<name>` exists with another type (`linear` where `raid1` is required, or the reverse), on
-  other physical volumes, or with a filesystem other than ext4
+- `lv_<name>` exists with another type (`linear` where `raid1` is required), on other physical
+  volumes, or with a filesystem other than ext4. A `raid1` volume over `primary` and
+  `secondary` meets an `expendable` requirement (D-18): it is kept, grown on both physical
+  volumes, and audited as the mirror it is
 - the mount path is a non-empty directory that is not already this volume's mount: mounting
   over it would hide data
 - the path is already a mount point of another device

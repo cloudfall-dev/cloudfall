@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import copy
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -1066,12 +1067,18 @@ def test_the_filesystem_repository_is_in_path_repo_and_registered_once() -> None
             "location": "{{ cloudfall_elasticsearch_service.backup.directory }}"
         },
     }
-    condition = cast("list[str]", register["when"])[1]
+    conditions = cast("list[str]", register["when"])
 
-    def registers(answer: dict[str, object]) -> bool:
-        scoped = {**variables, "cloudfall_elasticsearch_registered_repository": answer}
+    def registers(answer: dict[str, object], declared: object = service) -> bool:
+        scoped = {
+            **_variables(cast("dict[str, object]", declared)),
+            "cloudfall_elasticsearch_registered_repository": answer,
+        }
         templar = Templar(loader=DataLoader(), variables=scoped)
-        return bool(templar.evaluate_conditional(trust_as_template(condition)))
+        return all(
+            templar.evaluate_conditional(trust_as_template(condition))
+            for condition in conditions
+        )
 
     location = "/var/backups/cloudfall/search-main"
     same = {"type": "fs", "settings": {"location": location}}
@@ -1079,28 +1086,145 @@ def test_the_filesystem_repository_is_in_path_repo_and_registered_once() -> None
     assert registers({"status": 404})
     assert not registers({"status": 200, "json": {"cloudfall": same}})
     assert registers({"status": 200, "json": {"cloudfall": moved}})
+    # An S3 repository is never registered as a filesystem one.
+    assert not registers({"status": 404}, _service(9200, snapshotRepository=s3))
+
+
+S3_REPOSITORY = {
+    "type": "s3",
+    "bucket": "search-snapshots",
+    "endpoint": "s3.example.com",
+    "basePath": "search",
+    "credentialsRef": {"environment": "production", "path": "/x", "key": "S3"},
+}
+
+
+# proves: S-012-5
+def test_s012_5_the_s3_repository_is_registered_through_the_keystore_client() -> None:
+    """The declared snapshotRepository is the repository cloudfall, of type s3."""
+    declared = _service(9200, snapshotRepository=S3_REPOSITORY)
+    variables = _variables(declared, cloudfall_elasticsearch_bootstrap=False)
+    register = _task("Register the S3 snapshot repository")
+    uri = cast("dict[str, object]", register["ansible.builtin.uri"])
+    settings = {
+        "bucket": "search-snapshots",
+        "client": "default",
+        "base_path": "search",
+    }
+
+    assert _value(str(uri["url"]), variables) == (
+        "http://127.0.0.1:9200/_snapshot/cloudfall"
+    )
+    body = cast("dict[str, object]", uri["body"])
+    assert body["type"] == "s3"
+    assert _value(str(body["settings"]), variables) == settings
+    no_base = {key: value for key, value in S3_REPOSITORY.items() if key != "basePath"}
+    assert _value(
+        str(body["settings"]), _variables(_service(9200, snapshotRepository=no_base))
+    ) == {"bucket": "search-snapshots", "client": "default"}
+    rendered = yaml.safe_load(_render("elasticsearch.yml.j2", variables))
+    assert rendered["s3.client.default.endpoint"] == "s3.example.com"
+    assert "path.repo" not in rendered
+    conditions = cast("list[str]", register["when"])
+
+    def registers(answer: dict[str, object], service: object = declared) -> bool:
+        scoped = {
+            **_variables(cast("dict[str, object]", service)),
+            "cloudfall_elasticsearch_registered_repository": answer,
+        }
+        templar = Templar(loader=DataLoader(), variables=scoped)
+        return all(
+            templar.evaluate_conditional(trust_as_template(condition))
+            for condition in conditions
+        )
+
+    fs = {"type": "fs", "settings": {"location": "/var/backups/cloudfall/search-main"}}
+    assert registers({"status": 404})
+    # A one-node service that grows replaces its filesystem repository.
+    assert registers({"status": 200, "json": {"cloudfall": fs}})
+    assert not registers(
+        {"status": 200, "json": {"cloudfall": {"type": "s3", "settings": settings}}}
+    )
+    moved = {**settings, "bucket": "elsewhere"}
+    assert registers(
+        {"status": 200, "json": {"cloudfall": {"type": "s3", "settings": moved}}}
+    )
+    assert not registers({"status": 404}, _service(9200))
+    directory = _task("Create the snapshot repository directory")
+    templar = Templar(loader=DataLoader(), variables=variables)
+    assert not templar.evaluate_conditional(trust_as_template(str(directory["when"])))
+
+
+def test_the_s3_keys_go_into_every_node_keystore_by_stdin_only() -> None:
+    tasks = DataLoader().load_from_file(str(ROLE / "tasks" / "keystore.yml"))
+    assert isinstance(tasks, list)
+    (block,) = tasks
+    steps = {step["name"]: step for step in block["block"]}
+    add = steps["Put each S3 key in the node's keystore"]
+    command = cast("dict[str, object]", add["ansible.builtin.command"])
+    files = {
+        "cloudfallPassword": "/tmp/staged/cloudfall.password",  # noqa: S108
+        "s3AccessKey": "/tmp/staged/s3.access",  # noqa: S108
+        "s3SecretKey": "/tmp/staged/s3.secret",  # noqa: S108
+    }
+    variables = _variables(
+        _service(9200, snapshotRepository=S3_REPOSITORY),
+        cloudfall_elasticsearch_account_files=files,
+    )
+
+    assert add["no_log"] is True
+    assert cast("list[str]", command["argv"])[1:4] == ["add", "--stdin", "--force"]
+    # The value crosses stdin, read from the staged file; argv names the setting
+    assert "lookup('ansible.builtin.file', item.source)" in str(command["stdin"])
+    assert [
+        (item["setting"], _value(item["source"], variables)) for item in add["loop"]
+    ] == [
+        ("s3.client.default.access_key", "/tmp/staged/s3.access"),  # noqa: S108
+        ("s3.client.default.secret_key", "/tmp/staged/s3.secret"),  # noqa: S108
+    ]
+    assert steps["Record the digest of the S3 keys the keystore holds"]["no_log"]
+    keystore = steps["Keep the keystore readable by the node"]["ansible.builtin.file"]
+    assert (keystore["owner"], keystore["group"], keystore["mode"]) == (
+        "root",
+        "elasticsearch",
+        "0660",
+    )
+
+    def adds(marker: dict[str, object], listed: list[str]) -> bool:
+        scoped = {
+            **variables,
+            "cloudfall_elasticsearch_s3_marker_content": "abc",
+            "cloudfall_elasticsearch_s3_marker_file": {"stat": marker},
+            "cloudfall_elasticsearch_keystore_settings": {"stdout_lines": listed},
+        }
+        templar = Templar(loader=DataLoader(), variables=scoped)
+        return bool(templar.evaluate_conditional(trust_as_template(add["when"])))
+
+    both = ["keystore.seed", *(item["setting"] for item in add["loop"])]
+    digest = hashlib.sha256(b"abc").hexdigest()
+    assert adds({"exists": False}, both)
+    assert not adds({"exists": True, "checksum": digest}, both)
+    assert adds({"exists": True, "checksum": "0" * 64}, both)
+    assert adds({"exists": True, "checksum": digest}, ["keystore.seed"])
     main = DataLoader().load_from_file(str(ROLE / "tasks" / "main.yml"))
     assert isinstance(main, list)
     names = [task.get("name") for task in main]
-    # Refused before any task changes the host: right after the declaration.
-    refusing = names.index(
-        "Refuse a snapshot repository this release does not converge"
+    include = names.index(
+        "Put the S3 keys of the snapshot repository in the node's keystore"
     )
-    declaration = "Validate Elasticsearch service target and declaration"
-    assert refusing == names.index(declaration) + 1
-    refuse = main[refusing]
-    module = cast("dict[str, object]", refuse["ansible.builtin.assert"])
-    assert "S3 repository registration" in str(module["fail_msg"])
-    assert "not implemented" in str(module["fail_msg"])
-    conditions = cast("list[str]", module["that"])
-    declarations = ((service, True), (_service(9200, snapshotRepository=s3), False))
-    for declared, holds in declarations:
-        scoped = _variables(declared)
-        templar = Templar(loader=DataLoader(), variables=scoped)
-        assert all(
-            templar.evaluate_conditional(trust_as_template(condition))
-            for condition in conditions
-        ) is holds
+    # After the package made the keystore, before the restart reads it
+    assert names.index("Hold the Elasticsearch package at the declared version") < (
+        include
+    )
+    assert include < names.index("Apply the managed configuration")
+    reload = main[names.index("Reload the node's secure settings for its new S3 keys")]
+    assert str(reload["ansible.builtin.uri"]["url"]).strip().endswith(
+        "/_nodes/_local/reload_secure_settings"
+    )
+    assert names.index("Wait for the node to serve the cluster") < names.index(
+        str(reload["name"])
+    )
+    assert "Refuse a snapshot repository this release does not converge" not in names
 
 
 def test_with_remote_access_the_snapshots_use_https_and_the_project_ca() -> None:
@@ -1146,6 +1270,7 @@ def test_every_snapshot_task_that_sees_the_password_is_no_log() -> None:
     assert seeing == [
         "Read the registered snapshot repository",
         "Register the filesystem snapshot repository",
+        "Register the S3 snapshot repository",
     ]
     assert all(_task(str(name)).get("no_log") is True for name in seeing)
 

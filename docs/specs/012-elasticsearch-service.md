@@ -146,7 +146,7 @@ The kind yields S-011 requirements per node, so nothing below is prepared by han
 | Requirement | Value |
 |---|---|
 | `package` | `elasticsearch=<version>` from the declared major's repository |
-| `volume` | `elasticsearch`, 10G unless overridden, `mirrored` for one node and `expendable` for two or more (the replica is on another server), mounted at `/var/lib/elasticsearch`, needed by `elasticsearch.service` |
+| `volume` | `elasticsearch`, 10G unless overridden, `mirrored` for one node and `expendable` for two or more (the replica is on another server), mounted at `/var/lib/elasticsearch`, needed by `elasticsearch.service`. A node that was a cluster of one keeps its mirrored volume when the cluster grows: a mirror meets the expendable requirement (D-18) |
 | `port` | 9300/tcp from the other node servers only; with `remoteAccess`, `bind.port` from `allowedSources` only |
 | `certificate` | one per node from the project CA, usage server and client, names: the server's hostname and addresses; used for transport TLS with `verification_mode: full`, and for HTTP when `remoteAccess` is declared |
 | `secret` | `generate`: the password of Cloudfall's own account (below) |
@@ -194,6 +194,15 @@ project CA.
 - The repository is a filesystem repository in `backup.directory` (added to `path.repo`), or
   the declared `snapshotRepository` (`type: s3`, `bucket`, `endpoint`, `basePath`,
   `credentialsRef`), whose keys go into the Elasticsearch keystore on every node
+- `credentialsRef` names one key of the secret store whose value is the access key id and
+  the secret access key joined by the first `:`. The controller decrypts it, stages the two
+  keys in `0600` files for the run only, and refuses a missing key or another form before
+  any playbook. Each node gets them as `s3.client.default.access_key` and
+  `s3.client.default.secret_key` through the keystore tool's stdin, and keeps only their
+  SHA-256 beside the keystore, so a second converge changes nothing; `elasticsearch.yml`
+  names `endpoint` as `s3.client.default.endpoint`, a running node reloads its secure
+  settings, and the repository `cloudfall` is registered as `type: s3` with `bucket`,
+  `base_path` and the client `default`, replacing a filesystem repository of the same name
 - A cluster of two or more nodes requires `snapshotRepository`: a filesystem repository
   must be one shared mount on every node, which Cloudfall does not provide
 - `cloudfall-elasticsearch-backup` takes the snapshot `cloudfall-<timestamp>` of every index
@@ -226,6 +235,12 @@ project CA.
 - a server that is a node of two Elasticsearch services (`service_elasticsearch_server_shared`)
 - two or more nodes, or `existingCluster`, without `snapshotRepository`
   (`service_elasticsearch_snapshot_repository_local`)
+- a node of two or more whose baseline declares no firewall, which would leave 9300 open to
+  every address (`service_elasticsearch_cluster_firewall_missing`), or that has no IPv4 for
+  the other nodes to reach and admit (`service_elasticsearch_node_unaddressed`)
+- a node whose baseline declares no storage pool (`volume_requirement_pool_missing`) or
+  several (`volume_requirement_pool_ambiguous`), or, for a cluster of one, a pool without a
+  secondary physical volume (`volume_requirement_pool_unmirrored`)
 - a user named `elastic`, `cloudfall`, or after a built-in user or role
   (`service_elasticsearch_user_reserved`), a pattern of `*` or one that starts with `.`
   (`service_elasticsearch_pattern`)
@@ -339,6 +354,7 @@ Touches `config/schemas/v1/service.schema.json`, `config/examples/services/`,
 ## Decisions relied on
 
 - D-9: a password reaches the service only as a hash computed on the controller
+- D-18: a mirrored volume meets an expendable requirement
 
 ## Issues
 

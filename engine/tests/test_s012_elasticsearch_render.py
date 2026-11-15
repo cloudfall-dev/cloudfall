@@ -75,10 +75,10 @@ def test_s012_1_render_carries_the_service_with_its_one_node(
     assert service["metrics"] == {"enabled": True}
 
 
-def test_s012_1_a_cluster_renders_on_its_home_server_only(
+def test_s012_1_a_cluster_renders_on_each_of_its_nodes(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The service's server is its home; the other nodes are read from ``nodes``."""
+    """The service's server is its home; each node converges it too (#312)."""
     project = write_project(
         tmp_path / "project",
         elasticsearch_service(
@@ -93,7 +93,7 @@ def test_s012_1_a_cluster_renders_on_its_home_server_only(
     (service,) = services["h1"]
     elasticsearch = cast("dict[str, object]", service["elasticsearch"])
     assert elasticsearch["nodes"] == ["h1", "h2"]
-    assert services["h2"] == []
+    assert services["h2"] == [service]
 
 
 # proves: S-012-2

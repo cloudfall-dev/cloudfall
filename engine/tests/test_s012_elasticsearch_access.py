@@ -709,7 +709,9 @@ def test_s012_14_the_role_calls_its_api_over_https_verifying_the_project_ca(
         if "ansible.builtin.uri" in task
     ]
 
-    assert len(calls) == 3
+    # The health wait, the secure settings reload, the memory lock read and
+    # the elastic password
+    assert len(calls) == 4
     for task in calls:
         uri = cast("dict[str, str]", task["ansible.builtin.uri"])
         assert uri["url"].strip().startswith("{{ cloudfall_elasticsearch_api_url")
@@ -812,6 +814,12 @@ def test_the_certificate_is_checked_before_a_configuration_names_it() -> None:
     assert {"path": "{{ cloudfall_elasticsearch_key_path }}", "mode": "0640"} in cast(
         "list[dict[str, str]]", readable
     )
+    # The services converge issues the certificate only in a real run, so a
+    # dry run of a new node must not stop at its absence (Q-2).
+    for task in tls[1:]:
+        when = task.get("when", [])
+        assert isinstance(when, list)
+        assert "not ansible_check_mode" in when
 
 
 def _nft_rule(port: int, source: str | None = None) -> dict[str, object]:

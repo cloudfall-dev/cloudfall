@@ -346,9 +346,75 @@ def test_s014_7_too_little_free_space_is_refused() -> None:
     assert "bytes free" in _refusal(_raw(free=GIB))
 
 
-def test_s014_7_a_volume_of_another_type_is_refused() -> None:
+def _mirror(name: str, size: int) -> list[dict[str, str]]:
+    """Return the rows ``lvs -a`` prints for a raid1 volume over both disks."""
+    return [
+        {
+            "lv_name": name,
+            "vg_name": "vg_data",
+            "segtype": "raid1",
+            "lv_size": str(size),
+            "devices": f"{name}_rimage_0(0),{name}_rimage_1(0)",
+            "lv_dm_path": f"/dev/mapper/vg_data-{name}",
+        },
+        _linear(f"[{name}_rimage_0]", size, PRIMARY),
+        _linear(f"[{name}_rimage_1]", size, SECONDARY),
+    ]
+
+
+def test_s014_7_a_raid1_volume_on_one_disk_is_refused() -> None:
     lvs = [{**_linear("lv_loki", 10 * GIB), "segtype": "raid1"}]
-    assert "is raid1, but the requirement wants linear" in _refusal(_raw(lvs=lvs))
+    assert "sits on" in _refusal(_raw(lvs=lvs))
+
+
+def test_d14_a_mirrored_volume_meets_an_expendable_requirement() -> None:
+    """D-18: a raid1 volume asked for as expendable is kept and grown as raid1."""
+    raw = _raw(
+        lvs=[*_mirror("lv_loki", 10 * GIB), *_mirror("lv_prometheus", 4 * GIB)],
+        filesystems={"lv_loki": "ext4", "lv_prometheus": "ext4"},
+    )
+
+    planned = plan_volumes(_servers(), {"h1": normalize_report(raw)})  # type: ignore[arg-type]
+
+    actions = {item["name"]: item for item in actions_by_server(planned)["h1"]}
+    assert actions["loki"]["action"] == "keep"
+    assert actions["prometheus"]["action"] == "grow"
+    for item in actions.values():
+        # lvextend names both legs of the mirror, never one
+        assert item["type"] == "raid1"
+        assert item["physicalVolumes"] == [PRIMARY, SECONDARY]
+
+
+def test_d14_a_grown_mirror_needs_room_on_both_disks() -> None:
+    raw = _raw(
+        free=GIB,
+        lvs=[*_mirror("lv_loki", 10 * GIB), *_mirror("lv_prometheus", 4 * GIB)],
+        filesystems={"lv_loki": "ext4", "lv_prometheus": "ext4"},
+    )
+
+    assert "bytes free" in _refusal(raw)
+
+
+def test_s014_7_a_linear_volume_never_meets_a_mirrored_requirement(
+    tmp_path: Path,
+) -> None:
+    """The reverse of D-18 stays refused: a cluster of one keeps its data on two."""
+    from elasticsearch_project import (  # noqa: PLC0415 - one test's project
+        elasticsearch_service,
+        write_project,
+    )
+
+    project = write_project(tmp_path / "project", elasticsearch_service())
+    data = "/var/lib/elasticsearch"
+    raw = _raw(
+        lvs=[_linear("lv_elasticsearch", 10 * GIB)],
+        filesystems={"lv_elasticsearch": "ext4"},
+        paths={data: {"mountedFrom": None, "empty": True}},
+    )
+
+    reason = _refusal(raw, project)
+
+    assert "lv_elasticsearch is linear, but the requirement wants raid1" in reason
 
 
 def test_s014_7_a_volume_on_other_disks_is_refused() -> None:
@@ -507,6 +573,30 @@ def test_s014_8_the_compliant_fixture_audits_both_volumes_clean(
 )
 def test_s014_8_volume_drift(tmp_path: Path, edit: object) -> None:
     assert _volume_check(tmp_path, edit)[0] == "drift"
+
+
+def test_d14_audit_finds_a_mirror_compliant_with_an_expendable_requirement(
+    tmp_path: Path,
+) -> None:
+    def mirrored(evidence: dict[str, object]) -> None:
+        report = json.loads(str(evidence["lvsJson"]))
+        rows = report["report"][0]["lv"]
+        (loki,) = [row for row in rows if row["lv_name"] == "lv_loki"]
+        size = int(str(loki["lv_size"]))
+        rows.remove(loki)
+        rows.extend(
+            {**row, "lv_dm_path": loki.get("lv_dm_path", row["lv_dm_path"])}
+            if row["lv_name"] == "lv_loki"
+            else row
+            for row in _mirror("lv_loki", size)
+        )
+        evidence["lvsJson"] = json.dumps(report)
+
+    status, observed = _volume_check(tmp_path, mirrored)
+
+    assert status == "compliant"
+    assert observed["type"] == "raid1"  # type: ignore[index]
+    assert observed["physicalVolumes"] == [PRIMARY, SECONDARY]  # type: ignore[index]
 
 
 def test_s014_8_a_missing_volume_is_drift(tmp_path: Path) -> None:

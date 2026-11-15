@@ -18,9 +18,21 @@ http.port: {{ cloudfall_elasticsearch_service.bind.port }}
 # network.host.
 http.host: {{ [cloudfall_elasticsearch_service.bind.address, cloudfall_elasticsearch_service.elasticsearch.remoteAccess.listenAddress] | to_json }}
 {% endif %}
+{% if cloudfall_elasticsearch_node_transport %}
+# A cluster of two or more: HTTP stays on loopback, the transport listens on
+# this node's address, open to the other nodes only, and every connection
+# between nodes is TLS both ways, verified against the project CA by name.
+transport.host: {{ cloudfall_elasticsearch_node_transport.address | to_json }}
+transport.port: {{ cloudfall_elasticsearch_node_transport.port }}
+discovery.seed_hosts: {{ cloudfall_elasticsearch_node_transport.seedHosts | to_json }}
+{% else %}
 discovery.seed_hosts: {{ [cloudfall_elasticsearch_service.bind.address] | to_json }}
+{% endif %}
 {% if cloudfall_elasticsearch_service.elasticsearch.snapshotRepository is not defined %}
 path.repo: {{ [cloudfall_elasticsearch_service.backup.directory] | to_json }}
+{% else %}
+# The S3 snapshot repository's client; its keys are in the keystore.
+s3.client.default.endpoint: {{ cloudfall_elasticsearch_service.elasticsearch.snapshotRepository.endpoint | to_json }}
 {% endif %}
 {% if cloudfall_elasticsearch_bootstrap | bool %}
 cluster.initial_master_nodes: {{ [cloudfall_server_id] | to_json }}
@@ -35,4 +47,13 @@ xpack.security.http.ssl.certificate_authorities: {{ [cloudfall_elasticsearch_ca_
 {% else %}
 xpack.security.http.ssl.enabled: false
 {% endif %}
+{% if cloudfall_elasticsearch_node_transport %}
+xpack.security.transport.ssl.enabled: true
+xpack.security.transport.ssl.verification_mode: full
+xpack.security.transport.ssl.client_authentication: required
+xpack.security.transport.ssl.key: {{ cloudfall_elasticsearch_node_transport.keyPath | to_json }}
+xpack.security.transport.ssl.certificate: {{ cloudfall_elasticsearch_node_transport.certificatePath | to_json }}
+xpack.security.transport.ssl.certificate_authorities: {{ [cloudfall_elasticsearch_node_transport.caPath] | to_json }}
+{% else %}
 xpack.security.transport.ssl.enabled: false
+{% endif %}

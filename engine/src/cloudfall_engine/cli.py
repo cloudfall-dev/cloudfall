@@ -44,6 +44,7 @@ from cloudfall.secrets import (
     SecretsError,
     SopsSecretProvider,
     elasticsearch_account_passwords,
+    elasticsearch_s3_credentials,
     owned_role_passwords,
     staged_password_files,
 )
@@ -86,7 +87,11 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from cloudfall.domain import BuildTimeoutSeconds
-    from cloudfall.secrets import ElasticsearchAccountPassword, OwnedRolePassword
+    from cloudfall.secrets import (
+        ElasticsearchAccountPassword,
+        ElasticsearchS3Credentials,
+        OwnedRolePassword,
+    )
     from treaty import Completed
 
 app = App(
@@ -615,13 +620,46 @@ def _rendered_owned_databases(
 def _rendered_elasticsearch_services(
     inventory_file: Path,
 ) -> tuple[tuple[ResourceId, ResourceId], ...]:
-    """Read each Elasticsearch service's id and environment from an inventory."""
+    """Read each Elasticsearch service's id and environment from an inventory.
+
+    A service of several nodes is on each of their hosts; it is read once.
+    """
     return tuple(
-        (
-            ResourceId.from_boundary(service.get("id")),
-            ResourceId.from_boundary(service.get("environment")),
+        dict.fromkeys(
+            (
+                ResourceId.from_boundary(service.get("id")),
+                ResourceId.from_boundary(service.get("environment")),
+            )
+            for service in _rendered_services(inventory_file, "elasticsearch")
         )
-        for service in _rendered_services(inventory_file, "elasticsearch")
+    )
+
+
+def _rendered_snapshot_credentials(
+    inventory_file: Path,
+) -> tuple[tuple[ResourceId, SecretValueReference], ...]:
+    """Read the ``credentialsRef`` of each S3 snapshot repository, once per service."""
+    found: dict[str, tuple[ResourceId, SecretValueReference]] = {}
+    for service in _rendered_services(inventory_file, "elasticsearch"):
+        repository = _nested(service, "elasticsearch", "snapshotRepository")
+        if not repository:
+            continue
+        service_id = ResourceId.from_boundary(service.get("id"))
+        found[service_id.value] = (
+            service_id,
+            _secret_reference(repository.get("credentialsRef"), "credentialsRef"),
+        )
+    return tuple(found.values())
+
+
+def _secret_reference(reference: object, name: str) -> SecretValueReference:
+    if not isinstance(reference, dict):
+        message = f"a {name} is not a mapping"
+        raise TypeError(message)
+    return SecretValueReference(
+        environment=ResourceId.from_boundary(reference.get("environment")),
+        path=AbsolutePath.from_boundary(reference.get("path")),
+        key=SecretKeyName.from_boundary(reference.get("key")),
     )
 
 
@@ -672,48 +710,52 @@ def _mappings(value: object) -> list[Mapping[str, object]]:
 
 
 def _owned_database(database: Mapping[str, object]) -> OwnedPostgresDatabase:
-    reference = database["passwordRef"]
-    if not isinstance(reference, dict):
-        message = "an owned database's passwordRef is not a mapping"
-        raise TypeError(message)
     return OwnedPostgresDatabase(
         name=PostgresDatabaseName.from_boundary(database.get("name")),
         owner=PostgresRoleName.from_boundary(database.get("owner")),
-        password_ref=SecretValueReference(
-            environment=ResourceId.from_boundary(reference.get("environment")),
-            path=AbsolutePath.from_boundary(reference.get("path")),
-            key=SecretKeyName.from_boundary(reference.get("key")),
+        password_ref=_secret_reference(
+            database["passwordRef"], "owned database's passwordRef"
         ),
     )
 
 
-def _services_passwords(
-    args: RunArgs, run: PlaybookRun, ctx: Ctx
-) -> tuple[tuple[OwnedRolePassword, ...], tuple[ElasticsearchAccountPassword, ...]]:
-    """Decrypt the passwords the bundled services.yml sets, before it starts.
+@dataclass(frozen=True, slots=True)
+class _ServicesSecrets:
+    """What the bundled services.yml is handed, decrypted before it starts."""
 
-    Those are each owner role's, and the ``cloudfall`` and ``elastic``
-    passwords of each Elasticsearch service.
+    owned_roles: tuple[OwnedRolePassword, ...] = ()
+    accounts: tuple[ElasticsearchAccountPassword, ...] = ()
+    s3: tuple[ElasticsearchS3Credentials, ...] = ()
+
+
+def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesSecrets:
+    """Decrypt the secrets the bundled services.yml sets, before it starts.
+
+    Those are each owner role's password, the ``cloudfall`` and ``elastic``
+    passwords of each Elasticsearch service, and the S3 keys of each S3
+    snapshot repository.
     """
     # An engine without services.yml still runs its other playbooks (#296).
     services = playbook_directory(args.engine) / SERVICES_PLAYBOOK
     if args.syntax_check or run.playbook != services:
-        return (), ()
+        return _ServicesSecrets()
     try:
         databases = _rendered_owned_databases(args.inventory)
         clusters = _rendered_elasticsearch_services(args.inventory)
+        repositories = _rendered_snapshot_credentials(args.inventory)
     except (TypeError, ValueError) as error:
         message = f"the inventory declares a malformed service: {error}"
         raise ParseError(message, context={"flag": "inventory"}) from error
     if not databases and not clusters:
-        return (), ()
+        return _ServicesSecrets()
     provider = SopsSecretProvider(
         secrets_directory=args.secrets_dir, decrypt=_sops_decrypt(ctx)
     )
     try:
-        return (
+        return _ServicesSecrets(
             owned_role_passwords(databases, provider),
             elasticsearch_account_passwords(clusters, provider),
+            elasticsearch_s3_credentials(repositories, provider),
         )
     except SecretsError as error:
         raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
@@ -752,8 +794,9 @@ def run_playbook(args: RunArgs, ctx: Ctx) -> Played:
     file outside the project, removed when the run ends; only the file paths
     cross the command line.
     """
-    passwords, accounts = _services_passwords(args, _playbook_run(args), ctx)
-    with staged_password_files(passwords, accounts) as staged:
+    secrets = _services_passwords(args, _playbook_run(args), ctx)
+    passwords = secrets.owned_roles
+    with staged_password_files(passwords, secrets.accounts, secrets.s3) as staged:
         played = _run_ansible(
             args, ctx, _playbook_run(args, (json.dumps(staged),) if staged else ())
         )

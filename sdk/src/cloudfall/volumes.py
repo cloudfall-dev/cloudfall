@@ -301,7 +301,6 @@ def _plan(
         reason = f"volume group {group} does not exist"
         raise VolumeRefusedError(server, pool, reason)
     devices = _devices_of(report)
-    names = _physical_names(server, spec, report, devices)
     wanted = spec.minimum_size.value
     logical = _mapping(report, "logicalVolumes")
     paths = _mapping(report, "paths")
@@ -310,6 +309,7 @@ def _plan(
     mounted_from = path.get("mountedFrom")
     key = f"{group}/{spec.logical_volume}"
     if key not in logical:
+        names = _physical_names(server, spec, report, devices)
         if mounted_from is not None:
             reason = f"{spec.path.value} is already mounted from {mounted_from}"
             raise VolumeRefusedError(server, pool, reason)
@@ -321,6 +321,10 @@ def _plan(
             raise VolumeRefusedError(server, pool, reason)
         return PlannedVolume(server, spec, VolumeAction.CREATE, wanted, names)
     held = _mapping(logical, key)
+    # D-18: a mirrored volume meets an expendable requirement, so it is kept
+    # and grown as the mirror it is, on both of its physical volumes
+    spec = spec.held_as(held.get("type"))
+    names = _physical_names(server, spec, report, devices)
     _refuse_mismatch(server, pool, spec, held, devices)
     if mounted_from is not None and mounted_from not in {lv_path, held.get("mapper")}:
         reason = f"{spec.path.value} is already mounted from {mounted_from}"
