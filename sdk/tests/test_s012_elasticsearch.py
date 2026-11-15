@@ -4,19 +4,32 @@ from __future__ import annotations
 
 import datetime
 import json
-from typing import TYPE_CHECKING, Any
+import stat
+from pathlib import Path
+from typing import Any, cast
 
 import pytest
 import yaml
 from cloudfall.cli import main
+from cloudfall.domain import AbsolutePath, ResourceId, SecretKeyName
 from cloudfall.elasticsearch import (
     SUPPORTED_LINES,
     ElasticsearchLine,
     ElasticsearchVersion,
     supported_line,
 )
-from cloudfall.inventory import PlatformInventory
+from cloudfall.inventory import PlatformInventory, SecretValueReference
 from cloudfall.requirements import requirements_of
+from cloudfall.secrets import (
+    ELASTICSEARCH_FILES_VARIABLE,
+    SecretsError,
+    SopsSecretProvider,
+    elasticsearch_account_passwords,
+    elasticsearch_existing_cluster_credentials,
+    elasticsearch_existing_cluster_logins,
+    elasticsearch_services,
+    staged_password_files,
+)
 from cloudfall.validation import (
     ConfigValidationError,
     elasticsearch_versions_ending,
@@ -33,9 +46,6 @@ from elasticsearch_project import (
     elasticsearch_service,
     write_project,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 EXISTING_CLUSTER: dict[str, object] = {
     "seedHosts": ["10.0.0.11:9300", "10.0.0.12:9300"],
@@ -355,6 +365,163 @@ def test_s012_12_existing_cluster_seed_host_that_is_a_node_is_refused(
 
     context = _refused_with(project, capsys, "service_elasticsearch_existing_cluster")
     assert context["field"] == "spec.elasticsearch.existingCluster.seedHosts.0"
+
+
+MONITOR_REF = {
+    "environment": "production",
+    "path": "/services/search-main",
+    "key": "OLD_CLUSTER_MONITOR",
+}
+MONITOR_PASSWORD = "synthetic-monitor:value"  # noqa: S105 - grepped for
+
+
+def _joining_project(tmp_path: Path, **existing: object) -> Path:
+    project = write_project(
+        tmp_path / "project", _joining_service({**EXISTING_CLUSTER, **existing})
+    )
+    _write_ca(project, _certificate(ca=True)[0])
+    return project
+
+
+def _monitor_provider(project: Path, line: str) -> SopsSecretProvider:
+    source = project / "secrets" / "production" / "services" / "search-main.env"
+    source.parent.mkdir(parents=True)
+    source.write_text(f"CLOUDFALL_PASSWORD=synthetic-cloudfall\n{line}", "utf-8")
+    return SopsSecretProvider(
+        secrets_directory=project / "secrets",
+        decrypt=lambda path: path.read_text(encoding="utf-8"),
+    )
+
+
+# proves: S-012-17
+def test_s012_17_existing_cluster_credentials_ref_validates_as_a_reference(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = _joining_project(tmp_path, credentialsRef=MONITOR_REF)
+
+    exit_code, document = _validate(project, capsys)
+
+    assert exit_code == 0, document
+    inventory = PlatformInventory.from_state(validate_config(project, SCHEMAS))
+    (service,) = inventory.services
+    assert service.elasticsearch is not None
+    existing = service.elasticsearch.existing_cluster
+    assert existing is not None
+    assert existing.credentials_ref == SecretValueReference(
+        environment=ResourceId("production"),
+        path=AbsolutePath("/services/search-main"),
+        key=SecretKeyName("OLD_CLUSTER_MONITOR"),
+    )
+    assert existing.as_dict()["credentialsRef"] == MONITOR_REF
+    assert elasticsearch_existing_cluster_credentials(inventory) == (
+        (ResourceId("search-main"), existing.credentials_ref),
+    )
+
+
+# proves: S-012-17
+def test_s012_17_without_credentials_ref_the_join_check_needs_no_login(
+    tmp_path: Path,
+) -> None:
+    """Absent, the check falls back to the cloudfall account: nothing to decrypt."""
+    project = _joining_project(tmp_path)
+
+    inventory = PlatformInventory.from_state(validate_config(project, SCHEMAS))
+
+    assert elasticsearch_existing_cluster_credentials(inventory) == ()
+    (service,) = inventory.services
+    assert service.elasticsearch is not None
+    assert service.elasticsearch.existing_cluster is not None
+    assert "credentialsRef" not in service.elasticsearch.existing_cluster.as_dict()
+
+
+# proves: S-012-18
+@pytest.mark.parametrize(
+    "reference",
+    [
+        {"environment": "production", "path": "/services/search-main"},
+        {**MONITOR_REF, "value": "synthetic-monitor-inline"},
+        "OLD_CLUSTER_MONITOR",
+    ],
+    ids=["no-key", "inline-value", "not-a-mapping"],
+)
+def test_s012_18_a_malformed_credentials_ref_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], reference: object
+) -> None:
+    project = _joining_project(tmp_path, credentialsRef=reference)
+
+    _refused_with(project, capsys, "schema_validation_failed")
+
+
+# proves: S-012-18
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("", "OLD_CLUSTER_MONITOR is missing"),
+        (
+            "OLD_CLUSTER_MONITOR=synthetic-monitor-only\n",
+            "is not <username>:<password>",
+        ),
+        (
+            "OLD_CLUSTER_MONITOR=:synthetic-monitor-only\n",
+            "is not <username>:<password>",
+        ),
+    ],
+    ids=["unknown", "no-separator", "no-username"],
+)
+def test_s012_18_a_credentials_ref_naming_an_unknown_secret_is_refused(
+    tmp_path: Path, line: str, expected: str
+) -> None:
+    project = _joining_project(tmp_path, credentialsRef=MONITOR_REF)
+    inventory = PlatformInventory.from_state(validate_config(project, SCHEMAS))
+
+    with pytest.raises(SecretsError) as error:
+        elasticsearch_existing_cluster_logins(
+            elasticsearch_existing_cluster_credentials(inventory),
+            _monitor_provider(project, line),
+        )
+
+    assert expected in error.value.message
+    assert "existingCluster of Elasticsearch service search-main" in error.value.message
+    assert "synthetic-monitor-only" not in error.value.message
+
+
+# proves: S-012-18
+def test_s012_18_the_credentials_ref_login_is_staged_0600_and_removed(
+    tmp_path: Path,
+) -> None:
+    project = _joining_project(tmp_path, credentialsRef=MONITOR_REF)
+    inventory = PlatformInventory.from_state(validate_config(project, SCHEMAS))
+    provider = _monitor_provider(
+        project,
+        "ELASTIC_PASSWORD=synthetic-elastic\n"
+        f"OLD_CLUSTER_MONITOR=team-monitor:{MONITOR_PASSWORD}\n",
+    )
+    (login,) = elasticsearch_existing_cluster_logins(
+        elasticsearch_existing_cluster_credentials(inventory), provider
+    )
+    accounts = elasticsearch_account_passwords(
+        elasticsearch_services(inventory), provider
+    )
+
+    assert login.username == "team-monitor"
+    assert login.password == MONITOR_PASSWORD
+    assert MONITOR_PASSWORD not in repr(login)
+    with staged_password_files((), accounts, existing=(login,)) as extra:
+        staged = cast("dict[str, dict[str, str]]", extra[ELASTICSEARCH_FILES_VARIABLE])
+        files = staged["search-main"]
+        paths = [Path(files["existingUsername"]), Path(files["existingPassword"])]
+        assert [path.read_text("utf-8") for path in paths] == [
+            "team-monitor",
+            MONITOR_PASSWORD,
+        ]
+        assert {stat.S_IMODE(path.stat().st_mode) for path in paths} == {0o600}
+        assert MONITOR_PASSWORD not in json.dumps(extra)
+    assert not any(path.exists() for path in paths)
+    with (
+        pytest.raises(ValueError, match="existing-cluster logins need"),
+        staged_password_files((), existing=(login,)),
+    ):
+        pass
 
 
 def test_existing_cluster_seed_host_named_by_dns_is_refused(

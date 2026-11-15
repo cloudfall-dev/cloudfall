@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -19,13 +20,19 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 import yaml
 from ansible.parsing.dataloader import DataLoader
+from ansible.plugins.loader import init_plugin_loader
 from ansible.template import Templar, trust_as_template
 from cloudfall.ansible_data import as_ansible_data
 from cloudfall.cli import main
 from cloudfall.domain import ResourceId
 from cloudfall.elasticsearch_cluster import EXISTING_CLUSTER_CA_PATH
 from cloudfall.inventory import PlatformInventory
-from cloudfall.lifecycle import EngineContext, converge_services
+from cloudfall.lifecycle import (
+    ERROR_SERVICES_SECRET,
+    EngineContext,
+    LifecycleError,
+    converge_services,
+)
 from cloudfall.pki import load_or_create_ca
 from cloudfall.secret_store import SecretStore
 from cloudfall.secrets import SopsSecretProvider
@@ -46,6 +53,9 @@ from elasticsearch_project import (
 if TYPE_CHECKING:
     from cloudfall.lifecycle import ExecutionStep
 
+# The seed check's login is read by the file lookup, a plugin Ansible loads.
+init_plugin_loader()
+
 ROOT = Path(__file__).parents[2]
 ROLES = ROOT / "engine" / "ansible" / "roles"
 ROLE = ROLES / "cloudfall_elasticsearch"
@@ -55,6 +65,13 @@ EXISTING = {
     "caCertificateFile": "pki/search-old-ca.pem",
 }
 EXISTING_SEEDS = ["10.0.0.11:9300", "10.0.0.12:9300"]
+CREDENTIALS_REF = {
+    "environment": "production",
+    "path": "/services/search-main",
+    "key": "OLD_CLUSTER_MONITOR",
+}
+MONITOR_USER = "team-monitor"
+MONITOR_PASSWORD = "synthetic-monitor:value"  # noqa: S105 - grepped for
 PROJECT_CA = "/etc/elasticsearch/certs/ca.crt"
 FOREIGN_CA = "/etc/elasticsearch/certs/existing-cluster-ca.crt"
 FACTS = {
@@ -85,15 +102,24 @@ def _old_ca() -> str:
 
 
 def _project(
-    tmp_path: Path, *, nodes: tuple[str, ...] = ("h1",), joining: bool = True
+    tmp_path: Path,
+    *,
+    nodes: tuple[str, ...] = ("h1",),
+    joining: bool = True,
+    login: bool = False,
 ) -> Path:
-    """Write the spec's joining service on ``nodes``, or the same after it left."""
+    """Write the spec's joining service on ``nodes``, or the same after it left.
+
+    With ``login``, its ``existingCluster`` names a ``credentialsRef``.
+    """
     service = elasticsearch_service(
         clusterName="search", nodes=list(nodes), snapshotRepository=SNAPSHOT_REPOSITORY
     )
     if joining:
         spec = cast("dict[str, dict[str, object]]", service["spec"])
-        spec["elasticsearch"]["existingCluster"] = EXISTING
+        spec["elasticsearch"]["existingCluster"] = (
+            {**EXISTING, "credentialsRef": CREDENTIALS_REF} if login else EXISTING
+        )
     project = write_project(tmp_path / "project", service, servers=nodes)
     (project / "pki").mkdir()
     (project / "pki" / "search-old-ca.pem").write_text(_old_ca(), encoding="utf-8")
@@ -350,8 +376,6 @@ def test_s012_17_the_preflight_only_reads_the_existing_cluster(
     call = ask["ansible.builtin.uri"]
     assert "method" not in call  # GET
     assert "body" not in call
-    assert call["url_username"] == "cloudfall"
-    assert "cloudfallPassword" in call["url_password"]
     assert call["ca_path"] == "{{ cloudfall_elasticsearch_existing_ca_path }}"
     assert ask["no_log"] is True
     assert ask["changed_when"] is False
@@ -367,10 +391,88 @@ def test_s012_17_the_preflight_only_reads_the_existing_cluster(
     ]
 
 
+def _login(tmp_path: Path, *, login: bool) -> tuple[str, str]:
+    """Return the login the seed check sends, as Ansible renders it."""
+    hosts = _hosts(_rendered(_project(tmp_path / "project", login=login)))
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    files: dict[str, str] = {}
+    for name, value in (
+        ("cloudfallPassword", "synthetic-cloudfall"),
+        ("existingUsername", MONITOR_USER),
+        ("existingPassword", MONITOR_PASSWORD),
+    ):
+        if name.startswith("existing") and not login:
+            continue
+        (staged / name).write_text(value, encoding="utf-8")
+        files[name] = str(staged / name)
+    block, _ = _preflight()
+    variables = {
+        **_variables(hosts["h1"], cloudfall_elasticsearch_account_files=files),
+        **_trusted(block["vars"]),
+    }
+    call = _task(
+        block["block"], "Ask each seed host for the cluster's name and node versions"
+    )
+    return (
+        str(_value(call["ansible.builtin.uri"]["url_username"], variables)),
+        str(_value(call["ansible.builtin.uri"]["url_password"], variables)),
+    )
+
+
+# proves: S-012-17
+def test_s012_17_the_seed_check_logs_in_with_the_credentials_ref_account(
+    tmp_path: Path,
+) -> None:
+    """The team's own monitor account: nobody adds a cloudfall user there."""
+    assert _login(tmp_path / "ref", login=True) == (MONITOR_USER, MONITOR_PASSWORD)
+
+
+# proves: S-012-17
+def test_s012_17_without_credentials_ref_the_seed_check_logs_in_as_cloudfall(
+    tmp_path: Path,
+) -> None:
+    assert _login(tmp_path / "own", login=False) == (
+        "cloudfall",
+        "synthetic-cloudfall",
+    )
+
+
+# proves: S-012-18
+def test_s012_18_a_declared_login_that_is_not_staged_stops_the_converge(
+    tmp_path: Path,
+) -> None:
+    require = _task(
+        _load("existing-cluster.yml"),
+        "Require the staged login of the existing cluster",
+    )
+    with_ref = _hosts(_rendered(_project(tmp_path / "ref", login=True)))
+    without_ref = _hosts(_rendered(_project(tmp_path / "own")))
+
+    # Only the account files: services.yml was run without cloudfall.
+    unstaged = _variables(with_ref["h1"])
+    assert _true(require["when"], unstaged)
+    assert not _holds(require, unstaged)
+    assert "existingCluster's credentialsRef" in " ".join(
+        str(_value(require["ansible.builtin.assert"]["fail_msg"], unstaged)).split()
+    )
+    staged = _variables(
+        with_ref["h1"],
+        cloudfall_elasticsearch_account_files={
+            "cloudfallPassword": "/tmp/staged/cloudfall.password",  # noqa: S108
+            "existingUsername": "/tmp/staged/existing.username",  # noqa: S108
+            "existingPassword": "/tmp/staged/existing.password",  # noqa: S108
+        },
+    )
+    assert _holds(require, staged)
+    assert not _true(require["when"], _variables(without_ref["h1"]))
+
+
 ACCOUNTS = (
     "CLOUDFALL_PASSWORD=synthetic-cloudfall\nELASTIC_PASSWORD=synthetic-elastic\n"
     "S3=SYNTHETICACCESSKEY:synthetic/secret+key\n"
 )
+LOGIN = f"OLD_CLUSTER_MONITOR={MONITOR_USER}:{MONITOR_PASSWORD}\n"
 
 
 def _answers(
@@ -408,8 +510,11 @@ class _Services:
     passed: dict[str, list[str]] = field(default_factory=dict)
     delivered: dict[str, dict[str, str]] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
+    steps: list[ExecutionStep] = field(default_factory=list)
+    login: dict[str, tuple[str, int]] = field(default_factory=dict)
 
     def __call__(self, step: ExecutionStep) -> _Finished:
+        self.steps.append(step)
         if "--extra-vars" not in step.argv:
             return _Finished()
         extra = json.loads(step.argv[step.argv.index("--extra-vars") + 1])
@@ -422,8 +527,20 @@ class _Services:
     def _role(self, extra: dict[str, Any]) -> None:
         main_tasks = _load("main.yml")
         block, refusals = _preflight()
+        before_block = [
+            task
+            for task in _load("existing-cluster.yml")
+            if "ansible.builtin.assert" in task
+        ]
         for node, host in _hosts(self.rendered).items():
             files = extra["cloudfall_services_elasticsearch_files"]["search-main"]
+            for name in ("existingUsername", "existingPassword"):
+                if name in files:
+                    path = Path(files[name])
+                    self.login[name] = (
+                        path.read_text("utf-8"),
+                        stat.S_IMODE(path.stat().st_mode),
+                    )
             copied = extra["cloudfall_services_delivered_files"][node]
             self.delivered[node] = {
                 str(item["path"]): Path(str(item["source"])).read_text("utf-8")
@@ -453,7 +570,7 @@ class _Services:
                 if "ansible.builtin.assert" in task
             ]
             assert _true(block["when"], variables)
-            for guard in [*guards, *refusals]:
+            for guard in [*guards, *before_block, *refusals]:
                 if "when" in guard and not _true(guard["when"], variables):
                     continue
                 assert _holds(guard, variables), (node, guard["name"])
@@ -473,21 +590,30 @@ def _plaintext(source: Path) -> str:
     return source.read_text(encoding="utf-8")
 
 
-# proves: S-012-17
-def test_s012_17_the_converge_delivers_the_existing_ca_and_passes_every_guard(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    project = _project(tmp_path)
+def _converge(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    *,
+    login: bool = False,
+    secrets: str = ACCOUNTS,
+) -> tuple[Path, _Services]:
+    """Validate the joining project, then run its services converge on fake nodes."""
+    project = _project(tmp_path, login=login)
     assert main(
         ["config", "validate", "--project", str(project), "--schemas", str(SCHEMAS)]
     ) == 0, capsys.readouterr().out
     rendered = _rendered(project)
     text = json.dumps(as_ansible_data(rendered))
-    for secret in ("synthetic-cloudfall", "synthetic-elastic", "SYNTHETICACCESSKEY"):
+    for secret in (
+        "synthetic-cloudfall",
+        "synthetic-elastic",
+        "SYNTHETICACCESSKEY",
+        MONITOR_PASSWORD,
+    ):
         assert secret not in text
-    secrets = project / "secrets" / "production" / "services" / "search-main.env"
-    secrets.parent.mkdir(parents=True)
-    secrets.write_text(ACCOUNTS, encoding="utf-8")
+    source = project / "secrets" / "production" / "services" / "search-main.env"
+    source.parent.mkdir(parents=True)
+    source.write_text(secrets, encoding="utf-8")
     store = SecretStore(
         project / "secrets", decrypt=_plaintext, encrypt=lambda _, value: value
     )
@@ -505,6 +631,14 @@ def test_s012_17_the_converge_delivers_the_existing_ca_and_passes_every_guard(
         ),
         SopsSecretProvider(secrets_directory=project / "secrets", decrypt=_plaintext),
     )
+    return project, services
+
+
+# proves: S-012-17
+def test_s012_17_the_converge_delivers_the_existing_ca_and_passes_every_guard(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, services = _converge(tmp_path, capsys)
 
     assert services.nodes.playbooks[-1] == "services.yml"
     # The joining node makes its key and gets a transport certificate too.
@@ -533,6 +667,88 @@ def test_s012_17_the_converge_delivers_the_existing_ca_and_passes_every_guard(
         "s3AccessKey",
         "s3SecretKey",
     }
+    assert services.login == {}
+
+
+# proves: S-012-17
+def test_s012_17_the_converge_stages_the_credentials_ref_login_on_the_controller_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, services = _converge(
+        tmp_path, capsys, login=True, secrets=ACCOUNTS + LOGIN
+    )
+
+    assert "Require the staged login of the existing cluster" in services.passed["h1"]
+    assert services.login == {
+        "existingUsername": (MONITOR_USER, 0o600),
+        "existingPassword": (MONITOR_PASSWORD, 0o600),
+    }
+    staged = services.extra["cloudfall_services_elasticsearch_files"]["search-main"]
+    for name in ("existingUsername", "existingPassword"):
+        path = Path(staged[name])
+        # Removed after the run, never inside the project.
+        assert not path.exists()
+        assert project not in path.parents
+    # Never copied to a node, never on a command line or in an environment.
+    for delivered in services.delivered.values():
+        assert all(MONITOR_PASSWORD not in text for text in delivered.values())
+    for step in services.steps:
+        assert MONITOR_PASSWORD not in " ".join(step.argv)
+        assert MONITOR_PASSWORD not in json.dumps(dict(step.environment))
+    # The reference reaches the rendered inventory, its value does not.
+    (service,) = [
+        item
+        for item in _hosts(_rendered(project))["h1"]["cloudfall_services"]
+        if item["serviceKind"] == "elasticsearch"
+    ]
+    assert service["elasticsearch"]["existingCluster"]["credentialsRef"] == (
+        CREDENTIALS_REF
+    )
+
+
+# proves: S-012-18
+def test_s012_18_the_seed_check_and_its_login_stay_out_of_the_task_output() -> None:
+    block, _ = _preflight()
+    ask = _task(
+        block["block"], "Ask each seed host for the cluster's name and node versions"
+    )
+    require = _task(
+        _load("existing-cluster.yml"),
+        "Require the staged login of the existing cluster",
+    )
+
+    assert ask["no_log"] is True
+    # The guard names the reference, never a path's content.
+    message = str(require["ansible.builtin.assert"]["fail_msg"])
+    assert "lookup" not in message
+    assert "existingPassword" not in message
+
+
+# proves: S-012-18
+@pytest.mark.parametrize(
+    ("secrets", "expected"),
+    [
+        (ACCOUNTS, "OLD_CLUSTER_MONITOR is missing"),
+        (
+            ACCOUNTS + "OLD_CLUSTER_MONITOR=synthetic-monitor-only\n",
+            "is not <username>:<password> on one line",
+        ),
+    ],
+    ids=["unknown", "malformed"],
+)
+def test_s012_18_a_credentials_ref_the_store_lacks_stops_before_any_playbook(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    secrets: str,
+    expected: str,
+) -> None:
+    with pytest.raises(LifecycleError) as error:
+        _converge(tmp_path, capsys, login=True, secrets=secrets)
+
+    assert error.value.code == ERROR_SERVICES_SECRET
+    assert expected in error.value.detail
+    assert "existingCluster of Elasticsearch service search-main" in error.value.detail
+    assert "synthetic-monitor-only" not in error.value.detail
 
 
 # S-012-18
@@ -556,9 +772,9 @@ def test_s012_18_the_preflight_runs_before_the_volume_and_the_package() -> None:
 
 
 def _refusal(
-    tmp_path: Path, name: str, answers: dict[str, object]
+    tmp_path: Path, name: str, answers: dict[str, object], *, login: bool = False
 ) -> tuple[bool, str]:
-    hosts = _hosts(_rendered(_project(tmp_path)))
+    hosts = _hosts(_rendered(_project(tmp_path, login=login)))
     block, refusals = _preflight()
     variables = {
         **_variables(hosts["h1"], **answers),
@@ -629,10 +845,16 @@ def test_s012_18_a_cluster_no_seed_host_answers_for_stops_the_converge(
 ) -> None:
     name = "Refuse an existing cluster that no seed host answered for"
 
-    held, message = _refusal(tmp_path, name, _answers(status=401))
+    held, message = _refusal(tmp_path / "own", name, _answers(status=401))
     assert not held
     assert "(10.0.0.11:9300: 401, 10.0.0.12:9300: -1)" in message
     assert "no cloudfall account with the monitor privilege" in message
+    assert "existingCluster.credentialsRef" in message
+    # With a credentialsRef, the message points at that account instead.
+    held, message = _refusal(tmp_path / "ref", name, _answers(status=401), login=True)
+    assert not held
+    assert "the account existingCluster.credentialsRef names" in message
+    assert "cloudfall account" not in message
 
 
 def test_a_dry_run_on_a_node_without_the_existing_ca_skips_the_preflight(
@@ -693,17 +915,23 @@ def test_s012_19_without_existing_cluster_no_foreign_ca_or_old_seed_host_remains
 
 
 # proves: S-012-19
-def test_s012_19_the_foreign_ca_leaves_after_the_restart_and_the_cluster_is_green(
+def test_s012_19_the_foreign_ca_leaves_and_the_cluster_is_green_or_yellow_on_one_node(
     tmp_path: Path,
 ) -> None:
-    """The changed configuration restarts one node at a time; then the CA goes."""
+    """The changed configuration restarts one node at a time; then the CA goes.
+
+    Green with two or more Cloudfall nodes; a single one left has nowhere to
+    put its replicas, so yellow is its end state.
+    """
     main_tasks = _load("main.yml")
     names = [task["name"] for task in main_tasks]
     remove = _task(
         main_tasks, "Remove the existing cluster's CA once existingCluster is gone"
     )
     wait = _task(
-        main_tasks, "Wait for the cluster to be green without the existing cluster"
+        main_tasks,
+        "Wait for the cluster to be green, or yellow on one node, without the "
+        "existing cluster",
     )
     install = _task(main_tasks, "Install the managed Elasticsearch configuration")
 

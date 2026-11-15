@@ -589,6 +589,76 @@ def elasticsearch_s3_credentials(
     return tuple(found)
 
 
+@dataclass(frozen=True, slots=True)
+class ElasticsearchExistingClusterLogin:
+    """The login the join check of an ``existingCluster`` uses, in memory only.
+
+    ``credentialsRef`` names one key of the store; its value is the username
+    and the password of an account of the existing cluster with the
+    ``monitor`` privilege, joined by the first ``:`` (S-012, #315).
+    """
+
+    service: ResourceId
+    reference: SecretValueReference
+    username: str = field(repr=False)
+    password: str = field(repr=False)
+
+
+def elasticsearch_existing_cluster_credentials(
+    inventory: PlatformInventory,
+) -> tuple[tuple[ResourceId, SecretValueReference], ...]:
+    """Return each service's id with its ``existingCluster.credentialsRef``, if any."""
+    return tuple(
+        (service.resource_id, service.elasticsearch.existing_cluster.credentials_ref)
+        for service in inventory.services
+        if service.elasticsearch is not None
+        and service.elasticsearch.existing_cluster is not None
+        and service.elasticsearch.existing_cluster.credentials_ref is not None
+    )
+
+
+def elasticsearch_existing_cluster_logins(
+    references: Iterable[tuple[ResourceId, SecretValueReference]],
+    provider: SopsSecretProvider,
+) -> tuple[ElasticsearchExistingClusterLogin, ...]:
+    """Decrypt the existing-cluster login each service's ``credentialsRef`` names.
+
+    A missing file or key, or a value that is not ``<username>:<password>``
+    on one line, fails naming the file and the key, never the value, before
+    any playbook.
+    """
+    found: list[ElasticsearchExistingClusterLogin] = []
+    for service_id, reference in references:
+        try:
+            value = provider.fetch_value(reference)
+        except SecretsError as error:
+            message = (
+                f"{error.message}; it holds the login of the existingCluster of "
+                f"Elasticsearch service {service_id.value}, as "
+                "<username>:<password> of an account with the monitor privilege"
+            )
+            raise SecretsError(error.code, message) from error
+        username, separator, password = value.partition(":")
+        if (
+            not separator
+            or not username
+            or not password
+            or any(char in value for char in "\r\n")
+            or username.strip() != username
+        ):
+            message = (
+                f"secret key {reference.key.value} in "
+                f"{provider.source_path(reference)} is not <username>:<password> "
+                "on one line, the form the existingCluster of Elasticsearch "
+                f"service {service_id.value} reads"
+            )
+            raise SecretsError(_ERROR_SOURCE_INVALID, message)
+        found.append(
+            ElasticsearchExistingClusterLogin(service_id, reference, username, password)
+        )
+    return tuple(found)
+
+
 PASSWORD_FILES_VARIABLE = "cloudfall_services_password_files"  # noqa: S105 - a name
 """The ``services.yml`` variable mapping service, then owner, to a staged file."""
 ELASTICSEARCH_FILES_VARIABLE = "cloudfall_services_elasticsearch_files"
@@ -597,8 +667,10 @@ ELASTICSEARCH_FILES_VARIABLE = "cloudfall_services_elasticsearch_files"
 Each service maps ``cloudfallPassword`` (the password the node keeps in its
 0600 file), ``cloudfallHash`` and ``elasticHash`` (bcrypt hashes only), and,
 with an S3 ``snapshotRepository``, ``s3AccessKey`` and ``s3SecretKey`` (the
-client keys every node puts in its keystore), and, when it declares users,
-``users``: each user's name to its bcrypt hash file.
+client keys every node puts in its keystore), with an ``existingCluster``
+``credentialsRef``, ``existingUsername`` and ``existingPassword`` (the login
+the join check uses, read on the controller only), and, when it declares
+users, ``users``: each user's name to its bcrypt hash file.
 """
 
 
@@ -608,6 +680,7 @@ def staged_password_files(
     accounts: tuple[ElasticsearchAccountPassword, ...] = (),
     s3: tuple[ElasticsearchS3Credentials, ...] = (),
     users: tuple[ElasticsearchUserPassword, ...] = (),
+    existing: tuple[ElasticsearchExistingClusterLogin, ...] = (),
 ) -> Iterator[dict[str, object]]:
     """Write each password's server form to a 0600 file, then remove it.
 
@@ -615,13 +688,14 @@ def staged_password_files(
     verifier, never the password (D-9); an Elasticsearch account's files hold
     its bcrypt hash, and for ``cloudfall`` also the password the spec puts in
     a 0600 file on each node; an S3 snapshot repository's two files hold the
-    client keys the keystore of each node takes; a declared user's file holds
-    its bcrypt hash alone. Yields the extra vars ``services.yml`` reads: the
-    controller paths only, so neither crosses a command line, the inventory,
-    or the project. Nothing to stage yields no variable, leaving the run as
-    it was.
+    client keys the keystore of each node takes; an existing cluster's login
+    is two files the join check reads on the controller, never copied to a
+    node; a declared user's file holds its bcrypt hash alone. Yields the
+    extra vars ``services.yml`` reads: the controller paths only, so neither
+    crosses a command line, the inventory, or the project. Nothing to stage
+    yields no variable, leaving the run as it was.
     """
-    if not passwords and not accounts and not s3:
+    if not passwords and not accounts and not s3 and not users and not existing:
         yield {}
         return
     with tempfile.TemporaryDirectory(prefix="cloudfall-passwords-") as directory:
@@ -639,10 +713,13 @@ def staged_password_files(
             extra_vars[PASSWORD_FILES_VARIABLE] = files
         if accounts or s3:
             extra_vars[ELASTICSEARCH_FILES_VARIABLE] = _stage_accounts(
-                root / "elasticsearch", accounts, s3, users
+                root / "elasticsearch", accounts, s3, users, existing
             )
-        elif users:
-            message = "declared Elasticsearch users need their service's accounts"
+        elif users or existing:
+            message = (
+                "declared Elasticsearch users and existing-cluster logins need "
+                "their service's accounts"
+            )
             raise ValueError(message)
         yield extra_vars
 
@@ -652,6 +729,7 @@ def _stage_accounts(
     accounts: tuple[ElasticsearchAccountPassword, ...],
     s3: tuple[ElasticsearchS3Credentials, ...],
     users: tuple[ElasticsearchUserPassword, ...],
+    existing: tuple[ElasticsearchExistingClusterLogin, ...],
 ) -> dict[str, dict[str, object]]:
     root.mkdir(mode=0o700)
     staged: dict[str, dict[str, object]] = {}
@@ -673,6 +751,22 @@ def _stage_accounts(
         for name, suffix, value in (
             ("s3AccessKey", "access", credentials.access_key),
             ("s3SecretKey", "secret", credentials.secret_key),
+        ):
+            path = root / f"{prefix}.{suffix}"
+            _write_private(path, value)
+            service[name] = str(path)
+    for login in existing:
+        if login.service not in salt_keys:
+            message = (
+                f"the existingCluster login of Elasticsearch service "
+                f"{login.service.value} has no cloudfall account staged"
+            )
+            raise ValueError(message)
+        service = staged[login.service.value]
+        prefix = f"{login.service.value}-existing"
+        for name, suffix, value in (
+            ("existingUsername", "username", login.username),
+            ("existingPassword", "password", login.password),
         ):
             path = root / f"{prefix}.{suffix}"
             _write_private(path, value)

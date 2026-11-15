@@ -50,6 +50,7 @@ from cloudfall.secrets import (
     SecretsError,
     SopsSecretProvider,
     elasticsearch_account_passwords,
+    elasticsearch_existing_cluster_logins,
     elasticsearch_s3_credentials,
     elasticsearch_user_passwords,
     owned_role_passwords,
@@ -96,6 +97,7 @@ if TYPE_CHECKING:
     from cloudfall.domain import BuildTimeoutSeconds
     from cloudfall.secrets import (
         ElasticsearchAccountPassword,
+        ElasticsearchExistingClusterLogin,
         ElasticsearchS3Credentials,
         ElasticsearchUserPassword,
         OwnedRolePassword,
@@ -660,6 +662,23 @@ def _rendered_snapshot_credentials(
     return tuple(found.values())
 
 
+def _rendered_existing_cluster_credentials(
+    inventory_file: Path,
+) -> tuple[tuple[ResourceId, SecretValueReference], ...]:
+    """Read the ``existingCluster.credentialsRef`` of each service, once per service."""
+    found: dict[str, tuple[ResourceId, SecretValueReference]] = {}
+    for service in _rendered_services(inventory_file, "elasticsearch"):
+        existing = _nested(service, "elasticsearch", "existingCluster")
+        if "credentialsRef" not in existing:
+            continue
+        service_id = ResourceId.from_boundary(service.get("id"))
+        found[service_id.value] = (
+            service_id,
+            _secret_reference(existing.get("credentialsRef"), "credentialsRef"),
+        )
+    return tuple(found.values())
+
+
 def _secret_reference(reference: object, name: str) -> SecretValueReference:
     if not isinstance(reference, dict):
         message = f"a {name} is not a mapping"
@@ -767,6 +786,7 @@ class _ServicesSecrets:
     accounts: tuple[ElasticsearchAccountPassword, ...] = ()
     s3: tuple[ElasticsearchS3Credentials, ...] = ()
     users: tuple[ElasticsearchUserPassword, ...] = ()
+    existing: tuple[ElasticsearchExistingClusterLogin, ...] = ()
 
 
 def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesSecrets:
@@ -774,7 +794,8 @@ def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesS
 
     Those are each owner role's password, the ``cloudfall`` and ``elastic``
     passwords of each Elasticsearch service and each of its declared users',
-    and the S3 keys of each S3 snapshot repository.
+    the S3 keys of each S3 snapshot repository, and the login of each
+    ``existingCluster`` that names a ``credentialsRef``.
     """
     # An engine without services.yml still runs its other playbooks (#296).
     services = playbook_directory(args.engine) / SERVICES_PLAYBOOK
@@ -785,6 +806,7 @@ def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesS
         clusters = _rendered_elasticsearch_services(args.inventory)
         repositories = _rendered_snapshot_credentials(args.inventory)
         users = _rendered_elasticsearch_users(args.inventory)
+        logins = _rendered_existing_cluster_credentials(args.inventory)
     except (TypeError, ValueError) as error:
         message = f"the inventory declares a malformed service: {error}"
         raise ParseError(message, context={"flag": "inventory"}) from error
@@ -799,6 +821,7 @@ def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesS
             elasticsearch_account_passwords(clusters, provider),
             elasticsearch_s3_credentials(repositories, provider),
             elasticsearch_user_passwords(users, provider),
+            elasticsearch_existing_cluster_logins(logins, provider),
         )
     except SecretsError as error:
         raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
@@ -840,7 +863,7 @@ def run_playbook(args: RunArgs, ctx: Ctx) -> Played:
     secrets = _services_passwords(args, _playbook_run(args), ctx)
     passwords = secrets.owned_roles
     with staged_password_files(
-        passwords, secrets.accounts, secrets.s3, secrets.users
+        passwords, secrets.accounts, secrets.s3, secrets.users, secrets.existing
     ) as staged:
         played = _run_ansible(
             args, ctx, _playbook_run(args, (json.dumps(staged),) if staged else ())

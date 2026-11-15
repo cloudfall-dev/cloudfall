@@ -46,6 +46,8 @@ from cloudfall.secret_store import SecretStore, sops_encrypt
 from cloudfall.secrets import (
     SecretsError,
     elasticsearch_account_passwords,
+    elasticsearch_existing_cluster_credentials,
+    elasticsearch_existing_cluster_logins,
     elasticsearch_s3_credentials,
     elasticsearch_services,
     elasticsearch_snapshot_credentials,
@@ -77,6 +79,7 @@ if TYPE_CHECKING:
     )
     from cloudfall.secrets import (
         ElasticsearchAccountPassword,
+        ElasticsearchExistingClusterLogin,
         ElasticsearchS3Credentials,
         ElasticsearchUserPassword,
         OwnedRolePassword,
@@ -1113,6 +1116,7 @@ class ServicesSecrets:
     """Where the project CA lives, which signs the nodes' transport certificates."""
     elasticsearch_s3: tuple[ElasticsearchS3Credentials, ...] = ()
     elasticsearch_users: tuple[ElasticsearchUserPassword, ...] = ()
+    elasticsearch_existing: tuple[ElasticsearchExistingClusterLogin, ...] = ()
 
 
 def services_passwords(
@@ -1122,7 +1126,8 @@ def services_passwords(
 
     Those are each owner role's, the ``cloudfall`` and ``elastic``
     passwords of each Elasticsearch service and each of its declared users',
-    and the S3 keys of each S3 snapshot repository. A missing file or key
+    the S3 keys of each S3 snapshot repository, and the login of each
+    ``existingCluster`` that names a ``credentialsRef``. A missing file or key
     fails here, naming the expected path and key, so the converge stops
     before any playbook starts.
     """
@@ -1143,6 +1148,9 @@ def services_passwords(
                 elasticsearch_snapshot_credentials(inventory), provider
             ),
             elasticsearch_user_passwords(elasticsearch_users(inventory), provider),
+            elasticsearch_existing_cluster_logins(
+                elasticsearch_existing_cluster_credentials(inventory), provider
+            ),
         )
     except SecretsError as error:
         raise LifecycleError(ERROR_SERVICES_SECRET, error.message) from error
@@ -1175,6 +1183,7 @@ def run_services_playbook(context: EngineContext, secrets: ServicesSecrets) -> N
             secrets.elasticsearch,
             secrets.elasticsearch_s3,
             secrets.elasticsearch_users,
+            secrets.elasticsearch_existing,
         ) as extra,
     ):
         run_engine_playbook(context, "services.yml", {**extra, **provided})

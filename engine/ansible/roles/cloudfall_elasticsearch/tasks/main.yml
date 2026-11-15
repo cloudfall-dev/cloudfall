@@ -564,8 +564,9 @@
 # Once existingCluster is removed (S-012-19), the configuration above names
 # neither its seed hosts nor its CA, and the restart it notified brought the
 # node up without them: only now does the CA leave the node. The cluster is
-# then green before the next node moves (yellow on a cluster of one, whose
-# replicas have nowhere to go, as for any restart).
+# then green before the next node moves, with two or more Cloudfall nodes;
+# with a single one left its replicas have nowhere to go, so yellow is the
+# end state (S-012-19), as for any restart of a cluster of one.
 - name: Remove the existing cluster's CA once existingCluster is gone
   ansible.builtin.file:
     path: "{{ cloudfall_elasticsearch_existing_ca_path }}"
@@ -573,7 +574,7 @@
   register: cloudfall_elasticsearch_existing_ca_removed
   when: cloudfall_elasticsearch_service.elasticsearch.existingCluster is not defined
 
-- name: Wait for the cluster to be green without the existing cluster
+- name: Wait for the cluster to be green, or yellow on one node, without the existing cluster
   ansible.builtin.uri:
     url: >-
       {{ cloudfall_elasticsearch_api_url
