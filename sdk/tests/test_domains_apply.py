@@ -120,7 +120,7 @@ def _request(project: Path, *, issue_certificate: bool) -> DomainApply:
     return DomainApply(
         domain_id=ResourceId("crm-site"),
         issue_certificate=issue_certificate,
-        receipt_directory=project / "tmp" / "deployments",
+        receipt_directory=project / "record" / "deployments",
     )
 
 
@@ -155,7 +155,7 @@ def _untouched(project: Path) -> None:
     """Neither the inventory render nor a playbook ran, and no receipt exists."""
     assert not (project / "tmp" / "ansible-inventory.json").exists()
     assert not (project / "tmp" / "inventory.json").exists()
-    assert not (project / "tmp" / "deployments").exists()
+    assert not (project / "record" / "deployments").exists()
 
 
 # S-004-3: the plan
@@ -184,7 +184,7 @@ def test_s004_3_without_yes_the_plan_runs_nothing(
 
 def test_s004_3_the_plan_starts_no_engine_step(tmp_path: Path) -> None:
     project = _project(tmp_path)
-    recorder = _Recorder(project / "tmp" / "deployments")
+    recorder = _Recorder(project / "record" / "deployments")
     resolver = _resolver()
 
     planned = preview_domain_apply(
@@ -241,7 +241,7 @@ def test_s004_6_an_alias_elsewhere_is_refused_naming_it(
     tmp_path: Path,
 ) -> None:
     project = _project(tmp_path)
-    recorder = _Recorder(project / "tmp" / "deployments")
+    recorder = _Recorder(project / "record" / "deployments")
     resolver = _resolver(www_crm_example_test=ELSEWHERE)
     call = apply_domain if yes else preview_domain_apply
 
@@ -263,7 +263,7 @@ def test_s004_6_an_alias_elsewhere_is_refused_naming_it(
 
 def test_s004_6_a_name_that_resolves_to_nothing_is_refused(tmp_path: Path) -> None:
     project = _project(tmp_path)
-    recorder = _Recorder(project / "tmp" / "deployments")
+    recorder = _Recorder(project / "record" / "deployments")
     resolver = _resolver()
     del resolver.answers["crm.example.test"]
 
@@ -354,7 +354,7 @@ def test_s004_7_a_proxied_domain_skips_the_dns_check(
 
 def test_s004_7_a_proxied_domain_asks_no_resolver(tmp_path: Path) -> None:
     project = _project(tmp_path, edge={"provider": "cloudflare", "mode": "proxied"})
-    recorder = _Recorder(project / "tmp" / "deployments")
+    recorder = _Recorder(project / "record" / "deployments")
     resolver = _resolver(crm_example_test=ELSEWHERE)
 
     applied = apply_domain(
@@ -386,7 +386,7 @@ def test_s004_8_tls_disabled_refuses_issue_certificate(
 
 def test_s004_8_tls_disabled_is_refused_before_dns(tmp_path: Path) -> None:
     project = _project(tmp_path, tls={"mode": "disabled"})
-    recorder = _Recorder(project / "tmp" / "deployments")
+    recorder = _Recorder(project / "record" / "deployments")
     resolver = _resolver()
 
     with pytest.raises(LifecycleError) as error:
@@ -408,7 +408,7 @@ def test_s004_9_issue_certificate_passes_the_flag_to_domains_yml(
     tmp_path: Path,
 ) -> None:
     project = _project(tmp_path)
-    receipts = project / "tmp" / "deployments"
+    receipts = project / "record" / "deployments"
     recorder = _Recorder(receipts)
 
     applied = apply_domain(
@@ -568,7 +568,7 @@ def test_s004_1_only_the_proxy_server_runs_domains_yml(
 ) -> None:
     project = _project(tmp_path)
     run, log = _local_run(tmp_path, project)
-    receipts = project / "tmp" / "deployments"
+    receipts = project / "record" / "deployments"
 
     applied = apply_domain(
         _context(project, run),

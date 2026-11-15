@@ -288,6 +288,7 @@ from cloudfall.project import (
     ProjectDescription,
     ProjectError,
     ProjectName,
+    RecordStore,
     init_project,
     initialize_git,
     is_project,
@@ -841,8 +842,10 @@ class UpgradedPayload(Payload):
     description=(
         "Rewrite the project's files from deprecated names to current ones: "
         "server-types/ to baselines/, kind ServerType to Baseline, "
-        "spec.serverType to spec.baseline; comments and formatting are kept, "
-        "and a second run changes nothing"
+        "spec.serverType to spec.baseline; comments and formatting are kept. "
+        "Move receipts and operator proposals from tmp/ into the committed "
+        "record/, refusing to overwrite a different file there. A second run "
+        "changes nothing"
     ),
     danger_level="mutating",
     timeout=60,
@@ -1238,8 +1241,10 @@ class ProposalArgs(ProjectArgs):
     """Options of a command that reads the operator's proposal receipts."""
 
     proposals: Path = Flag(
-        default=Path("tmp/operator/proposals"),
-        description="Proposal receipt directory (default: tmp/operator/proposals)",
+        default=RecordStore.PROPOSALS.path,
+        description=(
+            f"Proposal receipt directory (default: {RecordStore.PROPOSALS.directory})"
+        ),
     )
 
     def __post_init__(self) -> None:
@@ -1325,10 +1330,10 @@ class AuditArgs(FleetArgs):
         ),
     )
     env_receipts: Path = Flag(
-        default=Path("tmp/env-receipts"),
+        default=RecordStore.ENVIRONMENT_RECEIPTS.path,
         description=(
             "Rendered environment receipt directory used for env-file drift "
-            "checks (default: tmp/env-receipts)"
+            f"checks (default: {RecordStore.ENVIRONMENT_RECEIPTS.directory})"
         ),
     )
 
@@ -1406,8 +1411,11 @@ class EvidenceArgs(ProjectArgs):
         description="Domain observation directory (default: tmp/observed-services)",
     )
     deployments: Path = Flag(
-        default=Path("tmp/deployments"),
-        description="Deployment receipt directory (default: tmp/deployments)",
+        default=RecordStore.DEPLOYMENTS.path,
+        description=(
+            "Deployment receipt directory "
+            f"(default: {RecordStore.DEPLOYMENTS.directory})"
+        ),
     )
 
     def __post_init__(self) -> None:
@@ -2255,8 +2263,10 @@ class BackupArgs(EngineArgs):
 
     service: ResourceId = Arg(description="Declared service to back up")
     backups: Path = Flag(
-        default=Path("tmp/backups"),
-        description="Backup receipt directory (default: tmp/backups)",
+        default=RecordStore.BACKUPS.path,
+        description=(
+            f"Backup receipt directory (default: {RecordStore.BACKUPS.directory})"
+        ),
     )
 
     def __post_init__(self) -> None:
@@ -3554,12 +3564,17 @@ class MigrateArgs(EngineArgs):
         description="Domain observation directory (default: tmp/observed-services)",
     )
     deployments: Path = Flag(
-        default=Path("tmp/deployments"),
-        description="Deployment receipt directory (default: tmp/deployments)",
+        default=RecordStore.DEPLOYMENTS.path,
+        description=(
+            "Deployment receipt directory "
+            f"(default: {RecordStore.DEPLOYMENTS.directory})"
+        ),
     )
     releases: Path = Flag(
-        default=Path("tmp/releases"),
-        description="Release receipt directory (default: tmp/releases)",
+        default=RecordStore.RELEASES.path,
+        description=(
+            f"Release receipt directory (default: {RecordStore.RELEASES.directory})"
+        ),
     )
     artifacts: Path = Flag(
         default=Path("tmp/artifacts"),
@@ -4060,8 +4075,11 @@ class SecretsRenderArgs(EngineArgs):
         description="Environment file to write (default: tmp/env/<component>.env)",
     )
     env_receipts: Path = Flag(
-        default=Path("tmp/env-receipts"),
-        description="Environment receipt directory (default: tmp/env-receipts)",
+        default=RecordStore.ENVIRONMENT_RECEIPTS.path,
+        description=(
+            "Environment receipt directory "
+            f"(default: {RecordStore.ENVIRONMENT_RECEIPTS.directory})"
+        ),
     )
 
     def __post_init__(self) -> None:
@@ -4555,8 +4573,10 @@ class DeployArgs(ComponentArgs):
         description="Optional controller-side environment file for the component",
     )
     releases: Path = Flag(
-        default=Path("tmp/releases"),
-        description="Release receipt directory (default: tmp/releases)",
+        default=RecordStore.RELEASES.path,
+        description=(
+            f"Release receipt directory (default: {RecordStore.RELEASES.directory})"
+        ),
     )
     approvals: Path = Flag(
         default=Path(APPROVALS_DIRECTORY),
@@ -4607,8 +4627,11 @@ class DataMigrateArgs(EngineArgs):
         ),
     )
     data_migrations: Path = Flag(
-        default=Path("tmp/data-migrations"),
-        description="Migration receipt directory (default: tmp/data-migrations)",
+        default=RecordStore.DATA_MIGRATIONS.path,
+        description=(
+            "Migration receipt directory "
+            f"(default: {RecordStore.DATA_MIGRATIONS.directory})"
+        ),
     )
     yes: bool = Flag(
         default=False,
@@ -5649,8 +5672,11 @@ class DomainApplyArgs(EngineArgs):
         ),
     )
     deployments: Path = Flag(
-        default=Path("tmp/deployments"),
-        description="Deployment receipt directory (default: tmp/deployments)",
+        default=RecordStore.DEPLOYMENTS.path,
+        description=(
+            "Deployment receipt directory "
+            f"(default: {RecordStore.DEPLOYMENTS.directory})"
+        ),
     )
     yes: bool = Flag(
         default=False,
@@ -5735,8 +5761,11 @@ class DomainObserveArgs(ProjectArgs):
         description="Engine directory containing ansible contracts (default: bundled)",
     )
     deployments: Path = Flag(
-        default=Path("tmp/deployments"),
-        description="Deployment receipt directory (default: tmp/deployments)",
+        default=RecordStore.DEPLOYMENTS.path,
+        description=(
+            "Deployment receipt directory "
+            f"(default: {RecordStore.DEPLOYMENTS.directory})"
+        ),
     )
 
     def __post_init__(self) -> None:

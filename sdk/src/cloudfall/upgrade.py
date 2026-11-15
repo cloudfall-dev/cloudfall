@@ -8,6 +8,13 @@ is the one-step fix the warning names. It moves the files to
 through the YAML parser's positions, so every other byte of a file,
 comments and formatting included, stays as it was. A second run finds
 nothing to change.
+
+Receipts and operator proposals lay under ``tmp/`` before 0.8.0, which git
+ignores, so the record did not survive losing the management host. They
+live in the committed ``record/`` now (D-16), and the upgrade moves each
+one there byte for byte. A file already in the record with the same bytes
+is a copy, so the one under ``tmp/`` is dropped; a different file there is
+refused, since either could be the record to keep.
 """
 
 from __future__ import annotations
@@ -18,6 +25,7 @@ from typing import TYPE_CHECKING, cast
 import yaml
 
 from cloudfall.domain import ResourceKind
+from cloudfall.project import RecordStore
 from cloudfall.validation import (
     BASELINE_FIELD,
     LEGACY_BASELINE_DIRECTORY,
@@ -33,6 +41,7 @@ ERROR_UPGRADE_TARGET_EXISTS = "upgrade_target_exists"
 ERROR_UPGRADE_SYMLINK = "upgrade_symlink"
 
 _YAML_SUFFIXES = frozenset({".yaml", ".yml"})
+_RECORD_PATTERN = "*.json"
 _QUOTED_STYLES = frozenset({"'", '"'})
 
 
@@ -91,32 +100,42 @@ class _Planned:
     text: str | None
     """The rewritten content, or None when only the folder changes."""
     renamed: tuple[str, ...]
+    record: bool = False
+    """A receipt or proposal moving from ``tmp/`` into ``record/``."""
 
 
 def upgrade_project(project: Path) -> UpgradeResult:
-    """Rewrite every deprecated name in the project's resource files.
+    """Rewrite every deprecated name, and move the record out of ``tmp/``.
 
     The whole plan is made before the first write, so a move that would
     overwrite an existing file, or a file or folder reached through a
     symlink, fails with nothing changed.
     """
-    planned = tuple(_plan(project))
+    planned = (*_plan(project), *_record_moves(project))
     for step in planned:
         _refuse_symlink(project, step.source)
         _refuse_symlink(project, step.target)
-        if step.target != step.source and step.target.exists():
+        if step.target != step.source and _occupied(step):
             message = (
                 f"cannot move {step.source.relative_to(project).as_posix()}: "
                 f"{step.target.relative_to(project).as_posix()} already exists"
+                + (" with different content" if step.record else "")
             )
             raise UpgradeError(ERROR_UPGRADE_TARGET_EXISTS, message)
     for step in planned:
         if step.text is not None:
             step.source.write_text(step.text, encoding="utf-8", newline="")
-        if step.target != step.source:
-            step.target.parent.mkdir(parents=True, exist_ok=True)
-            step.source.rename(step.target)
+        if step.target == step.source:
+            continue
+        if step.record and step.target.exists():
+            # A copy of the same bytes is already in the record.
+            step.source.unlink()
+            continue
+        step.target.parent.mkdir(parents=True, exist_ok=True)
+        step.source.rename(step.target)
     _remove_empty(project / LEGACY_BASELINE_DIRECTORY)
+    for store in RecordStore:
+        _remove_empty(project / store.legacy_directory)
     return UpgradeResult(
         project=project,
         files=tuple(
@@ -132,6 +151,37 @@ def upgrade_project(project: Path) -> UpgradeResult:
             for step in planned
         ),
     )
+
+
+def _record_moves(project: Path) -> Iterator[_Planned]:
+    """Plan each receipt and proposal under ``tmp/`` into ``record/``."""
+    for store in RecordStore:
+        legacy = project / store.legacy_directory
+        if not legacy.is_dir():
+            continue
+        for path in sorted(legacy.glob(_RECORD_PATTERN)):
+            if not path.is_file():
+                continue
+            yield _Planned(
+                source=path,
+                target=project / store.directory / path.name,
+                text=None,
+                renamed=(),
+                record=True,
+            )
+
+
+def _occupied(step: _Planned) -> bool:
+    """Whether the target holds something the move would overwrite.
+
+    A record whose target already holds the same bytes is not: it was
+    copied there before, and the move only drops the copy under ``tmp/``.
+    """
+    if not step.target.exists():
+        return False
+    if not step.record or not step.target.is_file():
+        return True
+    return step.target.read_bytes() != step.source.read_bytes()
 
 
 def _plan(project: Path) -> Iterator[_Planned]:

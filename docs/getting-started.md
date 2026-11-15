@@ -26,8 +26,9 @@ The project holds one directory per resource kind (`servers/`,
 its encrypted fragments, a README with the next steps (pass `--description`
 to say what the project manages), an `AGENTS.md` stating the terms on which
 an AI agent operates the project (see below), a `.gitignore` for the
-runtime `tmp/` directory where evidence and receipts land, a fresh git
-repository, and a `pyproject.toml`:
+runtime `tmp/` directory where observations and other rebuildable files
+land (receipts and the operator's proposals land in `record/`, which is
+committed), a fresh git repository, and a `pyproject.toml`:
 
 ```toml
 [project]
@@ -84,7 +85,7 @@ reads first: the canonical `uv run cloudfall` invocation and project
 resolution, every command sorted by effect (changes nothing on servers,
 writes project files, changes servers) with the gate each server-changing
 command demands, the JSON-on-stdout, JSON-error-on-stderr output contract
-and exit codes, what the agent may read under `tmp/`, the rule that secret
+and exit codes, what the agent may read under `record/` and `tmp/`, the rule that secret
 values are never read or written by an agent, and what is committed. A
 one-line `CLAUDE.md` points Claude Code at it. The classification is
 generated from the same catalog the tests check against the CLI, so a new

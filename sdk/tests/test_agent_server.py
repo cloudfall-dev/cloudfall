@@ -405,7 +405,7 @@ def test_s008_5_the_deploy_tool_refuses_an_unapproved_manual_release(
         f"cloudfall release approve crm-backend --release {release}"
     )
     assert not (project / "tmp" / "ansible-inventory.json").exists()
-    assert not (project / "tmp" / "releases").exists()
+    assert not (project / "record" / "releases").exists()
 
 
 def test_s008_5_the_project_instructions_name_release_approve(

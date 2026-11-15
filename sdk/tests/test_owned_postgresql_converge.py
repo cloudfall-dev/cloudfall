@@ -42,6 +42,7 @@ from cloudfall.operator import (
     engine_executor,
     propose_for_drift,
 )
+from cloudfall.project import RecordStore
 from cloudfall.secrets import (
     PASSWORD_FILES_VARIABLE,
     OwnedRoleRecord,
@@ -337,8 +338,9 @@ def test_s006_6_operator_approve_answers_and_receipts_the_hash_only(
     project = _project(tmp_path)
     secrets = _secrets(project, f"BILLING_PASSWORD={PASSWORD}\n")
     recorder = Recorder()
+    # The receipt lands in the committed record, as the CLI default puts it.
     store = ProposalStore(
-        directory=project / "tmp" / "operator" / "proposals",
+        directory=project / RecordStore.PROPOSALS.directory,
         catalog=SchemaCatalog(SCHEMAS),
     )
     proposal = propose_for_drift(
@@ -370,6 +372,7 @@ def test_s006_6_operator_approve_answers_and_receipts_the_hash_only(
     assert PASSWORD not in receipt
     assert all(PASSWORD not in " ".join(step.argv) for step in recorder.steps)
     assert PASSWORD not in _everything_written(project)
+    assert store.directory.is_relative_to(project / "record")
 
 
 # proves: S-006-6

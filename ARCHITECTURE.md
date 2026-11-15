@@ -71,17 +71,18 @@ repository, holding everything needed to run one user's stack.
 Every `cloudfall` command runs inside a project: the current directory when
 it is one, or the directory named by `--project` or by the
 `CLOUDFALL_PROJECT` environment variable. Relative paths, including the
-`tmp/` defaults, resolve against the project, as if the command had been
-started there.
+`tmp/` and `record/` defaults, resolve against the project, as if the
+command had been started there.
 Resources live in one directory per kind (`servers/`, `components/`, ...),
 and only those directories are read as resources; a resource in the wrong
 directory is a validation error. Everything else in the project is the
 user's: playbooks and roles of their own, encrypted secrets, docs, tooling.
-Runtime state (observations, receipts, rendered inventory, built artifacts,
+What can be rebuilt (observations, rendered inventory, built artifacts,
 rendered environment files, the persisted migration plan) lands under `tmp/`
-and is never committed. Decision records are the exception: what an agent
-proposed and who approved it lands in `decisions/` beside the operations, and
-the team commits it. `cloudfall init` lays out a new project and
+and is never committed. The record is committed: receipts and the
+operator's proposals land in `record/`, and what an agent proposed through
+a declared operation and who approved it lands in `decisions/` beside the
+operations (D-16). No record holds a secret value. `cloudfall init` lays out a new project and
 `cloudfall add` declares its first fleet resources.
 
 Proposed, not built: for a team that already runs Ansible, the project is
@@ -219,7 +220,8 @@ Operating servers is the same evidence discipline running continuously:
   globally; DNS cutover, data deletion, and database promotion stay behind
   explicit confirmation regardless of autonomy level
 - **Record** — receipts are the audit log: schema-validated, written under
-  the project's `tmp/`, one per decision or operation, holding the evidence,
+  the project's committed `record/` (decision records under `decisions/`),
+  one per decision or operation, holding the evidence,
   the action, the approver and the outcome. "Why did the agent do that" is
   answered from the record, not from the agent's memory
 - **Verify** — a run is not an outcome. Deploys are gated on health, backups

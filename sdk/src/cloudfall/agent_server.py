@@ -37,6 +37,7 @@ from cloudfall.investigation import INVESTIGATION_DIRECTORY
 from cloudfall.project import (
     PROJECT_DIRECTORY_VARIABLE,
     ProjectError,
+    RecordStore,
     is_project,
     resolve_project_directory,
 )
@@ -99,34 +100,47 @@ class McpServeArgs:
         description="Domain observation directory (default: tmp/observed-services)",
     )
     deployments: Path = Flag(
-        default=Path("tmp/deployments"),
-        description="Deployment receipt directory (default: tmp/deployments)",
+        default=RecordStore.DEPLOYMENTS.path,
+        description=(
+            "Deployment receipt directory "
+            f"(default: {RecordStore.DEPLOYMENTS.directory})"
+        ),
     )
     artifacts: Path = Flag(
         default=Path("tmp/artifacts"),
         description="Release artifact directory (default: tmp/artifacts)",
     )
     releases: Path = Flag(
-        default=Path("tmp/releases"),
-        description="Release receipt directory (default: tmp/releases)",
+        default=RecordStore.RELEASES.path,
+        description=(
+            f"Release receipt directory (default: {RecordStore.RELEASES.directory})"
+        ),
     )
     backups: Path = Flag(
-        default=Path("tmp/backups"),
-        description="Backup receipt directory (default: tmp/backups)",
+        default=RecordStore.BACKUPS.path,
+        description=(
+            f"Backup receipt directory (default: {RecordStore.BACKUPS.directory})"
+        ),
     )
     data_migrations: Path = Flag(
-        default=Path("tmp/data-migrations"),
-        description="Data migration receipt directory (default: tmp/data-migrations)",
+        default=RecordStore.DATA_MIGRATIONS.path,
+        description=(
+            "Data migration receipt directory "
+            f"(default: {RecordStore.DATA_MIGRATIONS.directory})"
+        ),
     )
     env_receipts: Path = Flag(
-        default=Path("tmp/env-receipts"),
+        default=RecordStore.ENVIRONMENT_RECEIPTS.path,
         description=(
-            "Rendered environment receipt directory (default: tmp/env-receipts)"
+            "Rendered environment receipt directory "
+            f"(default: {RecordStore.ENVIRONMENT_RECEIPTS.directory})"
         ),
     )
     proposals: Path = Flag(
-        default=Path("tmp/operator/proposals"),
-        description="Proposal receipt directory (default: tmp/operator/proposals)",
+        default=RecordStore.PROPOSALS.path,
+        description=(
+            f"Proposal receipt directory (default: {RecordStore.PROPOSALS.directory})"
+        ),
     )
     secrets_dir: Path = Flag(
         default=Path("secrets"),

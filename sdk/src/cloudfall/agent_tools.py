@@ -15,6 +15,7 @@ from cloudfall.lifecycle import (
     StepRunner,
     subprocess_step,
 )
+from cloudfall.project import RecordStore
 from cloudfall.release_approval import APPROVALS_DIRECTORY
 from cloudfall.secrets import SopsSecretProvider
 
@@ -35,12 +36,12 @@ class AgentConfig:
     deployments_directory: Path
     releases_directory: Path
     artifacts_directory: Path
-    data_migrations_directory: Path = Path("tmp/data-migrations")
-    backups_directory: Path = Path("tmp/backups")
+    data_migrations_directory: Path = RecordStore.DATA_MIGRATIONS.path
+    backups_directory: Path = RecordStore.BACKUPS.path
     secrets_directory: Path = Path("secrets")
     environment_directory: Path = Path("tmp/env")
-    environment_receipts_directory: Path = Path("tmp/env-receipts")
-    proposals_directory: Path = Path("tmp/operator/proposals")
+    environment_receipts_directory: Path = RecordStore.ENVIRONMENT_RECEIPTS.path
+    proposals_directory: Path = RecordStore.PROPOSALS.path
     approvals_directory: Path = Path(APPROVALS_DIRECTORY)
     """Release approvals a ``manual`` application's deploy step reads."""
     gateway_ca_path: Path | None = None
