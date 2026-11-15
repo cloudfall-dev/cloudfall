@@ -532,9 +532,10 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "cloudfall",
         "operator mark-interrupted",
         CommandEffect.PROJECT,
-        "close a `running` proposal as `interrupted` once a person confirmed "
-        "its execution is dead (`--confirm-dead`), recording who and when, so "
-        "the operator may propose it again; nothing on the servers changes",
+        "close a `running` or `executed` proposal as `interrupted` once a "
+        "person confirmed its execution is dead (`--confirm-dead`), recording "
+        "who and when, so the operator may propose it again; nothing on the "
+        "servers changes",
         output=_PROPOSAL,
     ),
     CommandContract(

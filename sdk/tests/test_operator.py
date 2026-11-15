@@ -458,6 +458,106 @@ def test_a_drift_proposal_confirmed_dead_is_proposed_again(tmp_path: Path) -> No
     assert len(again.proposed) == 1
 
 
+def _feed_unreachable(_proposal: object) -> bool:
+    code = "operator_feed_unreachable"
+    message = "alert feed unreachable: connection refused"
+    raise OperatorError(code, message)
+
+
+def test_a_verifier_that_raises_settles_the_receipt_failed(tmp_path: Path) -> None:
+    """An error from the verifier is an unverified run, never `executed` (#358)."""
+    store = _store(tmp_path)
+    _seed_verified_drift(store, "packages.required[git]")
+    _seed_verified_drift(store, "packages.required[rsync]")
+    failing = propose_for_drift(
+        ResourceId.from_boundary("h1"),
+        ("packages.required[acl]",),
+        OperationKind.CONVERGE_BASELINE,
+        "2026-09-10T11:00:00+00:00",
+    )
+    store.save(failing)
+
+    with pytest.raises(OperatorError) as caught:
+        approve(
+            store,
+            failing.resource_id,
+            lambda _proposal: None,
+            _feed_unreachable,
+            _FAST_APPROVE,
+            via=TERMINAL,
+        )
+    drift_pass(
+        lambda: _audit_report(("packages.required[curl]", AuditStatus.DRIFT)),
+        store,
+    )
+    from cloudfall.operator import autonomous_pass  # noqa: PLC0415 - test-local.
+
+    report = autonomous_pass(
+        store,
+        _policied_inventory(),
+        lambda _proposal: None,
+        lambda _proposal: lambda _p: True,
+        _FAST_APPROVE,
+        now=datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
+    )
+
+    assert caught.value.code == "operator_feed_unreachable"
+    failed = store.load(failing.resource_id)
+    assert failed.status is ProposalStatus.FAILED
+    assert failed.approval is not None
+    assert failed.outcome is not None
+    assert failed.outcome.verified_at is None
+    assert failed.outcome.detail == (
+        "verification failed: operator_feed_unreachable: "
+        "alert feed unreachable: connection refused"
+    )
+    assert report.executed == ()
+    assert "receipt failed" in report.withheld[0][1]
+
+
+def test_an_executed_receipt_confirmed_dead_is_closed_and_proposed_again(
+    tmp_path: Path,
+) -> None:
+    """A receipt left `executed` by an older release has a way out (#358)."""
+    store = _store(tmp_path)
+    auditor = lambda: _audit_report(  # noqa: E731
+        ("packages.required[curl]", AuditStatus.DRIFT)
+    )
+    first = drift_pass(auditor, store, now="2026-09-10T15:00:00+00:00")
+    proposal_id = ResourceId.from_boundary(first.proposed[0])
+
+    def _dies_verifying(_proposal: object) -> bool:
+        message = "killed while the verifier ran"
+        raise _KilledError(message)
+
+    with pytest.raises(_KilledError):
+        approve(
+            store,
+            proposal_id,
+            lambda _proposal: None,
+            _dies_verifying,
+            _FAST_APPROVE,
+            via=TERMINAL,
+        )
+    executed = store.load(proposal_id)
+    blocked = drift_pass(auditor, store, now="2026-09-10T15:30:00+00:00")
+
+    closed = mark_proposal_interrupted(
+        store, proposal_id, "alice", lambda: "2026-09-10T16:00:00+00:00"
+    )
+    again = drift_pass(auditor, store, now="2026-09-10T16:05:00+00:00")
+
+    assert executed.status is ProposalStatus.EXECUTED
+    assert blocked.proposed == ()
+    assert closed.status is ProposalStatus.INTERRUPTED
+    assert closed.interruption is not None
+    assert closed.interruption.confirmed_by == "alice"
+    assert closed.approval == executed.approval
+    assert closed.outcome == executed.outcome
+    assert store.load(proposal_id) == closed
+    assert len(again.proposed) == 1
+
+
 @pytest.mark.parametrize("status", ["proposed", "interrupted"])
 def test_only_a_running_proposal_is_closed_as_interrupted(
     tmp_path: Path, status: str
