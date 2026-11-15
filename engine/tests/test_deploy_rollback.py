@@ -775,6 +775,123 @@ def test_a_failed_redeploy_copy_is_removed_and_rollback_takes_the_passing_one(
     assert host.current.readlink() == passing
 
 
+# A redeploy copy whose release command failed is gone too, with its
+# environment file, so rollback never takes a copy that skipped its release
+# command and its gate (#373).
+
+FAILED_RELEASE_COMMAND_TASKS = (
+    "Inspect the currently active release",
+    "Record the rollback candidate",
+    "Compute release paths",
+    "Compute the release's environment file paths",
+    "Create the releases and shared roots",
+    "Create release and shared directories",
+    "Find the environment file the previous release reads",
+    "Choose the environment file the release reads",
+    "Carry the previous release's environment over to the release",
+    "Run the release command on the release server",
+)
+
+
+def _absolute_includes(task: object) -> object:
+    """Point main.yml's includes at the role's files from a play outside it."""
+    if isinstance(task, list):
+        return [_absolute_includes(item) for item in task]
+    if not isinstance(task, dict):
+        return task
+    include = task.get("ansible.builtin.include_tasks")
+    if isinstance(include, str):
+        return {**task, "ansible.builtin.include_tasks": str(ROLE / "tasks" / include)}
+    return {key: _absolute_includes(value) for key, value in task.items()}
+
+
+def _failed_release_command(host: _Host) -> tuple[int, str]:
+    """Deploy RELEASE, without a new environment, through a failing release command."""
+    playbook = host.tmp_path / "failed-release-command.yml"
+    playbook.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "name": "Deploy a release whose release command fails",
+                    "hosts": "cloudfall_servers",
+                    "gather_facts": False,
+                    "vars": {
+                        "cloudfall_deploy_component": (
+                            "{{ cloudfall_components | first | combine({'release':"
+                            " {'command': ['/bin/sh', '-c', 'echo migrating; exit 1'],"
+                            " 'server': 'h1', 'timeoutSeconds': 60}}) }}"
+                        ),
+                        "cloudfall_deploy_release": RELEASE,
+                        "cloudfall_deploy_environment_file": "",
+                        "cloudfall_deploy_release_output_characters": 2000,
+                        "cloudfall_deploy_release_failure_characters": 500,
+                    },
+                    "tasks": _absolute_includes(
+                        _main_tasks(FAILED_RELEASE_COMMAND_TASKS)
+                    ),
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return host.run(playbook, extra={})
+
+
+def test_a_redeploy_whose_release_command_fails_leaves_no_copy_behind(
+    tmp_path: Path,
+) -> None:
+    host = _Host(tmp_path)
+    host.release(RELEASE)
+    host.environment_file(RELEASE, "STATE=first\n")
+    passing = host.release(f"{RELEASE}.redeploy-20261101T000000Z")
+    passing_environment = host.environment_file(passing.name, "STATE=passing\n")
+    host.current.symlink_to(passing)
+
+    exit_code, output = _failed_release_command(host)
+
+    assert exit_code != 0, output
+    assert "exited with code 1" in output
+    assert host.current.readlink() == passing
+    assert sorted(path.name for path in host.releases.iterdir()) == [
+        RELEASE,
+        passing.name,
+    ]
+    # The previous copy's own file stays (D-21).
+    assert sorted(path.name for path in host.environment.iterdir()) == sorted(
+        [f"{COMPONENT_ID}.{RELEASE}.env", passing_environment.name]
+    )
+
+    host.current.unlink()
+    host.current.symlink_to(host.release(PREVIOUS))
+    host.install_unit(host.environment_file(PREVIOUS, "STATE=previous\n"))
+    exit_code, output = _rollback(host, RELEASE)
+
+    assert exit_code == 0, output
+    assert host.current.readlink() == passing
+    assert host.unit_environment == passing_environment
+
+
+def test_a_new_release_whose_release_command_fails_keeps_its_directory(
+    tmp_path: Path,
+) -> None:
+    """Only a redeploy copy goes; a new release's directory stays as before."""
+    host = _Host(tmp_path)
+    previous = host.release(PREVIOUS)
+    host.environment_file(PREVIOUS, "STATE=previous\n")
+    host.current.symlink_to(previous)
+
+    exit_code, output = _failed_release_command(host)
+
+    assert exit_code != 0, output
+    assert "exited with code 1" in output
+    assert host.current.readlink() == previous
+    assert sorted(path.name for path in host.releases.iterdir()) == [PREVIOUS, RELEASE]
+    assert sorted(path.name for path in host.environment.iterdir()) == [
+        f"{COMPONENT_ID}.{PREVIOUS}.env",
+        f"{COMPONENT_ID}.{RELEASE}.env",
+    ]
+
+
 # The receipt names the release a redeployed directory holds.
 
 

@@ -405,7 +405,12 @@ def test_s005_2_the_release_command_runs_between_materialize_and_the_switch() ->
     assert names.index(REQUIRE) < names.index(INSTALL_UNIT)
     assert names.index(INSTALL_UNIT) < names.index(SWITCH)
     run = next(t for t in _main_tasks() if t["name"] == RUN)
-    assert run["ansible.builtin.include_tasks"] == "release_command.yml"
+    # A block, so its rescue removes a redeploy copy the command failed (#373).
+    block = run["block"]
+    assert isinstance(block, list)
+    assert [task["ansible.builtin.include_tasks"] for task in block] == [
+        "release_command.yml"
+    ]
 
 
 def _variables(
