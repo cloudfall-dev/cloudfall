@@ -160,6 +160,20 @@ def test_s017_7_a_malformed_format_stops_validate_as_invalid(
     assert (error["context"]["oldest"], error["context"]["current"]) == (0, CURRENT)
 
 
+def test_s017_7_a_pyproject_that_is_not_utf8_stops_validate_as_invalid(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = copy_examples(tmp_path / "project")
+    (project / "pyproject.toml").write_bytes(b"[tool.cloudfall]\nformat = 1 # \xff\n")
+
+    exit_code, payload = _validate(capsys, project)
+
+    assert exit_code == PROJECT_FORMAT_UNSUPPORTED_EXIT
+    error = payload["error"]
+    assert isinstance(error, dict)
+    assert error["context"]["code"] == FormatErrorCode.INVALID.value
+
+
 def test_a_project_newer_than_current_stops_validate_as_too_new(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

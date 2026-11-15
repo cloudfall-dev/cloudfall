@@ -117,7 +117,7 @@ def read_project_format(directory: Path, supported: FormatRange) -> ProjectForma
     }
     try:
         document = tomllib.loads(path.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError as error:
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         detail = (
             f"{PYPROJECT_FILE} is not valid TOML, so its format cannot be read: "
             f"{error}"
