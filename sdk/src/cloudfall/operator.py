@@ -1240,8 +1240,16 @@ def autonomy_decision(
     policy: OperatorPolicyInventory,
     store: ProposalStore,
     now: datetime,
+    environments_by_server: Mapping[ResourceId, ResourceId],
 ) -> AutonomyDecision:
-    """Decide whether the declared policy licenses this execution now."""
+    """Decide whether the declared policy licenses this execution now.
+
+    Autonomy is earned per environment (D-19): the history the grant is
+    judged on, and the suspension rule, count only the settled receipts of
+    servers in the policy's environment, which is the proposal's server's.
+    ``environments_by_server`` maps each declared server to its environment;
+    a receipt of a server no longer declared counts for no environment.
+    """
     grant = policy.grant_for(proposal.operation_kind.value)
     if grant is None:
         reason = (
@@ -1256,6 +1264,8 @@ def autonomy_decision(
         if receipt.operation_kind is proposal.operation_kind
         and receipt.resource_id != proposal.resource_id
         and receipt.status in _SETTLED_STATUSES
+        and environments_by_server.get(receipt.operation_server)
+        == policy.environment
     ]
     verified = sum(
         1
@@ -1265,15 +1275,16 @@ def autonomy_decision(
     if verified < grant.required_verified_runs.value:
         reason = (
             f"insufficient verified history for "
-            f"{proposal.operation_kind.value}: {verified} of "
-            f"{grant.required_verified_runs.value} required"
+            f"{proposal.operation_kind.value} in {policy.environment.value}: "
+            f"{verified} of {grant.required_verified_runs.value} required"
         )
         return AutonomyDecision(granted=False, reason=reason)
     if history and history[-1].status in _SUSPENDING_STATUSES:
         last = history[-1].status
         outcome = "failed" if last is ProposalStatus.FAILED else "was interrupted"
         reason = (
-            f"most recent {proposal.operation_kind.value} receipt {outcome}; "
+            f"most recent {proposal.operation_kind.value} receipt {outcome} "
+            f"in {policy.environment.value}; "
             "autonomy suspended until a human-approved run verifies"
         )
         return AutonomyDecision(granted=False, reason=reason)
@@ -1381,7 +1392,9 @@ def autonomous_pass(  # noqa: PLR0913 - boundary mirrors approve().
         decision = (
             _incomplete_history(listing.unreadable)
             if listing.unreadable
-            else autonomy_decision(proposal, policy, store, moment)
+            else autonomy_decision(
+                proposal, policy, store, moment, environments_by_server
+            )
         )
         if not decision.granted:
             withheld.append((proposal.resource_id.value, decision.reason))

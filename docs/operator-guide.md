@@ -248,9 +248,15 @@ Autonomy is earned, bounded, and revocable:
 - **Earned by receipts**: an operation kind executes autonomously only after
   `requiredVerifiedRuns` verified receipts for that kind exist in the
   proposal store — human-approved runs build the trust history
-- **Suspended on failure**: if the most recent receipt for a kind failed,
-  or was closed as `interrupted` because its run died midway, autonomy for
-  that kind is withheld until a human-approved run verifies again
+- **Earned per environment**: only the receipts of servers in the policy's
+  environment count, so verified runs on any staging server build the
+  staging policy's history and never the production one's. A receipt of a
+  server no longer declared counts for no environment
+- **Suspended on failure**: if the most recent receipt for a kind in the
+  policy's environment failed, or was closed as `interrupted` because its
+  run died midway, autonomy for that kind there is withheld until a
+  human-approved run verifies again; a failure on staging leaves production
+  as it was
 - **Rate-limited and time-bounded**: at most `maxAutonomousPerHour`
   autonomous executions, and none during declared quiet hours; an
   autonomous run closed as `interrupted` counts from when it was confirmed
