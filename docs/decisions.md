@@ -108,3 +108,35 @@ entry that supersedes it, never by editing an old one.
 - Why: With serial deploys each server overwrote the previous server's receipt, so a partial failure left no record of which servers run which release; one file per component keeps every reader on one path, while a file per server would change the file names and make every reader collect several files
 - Applies to: engine/ansible/roles/cloudfall_deploy/tasks/release_receipt.yml, the receipt readers in sdk/src/cloudfall/*, cloudfall why, the operator
 - Enforced by: review
+
+## D-14: A change that makes a validating config stop validating is Breaking in the changelog
+
+- Decided: 2026-11-15, in cloudfall-dev/cloudfall#257
+- Rule: A changelog entry for a change after which a config that validated before stops validating or renders differently goes under ### Breaking, with the step a user takes before upgrading; the LoggingStack storage-pool requirement (S-014-2) is such a change
+- Why: Quality bar Q-3: configs that validate today keep validating, or the change is a breaking one; [bump] reads ### Breaking as a major bump and the release notes then tell LoggingStack users to add storage.pools before upgrading
+- Applies to: changelog.d/*, CHANGELOG.md, config validate
+- Enforced by: review
+
+## D-15: A component sets how many releases a deploy keeps with deployment.retainReleases
+
+- Decided: 2026-11-15, in cloudfall-dev/cloudfall#224
+- Rule: A Component's optional deployment.retainReleases (integer, at least 2, default 5) is how many releases a deploy keeps on each server; once a deploy passes its gate it removes the older ones, always keeping current and the release before it, and records what it removed in the receipt; retainUntilCleanup: true keeps validating and means cleanup is on
+- Why: retainUntilCleanup is declared const true and read as a bool, so there was no number to clean up to; a per-component count lets a team with large releases or tight disks tune it, while existing configs keep validating
+- Applies to: config/schemas/v1/component.schema.json, sdk/src/cloudfall/* inventory, engine/ansible/roles/cloudfall_deploy
+- Enforced by: review
+
+## D-16: Receipts and operator proposals live in a committed record/ directory
+
+- Decided: 2026-11-15, in cloudfall-dev/cloudfall#219
+- Rule: By default a project keeps its deployment receipts and operator proposals in a committed record/ directory, as decisions live in decisions/; tmp/ keeps only what can be rebuilt; cloudfall config upgrade moves an existing project's receipts and proposals from tmp/ into record/; no record written there holds a secret value
+- Why: The audit trail must survive losing the management host; tmp/ is not committed, and one upgrade command moves existing projects so there is one layout in the field
+- Applies to: sdk/src/cloudfall/project.py, the receipt and proposal stores, cloudfall init, cloudfall config upgrade, engine receipt paths, docs/operator-guide.md
+- Enforced by: review
+
+## D-17: Agents may change the CI workflows for a Debian converge job and hardening
+
+- Decided: 2026-11-15, in cloudfall-dev/cloudfall#227
+- Rule: CI converges a Debian container with systemd through bootstrap, baseline, services, a deploy, a rolled-back failing deploy, a backup and its restore drill, then reruns asserting zero changes; workflows sync with uv sync --locked, pin actions by commit SHA, set a least-privilege permissions block per job, syntax-check every playbook by glob, and Dependabot updates actions and dependencies
+- Why: No job converged a role on a real Debian, so deploy and rollback fixes were proven only by unit tests; loose pins and broad token permissions are the workflows' attack surface; the repo is public, so GitHub-hosted runners are allowed
+- Applies to: .github/workflows/*, .github/dependabot.yml
+- Enforced by: review
