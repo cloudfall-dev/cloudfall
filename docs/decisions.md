@@ -170,7 +170,7 @@ entry that supersedes it, never by editing an old one.
 ## D-21: Each release has its own environment file
 
 - Decided: 2026-11-15, in cloudfall-dev/cloudfall#353
-- Rule: A deploy writes the component's environment to shared/env/<component>.<release>.env and the release's unit, release command and health check read that file, so a rescue or rollback that restores the previous unit restores the previous environment; the legacy shared/env/<component>.env is never written or removed by a deploy, and retention removes a removed release's file
+- Rule: A deploy writes the component's environment to shared/env/<component>.<release>.env and the release's unit, release command and health check read that file, so a rescue or rollback that restores the previous unit restores the previous environment; a redeploy copy of the same release gets its own file, shared/env/<component>.<release>.redeploy-<time>.env, and a deploy without --env-file copies in the file the previous release reads; the legacy shared/env/<component>.env is never written or removed by a deploy, and retention removes a removed release's file
 - Why: Code, unit and environment must move together, or a rollback after a bad environment starts the previous release on the bad one
 - Applies to: engine/ansible/roles/cloudfall_deploy/*, deploy, rollback
 - Enforced by: review
