@@ -8,8 +8,14 @@ branch = "main"
 # pyproject: [project] version in pyproject.toml and uv.lock; none: tags and CHANGELOG only
 version_files = "pyproject"
 
-# Commands run after the version is written, before the commit; a failure stops the release
-after_stamp = ["uv lock --check"]
+# Commands run after the version is written, before the commit; a failure stops the release.
+# changelog-add records the interface changes `cloudfall changelog` serves (S-017-15): it
+# writes sdk/src/cloudfall/schema-changelog.json and its snapshot, which the release commit
+# takes with the stamp; an unchanged interface adds no entry
+after_stamp = [
+    "uv lock --check",
+    "uv run --frozen --no-dev treaty changelog-add cloudfall.app:app",
+]
 
 [changelog]
 path = "CHANGELOG.md"

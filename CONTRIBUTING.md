@@ -49,16 +49,17 @@ update the relevant README when a workflow changes.
 
 ## Releases
 
-After bumping `version` in `pyproject.toml`, record the release's interface
-changes, which `cloudfall changelog` serves:
+The release bot (shipmill, `.github/shipmill.toml`) cuts every release; nobody
+bumps the version or edits `CHANGELOG.md` by hand. Each pull request adds its
+entry as a fragment in `changelog.d/`.
 
-```console
-uv run treaty changelog-add cloudfall.app:app
-```
-
-It diffs the manifest against the snapshot beside
-`sdk/src/cloudfall/schema-changelog.json` and appends one entry; commit both
-files with the release.
+The release also records its interface changes, which `cloudfall changelog`
+serves: after stamping the version, its `after_stamp` step runs
+`treaty changelog-add cloudfall.app:app`, which diffs the manifest against the
+snapshot beside `sdk/src/cloudfall/schema-changelog.json` and adds an entry for
+the version. Both files go into the release commit and the wheel. A release
+whose interface did not change adds no entry, and a failed run stops the
+release.
 
 ## Licensing of contributions
 
