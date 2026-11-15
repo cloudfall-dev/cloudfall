@@ -35,6 +35,14 @@ from cloudfall.ansible_api import callback_plugin_path
 from cloudfall.ansible_data import as_ansible_data
 from cloudfall.catalog import RiskLevel, TargetScope
 from cloudfall.domain import ResourceId
+from cloudfall.proposal_binding import (
+    Binding,
+    BindingError,
+    BoundProject,
+    bind,
+    changes,
+    file_sha256,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -86,6 +94,8 @@ ERROR_DECISION_MISSING = "decision_missing"
 _ERROR_NOT_PROPOSED = "decision_not_proposed"
 ERROR_DECISION_REPLAYED = "decision_replayed"
 ERROR_DECISION_INTERRUPTED = "decision_run_interrupted"
+ERROR_BINDING_CHANGED = "decision_binding_changed"
+"""What a proposal was checked against changed, or its record binds nothing."""
 ERROR_NOT_RUNNING = "decision_not_running"
 ERROR_CONFIRMER_INVALID = "record_confirmer_invalid"
 _CONFIRMER_MAX_LENGTH = 128
@@ -488,6 +498,8 @@ class Decision:
     """The recording its check output was played back from; None when live."""
     interruption: Interruption | None = None
     """Who closed its ``running`` record as interrupted, and when."""
+    binding: Binding | None = None
+    """What its check ran against; None in a record made before #352."""
 
     def same_call(self, other: Decision) -> bool:
         """Return whether both name the same operation, targets and inputs."""
@@ -516,28 +528,36 @@ class Decision:
             "check": self.check.as_dict(),
             "status": self.status.value,
         }
-        if self.approval is not None:
-            spec["approval"] = self.approval.as_dict()
-        if self.execution is not None:
-            spec["execution"] = self.execution.as_dict()
-        if self.verification is not None:
-            spec["verify"] = self.verification.as_dict()
-        if self.verdict is not None:
-            spec["verdict"] = self.verdict
-        if self.ran_exit_code is not None:
-            spec["ranExitCode"] = self.ran_exit_code
-        if self.superseded_by is not None:
-            spec["supersededBy"] = self.superseded_by.value
-        if self.replay is not None:
-            spec["replay"] = self.replay
-        if self.interruption is not None:
-            spec["interruption"] = self.interruption.as_dict()
+        if self.binding is not None:
+            spec["binding"] = self.binding.as_dict()
+        spec.update(self._fate())
         return {
             "apiVersion": API_VERSION,
             "kind": DECISION_KIND,
             "metadata": {"id": self.decision_id.value},
             "spec": spec,
         }
+
+    def _fate(self) -> dict[str, object]:
+        """Return the fields set as the decision moves on from proposed."""
+        fate: dict[str, object] = {}
+        if self.approval is not None:
+            fate["approval"] = self.approval.as_dict()
+        if self.execution is not None:
+            fate["execution"] = self.execution.as_dict()
+        if self.verification is not None:
+            fate["verify"] = self.verification.as_dict()
+        if self.verdict is not None:
+            fate["verdict"] = self.verdict
+        if self.ran_exit_code is not None:
+            fate["ranExitCode"] = self.ran_exit_code
+        if self.superseded_by is not None:
+            fate["supersededBy"] = self.superseded_by.value
+        if self.replay is not None:
+            fate["replay"] = self.replay
+        if self.interruption is not None:
+            fate["interruption"] = self.interruption.as_dict()
+        return fate
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the decision for system boundaries."""
@@ -787,6 +807,19 @@ def propose(
             ),
             check=True,
         )
+        verify_playbook = (
+            operation.verify.playbook if operation.verify is not None else None
+        )
+        # Bound before the check runs, so the approval is of what was checked.
+        binding = _bound(
+            lambda: bind(
+                BoundProject(
+                    repository=request.repository, decisions=store.directory
+                ),
+                operation.playbook,
+                verify_playbook,
+            )
+        )
         exit_code = (run or _run_check)(argv, environment, diff_path)
         requirement, reason = gate(operation.risk)
         ran = requirement is Requirement.RUNS_FREELY
@@ -796,9 +829,7 @@ def propose(
             operation_id=operation.operation_id,
             playbook=operation.playbook,
             risk=operation.risk,
-            verify_playbook=(
-                operation.verify.playbook if operation.verify is not None else None
-            ),
+            verify_playbook=verify_playbook,
             targets=Targets(scope=request.targets.scope, pattern=pattern),
             inputs=declared,
             requirement=requirement,
@@ -809,6 +840,7 @@ def propose(
             verdict=_ran_verdict(exit_code, request.replay) if ran else None,
             ran_exit_code=exit_code if ran else None,
             replay=request.replay,
+            binding=binding,
         )
         store.save(decision)
     finally:
@@ -887,9 +919,14 @@ def approve(
     """Record who let one proposal through, run it, and verify it.
 
     Everything the run needs comes from the record rather than from the
-    caller or the catalog: the approval is of what was proposed, so the
-    playbook, the targets and the inputs cannot change between the diff a
-    human read and the run that follows it.
+    caller or the catalog: the targets and the inputs are the ones that
+    were proposed. The playbook and the verify playbook are read from the
+    project, so before anything runs their sha256 and the diff's are
+    compared with what the record bound at propose time, and so are the
+    git commit and the uncommitted changes when the project is in git: any
+    difference refuses the approval and leaves the record proposed (D-20).
+    Roles, templates and inventory are bound only through git; outside git
+    only the two playbooks and the diff are.
     """
     decision = request.decision
     refuse_replayed(decision)
@@ -903,6 +940,7 @@ def approve(
             "unknown channel"
         )
         raise DecisionError(_ERROR_CHANNEL_UNKNOWN, message)
+    refuse_changed(decision, request.repository, store.directory)
     clock = now or _utc_now
     stage = _Stage(request=request, store=store, runner=run or _run_check)
     moment = clock()
@@ -985,6 +1023,56 @@ def refuse_unapprovable(decision: Decision) -> None:
             "there is nothing left to approve"
         )
     raise DecisionError(_ERROR_NOT_PROPOSED, message)
+
+
+def refuse_changed(decision: Decision, repository: Path, decisions: Path) -> None:
+    """Refuse a proposal whose project or diff changed since it was checked.
+
+    The playbooks, the diff file and, in git, the commit and the uncommitted
+    changes are compared with what the record bound. A record with no
+    binding was proposed before Cloudfall bound proposals, so nothing says
+    what it was checked against: it is refused too. Callers that ask a
+    person for the decision id check this first.
+    """
+    binding = decision.binding
+    if binding is None:
+        message = (
+            f"decision {decision.decision_id} was proposed before Cloudfall "
+            "recorded what a proposal was checked against, so its approval "
+            "cannot be bound to it; propose it again"
+        )
+        raise DecisionError(ERROR_BINDING_CHANGED, message)
+    found = list(
+        _bound(
+            lambda: changes(
+                binding,
+                BoundProject(repository=repository, decisions=decisions),
+                decision.playbook,
+                decision.verify_playbook,
+            )
+        )
+    )
+    diff = decision.check.diff.path
+    diff_path = diff if diff.is_absolute() else repository / diff
+    current = file_sha256(diff_path)
+    if current is None or current.value != decision.check.diff.sha256:
+        found.append(f"the diff file {diff}")
+    if not found:
+        return
+    message = (
+        f"decision {decision.decision_id} changed since it was proposed: "
+        f"{'; '.join(found)}. The approval would run something other than "
+        "what was checked; propose it again"
+    )
+    raise DecisionError(ERROR_BINDING_CHANGED, message)
+
+
+def _bound[T](read: Callable[[], T]) -> T:
+    """Read a binding, answering a git failure as a decision error."""
+    try:
+        return read()
+    except BindingError as error:
+        raise DecisionError(error.code, error.detail) from error
 
 
 def refuse_not_running(decision: Decision) -> None:
@@ -1418,6 +1506,7 @@ def _decision_from_document(document: Mapping[str, object]) -> Decision:
         verification=_run_from_document(spec.get("verify")),
         approval=_approval_from_document(approval),
         interruption=Interruption.from_record(spec.get("interruption")),
+        binding=Binding.from_record(spec.get("binding")),
     )
 
 

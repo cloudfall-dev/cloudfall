@@ -398,6 +398,56 @@
           "description": "The recording this decision's check output was played back from, as agent investigate --replay named it. Such a decision cannot be approved. A record without it was checked live.",
           "minLength": 1,
           "maxLength": 512
+        },
+        "binding": {
+          "description": "What the check ran against, read before it ran: approve recomputes each value and the diff's sha256, and refuses any difference. A record without it was proposed before proposals were bound and cannot be approved.",
+          "type": "object",
+          "properties": {
+            "playbookSha256": {
+              "$ref": "common.schema.json#/$defs/sha256"
+            },
+            "verifyPlaybookSha256": {
+              "description": "Null when the operation declares no verify playbook.",
+              "oneOf": [
+                {
+                  "$ref": "common.schema.json#/$defs/sha256"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "commit": {
+              "description": "The project's git HEAD commit; null outside a git work tree or before its first commit.",
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "worktreeSha256": {
+              "description": "A sha256 over the uncommitted changes of tracked files and the untracked files' paths and contents, leaving out the decisions directory, record/ and tmp/; null outside a git work tree.",
+              "oneOf": [
+                {
+                  "$ref": "common.schema.json#/$defs/sha256"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "playbookSha256",
+            "verifyPlaybookSha256",
+            "commit",
+            "worktreeSha256"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [

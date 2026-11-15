@@ -140,6 +140,7 @@ from cloudfall.decision import (
     approve,
     mark_interrupted,
     propose,
+    refuse_changed,
     refuse_replayed,
     refuse_unapprovable,
 )
@@ -2579,6 +2580,8 @@ def decisions_approve(args: ApproveDecisionArgs, ctx: Ctx) -> Decided:
     try:
         refuse_replayed(decision)
         refuse_unapprovable(decision)
+        # Nobody types an id for a proposal whose project changed since (D-20).
+        refuse_changed(decision, args.root, store.directory)
     except DecisionError as error:
         raise _decision_failed(error) from error
     try:
