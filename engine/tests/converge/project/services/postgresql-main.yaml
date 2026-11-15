@@ -1,0 +1,23 @@
+---
+apiVersion: cloudfall/v1
+kind: Service
+metadata:
+  id: postgresql-main
+  description: Loopback PostgreSQL the converge job backs up and restores
+spec:
+  serviceKind: postgresql
+  environment: production
+  server: converge
+  bind:
+    address: 127.0.0.1
+    port: 5432
+  postgresql:
+    majorVersion: "17"
+    databases:
+      - name: probe
+        application: probe
+  backup:
+    directory: /var/backups/cloudfall/postgresql-main
+    onCalendar: "*-*-* 02:00:00 UTC"
+    restoreCheckOnCalendar: "*-*-* 05:00:00 UTC"
+    retentionDays: 14

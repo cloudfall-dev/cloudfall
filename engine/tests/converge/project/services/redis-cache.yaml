@@ -1,0 +1,21 @@
+---
+apiVersion: cloudfall/v1
+kind: Service
+metadata:
+  id: redis-cache
+  description: Loopback Redis the converge job backs up and restores
+spec:
+  serviceKind: redis
+  environment: production
+  server: converge
+  bind:
+    address: 127.0.0.1
+    port: 6379
+  redis:
+    maxmemoryMb: 64
+    appendOnly: true
+  backup:
+    directory: /var/backups/cloudfall/redis-cache
+    onCalendar: "*-*-* 03:00:00 UTC"
+    restoreCheckOnCalendar: "*-*-* 05:30:00 UTC"
+    retentionDays: 7

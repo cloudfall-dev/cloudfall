@@ -1,0 +1,6 @@
+[project]
+name = "probe-web"
+version = "1.0.0"
+description = "The component the CI converge job deploys"
+requires-python = ">=3.13"
+dependencies = []

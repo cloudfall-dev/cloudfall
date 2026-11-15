@@ -1,0 +1,37 @@
+---
+# Its source is engine/tests/converge/app, which the converge job commits
+# into a fresh git repository at the URL below before it builds a release
+apiVersion: cloudfall/v1
+kind: Component
+metadata:
+  id: probe-web
+  description: Standard-library HTTP server answering 200 on /health
+spec:
+  application: probe
+  repository:
+    url: file:///tmp/cloudfall-converge-app
+  runtime:
+    type: python
+    version: "3.13"
+    packageManager: uv
+  deployment:
+    strategy: artifact-symlink
+    servers:
+      - converge
+    installRoot: /srv/apps/probe/web
+    retainUntilCleanup: true
+  service:
+    manager: systemd
+    name: probe-web
+    command:
+      - .venv/bin/python
+      - app.py
+  healthCheck:
+    type: http
+    scheme: http
+    port: 8100
+    path: /health
+    expectedStatuses:
+      - 200
+    timeoutSeconds: 5
+    attempts: 5

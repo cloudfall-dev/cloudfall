@@ -1,0 +1,46 @@
+---
+# What a container can be held to: an overlay root, no RAID and no storage
+# pools (LVM volume groups need real disks), and SSH on the published port
+apiVersion: cloudfall/v1
+kind: Baseline
+metadata:
+  id: debian-container
+  description: Baseline of the CI converge job's Debian 13 container
+spec:
+  os:
+    distribution: Debian
+    versions:
+      - "13"
+    serviceManager: systemd
+  storage:
+    mounts:
+      - path: /
+        filesystem: overlay
+        minimumBytes: 1000000000
+  packages:
+    required:
+      - name: ca-certificates
+      - name: curl
+    forbidden:
+      - telnetd
+  services:
+    required:
+      - name: ssh.service
+        state: running
+        status: enabled
+      - name: apt-daily.timer
+        state: running
+        status: enabled
+  firewall:
+    policy: default-deny
+    allowedInbound:
+      - port: 2222
+        protocol: tcp
+        description: ssh
+  configuration:
+    files:
+      - path: /etc/ssh/sshd_config
+        capture: hash
+        owner: root
+        group: root
+        mode: "0644"

@@ -34,7 +34,7 @@ permissions:
 
 jobs:
   prepare:
-    uses: shipmill/shipmill/.github/workflows/prepare.yml@v0
+    uses: shipmill/shipmill/.github/workflows/prepare.yml@17c80627dd13e34a9a2c07363aa244a1f5656097 # v0.135.0
     with:
       lane: ${{ inputs.lane != 'policy' && inputs.lane || '' }}
       dry-run: ${{ inputs.dry-run || false }}
@@ -52,11 +52,13 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       ref: ${{ needs.prepare.outputs.sha }}
+    permissions:
+      contents: read
 
   land:
     needs: [prepare, ci]
     if: always() && needs.prepare.outputs.sha != ''
-    uses: shipmill/shipmill/.github/workflows/land.yml@v0
+    uses: shipmill/shipmill/.github/workflows/land.yml@17c80627dd13e34a9a2c07363aa244a1f5656097 # v0.135.0
     with:
       ci-result: ${{ needs.ci.result }}
       lane: ${{ needs.prepare.outputs.lane }}
