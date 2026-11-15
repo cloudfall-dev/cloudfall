@@ -108,6 +108,34 @@ def test_the_url_becomes_one_service_section(url: str, lines: list[str]) -> None
 
 
 @pytest.mark.parametrize(
+    ("url", "lines"),
+    [
+        (
+            "postgresql://u:pa?ss@h/crm",
+            ["user=u", "password=pa?ss", "host=h", "dbname=crm"],
+        ),
+        (
+            "postgresql://u:pa#ss@h/crm?sslmode=require",
+            ["user=u", "password=pa#ss", "host=h", "dbname=crm", "sslmode=require"],
+        ),
+        (
+            "postgresql://u@[fe80::1%25eth0]:%35432/crm",
+            ["user=u", "host=fe80::1%eth0", "port=5432", "dbname=crm"],
+        ),
+    ],
+    ids=["unencoded-question-mark", "unencoded-hash", "ipv6-zone-and-encoded-port"],
+)
+def test_a_url_libpq_reads_keeps_working(url: str, lines: list[str]) -> None:
+    # libpq takes the user info up to the first @ before any /, so an
+    # unencoded ? or # in the password is part of it, and it percent-decodes
+    # bracketed hosts and ports too; these URLs worked with --dbname before.
+    assert _pg_service()(url, "cloudfall_data_source").splitlines() == [
+        "[cloudfall_data_source]",
+        *lines,
+    ]
+
+
+@pytest.mark.parametrize(
     "url",
     [
         "mysql://zuser:zsecret@db/crm",

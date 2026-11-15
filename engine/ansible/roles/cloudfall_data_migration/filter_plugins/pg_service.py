@@ -70,7 +70,8 @@ def _hosts(host_list: str) -> tuple[list[str], list[str]]:
             port = after[1:]
         else:
             host, _, port = entry.partition(":")
-            host = _decode(host, "host")
+        host = _decode(host, "host")
+        port = _decode(port, "port")
         if "," in host or any(character.isspace() for character in host):
             message = "the source URL has a host with a comma or whitespace"
             raise SourceUrlError(message)
@@ -92,15 +93,15 @@ def _set(parameters: dict[str, str], keyword: str, value: str) -> None:
     parameters[keyword] = value
 
 
-def _authority(parameters: dict[str, str], authority: str) -> None:
-    userinfo, at, host_list = authority.partition("@")
-    if not at:
-        userinfo, host_list = "", authority
+def _userinfo(parameters: dict[str, str], userinfo: str) -> None:
     user, colon, password = userinfo.partition(":")
     if user:
         _set(parameters, "user", _decode(user, "user"))
     if colon:
         _set(parameters, "password", _decode(password, "password"))
+
+
+def _host_list(parameters: dict[str, str], host_list: str) -> None:
     if host_list:
         hosts, ports = _hosts(host_list)
         if any(hosts):
@@ -130,13 +131,20 @@ def connection_parameters(url: str) -> dict[str, str]:
     if scheme is None:
         message = "the source URL must start with postgresql:// or postgres://"
         raise SourceUrlError(message)
-    if "#" in text:
+    rest = text[len(scheme) :]
+    parameters: dict[str, str] = {}
+    # As libpq does, the user info runs to the first @ before any /, so an
+    # unencoded ? or # in the password stays part of it.
+    end = next((i for i, c in enumerate(rest) if c in "@/"), len(rest))
+    if rest[end:].startswith("@"):
+        _userinfo(parameters, rest[:end])
+        rest = rest[end + 1 :]
+    if "#" in rest:
         message = "the source URL holds a #; percent-encode it as %23"
         raise SourceUrlError(message)
-    location, _, query = text[len(scheme) :].partition("?")
-    authority, _, path = location.partition("/")
-    parameters: dict[str, str] = {}
-    _authority(parameters, authority)
+    location, _, query = rest.partition("?")
+    host_list, _, path = location.partition("/")
+    _host_list(parameters, host_list)
     if path:
         _set(parameters, "dbname", _decode(path, "database"))
     if query:
