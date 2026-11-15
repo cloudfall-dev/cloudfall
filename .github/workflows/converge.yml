@@ -146,8 +146,10 @@ jobs:
             uv run cloudfall backup verify "${service}" --project .
           done
 
+      # Every playbook runs, so one run names each that is not idempotent
       - name: Converge again, changing nothing
         run: |
+          changed=()
           for playbook in bootstrap baseline services; do
             uv run cloudfall-engine playbook run "${playbook}" 2>&1 \
               | tee "tmp/rerun-${playbook}.log"
@@ -158,9 +160,12 @@ jobs:
             fi
             if grep -E 'changed=[1-9]' <<<"${recap}"; then
               echo "::error::${playbook} changed the host on its second run"
-              exit 1
+              awk '/^(TASK|RUNNING HANDLER) /{task=$0} /^changed:/{print task; print}' \
+                "tmp/rerun-${playbook}.log"
+              changed+=("${playbook}")
             fi
           done
+          test "${#changed[@]}" -eq 0
 
       - name: Show the host's state after a failure
         if: failure()
