@@ -438,6 +438,14 @@ ROADMAP.md, ARCHITECTURE.md, and the guide.
 
 ## Issues
 
+- cloudfall-dev/cloudfall#419: S-019-1, S-019-2, S-019-10
+- cloudfall-dev/cloudfall#420: S-019-3, S-019-4, S-019-5, S-019-6, S-019-7, S-019-21
+- cloudfall-dev/cloudfall#421: S-019-11
+- cloudfall-dev/cloudfall#422: S-019-8, S-019-9
+- cloudfall-dev/cloudfall#423: S-019-12, S-019-13, S-019-14, S-019-15, S-019-16
+- cloudfall-dev/cloudfall#424: S-019-17, S-019-18
+- cloudfall-dev/cloudfall#425: S-019-19, S-019-20
+
 ## Verification
 
 No criterion is verified yet.
