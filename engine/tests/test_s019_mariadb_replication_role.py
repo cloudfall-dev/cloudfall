@@ -59,6 +59,7 @@ ROOT = Path(__file__).parents[2]
 ROLES = ROOT / "engine" / "ansible" / "roles"
 ROLE = ROLES / "cloudfall_mariadb"
 FIREWALL = ROLES / "cloudfall_firewall"
+SERVICES = ROOT / "engine" / "ansible" / "playbooks" / "services.yml"
 REPLICATION_PASSWORD = "synthetic-replication-password-0123456789"  # noqa: S105
 ADDRESSES = {"h1": "203.0.113.11", "h2": "203.0.113.12"}
 PER_HOST = (
@@ -880,6 +881,54 @@ def test_s019_15_a_role_swap_ends_within_two_converges_with_no_row_lost(
     assert pair.state("h1")["databases"]["billing"]["lines"] == 10
     third = pair.converge(order=order)
     assert third.changed == 0, third.output
+
+
+# proves: S-019-15
+def test_s019_15_the_services_converge_opens_the_new_primary_to_its_replica(
+    pair: Pair,
+) -> None:
+    (play,) = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))
+    tasks = play["tasks"]
+    enforce = next(
+        task
+        for task in tasks
+        if task.get("ansible.builtin.include_role", {}).get("name")
+        == "cloudfall_firewall"
+    )
+    # The host's declared ruleset, the one baseline converge applies, before
+    # any service of the host converges (#453)
+    assert enforce["vars"] == {"cloudfall_firewall_ruleset": "{{ cloudfall_firewall }}"}
+    services = [
+        index
+        for index, task in enumerate(tasks)
+        if "include_role" in str(task) and task is not enforce
+    ]
+    assert tasks.index(enforce) < min(services)
+    applies = Environment(
+        undefined=StrictUndefined,
+        autoescape=False,  # noqa: S701 - a playbook condition is not HTML.
+    ).compile_expression(enforce["when"])
+    # One change: the old primary is the new one's replica
+    pair.declare(
+        _replica_of("mariadb-replica", "mariadb-main", "h1", 1), _new_primary()
+    )
+    new_primary, old_primary = pair.rendered_host("h2"), pair.rendered_host("h1")
+
+    assert applies(**new_primary) is True
+    # The new primary admits 3306 from the new replica's address only
+    assert _port_rules(new_primary, 3306) == [
+        (
+            'ip saddr 203.0.113.11/32 tcp dport 3306 accept comment "mariadb-replica '
+            'replication"'
+        )
+    ]
+    # And the old primary's rule is gone with its role
+    assert _port_rules(old_primary, 3306) == []
+    # A host without a declared firewall is left alone
+    unfirewalled = {
+        key: value for key, value in old_primary.items() if key != "cloudfall_firewall"
+    }
+    assert applies(**unfirewalled) is False
 
 
 # proves: S-019-16
