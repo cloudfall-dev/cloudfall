@@ -47,6 +47,12 @@ uv run ansible-lint engine/ansible
 Keep changes scoped to one concern. Include tests for behavior changes and
 update the relevant README when a workflow changes.
 
+A change to a stable surface (a resource or record schema, the CLI envelope, an
+exit code, an MCP tool name) follows the
+[compatibility policy](docs/compatibility.md): additive changes in a minor
+release, a renamed or removed name only after its deprecation window, and a
+`cloudfall config upgrade` step for every name a project file can hold.
+
 ## Releases
 
 The release bot (shipmill, `.github/shipmill.toml`) cuts every release; nobody
@@ -57,9 +63,8 @@ The release also records its interface changes, which `cloudfall changelog`
 serves: after stamping the version, its `after_stamp` step runs
 `treaty changelog-add cloudfall.app:app`, which diffs the manifest against the
 snapshot beside `sdk/src/cloudfall/schema-changelog.json` and adds an entry for
-the version. Both files go into the release commit and the wheel. A release
-whose interface did not change adds no entry, and a failed run stops the
-release.
+the version. Both files go into the release commit and the wheel, and a failed
+run stops the release.
 
 ## Licensing of contributions
 
