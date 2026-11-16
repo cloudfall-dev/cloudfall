@@ -79,6 +79,8 @@ DECISION_OUTPUT_DIRECTORY = (
 
 _RAW_FILE_MODE = 0o600
 """Raw output may hold a secret, so only its owner reads it."""
+_RAW_DIRECTORY_MODE = 0o700
+"""Nor does anyone else list the folder it is kept in."""
 
 _HOST_STATS_DIRECTORY = "host-stats"
 HOST_STATS_CALLBACK = "cloudfall_host_stats"
@@ -1381,7 +1383,7 @@ def _raw_file(path: Path) -> Path:
 
     A runner opening it for writing keeps the mode, whichever runner it is.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(mode=_RAW_DIRECTORY_MODE, parents=True, exist_ok=True)
     path.touch(mode=_RAW_FILE_MODE)
     path.chmod(_RAW_FILE_MODE)
     return path

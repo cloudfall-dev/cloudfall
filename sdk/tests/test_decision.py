@@ -1097,6 +1097,7 @@ def test_a_secret_a_playbook_prints_reaches_no_file_under_decisions(
     for path in committed:
         assert _SECRET not in path.read_text(encoding="utf-8"), path
     raw = repository / "tmp" / "output" / "decisions"
+    assert raw.stat().st_mode & 0o777 == 0o700
     for artifact in (
         proposed.check.diff,
         approved.execution.log,
