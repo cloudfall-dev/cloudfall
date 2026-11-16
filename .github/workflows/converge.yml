@@ -111,8 +111,36 @@ jobs:
           fi
           ssh 127.0.0.1 true
 
+      # The ledger owner's password, sops-encrypted to a throwaway age key in
+      # sops' default key file, as an operator's secrets directory holds it
+      - name: Create the owner role password the services read
+        env:
+          SOPS_VERSION: v3.13.3
+          SOPS_SHA256: e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b
+        run: |
+          sudo apt-get update --quiet
+          sudo apt-get install --yes --quiet --no-install-recommends age
+          curl --fail --silent --show-error --location --output "${RUNNER_TEMP}/sops" \
+            "https://github.com/getsops/sops/releases/download/${SOPS_VERSION}/sops-${SOPS_VERSION}.linux.amd64"
+          echo "${SOPS_SHA256}  ${RUNNER_TEMP}/sops" | sha256sum --check --strict
+          sudo install -m 0755 "${RUNNER_TEMP}/sops" /usr/local/bin/sops
+          install --directory --mode=0700 ~/.config/sops/age tmp/env
+          age-keygen --output ~/.config/sops/age/keys.txt 2>/dev/null
+          recipient="$(age-keygen -y ~/.config/sops/age/keys.txt)"
+          (umask 077 && printf 'LEDGER_PASSWORD=%s\n' "$(openssl rand -hex 24)" > tmp/env/ledger.env)
+          install --directory secrets/production/postgresql-main
+          sops --encrypt --age "${recipient}" --input-type dotenv --output-type dotenv \
+            tmp/env/ledger.env > secrets/production/postgresql-main/ledger.env
+
       - name: Services
         run: uv run cloudfall-engine playbook run services
+
+      # The verifier the controller computed is one PostgreSQL accepts
+      - name: Log in as the owner role with its password
+        run: |
+          cut --delimiter='=' --fields=2- tmp/env/ledger.env \
+            | ssh 127.0.0.1 'PGPASSWORD="$(cat)" psql --host=127.0.0.1 --username=ledger --dbname=ledger --no-psqlrc --tuples-only --command="SELECT current_user"' \
+            | grep --quiet --word-regexp ledger
 
       - name: Build a healthy and a failing release
         run: |
@@ -206,14 +234,16 @@ jobs:
           test "${files%% *}" = "/srv/apps/probe/web/shared/env/probe-web.${healthy}.env"
           uv run cloudfall health probe-web --project .
 
-      # The drill fails on a dump that holds no table (#225), so the database
+      # The drill fails on a dump that holds no table (#225), so each database
       # gets one first
       - name: Back up and run the restore drill
         run: |
-          ssh 127.0.0.1 runuser -u postgres -- psql --dbname=probe --set=ON_ERROR_STOP=1 <<'SQL'
+          for database in probe ledger; do
+            ssh 127.0.0.1 runuser -u postgres -- psql --dbname="${database}" --set=ON_ERROR_STOP=1 <<'SQL'
           CREATE TABLE IF NOT EXISTS visits (id integer PRIMARY KEY);
           INSERT INTO visits SELECT generate_series(1, 100) ON CONFLICT DO NOTHING;
           SQL
+          done
           for service in postgresql-main redis-cache; do
             uv run cloudfall backup run "${service}" --project .
             uv run cloudfall backup verify "${service}" --project .

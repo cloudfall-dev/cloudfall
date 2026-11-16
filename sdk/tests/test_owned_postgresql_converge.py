@@ -2,8 +2,8 @@
 
 ``services.yml`` needs real hosts, so these tests run every path that starts
 it (the lifecycle call the MCP tool, the operator, and ``cloudfall migrate``
-share) with a recording step runner: it reads the staged verifier file the
-way the role's copy task does, and the tests grep every output for the value.
+share) with a recording step runner: it reads the staged password file the
+way the role's filter does, and the tests grep every output for the value.
 """
 
 from __future__ import annotations
@@ -55,7 +55,6 @@ from cloudfall.validation import (
 from cloudfall_engine.ansible_inventory import render_ansible_inventory
 from mcp import ClientSession, StdioServerParameters, stdio_client
 from mcp.types import TextContent
-from test_secrets import verifies
 
 ROOT = Path(__file__).parents[2]
 EXAMPLES = ROOT / "config" / "examples"
@@ -179,12 +178,15 @@ def _provider(secrets: Path) -> SopsSecretProvider:
     return SopsSecretProvider(secrets_directory=secrets, decrypt=_plaintext)
 
 
-def _staged_verifier(recorder: Recorder) -> str:
-    """Return the one staged file: a SCRAM-SHA-256 verifier, never the password."""
+def _staged_password(recorder: Recorder) -> str:
+    """Return the one staged controller file: the password, for the role's filter.
+
+    The role computes the verifier from it on the controller with the salt the
+    role already has (D-25); only the verifier reaches the host (D-9), which
+    the role's own tests check.
+    """
     ((content, _, _),) = recorder.staged.values()
-    assert content.startswith("SCRAM-SHA-256$4096:")
-    assert verifies(content, PASSWORD)
-    assert PASSWORD not in content
+    assert content == PASSWORD
     return content
 
 
@@ -197,7 +199,7 @@ def _everything_written(project: Path) -> str:
 
 
 # proves: S-006-6
-def test_s006_6_converge_stages_a_verifier_and_answers_the_password_hash(
+def test_s006_6_converge_stages_the_password_privately_and_answers_its_hash(
     tmp_path: Path,
 ) -> None:
     project = _project(tmp_path)
@@ -209,7 +211,7 @@ def test_s006_6_converge_stages_a_verifier_and_answers_the_password_hash(
     render, playbook = recorder.steps
     assert playbook.argv[-1].endswith("services.yml")
     assert recorder.staged == {
-        "postgresql-billing/billing": (_staged_verifier(recorder), 0o600, 0o700)
+        "postgresql-billing/billing": (_staged_password(recorder), 0o600, 0o700)
     }
     (staged,) = recorder.paths
     assert not staged.exists()
@@ -380,7 +382,7 @@ def test_s006_6_operator_approve_answers_and_receipts_the_hash_only(
         via=ApprovalChannel.TERMINAL,
     )
 
-    _staged_verifier(recorder)
+    _staged_password(recorder)
     answer = approved.as_document()
     outcome = cast("dict[str, dict[str, object]]", answer["spec"])["outcome"]
     assert outcome["ownedRoles"] == [OWNED_ROLE]
@@ -489,7 +491,7 @@ def test_s006_6_migrate_records_the_hash_in_its_services_step(tmp_path: Path) ->
             }
         ],
     }
-    _staged_verifier(recorder)
+    _staged_password(recorder)
     assert PASSWORD not in plan
     assert all(PASSWORD not in " ".join(step.argv) for step in recorder.steps)
 
