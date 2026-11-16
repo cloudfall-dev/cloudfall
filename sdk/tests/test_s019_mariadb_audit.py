@@ -464,6 +464,16 @@ def test_s019_3_a_primary_listening_beyond_its_declared_addresses_is_drift(
     assert bind.status is AuditStatus.DRIFT
 
 
+def test_a_primary_not_listening_on_its_replication_address_is_drift(
+    tmp_path: Path,
+) -> None:
+    inventory = _pair(tmp_path)
+
+    bind = _bind(tmp_path, inventory, "h1", "127.0.0.1:3306")
+
+    assert bind.status is AuditStatus.DRIFT
+
+
 def test_a_standalone_server_listening_on_a_public_address_is_drift(
     tmp_path: Path,
 ) -> None:

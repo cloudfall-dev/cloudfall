@@ -1131,6 +1131,14 @@ def _audit_service_binds(
                 listener.address == remote_access.listen_address.value
                 for listener in on_port
             )
+        # Likewise a primary must listen on its replication listenAddress: its
+        # replicas cannot connect to one that failed to bind it.
+        if replication_address is not None:
+            replication_ip = ip_address(replication_address.value)
+            declared_present = declared_present and any(
+                _listener_ip(listener.address) == replication_ip
+                for listener in on_port
+            )
         desired: dict[str, object] = {
             "protocol": "tcp",
             "address": address,
