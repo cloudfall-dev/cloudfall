@@ -30,6 +30,6 @@ platform team.
 ## Quality bar
 
 - Q-1: Never report success it cannot prove; say unknown instead of guessing
-- Q-2: Every server-changing action previews and waits behind a gate the agent does not control
+- Q-2: Every server-changing action previews first; declared operations and the operator wait behind a gate the agent does not control, while a project-mode `mcp serve` confirmation is the agent's own until policy decides it (#391)
 - Q-3: Configs that validate today keep validating and rendering the same, or the change is a breaking one with a changelog entry
 - Q-4: Plain Debian and Ansible; secrets never land in the record
