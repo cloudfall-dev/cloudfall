@@ -844,6 +844,89 @@
             "additionalProperties": false
           }
         },
+        "mariadb": {
+          "description": "The MariaDB service of the server (S-019): its managed settings file as text, null when it is missing; and, read as root through the socket when available, whether the server is read-only and its link to a primary, null when it has none",
+          "type": "object",
+          "properties": {
+            "service": {
+              "$ref": "common.schema.json#/$defs/resourceId"
+            },
+            "configurationPath": {
+              "$ref": "common.schema.json#/$defs/absolutePath"
+            },
+            "configuration": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 1048576
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "available": {
+              "type": "boolean"
+            },
+            "readOnly": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "replication": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "ioRunning": {
+                      "type": "string",
+                      "maxLength": 64
+                    },
+                    "sqlRunning": {
+                      "type": "string",
+                      "maxLength": 64
+                    },
+                    "secondsBehindMaster": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "sourceServerId": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0,
+                      "maximum": 4294967295
+                    }
+                  },
+                  "required": [
+                    "ioRunning",
+                    "sqlRunning",
+                    "secondsBehindMaster",
+                    "sourceServerId"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "service",
+            "configurationPath",
+            "configuration",
+            "available",
+            "readOnly",
+            "replication"
+          ],
+          "additionalProperties": false
+        },
         "mariadbAccounts": {
           "description": "The databases and users of each MariaDB service of the server (S-019); the lists are absent when the server could not be read",
           "type": "array",

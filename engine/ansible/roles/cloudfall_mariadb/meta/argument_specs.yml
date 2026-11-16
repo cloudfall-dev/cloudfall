@@ -157,6 +157,16 @@ argument_specs:
       cloudfall_mariadb_managed_role:
         type: str
         default: cloudfall-managed
+      cloudfall_mariadb_metrics_user:
+        type: str
+        default: alloy
+        description: >-
+          The account the collector scrapes the server as with metrics
+          declared, authenticated by the unix socket only
+      cloudfall_mariadb_metrics_privileges:
+        type: list
+        elements: str
+        description: What the metrics account may do, read status and replication state
       cloudfall_mariadb_system_users:
         type: list
         elements: str

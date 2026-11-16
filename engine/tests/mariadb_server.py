@@ -39,6 +39,19 @@ def account(name, host):
 
 def apply(statement):
     statement = statement.strip().rstrip(";").strip()
+    # A session outside the binary log: what follows is kept as unlogged
+    if statement.startswith("SET SESSION sql_log_bin = 0;"):
+        statement = statement.removeprefix("SET SESSION sql_log_bin = 0;").strip()
+        state.setdefault("unlogged", []).append(statement)
+    match = re.fullmatch(
+        r"GRANT ([A-Z][A-Z ,]*) ON \\*\\.\\* TO '([^']+)'@'localhost'", statement)
+    if match:
+        assert match[2] in users, "no such user"
+        privileges = state.setdefault("privileges", {{}}).setdefault(match[2], [])
+        for privilege in match[1].split(", "):
+            if privilege not in privileges:
+                privileges.append(privilege)
+        return
     match = re.fullmatch(
         r"(CREATE USER IF NOT EXISTS|ALTER USER) '([^']+)'@'([^']+)' "
         r"IDENTIFIED VIA (\\w+) USING '([^']*)'( REQUIRE SSL)?", statement)
@@ -119,6 +132,9 @@ if sql.startswith("source "):
         handle.write(json.dumps(["sourced", text]) + "\\n")
     for statement in filter(str.strip, text.split(";\\n")):
         apply(statement)
+elif "information_schema.USER_PRIVILEGES" in sql:
+    grantee = re.search(r"GRANTEE = '''([^']+)''@''localhost'''", sql)[1]
+    lines(state.get("privileges", {{}}).get(grantee, ["USAGE"]))
 elif "CONCAT_WS" in sql:
     name = re.search(r"User = '([^']+)'", sql)[1]
     table, key = account(name, re.search(r"Host = '([^']+)'", sql)[1])

@@ -1,0 +1,78 @@
+---
+# The account the collector scrapes the server as, with metrics declared
+# (S-019, Audit and metrics). Alloy's Linux user connects through the unix
+# socket with no password, as on PostgreSQL, so there is no credential to
+# stage or render. It reads status and replication state only: PROCESS and
+# SLAVE MONITOR. Every server makes its own, on a replica too, as root and
+# outside the binary log: the account is no GTID its pair never saw, and
+# never replicates over the other server's. Every statement runs only when
+# what it changes differs, so a second converge changes nothing.
+- name: Read the metrics account and its privileges
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --raw
+      - --skip-column-names
+      - --execute
+      - "{{ item.value }}"
+  loop: "{{ cloudfall_mariadb_metrics_state_queries | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: cloudfall_mariadb_metrics_read
+  changed_when: false
+
+- name: Keep the metrics account and its privileges
+  ansible.builtin.set_fact:
+    cloudfall_mariadb_metrics_state: >-
+      {{
+        dict(
+          cloudfall_mariadb_metrics_read.results | map(attribute='item.key')
+          | zip(cloudfall_mariadb_metrics_read.results
+                | map(attribute='stdout_lines'))
+        )
+      }}
+
+- name: Create the metrics account, authenticated by the socket only
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --execute
+      - >-
+        SET SESSION sql_log_bin = 0;
+        CREATE USER '{{ cloudfall_mariadb_metrics_user }}'@'localhost'
+        IDENTIFIED VIA unix_socket
+  changed_when: true
+  when: cloudfall_mariadb_metrics_user not in cloudfall_mariadb_metrics_state.users
+
+- name: Authenticate a metrics account made by hand by the socket only
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --execute
+      - >-
+        SET SESSION sql_log_bin = 0;
+        ALTER USER '{{ cloudfall_mariadb_metrics_user }}'@'localhost'
+        IDENTIFIED VIA unix_socket
+  changed_when: true
+  when:
+    - cloudfall_mariadb_metrics_user in cloudfall_mariadb_metrics_state.users
+    - cloudfall_mariadb_metrics_user not in cloudfall_mariadb_metrics_state.socket_users
+
+- name: Give the metrics account what reading status and replication needs
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --execute
+      - >-
+        SET SESSION sql_log_bin = 0;
+        GRANT {{ cloudfall_mariadb_metrics_privileges | join(', ') }} ON *.*
+        TO '{{ cloudfall_mariadb_metrics_user }}'@'localhost'
+  changed_when: true
+  when: >-
+    cloudfall_mariadb_metrics_privileges
+    | reject('in', cloudfall_mariadb_metrics_state.privileges)
+    | list | length > 0

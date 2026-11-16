@@ -1,6 +1,9 @@
 ---
 cloudfall_logging_collector_stack: {}
 cloudfall_logging_collector_metrics_role: alloy
+# The socket a MariaDB server listens on, as Debian's package sets it; its
+# exporter connects there as cloudfall_logging_collector_metrics_role (S-019)
+cloudfall_logging_collector_mariadb_socket: /run/mysqld/mysqld.sock
 # Where systemd puts the credentials of alloy.service (LoadCredential)
 cloudfall_logging_collector_credentials_directory: /run/credentials/alloy.service
 # Where an Elasticsearch node keeps the cloudfall password and, with

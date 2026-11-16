@@ -235,3 +235,17 @@ cloudfall_mariadb_state_queries:
     WHERE PLUGIN_NAME = 'ed25519' AND PLUGIN_STATUS = 'ACTIVE'
   databases: SELECT SCHEMA_NAME FROM information_schema.SCHEMATA
   grants: SELECT CONCAT(User, '|', Db) FROM mysql.db WHERE Host = 'localhost'
+# The account the collector scrapes the server as, with metrics declared:
+# Alloy's Linux user through the socket, as on PostgreSQL (mariadb.METRICS_USER).
+cloudfall_mariadb_metrics_user: alloy
+# What it may do: read status, including InnoDB's, and replication state.
+cloudfall_mariadb_metrics_privileges:
+  - PROCESS
+  - SLAVE MONITOR
+# What metrics.yml reads before it changes anything, one column each.
+cloudfall_mariadb_metrics_state_queries:
+  users: "{{ cloudfall_mariadb_state_queries.users }}"
+  socket_users: "{{ cloudfall_mariadb_state_queries.socket_users }}"
+  privileges: >-
+    SELECT PRIVILEGE_TYPE FROM information_schema.USER_PRIVILEGES
+    WHERE GRANTEE = '''{{ cloudfall_mariadb_metrics_user }}''@''localhost'''

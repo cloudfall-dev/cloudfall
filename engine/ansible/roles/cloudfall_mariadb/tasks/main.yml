@@ -259,5 +259,13 @@
     - not ansible_check_mode
     - cloudfall_mariadb_writer | bool
 
+# On every server with metrics declared, a replica's too: the account is
+# made outside the binary log, so nothing of it replicates.
+- name: Converge the account the collector scrapes the server as
+  ansible.builtin.include_tasks: metrics.yml
+  when:
+    - not ansible_check_mode
+    - cloudfall_mariadb_service.metrics is defined
+
 - name: Install the dumps and the restore drill
   ansible.builtin.include_tasks: backup.yml
