@@ -289,7 +289,9 @@ def scram_sha256_verifier(password: str, *, salt: bytes | None = None) -> str:
     with 4096 iterations and a fresh 16-byte salt, as PostgreSQL's defaults
     are. PostgreSQL stores a value of this shape as it is, so the password
     itself never reaches the server (D-9). The password is prepared with
-    SASLprep as PostgreSQL prepares it, so a client logs in with it.
+    SASLprep as PostgreSQL prepares it, so a client logs in with it. The
+    ``cloudfall_postgresql`` role's ``cloudfall_scram_verifier`` filter
+    computes the same on the controller during the play, as a test checks.
     """
     salt = token_bytes(_SCRAM_SALT_BYTES) if salt is None else salt
     if not salt:
@@ -684,8 +686,10 @@ def staged_password_files(
 ) -> Iterator[dict[str, object]]:
     """Write each password's server form to a 0600 file, then remove it.
 
-    The files sit in a private temp dir. An owner role's file holds its SCRAM
-    verifier, never the password (D-9); an Elasticsearch account's files hold
+    The files sit in a private temp dir. An owner role's file holds its
+    password, which only the controller reads: the role computes its SCRAM
+    verifier there with the salt the role already has (D-25), and only the
+    verifier reaches the host (D-9); an Elasticsearch account's files hold
     its bcrypt hash, and for ``cloudfall`` also the password the spec puts in
     a 0600 file on each node; an S3 snapshot repository's two files hold the
     client keys the keystore of each node takes; an existing cluster's login
@@ -704,7 +708,7 @@ def staged_password_files(
         files: dict[str, dict[str, str]] = {}
         for password in passwords:
             path = root / f"{password.service.value}-{password.owner.value}"
-            _write_private(path, scram_sha256_verifier(password.value))
+            _write_private(path, password.value)
             files.setdefault(password.service.value, {})[password.owner.value] = str(
                 path
             )

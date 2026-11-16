@@ -130,17 +130,22 @@ Every path that runs `services.yml` (the `converge_services` MCP tool, the
 `secrets`) before any playbook starts. A missing file or key stops it with
 `PRECONDITION`, naming the expected path and key.
 
-The controller computes the password's SCRAM-SHA-256 verifier (a fresh salt,
-4096 iterations, PostgreSQL's stored format) and writes the verifier, never the
-password, to a `0600` file in a private temp directory outside the project;
-only that file's path reaches Ansible. The role copies the file to the host as
-`0600`, `psql` reads it there and sends the verifier, which PostgreSQL stores as
-it is, and both files are removed when the run ends. The password itself never
-reaches the host, so it can't show in the PostgreSQL log or `pg_stat_activity`.
-Every task that sees the verifier runs with `no_log`. The answer's `owned_roles` names the reference,
-the key, and the value's SHA-256 (an operator proposal keeps them as
-`ownedRoles` in its receipt's `outcome`); the password is set on every converge, so a
-rotation is a commit in the private repository and a services converge.
+The controller writes the password to a `0600` file in a private temp directory
+outside the project; only that file's path reaches Ansible, and the file never
+leaves the controller. The role reads the role's stored verifier from the host,
+and computes on the controller the password's SCRAM-SHA-256 verifier
+(PostgreSQL's stored format) with that verifier's salt and iteration count, or a
+fresh salt and 4096 iterations when the role has none. When the two match, the
+role changes nothing. Otherwise it copies the new verifier to the host as `0600`,
+`psql` reads it there and sends it, PostgreSQL stores it as it is, and the file
+is removed when the task ends. The password itself never reaches the host, so
+it can't show in the PostgreSQL log or `pg_stat_activity`. Every task that sees
+the password or a verifier runs with `no_log`; a stored password that is
+neither a SCRAM-SHA-256 nor an md5 verifier stops the run. The answer's
+`owned_roles` names the reference, the key, and the value's SHA-256 (an operator
+proposal keeps them as `ownedRoles` in its receipt's `outcome`); a rotation is a
+commit in the private repository and a services converge, and a converge with
+the same password changes nothing.
 
 ## Secrets a workload requires
 
