@@ -125,6 +125,48 @@ class _Host:
         return self.install_root / "current"
 
     @property
+    def environment(self) -> Path:
+        return self.install_root / "shared" / "env"
+
+    @property
+    def unit_directory(self) -> Path:
+        return self.tmp_path / "systemd"
+
+    @property
+    def unit(self) -> Path:
+        return self.unit_directory / f"{COMPONENT_ID}.service"
+
+    def environment_file(self, release: str | None, text: str) -> Path:
+        """Write a release's own environment file, or the legacy one."""
+        name = f"{COMPONENT_ID}.{release}.env" if release else f"{COMPONENT_ID}.env"
+        path = self.environment / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def install_unit(self, environment: Path) -> None:
+        """Install the managed unit a deploy wrote, naming its environment."""
+        self.unit_directory.mkdir(exist_ok=True)
+        self.unit.write_text(
+            "# Managed by Cloudfall. Local changes will be overwritten.\n"
+            "[Service]\n"
+            f"WorkingDirectory={self.current}\n"
+            f"EnvironmentFile=-{environment}\n"
+            f"ExecStart={self.current}/.venv/bin/app\n",
+            encoding="utf-8",
+        )
+
+    @property
+    def unit_environment(self) -> Path:
+        """The environment file the installed unit names."""
+        (line,) = (
+            line
+            for line in self.unit.read_text(encoding="utf-8").splitlines()
+            if line.startswith("EnvironmentFile=")
+        )
+        return Path(line.removeprefix("EnvironmentFile=-"))
+
+    @property
     def systemctl_calls(self) -> list[str]:
         path = self.tmp_path / "bin" / "systemctl.log"
         if not path.exists():
@@ -209,7 +251,11 @@ class _Host:
             ),
             encoding="utf-8",
         )
-        variables = {"cloudfall_deploy_systemd_run": str(systemd_run), **extra}
+        variables = {
+            "cloudfall_deploy_systemd_run": str(systemd_run),
+            "cloudfall_deploy_unit_directory": str(self.unit_directory),
+            **extra,
+        }
         command = playbook_command(
             PlaybookRun(
                 playbook, inventory, extra_vars=(json.dumps(variables),), check=check
@@ -287,6 +333,8 @@ def test_a_dry_run_of_the_current_release_plans_a_fresh_directory(
 
 
 def _rollback(host: _Host, release: str) -> tuple[int, str]:
+    if not host.unit.exists():
+        host.install_unit(host.environment / f"{COMPONENT_ID}.env")
     playbook = host.tmp_path / "rollback.yml"
     playbook.write_text(
         yaml.safe_dump(
@@ -377,6 +425,246 @@ def test_a_rollback_to_a_missing_release_is_refused(tmp_path: Path) -> None:
         f" the releases kept there are {PREVIOUS}0, {RELEASE}"
     ) in " ".join(output.split())
     assert host.current.readlink() == live
+
+
+# A rollback restores the environment with the release (#353, D-21).
+
+
+def test_a_rollback_points_the_unit_at_the_target_releases_environment(
+    tmp_path: Path,
+) -> None:
+    host = _Host(tmp_path)
+    previous = host.release(PREVIOUS)
+    host.current.symlink_to(host.release(RELEASE))
+    host.environment_file(PREVIOUS, "STATE=previous\n")
+    host.install_unit(host.environment_file(RELEASE, "STATE=bad\n"))
+    before = host.unit.read_text(encoding="utf-8")
+
+    exit_code, output = _rollback(host, PREVIOUS)
+
+    assert exit_code == 0, output
+    assert host.current.readlink() == previous
+    assert host.unit_environment == host.environment / f"{COMPONENT_ID}.{PREVIOUS}.env"
+    assert host.unit_environment.read_text(encoding="utf-8") == "STATE=previous\n"
+    # Only the EnvironmentFile= line changed.
+    after = host.unit.read_text(encoding="utf-8").splitlines()
+    pairs = zip(before.splitlines(), after, strict=True)
+    changed = [old for old, new in pairs if old != new]
+    assert [old.split("=")[0] for old in changed] == ["EnvironmentFile"]
+
+
+def test_a_rollback_to_a_release_without_its_own_environment_names_the_legacy_one(
+    tmp_path: Path,
+) -> None:
+    """A release deployed before per-release files reads the legacy file."""
+    host = _Host(tmp_path)
+    host.release(PREVIOUS)
+    host.current.symlink_to(host.release(RELEASE))
+    legacy = host.environment_file(None, "STATE=previous\n")
+    host.install_unit(host.environment_file(RELEASE, "STATE=bad\n"))
+
+    exit_code, output = _rollback(host, PREVIOUS)
+
+    assert exit_code == 0, output
+    assert host.unit_environment == legacy
+    assert legacy.read_text(encoding="utf-8") == "STATE=previous\n"
+
+
+def test_a_rollback_to_a_redeployed_release_reads_its_newest_copys_environment(
+    tmp_path: Path,
+) -> None:
+    host = _Host(tmp_path)
+    host.release(RELEASE)
+    host.environment_file(RELEASE, "STATE=first\n")
+    host.release(REDEPLOYED)
+    host.environment_file(REDEPLOYED, "STATE=redeployed\n")
+    host.current.symlink_to(host.release(PREVIOUS))
+    host.install_unit(host.environment_file(PREVIOUS, "STATE=bad\n"))
+
+    exit_code, output = _rollback(host, RELEASE)
+
+    assert exit_code == 0, output
+    assert host.unit_environment.read_text(encoding="utf-8") == "STATE=redeployed\n"
+
+
+# A deploy whose new environment fails its gate leaves the previous release on
+# its previous environment (#353).
+
+BAD_ENVIRONMENT_TASKS = (
+    "Inspect the currently active release",
+    "Record the rollback candidate",
+    "Compute release paths",
+    "Compute the release's environment file paths",
+    "Create the releases and shared roots",
+    "Create release and shared directories",
+    "Find the environment file the previous release reads",
+    "Choose the environment file the release reads",
+    "Install the release's environment file",
+    "Carry the previous release's environment over to the release",
+    "Remove an environment file left for the release by an earlier deploy",
+    "Compute service unit paths",
+    "Inspect the existing service unit",
+    "Read the existing service unit",
+    "Recognize a hand-made service unit",
+    "Install the managed service unit",
+)
+BAD_ENVIRONMENT_RESCUE = (
+    "Restore the previous release symlink",
+    "Restore the service unit of the previous release",
+    "Restart the restored release",
+    "Remove the redeploy copy that failed its gate",
+)
+
+
+def _bad_environment_deploy(
+    host: _Host, release: str, *, environment_text: str | None = "STATE=bad\n"
+) -> tuple[int, str]:
+    """Deploy a release, with a new environment by default, and fail its gate.
+
+    The rescue then runs as the role's does.
+    """
+    environment = host.tmp_path / "controller" / "bad.env"
+    if environment_text is not None:
+        environment.parent.mkdir()
+        environment.write_text(environment_text, encoding="utf-8")
+    tasks = _main_tasks(BAD_ENVIRONMENT_TASKS)
+    # A play outside the role finds the role's template by its path.
+    template = tasks[-1]["ansible.builtin.template"]
+    assert isinstance(template, dict)
+    template["src"] = str(ROLE / "templates" / "component.service.j2")
+    playbook = host.tmp_path / "bad-environment.yml"
+    playbook.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "name": "Deploy a release whose environment fails its gate",
+                    "hosts": "cloudfall_servers",
+                    "gather_facts": False,
+                    "vars": {
+                        "cloudfall_deploy_component": (
+                            "{{ cloudfall_components | first }}"
+                        ),
+                        "cloudfall_deploy_release": release,
+                        "cloudfall_deploy_environment_file": (
+                            "" if environment_text is None else str(environment)
+                        ),
+                    },
+                    "tasks": [
+                        *tasks,
+                        {
+                            "name": "Activate the release behind the health gate",
+                            "block": [
+                                *_main_tasks(("Switch the current release symlink",)),
+                                {
+                                    "name": "Fail the health gate",
+                                    "ansible.builtin.fail": {"msg": "unhealthy"},
+                                },
+                            ],
+                            "rescue": _main_tasks(BAD_ENVIRONMENT_RESCUE),
+                        },
+                    ],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return host.run(playbook, extra={})
+
+
+@pytest.mark.parametrize("own", [True, False], ids=["own-file", "legacy-file"])
+def test_a_failed_deploy_restores_the_previous_environment(
+    own: bool,  # noqa: FBT001 - a parametrized case
+    tmp_path: Path,
+) -> None:
+    """The previous release was deployed with its own file, or before them."""
+    host = _Host(tmp_path)
+    previous = host.release(PREVIOUS)
+    host.current.symlink_to(previous)
+    host.release(RELEASE)
+    host.install_unit(
+        host.environment_file(PREVIOUS if own else None, "STATE=previous\n")
+    )
+    before = host.unit.read_text(encoding="utf-8")
+
+    exit_code, output = _bad_environment_deploy(host, RELEASE)
+
+    assert exit_code == 0, output
+    assert host.current.readlink() == previous
+    assert host.unit.read_text(encoding="utf-8") == before
+    assert host.unit_environment.read_text(encoding="utf-8") == "STATE=previous\n"
+    # The failed release keeps its own file; the legacy one is never written.
+    new = host.environment / f"{COMPONENT_ID}.{RELEASE}.env"
+    assert new.read_text(encoding="utf-8") == "STATE=bad\n"
+    assert own == (not (host.environment / f"{COMPONENT_ID}.env").exists())
+
+
+def test_a_failed_redeploy_restores_the_previous_copys_environment(
+    tmp_path: Path,
+) -> None:
+    """A redeploy of current's release gets a file of its own, then loses it."""
+    host = _Host(tmp_path)
+    live = host.release(RELEASE)
+    host.current.symlink_to(live)
+    host.install_unit(host.environment_file(RELEASE, "STATE=previous\n"))
+    before = host.unit.read_text(encoding="utf-8")
+
+    exit_code, output = _bad_environment_deploy(host, RELEASE)
+
+    assert exit_code == 0, output
+    assert host.current.readlink() == live
+    assert host.unit.read_text(encoding="utf-8") == before
+    assert host.unit_environment.read_text(encoding="utf-8") == "STATE=previous\n"
+    assert sorted(path.name for path in host.environment.iterdir()) == [
+        f"{COMPONENT_ID}.{RELEASE}.env"
+    ]
+    assert [path.name for path in host.releases.iterdir()] == [RELEASE]
+
+
+@pytest.mark.parametrize("own", [True, False], ids=["own-file", "legacy-file"])
+def test_a_deploy_without_an_environment_file_keeps_the_previous_one(
+    own: bool,  # noqa: FBT001 - a parametrized case
+    tmp_path: Path,
+) -> None:
+    """The release gets a copy of what the previous release reads, as its own."""
+    host = _Host(tmp_path)
+    previous = host.release(PREVIOUS)
+    host.current.symlink_to(previous)
+    host.release(RELEASE)
+    previous_environment = host.environment_file(
+        PREVIOUS if own else None, "STATE=previous\n"
+    )
+    host.install_unit(previous_environment)
+
+    exit_code, output = _bad_environment_deploy(host, RELEASE, environment_text=None)
+
+    assert exit_code == 0, output
+    new = host.environment / f"{COMPONENT_ID}.{RELEASE}.env"
+    assert new.read_text(encoding="utf-8") == "STATE=previous\n"
+    assert previous_environment.read_text(encoding="utf-8") == "STATE=previous\n"
+    # The rescue gave the previous release its unit back, naming its file.
+    assert host.unit_environment == previous_environment
+
+
+def test_a_deploy_without_any_environment_names_the_missing_legacy_file(
+    tmp_path: Path,
+) -> None:
+    """A component that never had an environment file behaves as before."""
+    host = _Host(tmp_path)
+    host.current.symlink_to(host.release(PREVIOUS))
+    host.release(RELEASE)
+    stale = host.environment_file(RELEASE, "STATE=stale\n")
+    host.environment_file(None, "unused\n").unlink()
+    host.unit_directory.mkdir()
+
+    exit_code, output = _bad_environment_deploy(host, RELEASE, environment_text=None)
+
+    assert exit_code == 0, output
+    assert not stale.exists()
+    assert list(host.environment.iterdir()) == []
+    unit = host.unit_directory / f"{COMPONENT_ID}.service"
+    # The previous release had no managed unit: the rendered one stays.
+    lines = unit.read_text(encoding="utf-8").splitlines()
+    assert f"EnvironmentFile=-{host.environment}/{COMPONENT_ID}.env" in lines
 
 
 # A redeploy copy that failed its gate is gone, so rollback takes the newest
@@ -485,6 +773,123 @@ def test_a_failed_redeploy_copy_is_removed_and_rollback_takes_the_passing_one(
 
     assert exit_code == 0, output
     assert host.current.readlink() == passing
+
+
+# A redeploy copy whose release command failed is gone too, with its
+# environment file, so rollback never takes a copy that skipped its release
+# command and its gate (#373).
+
+FAILED_RELEASE_COMMAND_TASKS = (
+    "Inspect the currently active release",
+    "Record the rollback candidate",
+    "Compute release paths",
+    "Compute the release's environment file paths",
+    "Create the releases and shared roots",
+    "Create release and shared directories",
+    "Find the environment file the previous release reads",
+    "Choose the environment file the release reads",
+    "Carry the previous release's environment over to the release",
+    "Run the release command on the release server",
+)
+
+
+def _absolute_includes(task: object) -> object:
+    """Point main.yml's includes at the role's files from a play outside it."""
+    if isinstance(task, list):
+        return [_absolute_includes(item) for item in task]
+    if not isinstance(task, dict):
+        return task
+    include = task.get("ansible.builtin.include_tasks")
+    if isinstance(include, str):
+        return {**task, "ansible.builtin.include_tasks": str(ROLE / "tasks" / include)}
+    return {key: _absolute_includes(value) for key, value in task.items()}
+
+
+def _failed_release_command(host: _Host) -> tuple[int, str]:
+    """Deploy RELEASE, without a new environment, through a failing release command."""
+    playbook = host.tmp_path / "failed-release-command.yml"
+    playbook.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "name": "Deploy a release whose release command fails",
+                    "hosts": "cloudfall_servers",
+                    "gather_facts": False,
+                    "vars": {
+                        "cloudfall_deploy_component": (
+                            "{{ cloudfall_components | first | combine({'release':"
+                            " {'command': ['/bin/sh', '-c', 'echo migrating; exit 1'],"
+                            " 'server': 'h1', 'timeoutSeconds': 60}}) }}"
+                        ),
+                        "cloudfall_deploy_release": RELEASE,
+                        "cloudfall_deploy_environment_file": "",
+                        "cloudfall_deploy_release_output_characters": 2000,
+                        "cloudfall_deploy_release_failure_characters": 500,
+                    },
+                    "tasks": _absolute_includes(
+                        _main_tasks(FAILED_RELEASE_COMMAND_TASKS)
+                    ),
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return host.run(playbook, extra={})
+
+
+def test_a_redeploy_whose_release_command_fails_leaves_no_copy_behind(
+    tmp_path: Path,
+) -> None:
+    host = _Host(tmp_path)
+    host.release(RELEASE)
+    host.environment_file(RELEASE, "STATE=first\n")
+    passing = host.release(f"{RELEASE}.redeploy-20261101T000000Z")
+    passing_environment = host.environment_file(passing.name, "STATE=passing\n")
+    host.current.symlink_to(passing)
+
+    exit_code, output = _failed_release_command(host)
+
+    assert exit_code != 0, output
+    assert "exited with code 1" in output
+    assert host.current.readlink() == passing
+    assert sorted(path.name for path in host.releases.iterdir()) == [
+        RELEASE,
+        passing.name,
+    ]
+    # The previous copy's own file stays (D-21).
+    assert sorted(path.name for path in host.environment.iterdir()) == sorted(
+        [f"{COMPONENT_ID}.{RELEASE}.env", passing_environment.name]
+    )
+
+    host.current.unlink()
+    host.current.symlink_to(host.release(PREVIOUS))
+    host.install_unit(host.environment_file(PREVIOUS, "STATE=previous\n"))
+    exit_code, output = _rollback(host, RELEASE)
+
+    assert exit_code == 0, output
+    assert host.current.readlink() == passing
+    assert host.unit_environment == passing_environment
+
+
+def test_a_new_release_whose_release_command_fails_keeps_its_directory(
+    tmp_path: Path,
+) -> None:
+    """Only a redeploy copy goes; a new release's directory stays as before."""
+    host = _Host(tmp_path)
+    previous = host.release(PREVIOUS)
+    host.environment_file(PREVIOUS, "STATE=previous\n")
+    host.current.symlink_to(previous)
+
+    exit_code, output = _failed_release_command(host)
+
+    assert exit_code != 0, output
+    assert "exited with code 1" in output
+    assert host.current.readlink() == previous
+    assert sorted(path.name for path in host.releases.iterdir()) == [PREVIOUS, RELEASE]
+    assert sorted(path.name for path in host.environment.iterdir()) == [
+        f"{COMPONENT_ID}.{PREVIOUS}.env",
+        f"{COMPONENT_ID}.{RELEASE}.env",
+    ]
 
 
 # The receipt names the release a redeployed directory holds.
@@ -1232,11 +1637,27 @@ def test_a_passed_deploy_removes_the_releases_beyond_the_count(tmp_path: Path) -
     fleet.current("h1").symlink_to(fleet.release("h1", PREVIOUS, healthy=True))
     fleet.release("h1", RELEASE, healthy=True)
     (fleet.install_root("h1") / "releases" / "hand-made").mkdir()
+    environment = fleet.install_root("h1") / "shared" / "env"
+    environment.mkdir(parents=True)
+    copy = f"{OLDER[0]}.redeploy-20261010T000000Z"
+    kept = [f"{COMPONENT_ID}.{name}.env" for name in (OLDER[4], PREVIOUS, RELEASE)]
+    for name in [
+        *(f"{COMPONENT_ID}.{release}.env" for release in (*OLDER, copy)),
+        *kept,
+        f"{COMPONENT_ID}.env",
+        "other.env",
+    ]:
+        (environment / name).write_text("KEY=value\n", encoding="utf-8")
 
     exit_code, output = fleet.deploy()
 
     assert exit_code == 0, output
     assert _names(fleet, "h1") == sorted([OLDER[4], PREVIOUS, RELEASE, "hand-made"])
+    # A removed release's environment files go with it (D-21); the legacy file
+    # and any file that names no release stay.
+    assert sorted(path.name for path in environment.iterdir()) == sorted(
+        [*kept, f"{COMPONENT_ID}.env", "other.env"]
+    )
     # The cleanup removes inside releases/, never the 0750 root itself.
     releases = fleet.install_root("h1") / "releases"
     assert stat.S_IMODE(releases.stat().st_mode) == 0o750

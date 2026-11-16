@@ -221,7 +221,7 @@ def _ran_nothing(project: Path, tmp_path: Path) -> bool:
     return (
         not (tmp_path / "ran-deploy.yml").exists()
         and not (tmp_path / "inventory.json").exists()
-        and not (project / "tmp" / "releases").exists()
+        and not (project / "record" / "releases").exists()
     )
 
 
@@ -275,7 +275,9 @@ def test_s008_3_an_approved_release_deploys_and_names_its_approval(
         "approved_at": record["approvedAt"],
     }
     assert (tmp_path / "ran-deploy.yml").read_text(encoding="utf-8") == "ran"
-    assert (project / "tmp" / "releases" / "crm-backend.json").is_file()
+    # The receipt lands in the committed record by default (D-16).
+    assert (project / "record" / "releases" / "crm-backend.json").is_file()
+    assert not (project / "tmp" / "releases").exists()
 
 
 def test_s008_6_a_record_for_another_archive_does_not_count(

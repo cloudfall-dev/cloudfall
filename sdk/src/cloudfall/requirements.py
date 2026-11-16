@@ -45,6 +45,7 @@ from cloudfall.elasticsearch_cluster import (
     transport_address,
 )
 from cloudfall.inventory import SecretValueReference, StoragePool
+from cloudfall.mariadb import MariadbReplicationRole
 
 if TYPE_CHECKING:
     from cloudfall.inventory import (
@@ -417,6 +418,8 @@ def requirements_of(inventory: PlatformInventory) -> tuple[ServerRequirements, .
     for service in inventory.services:
         for server_id, requirement in _elasticsearch_requirements(service, inventory):
             by_server.setdefault(server_id.value, []).append(requirement)
+        for server_id, requirement in _mariadb_requirements(service, inventory):
+            by_server.setdefault(server_id.value, []).append(requirement)
     return tuple(
         ServerRequirements(
             server.resource_id,
@@ -468,8 +471,9 @@ def _elasticsearch_requirements(
     password; the role writes the password on the node and only its bcrypt
     hash into the file realm. A node of a cluster of two or more also needs
     the transport port, open to the other nodes only; one node keeps its
-    transport on loopback. A node of a cluster, or of a service with
-    ``remoteAccess``, needs its one certificate from the project CA, which
+    transport on loopback, unless it joins an ``existingCluster``. A node of a
+    cluster, or of a service with ``remoteAccess``, needs its one certificate
+    from the project CA, which
     the transport and HTTP over TLS share: the other nodes verify it at its
     IPv4, a client at the listen address.
     """
@@ -479,7 +483,13 @@ def _elasticsearch_requirements(
     owner = RequirementOwner(ResourceKind.SERVICE, service.resource_id)
     servers = {server.resource_id: server for server in inventory.servers}
     nodes = cluster_nodes(service, inventory.servers)
-    placement = VolumePlacement.EXPENDABLE if nodes else VolumePlacement.MIRRORED
+    # One Cloudfall node keeps the only copy it will hold once an existing
+    # cluster it joined is drained, so it stays mirrored.
+    placement = (
+        VolumePlacement.EXPENDABLE
+        if len(elasticsearch.nodes) > 1
+        else VolumePlacement.MIRRORED
+    )
     placed: list[tuple[ResourceId, Requirement]] = []
     for node_id in elasticsearch.nodes:
         baseline = inventory.baseline(servers[node_id].baseline_id)
@@ -503,6 +513,10 @@ def _elasticsearch_requirements(
         others = tuple(
             item.server_id for item in nodes if item.server_id != node.server_id
         )
+        if not others:
+            # The only Cloudfall node of a joined cluster: its peers are the
+            # existing cluster's nodes, which are no declared servers.
+            continue
         placed.append(
             (
                 node.server_id,
@@ -579,6 +593,139 @@ def elasticsearch_node_names(
     if listen_address is not None:
         addresses.append(listen_address.value)
     return (server.hostname, *(IpAddress(item) for item in dict.fromkeys(addresses)))
+
+
+MARIADB_PACKAGE = PackageName("mariadb-server")
+MARIADB_REQUIREMENT_NAME = RequirementName("mariadb")
+MARIADB_VOLUME_PATH = AbsolutePath("/var/lib/mysql")
+MARIADB_VOLUME_SIZE = ByteSize(10 * GIBIBYTE)
+"""The starting size of the data volume; it grows, never shrinks."""
+MARIADB_REPLICATION_NAME = RequirementName("mariadb-replication")
+MARIADB_CERTIFICATE_PATH = AbsolutePath("/etc/mysql/cloudfall/server.crt")
+MARIADB_KEY_PATH = AbsolutePath("/etc/mysql/cloudfall/server.key")
+MARIADB_CA_PATH = AbsolutePath("/etc/mysql/cloudfall/ca.crt")
+MARIADB_REPLICATION_PASSWORD_NAME = RequirementName("mariadb-replication-password")
+MARIADB_REPLICATION_PASSWORD_PATH = AbsolutePath(
+    "/etc/mysql/cloudfall/replication-password"
+)
+MARIADB_REPLICATION_PASSWORD_KEY = SecretKeyName("REPLICATION_PASSWORD")
+
+
+def mariadb_replication_reference(
+    environment: ResourceId, service_id: ResourceId
+) -> SecretValueReference:
+    """Return where the store keeps a primary's ``cloudfall_repl`` password."""
+    return SecretValueReference(
+        environment=environment,
+        path=AbsolutePath(f"/services/{service_id.value}"),
+        key=MARIADB_REPLICATION_PASSWORD_KEY,
+    )
+
+
+def _mariadb_requirements(
+    service: ServiceInventory, inventory: PlatformInventory
+) -> list[tuple[ResourceId, Requirement]]:
+    """Place what the server of a MariaDB service needs (S-019).
+
+    Every server needs its mirrored data volume and its package at the
+    declared version. A primary needs its port open to the servers of its
+    replicas only, and the generated password of its replication account. A
+    server with ``remoteAccess`` or ``replication`` needs one server
+    certificate from the project CA, named after its hostname and addresses.
+    """
+    mariadb = service.mariadb
+    if mariadb is None:
+        return []
+    owner = RequirementOwner(ResourceKind.SERVICE, service.resource_id)
+    servers = {server.resource_id: server for server in inventory.servers}
+    server = servers[service.server_id]
+    baseline = inventory.baseline(server.baseline_id)
+    specs: list[RequirementSpec] = [
+        VolumeRequirement(
+            MARIADB_REQUIREMENT_NAME,
+            MARIADB_VOLUME_PATH,
+            MARIADB_VOLUME_SIZE,
+            VolumePlacement.MIRRORED,
+            (SystemdUnitName("mariadb.service"),),
+            _pool(baseline, None, MARIADB_REQUIREMENT_NAME.value),
+        ),
+        PackageRequirement(
+            MARIADB_REQUIREMENT_NAME,
+            MARIADB_PACKAGE,
+            PackageVersion(mariadb.version.value),
+        ),
+    ]
+    replication = mariadb.replication
+    primary = (
+        replication is not None and replication.role is MariadbReplicationRole.PRIMARY
+    )
+    replicas = tuple(
+        other.server_id
+        for other in inventory.services
+        if other.mariadb is not None
+        and other.mariadb.replication is not None
+        and other.mariadb.replication.primary == service.resource_id
+    )
+    if primary and replicas:
+        specs.append(
+            PortRequirement(
+                MARIADB_REPLICATION_NAME,
+                service.bind.port,
+                NetworkProtocol.TCP,
+                replicas,
+            )
+        )
+    if mariadb.remote_access is not None or replication is not None:
+        listen_addresses = tuple(
+            address
+            for address in (
+                None
+                if mariadb.remote_access is None
+                else mariadb.remote_access.listen_address,
+                None if replication is None else replication.listen_address,
+            )
+            if address is not None
+        )
+        specs.append(
+            CertificateRequirement(
+                MARIADB_REQUIREMENT_NAME,
+                CertificateUsage.SERVER,
+                mariadb_server_names(server, listen_addresses),
+                MARIADB_CERTIFICATE_PATH,
+                MARIADB_KEY_PATH,
+                MARIADB_CA_PATH,
+            )
+        )
+    if primary:
+        specs.append(
+            SecretRequirement(
+                MARIADB_REPLICATION_PASSWORD_NAME,
+                SecretSource.GENERATE,
+                MARIADB_REPLICATION_PASSWORD_PATH,
+                mariadb_replication_reference(
+                    service.environment, service.resource_id
+                ),
+            )
+        )
+    return [(service.server_id, Requirement(owner, spec)) for spec in specs]
+
+
+def mariadb_server_names(
+    server: ServerInventory, listen_addresses: tuple[IpAddress, ...] = ()
+) -> tuple[Hostname | IpAddress, ...]:
+    """Return the names of a MariaDB server's certificate: hostname, then addresses.
+
+    The addresses are the server's IPv4, an IP ``address`` of another family,
+    and the ``remoteAccess`` and replication listen addresses, each once.
+    """
+    names = elasticsearch_node_names(server)
+    known = {name.value for name in names}
+    extra = tuple(
+        address
+        for address in dict.fromkeys(listen_addresses)
+        if address.value not in known
+    )
+    return (*names, *extra)
 
 
 TELEGRAM_TOKEN_NAME = RequirementName("telegram-bot-token")

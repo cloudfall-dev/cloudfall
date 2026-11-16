@@ -1,0 +1,142 @@
+---
+# Controller paths of each owner's staged hash file, by owner; services.yml
+# passes the service's entry of cloudfall_services_mariadb_files (S-019, D-9).
+cloudfall_mariadb_hash_files: {}
+# What the services converge decided for this server's data volume (S-014).
+cloudfall_mariadb_volume_actions: >-
+  {{ (cloudfall_volume_actions | default({})).get(cloudfall_server_id, [])
+     | selectattr('name', 'equalto', 'mariadb') | list }}
+cloudfall_mariadb_series: >-
+  {{ cloudfall_mariadb_service.mariadb.version.split('.')[:2] | join('.') }}
+# The upstream X.Y.Z of the installed mariadb-server, or '' when none is:
+# MariaDB's 1:11.8.9+maria~deb13 and Debian's 1:11.8.3-0+deb13u1 alike.
+cloudfall_mariadb_installed_version: >-
+  {{
+    (cloudfall_mariadb_installed.stdout.split('|')[1].split(':') | last
+     | regex_search('^[0-9]+[.][0-9]+[.][0-9]+') | default('', true))
+    if cloudfall_mariadb_installed.rc == 0
+    and cloudfall_mariadb_installed.stdout.startswith('installed|')
+    else ''
+  }}
+# The exact package of MariaDB's archive: 1:<version>+maria~deb<major>.
+cloudfall_mariadb_package_version: >-
+  1:{{ cloudfall_mariadb_service.mariadb.version }}+maria~deb{{
+    ansible_facts['distribution_major_version'] }}
+cloudfall_mariadb_data_path: /var/lib/mysql
+cloudfall_mariadb_settings_path: /etc/mysql/mariadb.conf.d/90-cloudfall.cnf
+cloudfall_mariadb_client: /usr/bin/mariadb
+cloudfall_mariadb_admin: /usr/bin/mariadb-admin
+# The host directory an owner's statement, holding its hash, is staged in,
+# 0700 root, the file removed after the run.
+cloudfall_mariadb_state_directory: /var/lib/cloudfall/mariadb
+# The backup root every service's backup directory shares, root-owned 0755.
+cloudfall_mariadb_backup_root: /var/backups/cloudfall
+cloudfall_mariadb_repository_key_url: https://mariadb.org/mariadb_release_signing_key.pgp
+cloudfall_mariadb_repository_key_path: /etc/apt/keyrings/mariadb-keyring.pgp
+# MariaDB's archive keeps every release; the series repository keeps only the
+# newest patches, so a pinned version comes from here.
+cloudfall_mariadb_repository_url: https://archive.mariadb.org
+# The series MariaDB publishes packages for, by Debian major release (S-019,
+# Supported versions): only series newer than the one Debian ships.
+cloudfall_mariadb_debian_series:
+  "12":
+    - "10.11"
+    - "11.4"
+    - "11.8"
+    - "12.3"
+  "13":
+    - "11.8"
+    - "12.3"
+# The marker role every user Cloudfall creates or adopts holds (S-019).
+cloudfall_mariadb_managed_role: cloudfall-managed
+# Accounts the package, MariaDB or Cloudfall itself holds; never declared,
+# locked or listed as unmanaged.
+cloudfall_mariadb_system_users:
+  - root
+  - mysql
+  - mariadb.sys
+  - cloudfall_repl
+  - alloy
+# The declared users: every database's owner, an application's Linux user or
+# an owner with a password, each once.
+cloudfall_mariadb_declared_users: >-
+  {{
+    cloudfall_mariadb_service.mariadb.databases
+    | map(attribute='owner') | unique | list
+  }}
+cloudfall_mariadb_application_users: >-
+  {{
+    cloudfall_mariadb_service.mariadb.databases
+    | rejectattr('passwordRef', 'defined')
+    | map(attribute='owner') | unique | list
+  }}
+cloudfall_mariadb_owners: >-
+  {{
+    cloudfall_mariadb_service.mariadb.databases
+    | selectattr('passwordRef', 'defined')
+    | unique(attribute='owner') | list
+  }}
+# remoteAccess (S-019, Access): the server certificate from the project CA,
+# its key, made on this host, and the CA, at the paths of the server's S-011
+# certificate requirement mariadb, which replication uses too.
+cloudfall_mariadb_certificate_path: /etc/mysql/cloudfall/server.crt
+cloudfall_mariadb_key_path: /etc/mysql/cloudfall/server.key
+cloudfall_mariadb_ca_path: /etc/mysql/cloudfall/ca.crt
+# What the services converge signed and staged for this server: the
+# certificate and the CA, only when they are missing or due.
+cloudfall_mariadb_delivered_files: >-
+  {{ (cloudfall_services_mariadb_delivered_files | default({}))
+     .get(cloudfall_server_id, []) }}
+# The account host of each allowed source: 10.0.0.0/255.255.255.0, or one
+# address as itself; '' for an IPv6 network, which MariaDB cannot match.
+cloudfall_mariadb_remote_hosts: >-
+  {{
+    cloudfall_mariadb_service.mariadb.remoteAccess.allowedSources
+    | map('cloudfall_mariadb_host') | list
+    if cloudfall_mariadb_service.mariadb.remoteAccess is defined
+    else []
+  }}
+# Each owner's account from each allowed source, as user@host.
+cloudfall_mariadb_remote_accounts: >-
+  {{
+    cloudfall_mariadb_owners | map(attribute='owner')
+    | product(cloudfall_mariadb_remote_hosts) | map('join', '@') | list
+  }}
+# What remote_accounts.yml reads: the accounts at a host other than
+# localhost, as user@host, and their grants as user@host|database.
+cloudfall_mariadb_remote_state_queries:
+  users: >-
+    SELECT CONCAT(User, '@', Host) FROM mysql.global_priv
+    WHERE Host NOT IN ('localhost', '')
+  locked_users: >-
+    SELECT CONCAT(User, '@', Host) FROM mysql.global_priv
+    WHERE Host NOT IN ('localhost', '')
+    AND JSON_VALUE(Priv, '$.account_locked') = 'true'
+  managed_users: >-
+    SELECT CONCAT(User, '@', Host) FROM mysql.roles_mapping
+    WHERE Host NOT IN ('localhost', '')
+    AND Role = '{{ cloudfall_mariadb_managed_role }}' AND Admin_option = 'N'
+  grants: >-
+    SELECT CONCAT(User, '@', Host, '|', Db) FROM mysql.db
+    WHERE Host NOT IN ('localhost', '')
+# What accounts.yml reads before it changes anything, one column each.
+cloudfall_mariadb_state_queries:
+  users: SELECT User FROM mysql.global_priv WHERE Host = 'localhost'
+  socket_users: >-
+    SELECT User FROM mysql.global_priv WHERE Host = 'localhost'
+    AND JSON_VALUE(Priv, '$.plugin') = 'unix_socket'
+    AND JSON_EXTRACT(Priv, '$.auth_or') IS NULL
+  locked_users: >-
+    SELECT User FROM mysql.global_priv WHERE Host = 'localhost'
+    AND JSON_VALUE(Priv, '$.account_locked') = 'true'
+  managed_users: >-
+    SELECT User FROM mysql.roles_mapping WHERE Host = 'localhost'
+    AND Role = '{{ cloudfall_mariadb_managed_role }}' AND Admin_option = 'N'
+  roles: >-
+    SELECT User FROM mysql.global_priv WHERE Host = ''
+    AND User = '{{ cloudfall_mariadb_managed_role }}'
+  ed25519: >-
+    SELECT PLUGIN_NAME FROM information_schema.PLUGINS
+    WHERE PLUGIN_NAME = 'ed25519' AND PLUGIN_STATUS = 'ACTIVE'
+  databases: SELECT SCHEMA_NAME FROM information_schema.SCHEMATA
+  grants: SELECT CONCAT(User, '|', Db) FROM mysql.db WHERE Host = 'localhost'

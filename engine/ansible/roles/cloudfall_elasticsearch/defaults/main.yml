@@ -19,6 +19,12 @@ cloudfall_elasticsearch_state_directory: /var/lib/cloudfall/elasticsearch
 cloudfall_elasticsearch_certificate_path: /etc/elasticsearch/certs/transport.crt
 cloudfall_elasticsearch_key_path: /etc/elasticsearch/certs/transport.key
 cloudfall_elasticsearch_ca_path: /etc/elasticsearch/certs/ca.crt
+# With existingCluster (S-012, #315): the existing cluster's CA, trusted beside
+# the project CA while it is declared and removed once it is not
+# (elasticsearch_cluster.EXISTING_CLUSTER_CA_PATH), and the HTTP port its
+# nodes answer at on their seed host addresses, which the preflight asks.
+cloudfall_elasticsearch_existing_ca_path: /etc/elasticsearch/certs/existing-cluster-ca.crt
+cloudfall_elasticsearch_existing_http_port: 9200
 # Where the role reaches the node's API: plain HTTP on loopback, or, with
 # remoteAccess, HTTPS on the listen address the certificate names, verified
 # against the project CA (plain HTTP is refused there).

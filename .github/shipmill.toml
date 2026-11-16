@@ -8,8 +8,14 @@ branch = "main"
 # pyproject: [project] version in pyproject.toml and uv.lock; none: tags and CHANGELOG only
 version_files = "pyproject"
 
-# Commands run after the version is written, before the commit; a failure stops the release
-after_stamp = ["uv lock --check"]
+# Commands run after the version is written, before the commit; a failure stops the release.
+# changelog-add records the interface changes `cloudfall changelog` serves (S-017-15): it
+# writes sdk/src/cloudfall/schema-changelog.json and its snapshot, which the release commit
+# takes with the stamp; an unchanged interface adds no entry
+after_stamp = [
+    "uv lock --check",
+    "uv run --frozen --no-dev treaty changelog-add cloudfall.app:app",
+]
 
 [changelog]
 path = "CHANGELOG.md"
@@ -92,6 +98,11 @@ remind_hours = 4   # repeat it while the session still waits
 max_wait_minutes = 15 # stop a session that waited this long; 0: never
 app_id = 5209412   # gated sessions write as shipmill-romamo[bot]
 mode = "headless" # nobody attaches: sessions ask on GitHub with needs-decision
+
+# Programs a gate session's `uv run` may start besides python, pytest, ruff and mypy (D-82):
+# implementers lint Ansible changes before pushing, as CI does (#325)
+[hooks]
+uv_run = ["ansible-lint"]
 
 [autonomy]
 triage = "act"

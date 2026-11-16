@@ -9,6 +9,28 @@
 # exit code and systemd-run's own timeout line are read. The result lands in
 # cloudfall_deploy_command_health_result, then a failed check fails the task
 # that follows, so a block's rescue can still read what happened.
+#
+# The environment is the one of the release current points to (D-21): its own
+# shared/env/<component>.<release directory>.env, or the legacy
+# shared/env/<component>.env when its deploy wrote none for it, which is the
+# file its unit names.
+- name: Inspect the release current points to for its environment file
+  ansible.builtin.stat:
+    path: "{{ cloudfall_deploy_component.install_root }}/current"
+    follow: false
+    get_checksum: false
+  register: cloudfall_deploy_command_health_release
+
+- name: Inspect the current release's own environment file
+  ansible.builtin.stat:
+    path: >-
+      {{ cloudfall_deploy_component.install_root }}/shared/env/{{
+        cloudfall_deploy_component.id
+      }}.{{ cloudfall_deploy_command_health_release.stat.lnk_source | basename }}.env
+    get_checksum: false
+  register: cloudfall_deploy_command_health_environment_own
+  when: cloudfall_deploy_command_health_release.stat.islnk | default(false)
+
 - name: Compute the command health check invocation
   ansible.builtin.set_fact:
     cloudfall_deploy_command_health_current: >-
@@ -22,6 +44,15 @@
       }}
     cloudfall_deploy_command_health_attempts: >-
       {{ cloudfall_deploy_component.healthCheck.attempts | int }}
+    cloudfall_deploy_command_health_environment: >-
+      {{ cloudfall_deploy_component.install_root }}/shared/env/{{
+        cloudfall_deploy_component.id
+      }}{{
+        '.' ~ (cloudfall_deploy_command_health_release.stat.lnk_source | basename)
+        if cloudfall_deploy_command_health_environment_own.stat.exists
+        | default(false)
+        else ''
+      }}.env
 
 - name: Run the command health check
   ansible.builtin.command:
@@ -37,8 +68,7 @@
           '--gid=' ~ cloudfall_deploy_component.application_user,
           '--working-directory=' ~ cloudfall_deploy_command_health_current,
           '--property=EnvironmentFile=-'
-          ~ cloudfall_deploy_component.install_root ~ '/shared/env/'
-          ~ cloudfall_deploy_component.id ~ '.env',
+          ~ cloudfall_deploy_command_health_environment,
           '--property=RuntimeMaxSec='
           ~ cloudfall_deploy_component.healthCheck.timeoutSeconds,
           '--property=TimeoutStopSec=10',

@@ -1,0 +1,3 @@
+### Fixed
+
+- `audit` now sees `REQUIRE SSL` removed by hand from a MariaDB owner account at an allowed source (`ALTER USER ... REQUIRE NONE`): inspect reads each remote account's `ssl_type` into a new optional `sslTypes` list of `mariadbAccounts`, and the `mariadb.accounts` check reports drift for a remote owner account whose `ssl_type` isn't `ANY` (what converge's `REQUIRE SSL` sets), naming the account and its type. A record an older inspect wrote, which has no `sslTypes`, now reports that check as unknown instead of compliant when the service has remote owner accounts, until the next inspect; local accounts are checked as before (#435)

@@ -12,10 +12,11 @@ role's own conditions and receipt template with Ansible's templating.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 import yaml
@@ -40,6 +41,9 @@ INSTALL_UNIT = "Install the managed service unit"
 ACTIVATE = "Activate the release behind the health gate"
 SWITCH = "Switch the current release symlink"
 RECEIPT = "Write the release receipt on the controller"
+KEEP_OUTPUT = (
+    "Keep the release command output on the controller, outside the receipt"
+)
 RECORD_ENTRY = "Record the server's entry in the run's release receipt"
 TIMEOUT_MARKER = "cloudfall-test-timeout"
 REFUSED_MARKER = "cloudfall-test-refused"
@@ -134,6 +138,11 @@ def _local_inventory(tmp_path: Path) -> Path:
     return inventory
 
 
+def _environment_path(tmp_path: Path) -> Path:
+    """Name the new release's own environment file as the deploy does (D-21)."""
+    return tmp_path / "shared" / "env" / "crm-backend.20261027T000000Z-abcdef1.env"
+
+
 def _run_release_command(
     tmp_path: Path,
     arguments: list[str],
@@ -153,6 +162,7 @@ def _run_release_command(
         "cloudfall_deploy_release": release_directory.name,
         "cloudfall_deploy_release_directory": str(release_directory),
         "cloudfall_deploy_shared_directory": str(tmp_path / "shared"),
+        "cloudfall_deploy_environment_path": str(_environment_path(tmp_path)),
         "cloudfall_deploy_systemd_run": str(systemd_run),
         "cloudfall_deploy_component": _component(
             {
@@ -256,17 +266,25 @@ def test_s005_2_the_command_runs_in_its_working_directory_as_the_user(
 def test_s005_3_the_command_loads_the_unit_environment_file(
     tmp_path: Path,
 ) -> None:
-    """The transient unit gets the ``EnvironmentFile=-`` line the unit names."""
+    """The transient unit gets the ``EnvironmentFile=-`` line the unit names.
+
+    Both name the new release's own environment file (D-21).
+    """
     exit_code, _ = _run_release_command(tmp_path, ["0"])
 
     assert exit_code == 0
+    assert (
+        f"--property=EnvironmentFile=-{_environment_path(tmp_path)}"
+        in _argv(tmp_path)
+    )
     unit = Templar(
         loader=DataLoader(),
         variables={
             "cloudfall_deploy_component": {
                 **_component(None),
                 "install_root": str(tmp_path),
-            }
+            },
+            "cloudfall_deploy_environment_path": str(_environment_path(tmp_path)),
         },
     ).template(
         trust_as_template(
@@ -387,7 +405,12 @@ def test_s005_2_the_release_command_runs_between_materialize_and_the_switch() ->
     assert names.index(REQUIRE) < names.index(INSTALL_UNIT)
     assert names.index(INSTALL_UNIT) < names.index(SWITCH)
     run = next(t for t in _main_tasks() if t["name"] == RUN)
-    assert run["ansible.builtin.include_tasks"] == "release_command.yml"
+    # A block, so its rescue removes a redeploy copy the command failed (#373).
+    block = run["block"]
+    assert isinstance(block, list)
+    assert [task["ansible.builtin.include_tasks"] for task in block] == [
+        "release_command.yml"
+    ]
 
 
 def _variables(
@@ -447,8 +470,15 @@ def test_s005_6_a_server_whose_release_server_has_not_passed_does_not_switch() -
 # The release receipt.
 
 
+OUTPUT_REFERENCE = "tmp/output/releases"
+
+
 def _receipt(
-    component: dict[str, object], servers: tuple[str, ...], hostvars: dict[str, object]
+    component: dict[str, object],
+    servers: tuple[str, ...],
+    hostvars: dict[str, object],
+    *,
+    output_directory: str = "/srv/fleet/tmp/output/releases",
 ) -> dict[str, object]:
     """Receipt a passed gate on each server in turn, as one deploy run does."""
     tasks = DataLoader().load_from_file(str(ROLE / "tasks" / "release_receipt.yml"))
@@ -469,6 +499,8 @@ def _receipt(
             "cloudfall_deploy_release": "20261027T000000Z-abcdef1",
             "cloudfall_deploy_artifact_sha256": "a" * 64,
             "cloudfall_deploy_previous_directory": "",
+            "cloudfall_deploy_output_directory": output_directory,
+            "cloudfall_deploy_output_reference_directory": OUTPUT_REFERENCE,
             "ansible_facts": {"date_time": {"iso8601": "2026-10-27T00:00:00Z"}},
         }
         templar = Templar(loader=DataLoader(), variables=variables)
@@ -510,7 +542,14 @@ def test_s005_6_every_receipt_names_the_release_server() -> None:
 
     assert isinstance(spec, dict)
     assert [entry["server"] for entry in spec["servers"]] == ["b", "a"]
-    assert spec["releaseCommand"] == RESULT_ON_B
+    without_tail = {k: v for k, v in RESULT_ON_B.items() if k != "outputTail"}
+    assert spec["releaseCommand"] == {
+        **without_tail,
+        "output": {
+            "path": f"{OUTPUT_REFERENCE}/crm-backend.20261027T000000Z-abcdef1.log",
+            "sha256": hashlib.sha256(b"migrated").hexdigest(),
+        },
+    }
 
 
 def test_s005_10_a_receipt_without_release_has_no_release_command() -> None:
@@ -531,19 +570,113 @@ def test_s005_10_a_receipt_without_release_has_no_release_command() -> None:
     ]
 
 
-def test_s005_7_a_receipt_refuses_an_output_tail_over_2000_characters() -> None:
+SECRET_OUTPUT = "DATABASE_URL=postgres://app:s3cr3t-pw@db/app"  # noqa: S105
+
+
+def test_the_receipt_never_holds_the_release_command_output() -> None:
+    """The output may print a secret, and the receipt is committed (D-16)."""
     component = _component({"command": ["bin/migrate"]}, server="b")
     hostvars: dict[str, object] = {
         "b": {
             "cloudfall_deploy_release_command_result": {
                 **RESULT_ON_B,
-                "outputTail": "x" * 2001,
+                "outputTail": SECRET_OUTPUT,
             }
         }
     }
 
+    receipt = _receipt(component, ("b",), hostvars)
+
+    assert "s3cr3t-pw" not in json.dumps(receipt)
+    spec = receipt["spec"]
+    assert isinstance(spec, dict)
+    assert "outputTail" not in spec["releaseCommand"]
+    assert spec["releaseCommand"]["output"]["sha256"] == (
+        hashlib.sha256(SECRET_OUTPUT.encode()).hexdigest()
+    )
+    # The text goes to the uncommitted file the receipt names, 0600.
+    kept = next(
+        t
+        for t in DataLoader().load_from_file(
+            str(ROLE / "tasks" / "receipt_write.yml")
+        )
+        if t["name"] == KEEP_OUTPUT
+    )["ansible.builtin.copy"]
+    templar = Templar(
+        loader=DataLoader(),
+        variables={
+            "hostvars": hostvars,
+            "cloudfall_deploy_component": component,
+            "cloudfall_deploy_release": "20261027T000000Z-abcdef1",
+            "cloudfall_deploy_output_directory": "/srv/fleet/tmp/output/releases",
+        },
+    )
+    assert templar.template(trust_as_template(kept["content"])) == SECRET_OUTPUT
+    assert templar.template(trust_as_template(kept["dest"])) == (
+        "/srv/fleet/" + spec["releaseCommand"]["output"]["path"]
+    )
+    assert kept["mode"] == "0600"
+
+
+def test_without_an_output_directory_the_receipt_keeps_no_output() -> None:
+    component = _component({"command": ["bin/migrate"]}, server="b")
+    hostvars: dict[str, object] = {
+        "b": {"cloudfall_deploy_release_command_result": RESULT_ON_B}
+    }
+
+    spec = _receipt(component, ("b",), hostvars, output_directory="")["spec"]
+
+    assert isinstance(spec, dict)
+    assert set(spec["releaseCommand"]) == {
+        "server",
+        "command",
+        "workingDirectory",
+        "exitCode",
+    }
+
+
+def test_a_receipt_from_before_0_8_0_with_its_output_tail_still_validates() -> None:
+    _validate_receipt(_old_receipt("migrated"))
+
+
+def test_a_receipt_with_both_the_tail_and_a_reference_is_refused() -> None:
+    receipt = _old_receipt("migrated")
+    spec = receipt["spec"]
+    assert isinstance(spec, dict)
+    spec["releaseCommand"]["output"] = {"path": "tmp/x.log", "sha256": "a" * 64}
+
+    with pytest.raises(ValidationError):
+        _validate_receipt(receipt)
+
+
+def test_s005_7_an_old_receipt_refuses_an_output_tail_over_2000_characters() -> None:
     with pytest.raises(ValidationError, match="too long"):
-        _receipt(component, ("b",), hostvars)
+        _validate_receipt(_old_receipt("x" * 2001))
+
+
+def _old_receipt(tail: str) -> dict[str, Any]:
+    """Return a release receipt as 0.7.0 wrote it, with the output in it."""
+    return {
+        "apiVersion": "cloudfall/v1",
+        "kind": "ReleaseReceipt",
+        "metadata": {"id": "crm-backend", "description": "old receipt"},
+        "spec": {
+            "component": "crm-backend",
+            "release": "20261027T000000Z-abcdef1",
+            "artifactSha256": "a" * 64,
+            "servers": [
+                {
+                    "server": "b",
+                    "release": "20261027T000000Z-abcdef1",
+                    "previousRelease": None,
+                    "deployedAt": "2026-10-27T00:00:00Z",
+                    "healthCheckPassed": True,
+                    "rolledBack": False,
+                }
+            ],
+            "releaseCommand": {**RESULT_ON_B, "outputTail": tail},
+        },
+    }
 
 
 # deploy.yml's host order, run for real against two local hosts.

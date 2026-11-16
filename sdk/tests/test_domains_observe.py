@@ -61,7 +61,7 @@ def _sha256(path: Path) -> str:
 
 def _write_receipt(project: Path, vhost: Path) -> Path:
     """Write the receipt a ``domains.yml`` run leaves for the vhost as it is."""
-    receipts = project / "tmp" / "deployments"
+    receipts = project / "record" / "deployments"
     receipts.mkdir(parents=True)
     receipt = receipts / "crm-site.json"
     receipt.write_text(
@@ -214,7 +214,7 @@ def _setup(
     )
     request = DomainObserve(
         domain_id=ResourceId("crm-site"),
-        receipt_directory=project / "tmp" / "deployments",
+        receipt_directory=project / "record" / "deployments",
         reading_file=scratch / "reading.json",
     )
     return project, server, run, context, request
@@ -397,7 +397,7 @@ def _recorded(tmp_path: Path, run: StepRunner) -> tuple[EngineContext, DomainObs
     )
     request = DomainObserve(
         domain_id=ResourceId("crm-site"),
-        receipt_directory=project / "tmp" / "deployments",
+        receipt_directory=project / "record" / "deployments",
         reading_file=tmp_path / "reading.json",
     )
     return context, request

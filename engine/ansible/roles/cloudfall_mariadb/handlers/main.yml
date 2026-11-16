@@ -1,0 +1,16 @@
+---
+- name: Restart MariaDB
+  ansible.builtin.systemd_service:
+    name: mariadb.service
+    state: restarted
+    daemon_reload: true
+
+# After a restart, when both are notified: the server already read the files.
+- name: Reload the MariaDB server certificate
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --execute
+      - FLUSH SSL
+  changed_when: true

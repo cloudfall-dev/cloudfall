@@ -16,6 +16,14 @@ spec:
     databases:
       - name: probe
         application: probe
+      # Its password is created sops-encrypted by the converge job, so the
+      # second converge proves an unchanged password changes nothing (#398)
+      - name: ledger
+        owner: ledger
+        passwordRef:
+          environment: production
+          path: /postgresql-main/ledger
+          key: LEDGER_PASSWORD
   backup:
     directory: /var/backups/cloudfall/postgresql-main
     onCalendar: "*-*-* 02:00:00 UTC"

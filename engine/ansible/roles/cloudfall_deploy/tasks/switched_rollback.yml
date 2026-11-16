@@ -52,11 +52,18 @@
   when: cloudfall_deploy_switched.cloudfall_deploy_previous_directory | length > 0
 
 # As the deploy's rescue does for a failed one, so a rollback to the release
-# id takes the copy that ran before this run.
+# id takes the copy that ran before this run; its environment file goes with
+# it.
 - name: Remove the switched server's redeploy copy of the rolled-back release
   ansible.builtin.file:
-    path: "{{ cloudfall_deploy_switched.cloudfall_deploy_release_directory }}"
+    path: "{{ item }}"
     state: absent
+  loop:
+    - "{{ cloudfall_deploy_switched_copy }}"
+    - >-
+      {{ cloudfall_deploy_switched.cloudfall_deploy_shared_directory }}/env/{{
+        cloudfall_deploy_component.id
+      }}.{{ cloudfall_deploy_switched_copy | basename }}.env
   delegate_to: "{{ cloudfall_deploy_switched_server }}"
   when:
     - cloudfall_deploy_switched.cloudfall_deploy_previous_directory | length > 0

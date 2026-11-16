@@ -36,10 +36,26 @@ directly, the CLI validates and reads it, and the engine converges servers
 to it. The agent operates through a stable CLI, the `cloudfall mcp serve` server
 and a Python API instead of inventing shell commands or discovering
 infrastructure over SSH. Every mutating operation goes through the engine's
-explicit playbook contracts, waits behind a gate the agent does not control
-(a confirmation handshake, or an `OperatorPolicy` that licenses the
-operation class), and produces receipts. Status is derived from validated
-observations, never inferred.
+explicit playbook contracts, previews its plan first, and produces receipts.
+Status is derived from validated observations, never inferred.
+
+Where the gate holds depends on the path. A declared operation in fleet
+mode changes a host only once a person approves its recorded diff at a
+terminal. The operator runs a proposal only when a person approves it at a
+terminal or an `OperatorPolicy` grant licenses its operation class. The
+terminal check stops an agent's tool call, not a process running as the
+same OS user (see the [operator guide](docs/operator-guide.md)).
+
+In project mode the gate is the agent's own. The `cloudfall mcp serve`
+tools that change servers return their plan first, but the confirmation
+that runs it (`yes: true`, or `confirm_destructive: true` for the
+`converge_*` tools) comes from the agent: nothing it does not control
+stands between the plan and the run. The exception is a release whose
+application declares `approval: manual`, which `deploy` and `migrate` run
+only after a person's `cloudfall release approve`. Letting an
+`OperatorPolicy` decide which of these confirmations an agent may give
+itself is planned
+([#391](https://github.com/cloudfall-dev/cloudfall/issues/391)).
 
 The record is the durable output. Every operator decision is written as a
 schema-validated receipt that holds the evidence it was based on, the
@@ -71,17 +87,21 @@ repository, holding everything needed to run one user's stack.
 Every `cloudfall` command runs inside a project: the current directory when
 it is one, or the directory named by `--project` or by the
 `CLOUDFALL_PROJECT` environment variable. Relative paths, including the
-`tmp/` defaults, resolve against the project, as if the command had been
-started there.
+`tmp/` and `record/` defaults, resolve against the project, as if the
+command had been started there.
 Resources live in one directory per kind (`servers/`, `components/`, ...),
 and only those directories are read as resources; a resource in the wrong
 directory is a validation error. Everything else in the project is the
 user's: playbooks and roles of their own, encrypted secrets, docs, tooling.
-Runtime state (observations, receipts, rendered inventory, built artifacts,
+What can be rebuilt (observations, rendered inventory, built artifacts,
 rendered environment files, the persisted migration plan) lands under `tmp/`
-and is never committed. Decision records are the exception: what an agent
-proposed and who approved it lands in `decisions/` beside the operations, and
-the team commits it. `cloudfall init` lays out a new project and
+and is never committed. The record is committed: receipts and the
+operator's proposals land in `record/`, and what an agent proposed through
+a declared operation and who approved it lands in `decisions/` beside the
+operations (D-16). No record holds a secret value: a decision's check diff
+and run logs are raw Ansible output, so they stay under
+`tmp/output/decisions/` and the record keeps each file's path, sha256 and
+size (D-24). `cloudfall init` lays out a new project and
 `cloudfall add` declares its first fleet resources.
 
 Proposed, not built: for a team that already runs Ansible, the project is
@@ -145,7 +165,9 @@ rather than by path, and each may deploy to one or more servers.
 On disk, each application owns a Linux user and a `/srv/apps/<application>/`
 directory with one subdirectory per component. Releases unpack into
 `releases/` and a `current` symlink points at the active release, which is
-what makes rollback a symlink switch.
+what makes rollback a symlink switch. A rollback switches code, unit and
+environment back; it does not undo the release command (see Deployment
+strategy).
 
 Components come from one repository each by preference, with monorepos also
 supported.
@@ -158,12 +180,29 @@ once the operator runs persistently — never on production servers:
 
 ```text
 Git ref → build artifact (hashed tarball + release metadata) → digest-verified
-transfer → unpack into releases/ → locked dependency materialization →
-environment file → systemd unit → health-check gate → symlink switch
+transfer → unpack into releases/ → environment file → locked dependency
+materialization → release command (once per deploy) → systemd unit →
+symlink switch → service restart → health-check gate
 ```
 
-A failed health check triggers automatic rollback to the previous release.
-Once a deploy passes its health gate on a server, it keeps the component's
+The gate runs on the live release: `current` already points at the new
+release and its service has restarted, so the new release serves traffic
+while the gate runs. A failed health check triggers automatic rollback:
+`current` goes back to the previous release, which restarts under its own
+unit and is gated again.
+
+The release command (database migrations, say) runs once per deploy, on the
+component's first server, before any server switches. A rollback, the
+automatic one or `cloudfall rollback`, does not undo it: nothing reverts what
+the command changed, and the previous release runs against it. A migration
+must therefore stay compatible with the release before it.
+
+Each release reads its own environment file,
+`shared/env/<component>.<release>.env`, named by its systemd unit, so a
+rollback (the automatic one or `cloudfall rollback`) restores the previous
+release's code, its unit and its environment together: a deploy that fails
+only because of a bad environment value leaves the previous release running
+on the environment it had. Once a deploy passes its health gate on a server, it keeps the component's
 `deployment.retainReleases` releases there (5 unless declared, at least 2)
 and removes the older ones, always keeping `current` and the release before
 it, so explicit rollback to any retained release stays available and the
@@ -219,7 +258,8 @@ Operating servers is the same evidence discipline running continuously:
   globally; DNS cutover, data deletion, and database promotion stay behind
   explicit confirmation regardless of autonomy level
 - **Record** — receipts are the audit log: schema-validated, written under
-  the project's `tmp/`, one per decision or operation, holding the evidence,
+  the project's committed `record/` (decision records under `decisions/`),
+  one per decision or operation, holding the evidence,
   the action, the approver and the outcome. "Why did the agent do that" is
   answered from the record, not from the agent's memory
 - **Verify** — a run is not an outcome. Deploys are gated on health, backups

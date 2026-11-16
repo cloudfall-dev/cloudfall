@@ -73,6 +73,7 @@
             'postgresql': 'postgres',
             'redis': 'redis',
             'elasticsearch': 'elasticsearch',
+            'mariadb': 'root',
           }[cloudfall_backup_item.serviceKind]
         }}
       loop: "{{ cloudfall_backup_matched }}"

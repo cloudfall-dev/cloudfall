@@ -531,7 +531,39 @@
           {{ cloudfall_inspect_component_environment | default([]) }}
         configuration: "{{ cloudfall_inspect_configuration }}"
 
-- name: Capture component environment file evidence
+# The environment file is the one of the release current points to (D-21):
+# shared/env/<component>.<release directory>.env, or the legacy
+# shared/env/<component>.env when its deploy wrote none for it.
+- name: Capture the release each component's current points to
+  ansible.builtin.stat:
+    path: "{{ cloudfall_inspect_component_item.install_root }}/current"
+    follow: false
+    get_checksum: false
+  loop: "{{ cloudfall_inspect_components }}"
+  loop_control:
+    loop_var: cloudfall_inspect_component_item
+    label: "{{ cloudfall_inspect_component_item.id }}"
+  register: cloudfall_inspect_component_current
+
+- name: Capture the current release's own environment file evidence
+  ansible.builtin.stat:
+    path: >-
+      {{ cloudfall_inspect_current_component.install_root }}/shared/env/{{
+        cloudfall_inspect_current_component.id
+      }}.{{
+        cloudfall_inspect_current_result.stat.lnk_source | default('') | basename
+      }}.env
+    checksum_algorithm: sha256
+  vars:
+    cloudfall_inspect_current_component: >-
+      {{ cloudfall_inspect_current_result.cloudfall_inspect_component_item }}
+  loop: "{{ cloudfall_inspect_component_current.results | default([]) }}"
+  loop_control:
+    loop_var: cloudfall_inspect_current_result
+    label: "{{ cloudfall_inspect_current_component.id }}"
+  register: cloudfall_inspect_component_release_env
+
+- name: Capture the legacy component environment file evidence
   ansible.builtin.stat:
     path: >-
       {{ cloudfall_inspect_component_item.install_root }}/shared/env/{{
@@ -549,22 +581,44 @@
     cloudfall_inspect_component_environment: >-
       {{
         cloudfall_inspect_component_environment | default([]) + [{
-          'component':
-            cloudfall_inspect_env_result.cloudfall_inspect_component_item.id,
+          'component': cloudfall_inspect_env_component.id,
           'path':
-            cloudfall_inspect_env_result.cloudfall_inspect_component_item
-              .install_root ~ '/shared/env/'
-            ~ cloudfall_inspect_env_result.cloudfall_inspect_component_item.id
+            cloudfall_inspect_env_component.install_root ~ '/shared/env/'
+            ~ cloudfall_inspect_env_component.id
+            ~ (
+              '.' ~ (cloudfall_inspect_env_current.lnk_source | basename)
+              if cloudfall_inspect_env_own
+              else ''
+            )
             ~ '.env',
-          'exists': cloudfall_inspect_env_result.stat.exists,
-          'sha256': cloudfall_inspect_env_result.stat.checksum | default(none),
+          'exists': cloudfall_inspect_env_chosen.stat.exists,
+          'sha256': cloudfall_inspect_env_chosen.stat.checksum | default(none),
         }]
       }}
-  loop: "{{ cloudfall_inspect_component_env.results | default([]) }}"
+  vars:
+    cloudfall_inspect_env_component: >-
+      {{ cloudfall_inspect_env_pair[1].cloudfall_inspect_component_item }}
+    cloudfall_inspect_env_current: >-
+      {{ cloudfall_inspect_env_pair[0].cloudfall_inspect_current_result.stat }}
+    cloudfall_inspect_env_own: >-
+      {{
+        (cloudfall_inspect_env_current.islnk | default(false))
+        and cloudfall_inspect_env_pair[0].stat.exists
+      }}
+    cloudfall_inspect_env_chosen: >-
+      {{
+        cloudfall_inspect_env_pair[0]
+        if cloudfall_inspect_env_own
+        else cloudfall_inspect_env_pair[1]
+      }}
+  loop: >-
+    {{
+      cloudfall_inspect_component_release_env.results | default([])
+      | zip(cloudfall_inspect_component_env.results | default([])) | list
+    }}
   loop_control:
-    loop_var: cloudfall_inspect_env_result
-    label: >-
-      {{ cloudfall_inspect_env_result.cloudfall_inspect_component_item.id }}
+    loop_var: cloudfall_inspect_env_pair
+    label: "{{ cloudfall_inspect_env_pair[1].cloudfall_inspect_component_item.id }}"
 
 - name: Collect Prometheus alert rule evidence
   ansible.builtin.uri:
@@ -644,6 +698,42 @@
 - name: Collect bundled dashboard evidence
   ansible.builtin.include_tasks: dashboards.yml
   when: cloudfall_inspect_logging_backend | length > 0
+
+- name: Collect Elasticsearch user evidence
+  ansible.builtin.include_tasks: elasticsearch_users.yml
+  loop: "{{ cloudfall_inspect_elasticsearch_services }}"
+  loop_control:
+    loop_var: cloudfall_inspect_elasticsearch_service
+    label: "{{ cloudfall_inspect_elasticsearch_service.id }}"
+
+- name: Attach Elasticsearch user evidence
+  ansible.builtin.set_fact:
+    cloudfall_inspect_snapshot: >-
+      {{
+        cloudfall_inspect_snapshot | combine(
+          {'spec': {'elasticsearchUsers': cloudfall_inspect_elasticsearch_users}},
+          recursive=true
+        )
+      }}
+  when: cloudfall_inspect_elasticsearch_services | length > 0
+
+- name: Collect MariaDB account evidence
+  ansible.builtin.include_tasks: mariadb_accounts.yml
+  loop: "{{ cloudfall_inspect_mariadb_services }}"
+  loop_control:
+    loop_var: cloudfall_inspect_mariadb_service
+    label: "{{ cloudfall_inspect_mariadb_service.id }}"
+
+- name: Attach MariaDB account evidence
+  ansible.builtin.set_fact:
+    cloudfall_inspect_snapshot: >-
+      {{
+        cloudfall_inspect_snapshot | combine(
+          {'spec': {'mariadbAccounts': cloudfall_inspect_mariadb_accounts}},
+          recursive=true
+        )
+      }}
+  when: cloudfall_inspect_mariadb_services | length > 0
 
 - name: Create controller observation directory
   ansible.builtin.file:

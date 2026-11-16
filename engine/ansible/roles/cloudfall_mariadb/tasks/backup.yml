@@ -1,0 +1,92 @@
+---
+# The dumps and the restore drill (S-019, Backups and the restore drill),
+# run by their timers and by cloudfall backup run / verify through backup.yml.
+# They run as root through the socket; the dumps hold data, so the directory
+# is root's alone and every file in it 0600.
+
+# Every service's backup directory sits in the shared backup root, so the
+# root is created root-owned 0755 first: left to the leaf's task, it would
+# take the first service's owner and 0700 and lock the others out (#342).
+- name: Create the backup root
+  ansible.builtin.file:
+    path: "{{ cloudfall_mariadb_backup_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: >-
+    cloudfall_mariadb_service.backup.directory
+    .startswith(cloudfall_mariadb_backup_root ~ '/')
+
+- name: Create the backup directory
+  ansible.builtin.file:
+    path: "{{ cloudfall_mariadb_service.backup.directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install the backup script
+  ansible.builtin.template:
+    src: backup.sh.j2
+    dest: /usr/local/sbin/cloudfall-mariadb-backup
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the restore-check script
+  ansible.builtin.template:
+    src: restore-check.sh.j2
+    dest: /usr/local/sbin/cloudfall-mariadb-restore-check
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the backup service unit
+  ansible.builtin.template:
+    src: backup.service.j2
+    dest: /etc/systemd/system/cloudfall-mariadb-backup.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the backup timer unit
+  ansible.builtin.template:
+    src: backup.timer.j2
+    dest: /etc/systemd/system/cloudfall-mariadb-backup.timer
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable the backup timer
+  ansible.builtin.systemd_service:
+    name: cloudfall-mariadb-backup.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Install the restore-drill service unit
+  ansible.builtin.template:
+    src: restore-check.service.j2
+    dest: /etc/systemd/system/cloudfall-mariadb-restore-check.service
+    owner: root
+    group: root
+    mode: "0644"
+  when: cloudfall_mariadb_service.backup.restoreCheckOnCalendar is defined
+
+- name: Install the restore-drill timer unit
+  ansible.builtin.template:
+    src: restore-check.timer.j2
+    dest: /etc/systemd/system/cloudfall-mariadb-restore-check.timer
+    owner: root
+    group: root
+    mode: "0644"
+  when: cloudfall_mariadb_service.backup.restoreCheckOnCalendar is defined
+
+- name: Enable the restore-drill timer
+  ansible.builtin.systemd_service:
+    name: cloudfall-mariadb-restore-check.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: cloudfall_mariadb_service.backup.restoreCheckOnCalendar is defined

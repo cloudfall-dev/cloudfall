@@ -121,12 +121,21 @@ argument_specs:
       cloudfall_deploy_receipt_directory:
         type: str
         default: ""
+      cloudfall_deploy_output_directory:
+        type: str
+        default: ""
+      cloudfall_deploy_output_reference_directory:
+        type: str
+        default: ""
       cloudfall_deploy_unit_settle_seconds:
         type: int
         default: 10
       cloudfall_deploy_systemd_run:
         type: str
         default: /usr/bin/systemd-run
+      cloudfall_deploy_unit_directory:
+        type: str
+        default: /etc/systemd/system
       cloudfall_deploy_release_output_characters:
         type: int
         default: 2000
@@ -149,6 +158,9 @@ argument_specs:
       cloudfall_deploy_release:
         type: str
         required: true
+      cloudfall_deploy_unit_directory:
+        type: str
+        default: /etc/systemd/system
   restart:
     short_description: Restart one component behind its health check
     options:

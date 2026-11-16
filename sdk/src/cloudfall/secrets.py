@@ -35,8 +35,10 @@ from cloudfall.domain import (
     ResourceId,
     SecretKeyName,
 )
-from cloudfall.elasticsearch import ElasticsearchAccount
+from cloudfall.elasticsearch import ElasticsearchAccount, ElasticsearchUserName
 from cloudfall.inventory import (
+    ElasticsearchUser,
+    MariadbOwnedDatabase,
     OwnedPostgresDatabase,
     PlatformInventory,
     SecretValueReference,
@@ -49,6 +51,7 @@ if TYPE_CHECKING:
 
     from cloudfall.inventory import ComponentInventory, SecretReference
     from cloudfall.lifecycle import EngineContext
+    from cloudfall.mariadb import MariadbAuthentication, MariadbUserName
 
 ERROR_SOPS_MISSING = "secrets_sops_missing"
 ERROR_KEY_MISSING = "secrets_key_missing"
@@ -276,6 +279,83 @@ def owned_role_passwords(
     return tuple(passwords.values())
 
 
+@dataclass(frozen=True, slots=True)
+class MariadbOwnerPassword:
+    """The decrypted password of one MariaDB owner user, held only in memory.
+
+    What leaves it is the hash its ``authentication`` plugin stores (S-019,
+    D-9): the controller stages that hash, and the password reaches no host.
+    """
+
+    service: ResourceId
+    owner: MariadbUserName
+    authentication: MariadbAuthentication
+    reference: SecretValueReference
+    value: str = field(repr=False)
+
+    @property
+    def password_hash(self) -> str:
+        """Return the hash the server stores; the only form the host receives."""
+        return self.authentication.password_hash(self.value)
+
+
+def mariadb_owned_databases(
+    inventory: PlatformInventory,
+) -> tuple[tuple[ResourceId, MariadbOwnedDatabase], ...]:
+    """Return every MariaDB database whose owner has a password, with its service."""
+    return tuple(
+        (service.resource_id, database)
+        for service in inventory.services
+        if service.mariadb is not None
+        for database in service.mariadb.databases
+        if isinstance(database, MariadbOwnedDatabase)
+    )
+
+
+def mariadb_owner_passwords(
+    databases: Iterable[tuple[ResourceId, MariadbOwnedDatabase]],
+    provider: SopsSecretProvider,
+) -> tuple[MariadbOwnerPassword, ...]:
+    """Decrypt the password of every MariaDB owner, once per service and user.
+
+    One user named by two databases of a service must name one reference and
+    one ``authentication``. A missing file or key fails naming the file, the
+    key and the owner, never a value, before any playbook runs.
+    """
+    passwords: dict[tuple[ResourceId, MariadbUserName], MariadbOwnerPassword] = {}
+    for service_id, database in databases:
+        slot = (service_id, database.owner)
+        known = passwords.get(slot)
+        if known is not None:
+            if (
+                known.reference != database.password_ref
+                or known.authentication is not database.authentication
+            ):
+                message = (
+                    f"user {database.owner.value} of MariaDB service "
+                    f"{service_id.value} names two passwordRefs or two "
+                    "authentications; every database it owns must name the same"
+                )
+                raise SecretsError(_ERROR_OWNER_CONFLICT, message)
+            continue
+        try:
+            value = provider.fetch_value(database.password_ref)
+        except SecretsError as error:
+            message = (
+                f"{error.message}; it is the passwordRef of user "
+                f"{database.owner.value} of MariaDB service {service_id.value}"
+            )
+            raise SecretsError(error.code, message) from error
+        passwords[slot] = MariadbOwnerPassword(
+            service=service_id,
+            owner=database.owner,
+            authentication=database.authentication,
+            reference=database.password_ref,
+            value=value,
+        )
+    return tuple(passwords.values())
+
+
 _SCRAM_ITERATIONS = 4096
 _SCRAM_SALT_BYTES = 16
 
@@ -288,7 +368,9 @@ def scram_sha256_verifier(password: str, *, salt: bytes | None = None) -> str:
     with 4096 iterations and a fresh 16-byte salt, as PostgreSQL's defaults
     are. PostgreSQL stores a value of this shape as it is, so the password
     itself never reaches the server (D-9). The password is prepared with
-    SASLprep as PostgreSQL prepares it, so a client logs in with it.
+    SASLprep as PostgreSQL prepares it, so a client logs in with it. The
+    ``cloudfall_postgresql`` role's ``cloudfall_scram_verifier`` filter
+    computes the same on the controller during the play, as a test checks.
     """
     salt = token_bytes(_SCRAM_SALT_BYTES) if salt is None else salt
     if not salt:
@@ -384,6 +466,96 @@ class ElasticsearchAccountPassword:
     def bcrypt_hash(self) -> str:
         """Return the hash the node stores; the only form the server receives."""
         return elasticsearch_bcrypt_hash(self.value)
+
+
+_USER_SALT_CONTEXT = b"cloudfall elasticsearch user salt"
+_BCRYPT_SALT_BYTES = 16
+_TO_BCRYPT_BASE64 = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",
+    "./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+)
+
+
+def elasticsearch_user_bcrypt_hash(
+    password: str,
+    *,
+    service: ResourceId,
+    user: ElasticsearchUserName,
+    salt_key: str,
+) -> str:
+    """Return the ``$2a$10$`` bcrypt hash of a declared user's password.
+
+    The salt is the HMAC-SHA256 of the service and user names keyed by
+    ``salt_key`` (the service's ``cloudfall`` password), so the same password
+    gives the same hash on every converge and the role can tell an unchanged
+    password from a new one without the password: it compares a digest of
+    this hash. The salt reveals nothing of the password, and without the key
+    nobody can recompute it, so a guess still costs a bcrypt round (D-9).
+    """
+    if not salt_key:
+        message = "a declared user's hash needs a non-empty salt key"
+        raise ValueError(message)
+    message_bytes = b"\0".join(
+        (_USER_SALT_CONTEXT, service.value.encode("utf-8"), user.value.encode("utf-8"))
+    )
+    raw = hmac.digest(salt_key.encode("utf-8"), message_bytes, "sha256")
+    encoded = (
+        base64.b64encode(raw[:_BCRYPT_SALT_BYTES])
+        .decode("ascii")
+        .rstrip("=")
+        .translate(_TO_BCRYPT_BASE64)
+    )
+    salt = f"$2a${_BCRYPT_COST:02d}${encoded}".encode("ascii")
+    return bcrypt.hashpw(password.encode("utf-8"), salt).decode("ascii")
+
+
+@dataclass(frozen=True, slots=True)
+class ElasticsearchUserPassword:
+    """The decrypted password of one declared user of a service, in memory only."""
+
+    service: ResourceId
+    user: ElasticsearchUserName
+    reference: SecretValueReference
+    value: str = field(repr=False)
+
+    def bcrypt_hash(self, salt_key: str) -> str:
+        """Return the hash the cluster stores; the only form the server receives."""
+        return elasticsearch_user_bcrypt_hash(
+            self.value, service=self.service, user=self.user, salt_key=salt_key
+        )
+
+
+def elasticsearch_users(
+    inventory: PlatformInventory,
+) -> tuple[tuple[ResourceId, ElasticsearchUser], ...]:
+    """Return every declared user of every Elasticsearch service, with its service."""
+    return tuple(
+        (service.resource_id, user)
+        for service in inventory.services
+        if service.elasticsearch is not None
+        for user in service.elasticsearch.users
+    )
+
+
+def elasticsearch_user_passwords(
+    users: Iterable[tuple[ResourceId, ElasticsearchUser]],
+    provider: SopsSecretProvider,
+) -> tuple[ElasticsearchUserPassword, ...]:
+    """Decrypt each declared user's ``passwordRef``; a missing one names its key."""
+    found: list[ElasticsearchUserPassword] = []
+    for service_id, user in users:
+        try:
+            value = provider.fetch_value(user.password_ref)
+        except SecretsError as error:
+            message = (
+                f"{error.message}; it is the passwordRef of user {user.name.value} "
+                f"of Elasticsearch service {service_id.value}"
+            )
+            raise SecretsError(error.code, message) from error
+        found.append(
+            ElasticsearchUserPassword(service_id, user.name, user.password_ref, value)
+        )
+    return tuple(found)
 
 
 def elasticsearch_services(
@@ -498,6 +670,76 @@ def elasticsearch_s3_credentials(
     return tuple(found)
 
 
+@dataclass(frozen=True, slots=True)
+class ElasticsearchExistingClusterLogin:
+    """The login the join check of an ``existingCluster`` uses, in memory only.
+
+    ``credentialsRef`` names one key of the store; its value is the username
+    and the password of an account of the existing cluster with the
+    ``monitor`` privilege, joined by the first ``:`` (S-012, #315).
+    """
+
+    service: ResourceId
+    reference: SecretValueReference
+    username: str = field(repr=False)
+    password: str = field(repr=False)
+
+
+def elasticsearch_existing_cluster_credentials(
+    inventory: PlatformInventory,
+) -> tuple[tuple[ResourceId, SecretValueReference], ...]:
+    """Return each service's id with its ``existingCluster.credentialsRef``, if any."""
+    return tuple(
+        (service.resource_id, service.elasticsearch.existing_cluster.credentials_ref)
+        for service in inventory.services
+        if service.elasticsearch is not None
+        and service.elasticsearch.existing_cluster is not None
+        and service.elasticsearch.existing_cluster.credentials_ref is not None
+    )
+
+
+def elasticsearch_existing_cluster_logins(
+    references: Iterable[tuple[ResourceId, SecretValueReference]],
+    provider: SopsSecretProvider,
+) -> tuple[ElasticsearchExistingClusterLogin, ...]:
+    """Decrypt the existing-cluster login each service's ``credentialsRef`` names.
+
+    A missing file or key, or a value that is not ``<username>:<password>``
+    on one line, fails naming the file and the key, never the value, before
+    any playbook.
+    """
+    found: list[ElasticsearchExistingClusterLogin] = []
+    for service_id, reference in references:
+        try:
+            value = provider.fetch_value(reference)
+        except SecretsError as error:
+            message = (
+                f"{error.message}; it holds the login of the existingCluster of "
+                f"Elasticsearch service {service_id.value}, as "
+                "<username>:<password> of an account with the monitor privilege"
+            )
+            raise SecretsError(error.code, message) from error
+        username, separator, password = value.partition(":")
+        if (
+            not separator
+            or not username
+            or not password
+            or any(char in value for char in "\r\n")
+            or username.strip() != username
+        ):
+            message = (
+                f"secret key {reference.key.value} in "
+                f"{provider.source_path(reference)} is not <username>:<password> "
+                "on one line, the form the existingCluster of Elasticsearch "
+                f"service {service_id.value} reads"
+            )
+            raise SecretsError(_ERROR_SOURCE_INVALID, message)
+        found.append(
+            ElasticsearchExistingClusterLogin(service_id, reference, username, password)
+        )
+    return tuple(found)
+
+
 PASSWORD_FILES_VARIABLE = "cloudfall_services_password_files"  # noqa: S105 - a name
 """The ``services.yml`` variable mapping service, then owner, to a staged file."""
 ELASTICSEARCH_FILES_VARIABLE = "cloudfall_services_elasticsearch_files"
@@ -506,28 +748,45 @@ ELASTICSEARCH_FILES_VARIABLE = "cloudfall_services_elasticsearch_files"
 Each service maps ``cloudfallPassword`` (the password the node keeps in its
 0600 file), ``cloudfallHash`` and ``elasticHash`` (bcrypt hashes only), and,
 with an S3 ``snapshotRepository``, ``s3AccessKey`` and ``s3SecretKey`` (the
-client keys every node puts in its keystore).
+client keys every node puts in its keystore), with an ``existingCluster``
+``credentialsRef``, ``existingUsername`` and ``existingPassword`` (the login
+the join check uses, read on the controller only), and, when it declares
+users, ``users``: each user's name to its bcrypt hash file.
+"""
+MARIADB_FILES_VARIABLE = "cloudfall_services_mariadb_files"
+"""The ``services.yml`` variable mapping a MariaDB service, then owner, to a hash file.
+
+Each file holds the hash the owner's ``authentication`` plugin stores, never
+the password (S-019, D-9).
 """
 
 
 @contextmanager
-def staged_password_files(
+def staged_password_files(  # noqa: PLR0913 - one staging dir for every kind.
     passwords: tuple[OwnedRolePassword, ...],
     accounts: tuple[ElasticsearchAccountPassword, ...] = (),
     s3: tuple[ElasticsearchS3Credentials, ...] = (),
+    users: tuple[ElasticsearchUserPassword, ...] = (),
+    existing: tuple[ElasticsearchExistingClusterLogin, ...] = (),
+    mariadb: tuple[MariadbOwnerPassword, ...] = (),
 ) -> Iterator[dict[str, object]]:
     """Write each password's server form to a 0600 file, then remove it.
 
-    The files sit in a private temp dir. An owner role's file holds its SCRAM
-    verifier, never the password (D-9); an Elasticsearch account's files hold
+    The files sit in a private temp dir. An owner role's file holds its
+    password, which only the controller reads: the role computes its SCRAM
+    verifier there with the salt the role already has (D-25), and only the
+    verifier reaches the host (D-9); an Elasticsearch account's files hold
     its bcrypt hash, and for ``cloudfall`` also the password the spec puts in
     a 0600 file on each node; an S3 snapshot repository's two files hold the
-    client keys the keystore of each node takes. Yields the extra vars
-    ``services.yml`` reads: the controller paths only, so neither crosses a
-    command line, the inventory, or the project. Nothing to stage yields no
-    variable, leaving the run as it was.
+    client keys the keystore of each node takes; an existing cluster's login
+    is two files the join check reads on the controller, never copied to a
+    node; a declared user's file holds its bcrypt hash alone; a MariaDB
+    owner's file holds the hash its plugin stores, never the password. Yields
+    the extra vars ``services.yml`` reads: the controller paths only, so
+    neither crosses a command line, the inventory, or the project. Nothing to
+    stage yields no variable, leaving the run as it was.
     """
-    if not passwords and not accounts and not s3:
+    if not any((passwords, accounts, s3, users, existing, mariadb)):
         yield {}
         return
     with tempfile.TemporaryDirectory(prefix="cloudfall-passwords-") as directory:
@@ -536,7 +795,7 @@ def staged_password_files(
         files: dict[str, dict[str, str]] = {}
         for password in passwords:
             path = root / f"{password.service.value}-{password.owner.value}"
-            _write_private(path, scram_sha256_verifier(password.value))
+            _write_private(path, password.value)
             files.setdefault(password.service.value, {})[password.owner.value] = str(
                 path
             )
@@ -545,18 +804,43 @@ def staged_password_files(
             extra_vars[PASSWORD_FILES_VARIABLE] = files
         if accounts or s3:
             extra_vars[ELASTICSEARCH_FILES_VARIABLE] = _stage_accounts(
-                root / "elasticsearch", accounts, s3
+                root / "elasticsearch", accounts, s3, users, existing
+            )
+        elif users or existing:
+            message = (
+                "declared Elasticsearch users and existing-cluster logins need "
+                "their service's accounts"
+            )
+            raise ValueError(message)
+        if mariadb:
+            extra_vars[MARIADB_FILES_VARIABLE] = _stage_mariadb(
+                root / "mariadb", mariadb
             )
         yield extra_vars
+
+
+def _stage_mariadb(
+    root: Path, owners: tuple[MariadbOwnerPassword, ...]
+) -> dict[str, dict[str, str]]:
+    root.mkdir(mode=0o700)
+    staged: dict[str, dict[str, str]] = {}
+    for owner in owners:
+        path = root / f"{owner.service.value}-{owner.owner.value}.hash"
+        _write_private(path, owner.password_hash)
+        staged.setdefault(owner.service.value, {})[owner.owner.value] = str(path)
+    return staged
 
 
 def _stage_accounts(
     root: Path,
     accounts: tuple[ElasticsearchAccountPassword, ...],
     s3: tuple[ElasticsearchS3Credentials, ...],
-) -> dict[str, dict[str, str]]:
+    users: tuple[ElasticsearchUserPassword, ...],
+    existing: tuple[ElasticsearchExistingClusterLogin, ...],
+) -> dict[str, dict[str, object]]:
     root.mkdir(mode=0o700)
-    staged: dict[str, dict[str, str]] = {}
+    staged: dict[str, dict[str, object]] = {}
+    salt_keys: dict[ResourceId, str] = {}
     for account in accounts:
         service = staged.setdefault(account.service.value, {})
         prefix = f"{account.service.value}-{account.account.value}"
@@ -567,6 +851,7 @@ def _stage_accounts(
             plain = root / f"{prefix}.password"
             _write_private(plain, account.value)
             service["cloudfallPassword"] = str(plain)
+            salt_keys[account.service] = account.value
     for credentials in s3:
         service = staged.setdefault(credentials.service.value, {})
         prefix = f"{credentials.service.value}-s3"
@@ -577,6 +862,37 @@ def _stage_accounts(
             path = root / f"{prefix}.{suffix}"
             _write_private(path, value)
             service[name] = str(path)
+    for login in existing:
+        if login.service not in salt_keys:
+            message = (
+                f"the existingCluster login of Elasticsearch service "
+                f"{login.service.value} has no cloudfall account staged"
+            )
+            raise ValueError(message)
+        service = staged[login.service.value]
+        prefix = f"{login.service.value}-existing"
+        for name, suffix, value in (
+            ("existingUsername", "username", login.username),
+            ("existingPassword", "password", login.password),
+        ):
+            path = root / f"{prefix}.{suffix}"
+            _write_private(path, value)
+            service[name] = str(path)
+    for user in users:
+        salt_key = salt_keys.get(user.service)
+        if salt_key is None:
+            message = (
+                f"user {user.user.value} of Elasticsearch service "
+                f"{user.service.value} has no cloudfall account staged"
+            )
+            raise ValueError(message)
+        hashed = root / f"{user.service.value}-user-{user.user.value}.bcrypt"
+        _write_private(hashed, user.bcrypt_hash(salt_key))
+        files = cast(
+            "dict[str, str]",
+            staged[user.service.value].setdefault("users", {}),
+        )
+        files[user.user.value] = str(hashed)
     return staged
 
 

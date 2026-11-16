@@ -67,6 +67,67 @@
         cloudfall_deploy_release
       }}.tar.gz
 
+# Each release reads its own environment file (D-21), named after its release
+# directory, so a redeploy copy gets one of its own too. The release's unit,
+# its release command and its command health check read it, and a rollback
+# that restores the previous unit restores the previous environment with it.
+# No deploy writes or removes the legacy shared/env/<component>.env, so a
+# release deployed before per-release files still finds the file its unit
+# names.
+- name: Compute the release's environment file paths
+  ansible.builtin.set_fact:
+    cloudfall_deploy_environment_own_path: >-
+      {{ cloudfall_deploy_shared_directory }}/env/{{
+        cloudfall_deploy_component.id
+      }}.{{ cloudfall_deploy_release_directory | basename }}.env
+    cloudfall_deploy_environment_legacy_path: >-
+      {{ cloudfall_deploy_shared_directory }}/env/{{
+        cloudfall_deploy_component.id
+      }}.env
+    cloudfall_deploy_environment_previous_own_path: >-
+      {{ cloudfall_deploy_shared_directory }}/env/{{
+        cloudfall_deploy_component.id
+      }}.{{ cloudfall_deploy_previous_directory | basename }}.env
+
+# A deploy without an environment file keeps the environment the previous
+# release reads, as one shared file kept it before: its own file, else the
+# legacy one. The release gets a copy of it as its own file.
+- name: Find the environment file the previous release reads
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  loop: >-
+    {{
+      (
+        [cloudfall_deploy_environment_previous_own_path]
+        if cloudfall_deploy_previous_directory | length > 0
+        else []
+      )
+      + [cloudfall_deploy_environment_legacy_path]
+    }}
+  register: cloudfall_deploy_environment_previous
+  when: cloudfall_deploy_environment_file | length == 0
+
+# With neither a new nor a previous environment, the unit names the legacy
+# file, missing, as every deploy without one did before.
+- name: Choose the environment file the release reads
+  ansible.builtin.set_fact:
+    cloudfall_deploy_environment_inherited: "{{ cloudfall_deploy_inherited }}"
+    cloudfall_deploy_environment_path: >-
+      {{
+        cloudfall_deploy_environment_own_path
+        if cloudfall_deploy_environment_file | length > 0
+        or cloudfall_deploy_inherited | length > 0
+        else cloudfall_deploy_environment_legacy_path
+      }}
+  vars:
+    cloudfall_deploy_inherited: >-
+      {{
+        cloudfall_deploy_environment_previous.results | default([])
+        | selectattr('stat', 'defined') | selectattr('stat.exists')
+        | map(attribute='item') | first | default('')
+      }}
+
 # A read, so a dry run (--check) sees the installed version too.
 - name: Check the installed uv version
   ansible.builtin.command:
@@ -96,12 +157,18 @@
       cloudfall_deploy_uv_installed.rc != 0
       or cloudfall_deploy_uv_version not in cloudfall_deploy_uv_installed.stdout
   block:
+    # One slow GitHub download must not fail the deploy: retry a few times,
+    # then fail (#372).
     - name: Download the pinned uv archive
       ansible.builtin.get_url:
         url: "{{ cloudfall_deploy_uv_url }}"
         dest: /tmp/cloudfall-uv.tar.gz
         checksum: "sha256:{{ cloudfall_deploy_uv_sha256 }}"
         mode: "0644"
+      register: cloudfall_deploy_uv_download
+      until: cloudfall_deploy_uv_download is succeeded
+      retries: 5
+      delay: 10
 
     - name: Unpack the uv archive
       ansible.builtin.unarchive:
@@ -186,17 +253,42 @@
     path: "{{ cloudfall_deploy_staging_archive }}"
     state: absent
 
-- name: Install the component environment file
+# An environment file holds secrets: a run with --diff prints no content of
+# it (#374).
+- name: Install the release's environment file
   ansible.builtin.copy:
     src: "{{ cloudfall_deploy_environment_file }}"
-    dest: >-
-      {{ cloudfall_deploy_shared_directory }}/env/{{
-        cloudfall_deploy_component.id
-      }}.env
+    dest: "{{ cloudfall_deploy_environment_path }}"
     owner: root
     group: "{{ cloudfall_deploy_component.application_user }}"
     mode: "0640"
+  diff: false
   when: cloudfall_deploy_environment_file | length > 0
+
+- name: Carry the previous release's environment over to the release
+  ansible.builtin.copy:
+    src: "{{ cloudfall_deploy_environment_inherited }}"
+    dest: "{{ cloudfall_deploy_environment_path }}"
+    remote_src: true
+    owner: root
+    group: "{{ cloudfall_deploy_component.application_user }}"
+    mode: "0640"
+  diff: false
+  when:
+    - cloudfall_deploy_environment_file | length == 0
+    - cloudfall_deploy_environment_inherited | length > 0
+
+# The release directory is never current here (a redeploy unpacks into a new
+# copy), so the file is no running release's. Left behind by an earlier deploy
+# of the same release, it would make a rollback to this release read an
+# environment this deploy did not give it.
+- name: Remove an environment file left for the release by an earlier deploy
+  ansible.builtin.file:
+    path: "{{ cloudfall_deploy_environment_own_path }}"
+    state: absent
+  when:
+    - cloudfall_deploy_environment_file | length == 0
+    - cloudfall_deploy_environment_inherited | length == 0
 
 - name: Materialize locked dependencies for the release
   ansible.builtin.command:
@@ -216,12 +308,37 @@
   # A dry run unpacks nothing, so the release directory may not exist yet.
   when: not ansible_check_mode
 
+# A redeploy copy whose release command failed goes, as one that failed its
+# gate does (#373), so rollback's newest copy of a release is always one that
+# passed. current has not moved, so the previous copy still runs and is never
+# removed; the copy's environment file goes with it, the previous copy's own
+# file stays. releases/<release> itself is never a redeploy copy.
 - name: Run the release command on the release server
-  ansible.builtin.include_tasks: release_command.yml
   when:
     - not ansible_check_mode
     - cloudfall_deploy_component.release is defined
     - cloudfall_deploy_component.release.server == cloudfall_server_id
+  block:
+    - name: Run the release command against the unpacked release
+      ansible.builtin.include_tasks: release_command.yml
+  rescue:
+    - name: Remove the redeploy copy whose release command failed
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ cloudfall_deploy_release_directory }}"
+        - "{{ cloudfall_deploy_environment_own_path }}"
+      when:
+        - >-
+          (cloudfall_deploy_release_directory | basename).startswith(
+            cloudfall_deploy_release ~ '.redeploy-'
+          )
+        - cloudfall_deploy_release_directory != cloudfall_deploy_previous_directory
+
+    - name: Fail the deployment whose release command failed
+      ansible.builtin.fail:
+        msg: "{{ ansible_failed_result.msg }}"
 
 - name: Require the release command to have passed before switching
   ansible.builtin.assert:
@@ -246,9 +363,11 @@
 - name: Compute service unit paths
   ansible.builtin.set_fact:
     cloudfall_deploy_unit_path: >-
-      /etc/systemd/system/{{ cloudfall_deploy_component.service.name }}.service
+      {{ cloudfall_deploy_unit_directory }}/{{
+        cloudfall_deploy_component.service.name
+      }}.service
     cloudfall_deploy_unit_kept_path: >-
-      /etc/systemd/system/{{
+      {{ cloudfall_deploy_unit_directory }}/{{
         cloudfall_deploy_component.service.name
       }}.service.pre-cloudfall
 
@@ -526,11 +645,18 @@
     # A redeploy copy that failed its gate goes, once current points back at
     # the previous copy and the service runs from it, so rollback's newest
     # copy of a release is always one that passed. releases/<release> itself
-    # is never a redeploy copy, and the previous copy is never removed.
+    # is never a redeploy copy, and the previous copy is never removed. Its
+    # environment file goes with it; the previous copy's own file stays.
     - name: Remove the redeploy copy that failed its gate
       ansible.builtin.file:
-        path: "{{ cloudfall_deploy_release_directory }}"
+        path: "{{ item }}"
         state: absent
+      loop:
+        - "{{ cloudfall_deploy_release_directory }}"
+        - >-
+          {{ cloudfall_deploy_shared_directory }}/env/{{
+            cloudfall_deploy_component.id
+          }}.{{ cloudfall_deploy_release_directory | basename }}.env
       when:
         - cloudfall_deploy_previous_directory | length > 0
         - not ansible_check_mode

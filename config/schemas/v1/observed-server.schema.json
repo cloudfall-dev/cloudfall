@@ -27,6 +27,49 @@
         "null"
       ]
     },
+    "elasticsearchSecurityNames": {
+      "description": "Names of a cluster's users or roles that are not built in, split by Cloudfall's marker; null when the cluster could not be read",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "managed": {
+              "$ref": "#/$defs/elasticsearchSecurityNameList"
+            },
+            "unmanaged": {
+              "$ref": "#/$defs/elasticsearchSecurityNameList"
+            }
+          },
+          "required": [
+            "managed",
+            "unmanaged"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "elasticsearchSecurityNameList": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "mariadbNameList": {
+      "description": "Names of MariaDB databases, or users as user@host",
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
+    },
     "blockDevice": {
       "type": "object",
       "properties": {
@@ -765,6 +808,81 @@
               "path",
               "exists",
               "certificate"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "elasticsearchUsers": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "properties": {
+              "service": {
+                "$ref": "common.schema.json#/$defs/resourceId"
+              },
+              "available": {
+                "type": "boolean"
+              },
+              "users": {
+                "$ref": "#/$defs/elasticsearchSecurityNames"
+              },
+              "roles": {
+                "$ref": "#/$defs/elasticsearchSecurityNames"
+              }
+            },
+            "required": [
+              "service",
+              "available",
+              "users",
+              "roles"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "mariadbAccounts": {
+          "description": "The databases and users of each MariaDB service of the server (S-019); the lists are absent when the server could not be read",
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "properties": {
+              "service": {
+                "$ref": "common.schema.json#/$defs/resourceId"
+              },
+              "available": {
+                "type": "boolean"
+              },
+              "users": {
+                "$ref": "#/$defs/mariadbNameList"
+              },
+              "managedUsers": {
+                "$ref": "#/$defs/mariadbNameList"
+              },
+              "lockedUsers": {
+                "$ref": "#/$defs/mariadbNameList"
+              },
+              "databases": {
+                "$ref": "#/$defs/mariadbNameList"
+              },
+              "managedDatabases": {
+                "$ref": "#/$defs/mariadbNameList"
+              },
+              "sslTypes": {
+                "description": "Each remote account's TLS requirement as user@host and its ssl_type, as 'billing@10.0.0.0/255.255.255.0 ANY'; absent from a record an older inspect wrote",
+                "type": "array",
+                "maxItems": 4096,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512,
+                  "pattern": "^.*@.+ (NONE|ANY|X509|SPECIFIED)$"
+                }
+              }
+            },
+            "required": [
+              "service",
+              "available"
             ],
             "additionalProperties": false
           }

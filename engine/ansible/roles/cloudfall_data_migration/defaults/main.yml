@@ -1,6 +1,9 @@
 ---
 cloudfall_data_migration_receipt_directory: ""
-cloudfall_data_migration_url_path: /root/.cloudfall-data-source-url
+# The 0600 libpq service file the source URL becomes on the target host,
+# and the service it names for psql and pg_dump.
+cloudfall_data_migration_service_file_path: /root/.cloudfall-data-source.pgservice
+cloudfall_data_migration_pg_service: cloudfall_data_source
 cloudfall_data_migration_dump_path: /var/tmp/cloudfall-data-migration.dump
 # Schemas to copy; empty copies every non-system schema of the source,
 # which is what a pg_dump without --schema dumps.

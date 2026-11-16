@@ -17,14 +17,18 @@ from ansible.template import Templar, trust_as_template
 ROOT = Path(__file__).parents[2]
 ROLE = ROOT / "engine" / "ansible" / "roles" / "cloudfall_data_migration"
 PLAYBOOK = ROOT / "engine" / "ansible" / "playbooks" / "data.yml"
-URL_PATH = "/root/.cloudfall-data-source-url"
 DUMP_PATH = "/var/tmp/cloudfall-data-migration.dump"  # noqa: S108 - role default.
-# The dump command 0.7.0 ran, which a copy without --schema keeps.
-WHOLE_DATABASE_DUMP = (
-    f'pg_dump --dbname "$(cat {URL_PATH})" '
-    "--no-owner --no-privileges --format custom "
-    f"--file {DUMP_PATH}"
-)
+# The dump command 0.7.0 ran, which a copy without --schema keeps, less the
+# source URL, which now reaches pg_dump through its environment (#355).
+WHOLE_DATABASE_DUMP = [
+    "/usr/bin/pg_dump",
+    "--no-owner",
+    "--no-privileges",
+    "--format",
+    "custom",
+    "--file",
+    DUMP_PATH,
+]
 
 
 def _defaults() -> dict[str, object]:
@@ -108,20 +112,20 @@ def _schemas_variable(selected: list[str]) -> str:
     )
 
 
-def _dump_command(named: list[str]) -> str:
-    shell = _module(
-        "Dump the source database on the target host", "ansible.builtin.shell"
+def _dump_argv(named: list[str], extensions: list[str] | None = None) -> list[str]:
+    command = _module(
+        "Dump the source database on the target host", "ansible.builtin.command"
     )
-    return str(
-        _render(
-            shell["cmd"],
-            {
-                "cloudfall_data_migration_schemas": named,
-                # The preflight found the schemas need no extension.
-                "cloudfall_data_migration_needs": {"extensions": []},
-            },
-        )
+    argv = _render(
+        command["argv"],
+        {
+            "cloudfall_data_migration_schemas": named,
+            # Without a list, the preflight found the schemas need none.
+            "cloudfall_data_migration_needs": {"extensions": extensions or []},
+        },
     )
+    assert isinstance(argv, list)
+    return [str(argument) for argument in argv]
 
 
 def _psql_substitute(sql: str, variable: str) -> str:
@@ -171,30 +175,34 @@ def _receipt(selected: list[str], lines: list[str]) -> dict[str, object]:
 
 def test_s007_1_named_schemas_reach_pg_dump_and_the_receipt() -> None:
     selected = _selected(["public", "app"], SOURCE_SCHEMAS)
-    command = _dump_command(["public", "app"])
+    command = _dump_argv(["public", "app"])
     receipt = _receipt(selected, SOURCE_LINES[:3])
 
     assert selected == ["app", "public"]
-    assert command == f"{WHOLE_DATABASE_DUMP} --schema '\"app\"' --schema '\"public\"'"
+    assert command == [
+        *WHOLE_DATABASE_DUMP,
+        "--schema",
+        '"app"',
+        "--schema",
+        '"public"',
+    ]
     spec = receipt["spec"]
     assert isinstance(spec, dict)
     assert spec["schemas"] == ["app", "public"]
 
 
 def test_s007_1_a_schema_name_stays_one_quoted_pg_dump_argument() -> None:
-    """A hostile name is one shell word and one literal pg_dump pattern."""
-    command = _dump_command(['Bad;Name"$(touch x)'])
+    """A hostile name is one argument and one literal pg_dump pattern."""
+    command = _dump_argv(['Bad;Name"$(touch x)'])
 
-    assert command == (
-        f"{WHOLE_DATABASE_DUMP} --schema '\"Bad;Name\"\"$(touch x)\"'"
-    )
+    assert command == [*WHOLE_DATABASE_DUMP, "--schema", '"Bad;Name""$(touch x)"']
 
 
 def test_s007_2_without_schema_the_dump_is_the_whole_database_as_in_0_7_0() -> None:
     selected = _selected([], SOURCE_SCHEMAS)
     receipt = _receipt(selected, SOURCE_LINES)
 
-    assert _dump_command([]) == WHOLE_DATABASE_DUMP
+    assert _dump_argv([]) == WHOLE_DATABASE_DUMP
     assert selected == ["app", "audit", "public"]
     spec = receipt["spec"]
     assert isinstance(spec, dict)
@@ -250,15 +258,20 @@ def test_s007_4_both_sides_pass_the_schemas_to_the_row_count_query() -> None:
         ),
         "cloudfall_data_migration_database": "crm",
     }
-    source = _module("Read source table row counts", "ansible.builtin.shell")
+    source = _module("Read source table row counts", "ansible.builtin.command")
     restored = _module("Read restored table row counts", "ansible.builtin.command")
     query = str(_defaults()["cloudfall_data_migration_count_query"])
 
-    source_cmd = str(_render(source["cmd"], variables))
+    source_argv = _render(source["argv"], variables)
     restored_argv = _render(restored["argv"], variables)
+    assert isinstance(source_argv, list)
     assert isinstance(restored_argv, list)
-    assert "--set ON_ERROR_STOP=1" in source_cmd
-    assert "--set 'cloudfall_data_schemas=[\"app\", \"public\"]'" in source_cmd
+    assert source_argv[-4:] == [
+        "--set",
+        "ON_ERROR_STOP=1",
+        "--set",
+        'cloudfall_data_schemas=["app", "public"]',
+    ]
     assert restored_argv[-2:] == ["--set", 'cloudfall_data_schemas=["app", "public"]']
     assert _render(source["stdin"], variables) == f"{query};"
     assert _render(restored["stdin"], variables) == f"{query};"
@@ -367,22 +380,22 @@ def _source_preflight_sql(schemas: list[str], *, every_schema: bool) -> str:
     )
 
 
-def _source_preflight_command(named: list[str]) -> str:
-    shell = _module(
+def _source_preflight_argv(named: list[str]) -> list[str]:
+    command = _module(
         "Read what the selected schemas need from the source",
-        "ansible.builtin.shell",
+        "ansible.builtin.command",
     )
-    return str(
-        _render(
-            shell["cmd"],
-            {
-                "cloudfall_data_migration_schemas": named,
-                "cloudfall_data_migration_schemas_variable": _schemas_variable(
-                    named or ["app"]
-                ),
-            },
-        )
+    argv = _render(
+        command["argv"],
+        {
+            "cloudfall_data_migration_schemas": named,
+            "cloudfall_data_migration_schemas_variable": _schemas_variable(
+                named or ["app"]
+            ),
+        },
     )
+    assert isinstance(argv, list)
+    return [str(argument) for argument in argv]
 
 
 def _target_preflight_argv(needs: dict[str, list[str]]) -> list[str]:
@@ -433,19 +446,25 @@ def test_s007_6_a_missing_schema_is_refused_before_the_dump() -> None:
 
 def test_s007_6_the_source_preflight_takes_names_only_as_psql_variables() -> None:
     query = str(_defaults()["cloudfall_data_migration_source_preflight_query"])
-    named = _source_preflight_command(['Bad;Name"$(touch x)'])
-    every = _source_preflight_command([])
+    named = _source_preflight_argv(['Bad;Name"$(touch x)'])
+    every = _source_preflight_argv([])
 
     assert ":'cloudfall_data_schemas'::jsonb" in query
     assert ":'cloudfall_data_every_schema'::boolean" in query
     assert "{{" not in query
-    assert "--set ON_ERROR_STOP=1" in named
-    assert "--set cloudfall_data_every_schema=false" in named
-    assert "--set cloudfall_data_every_schema=true" in every
-    assert "touch" not in named.replace(
-        "'cloudfall_data_schemas=[\"Bad;Name\\\"$(touch x)\"]'", ""
-    )
-    assert '"$(cat /root/.cloudfall-data-source-url)"' in named
+    assert named[1:] == [
+        "--no-psqlrc",
+        "--tuples-only",
+        "--no-align",
+        "--set",
+        "ON_ERROR_STOP=1",
+        "--set",
+        'cloudfall_data_schemas=["Bad;Name\\"$(touch x)"]',
+        "--set",
+        "cloudfall_data_every_schema=false",
+    ]
+    assert every[-2:] == ["--set", "cloudfall_data_every_schema=true"]
+    assert "--dbname" not in named
 
 
 def test_s007_7_an_extension_the_target_lacks_is_refused() -> None:
@@ -490,40 +509,24 @@ def test_s007_7_an_array_or_domain_of_an_extension_type_names_it() -> None:
 
 
 def test_s007_7_named_schemas_dump_their_needed_extensions() -> None:
-    shell = _module(
-        "Dump the source database on the target host", "ansible.builtin.shell"
-    )
-    needs = {**NO_FINDINGS, "extensions": ["citext", "uuid-ossp"]}
+    extensions = ["citext", "uuid-ossp"]
 
-    named = _render(
-        shell["cmd"],
-        {
-            "cloudfall_data_migration_schemas": ["public"],
-            "cloudfall_data_migration_needs": needs,
-        },
-    )
-    every = _render(
-        shell["cmd"],
-        {
-            "cloudfall_data_migration_schemas": [],
-            "cloudfall_data_migration_needs": needs,
-        },
-    )
+    named = _dump_argv(["public"], extensions)
+    every = _dump_argv([], extensions)
 
-    assert named == (
-        f"{WHOLE_DATABASE_DUMP} --schema '\"public\"' "
-        "--extension '\"citext\"' --extension '\"uuid-ossp\"'"
-    )
+    assert named == [
+        *WHOLE_DATABASE_DUMP,
+        "--schema",
+        '"public"',
+        "--extension",
+        '"citext"',
+        "--extension",
+        '"uuid-ossp"',
+    ]
     assert every == WHOLE_DATABASE_DUMP
-    # An extension name read from the source stays one quoted shell word.
-    hostile = _render(
-        shell["cmd"],
-        {
-            "cloudfall_data_migration_schemas": ["public"],
-            "cloudfall_data_migration_needs": {"extensions": ['x";$(touch y)']},
-        },
-    )
-    assert str(hostile).endswith("--extension '\"x\"\";$(touch y)\"'")
+    # An extension name read from the source stays one literal argument.
+    hostile = _dump_argv(["public"], ['x";$(touch y)'])
+    assert hostile[-2:] == ["--extension", '"x"";$(touch y)"']
 
 
 def test_s007_8_policy_roles_the_target_lacks_are_refused() -> None:

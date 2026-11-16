@@ -8,7 +8,10 @@ action, or refuses before any host changes; each node makes its own key and
 a signing request, and the CA of the service's environment signs those whose
 certificate is missing or due, so a private key never leaves its host. The
 signed certificates and the CA are staged in a private temp dir, removed
-when the run ends, and the role copies them.
+when the run ends, and the role copies them. A service that joins an
+``existingCluster`` also stages that cluster's CA certificate, read from the
+project, for each of its nodes. A MariaDB server with ``remoteAccess`` gets
+its server certificate the same way (S-019).
 """
 
 from __future__ import annotations
@@ -20,11 +23,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from cloudfall.domain import ResourceKind
+from cloudfall.elasticsearch_cluster import EXISTING_CLUSTER_CA_PATH
 from cloudfall.lifecycle_error import LifecycleError
 from cloudfall.logging_deploy import (
     DELIVERED_FILES_VARIABLE,
     REQUESTS_DIRECTORY_VARIABLE,
     REQUESTS_PLAYBOOK,
+    DeliveryRole,
     LoggingDeployError,
     StagedFile,
     certificate_files,
@@ -36,7 +41,15 @@ from cloudfall.logging_deploy import (
     REQUESTS_VARIABLE as CERTIFICATE_REQUESTS_VARIABLE,
 )
 from cloudfall.pki import PkiError, load_or_create_ca
-from cloudfall.requirements import ServerRequirements, requirements_of
+from cloudfall.requirements import (
+    MARIADB_CA_PATH,
+    MARIADB_CERTIFICATE_PATH,
+    CertificateRequirement,
+    Requirement,
+    ServerRequirements,
+    VolumeRequirement,
+    requirements_of,
+)
 from cloudfall.secrets import SecretsError
 from cloudfall.volumes import (
     ACTIONS_VARIABLE,
@@ -66,6 +79,9 @@ PROVIDER_HOSTS_VARIABLE = "cloudfall_provider_hosts"
 """The hosts ``logging-volumes.yml`` and ``logging-requests.yml`` read: the nodes."""
 DELIVERED_VARIABLE = "cloudfall_services_delivered_files"
 """``services.yml``'s variable: server id, then the files the role copies."""
+MARIADB_DELIVERED_VARIABLE = "cloudfall_services_mariadb_delivered_files"
+"""The same for the MariaDB role: the server certificate and the project CA."""
+_MARIADB_PATHS = frozenset({MARIADB_CERTIFICATE_PATH.value, MARIADB_CA_PATH.value})
 ERROR_PROVIDER = "services_requirement_unmet"
 """A node requirement the controller could not meet; no host changed."""
 
@@ -90,6 +106,76 @@ def elasticsearch_requirements(
         if owned:
             found.append(ServerRequirements(server.server_id, owned))
     return tuple(found)
+
+
+def mariadb_volume_requirements(
+    inventory: PlatformInventory,
+) -> tuple[ServerRequirements, ...]:
+    """Return the data volume each MariaDB service places on its server (S-019).
+
+    Only the volume: the server certificate comes with
+    ``mariadb_certificate_requirements``, and a primary's port and replication
+    secret with ``replication``, which this converge does not meet yet.
+    """
+    services = {
+        service.resource_id
+        for service in inventory.services
+        if service.mariadb is not None
+    }
+    return _owned(inventory, services, VolumeRequirement)
+
+
+def mariadb_certificate_requirements(
+    inventory: PlatformInventory,
+) -> tuple[ServerRequirements, ...]:
+    """Return the server certificate of each MariaDB service with ``remoteAccess``.
+
+    A service that also declares ``replication`` is left out: the role refuses
+    replication before it changes anything (#423), so its server is not asked
+    to make a key either.
+    """
+    services = {
+        service.resource_id
+        for service in inventory.services
+        if service.mariadb is not None
+        and service.mariadb.remote_access is not None
+        and service.mariadb.replication is None
+    }
+    return _owned(inventory, services, CertificateRequirement)
+
+
+def _owned(
+    inventory: PlatformInventory,
+    services: set[ResourceId],
+    kind: type[VolumeRequirement | CertificateRequirement],
+) -> tuple[ServerRequirements, ...]:
+    """Return the requirements of ``kind`` that ``services`` place, by server."""
+    found: list[ServerRequirements] = []
+    for server in requirements_of(inventory):
+        owned = tuple(
+            item
+            for item in server.requirements
+            if item.owner.kind is ResourceKind.SERVICE
+            and item.owner.resource_id in services
+            and isinstance(item.spec, kind)
+        )
+        if owned:
+            found.append(ServerRequirements(server.server_id, owned))
+    return tuple(found)
+
+
+def _merged(
+    *groups: tuple[ServerRequirements, ...],
+) -> tuple[ServerRequirements, ...]:
+    """Join the requirements of each server across groups, in server order."""
+    by_server: dict[ResourceId, list[Requirement]] = {}
+    for group in groups:
+        for server in group:
+            by_server.setdefault(server.server_id, []).extend(server.requirements)
+    return tuple(
+        ServerRequirements(server_id, tuple(requirements))
+        for server_id, requirements in by_server.items()
+    )
 
 
 def _hosts(servers: tuple[ServerRequirements, ...]) -> str:
@@ -160,21 +246,89 @@ def _certificates(
     return files
 
 
+EXISTING_CLUSTER_CA_NAME = "elasticsearch-existing-cluster-ca"
+"""How the staged CA of an existing cluster is named; the role copies it 0644."""
+
+
+def existing_cluster_ca_files(
+    inventory: PlatformInventory, project_directory: Path
+) -> list[StagedFile]:
+    """Stage the CA of each joined existing cluster for every node of its service.
+
+    Validation checked the file is CA certificates only, inside the project.
+    """
+    files: list[StagedFile] = []
+    for service in inventory.services:
+        elasticsearch = service.elasticsearch
+        if elasticsearch is None or elasticsearch.existing_cluster is None:
+            continue
+        relative = elasticsearch.existing_cluster.ca_certificate_file.value
+        content = (project_directory / relative).read_text(encoding="utf-8")
+        files.extend(
+            StagedFile(
+                node,
+                DeliveryRole.COLLECTOR,
+                EXISTING_CLUSTER_CA_NAME,
+                EXISTING_CLUSTER_CA_PATH.value,
+                content,
+                "0644",
+                force=True,
+            )
+            for node in elasticsearch.nodes
+        )
+    return files
+
+
 @contextmanager
 def prepared_nodes(
-    run: PlaybookRunner, inventory: PlatformInventory, store: SecretStore
+    run: PlaybookRunner,
+    inventory: PlatformInventory,
+    store: SecretStore,
+    project_directory: Path,
+    server: ResourceId | None = None,
 ) -> Iterator[dict[str, object]]:
     """Meet each node's volume and certificate; yield ``services.yml``'s extra vars.
 
-    Nothing to meet yields no variable, leaving the run as it was.
+    A MariaDB server's data volume is decided with the nodes' (S-019), in the
+    same read before any host changes, and the server certificate of one
+    with ``remoteAccess`` is requested and signed with the nodes'; it is
+    handed to the MariaDB role apart from the nodes' files, so neither role
+    copies the other's. Nothing to meet yields no variable, leaving the run
+    as it was. ``server`` meets that one server's alone, for a run limited to
+    it.
     """
-    servers = elasticsearch_requirements(inventory)
-    if not servers:
+    servers = tuple(
+        found
+        for found in elasticsearch_requirements(inventory)
+        if server is None or found.server_id == server
+    )
+    databases = tuple(
+        found
+        for found in mariadb_volume_requirements(inventory)
+        if server is None or found.server_id == server
+    )
+    database_certificates = tuple(
+        found
+        for found in mariadb_certificate_requirements(inventory)
+        if server is None or found.server_id == server
+    )
+    if not servers and not databases:
         yield {}
         return
     try:
-        actions = _volume_actions(run, servers)
-        files = _certificates(run, servers, inventory, store)
+        actions = _volume_actions(run, _merged(servers, databases))
+        signed = _certificates(
+            run, _merged(servers, database_certificates), inventory, store
+        )
+        files = [
+            *(item for item in signed if item.path not in _MARIADB_PATHS),
+            *(
+                staged
+                for staged in existing_cluster_ca_files(inventory, project_directory)
+                if server is None or staged.server == server
+            ),
+        ]
+        database_files = [item for item in signed if item.path in _MARIADB_PATHS]
     except VolumeRefusedError as error:
         raise LifecycleError(
             error.code,
@@ -183,8 +337,15 @@ def prepared_nodes(
         ) from error
     except (LoggingDeployError, PkiError, SecretsError) as error:
         raise LifecycleError(ERROR_PROVIDER, error.message) from error
-    with staged_files(files) as (staged, _):
+    with (
+        staged_files(files) as (staged, _),
+        staged_files(database_files) as (database_staged, _),
+    ):
         extra: dict[str, object] = {ACTIONS_VARIABLE: actions}
         if files:
             extra[DELIVERED_VARIABLE] = staged[DELIVERED_FILES_VARIABLE]
+        if database_files:
+            extra[MARIADB_DELIVERED_VARIABLE] = database_staged[
+                DELIVERED_FILES_VARIABLE
+            ]
         yield extra

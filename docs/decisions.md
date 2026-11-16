@@ -74,7 +74,7 @@ entry that supersedes it, never by editing an old one.
 - Rule: Cloudfall sets a PostgreSQL role's password only with a SCRAM-SHA-256 verifier computed on the controller; the plaintext password is never staged on the host and never sent to the server, so it can't reach the PostgreSQL log or pg_stat_activity
 - Why: psql substitutes a variable into the statement text, so ALTER ROLE ... PASSWORD with the plaintext puts the password in the server's log under log_statement ddl or all, or on a failing statement; PostgreSQL stores a pre-hashed verifier as it is
 - Applies to: engine/ansible/roles/cloudfall_postgresql/tasks/owner_password.yml, sdk/src/cloudfall/secrets.py, engine/src/cloudfall_engine/cli.py
-- Enforced by: a regression test that the staged file holds a verifier and never the password
+- Enforced by: a regression test that the file staged on the host holds a verifier and never the password (since D-25 the controller's own 0600 file holds the password, which never leaves the controller)
 
 ## D-10: Components are isolated by the systemd sandbox, and separate servers are recommended, not required
 
@@ -83,6 +83,8 @@ entry that supersedes it, never by editing an old one.
 - Why: A Unix user alone keeps only files and signals apart; containers use the same kernel mechanisms systemd exposes and add no boundary, only a runtime to operate; a separate kernel is the one stronger boundary and comes from a separate server, but requiring it would rule out the one-server teams Cloudfall serves, and a team can accept that risk for its own projects, not for other owners; the full reasoning is in docs/decisions/2026-11-02-isolation-without-containers.md
 - Applies to: engine/ansible/roles/cloudfall_deploy/templates/component.service.j2, engine/ansible/roles/cloudfall_access, server placement in plans, runner and CI setup
 - Enforced by: review
+
+Status on 2026-11-15: partly built. component.service.j2 sets only User, Group, NoNewPrivileges=true and PrivateTmp=true, secrets reach the unit through the per-release EnvironmentFile (D-21) rather than systemd credentials, and deploy tasks run as root through become; the rest of the sandbox, the directives listed in docs/decisions/2026-11-02-isolation-without-containers.md, is not built yet and is tracked in cloudfall-dev/cloudfall#362.
 
 ## D-11: The resource every server runs is a Baseline
 
@@ -148,3 +150,63 @@ entry that supersedes it, never by editing an old one.
 - Why: S-012 makes an Elasticsearch node's volume mirrored for a cluster of one and expendable for two or more, while S-014 refused any change of an existing volume's type, so growing a one-node service refused its first node; a mirror is stronger than what an expendable volume asks, nothing on the host has to change when the cluster grows, and converting a raid1 volume to linear in place would mean an lvconvert the provider never runs
 - Applies to: sdk/src/cloudfall/requirements.py (VolumeRequirement.held_as), sdk/src/cloudfall/volumes.py, sdk/src/cloudfall/audit.py; S-012 What each node needs, S-014 Refusals
 - Enforced by: sdk/tests/test_s014_volumes.py
+
+## D-19: Operator autonomy is earned per environment
+
+- Decided: 2026-11-15, in cloudfall-dev/cloudfall#351
+- Rule: The history an autonomy grant is judged on, and the suspension rule, count only settled receipts whose operation_server is in the same environment as the proposal's server; a receipt of an undeclared server counts for no environment
+- Why: The grant lives in the policy chosen by the server's environment; servers of one environment run the same declarations, so per-server history would make each new server start from zero
+- Applies to: sdk/src/cloudfall/operator.py, operator autonomy
+- Enforced by: review
+- Zone: interpretation (notify, veto until 2026-11-16T16:10:00Z)
+
+## D-20: An approval is bound to what was proposed
+
+- Decided: 2026-11-15, in cloudfall-dev/cloudfall#352
+- Rule: A decision record binds the sha256 of its playbook and verify playbook and, in a git project, the HEAD commit and a digest of uncommitted changes outside the decisions, record/ and tmp/ directories; approve recomputes them and the diff's sha256 before anything runs and refuses any difference, and refuses a record with no binding, asking for a new proposal; a dirty tree at propose time is allowed
+- Why: The approval must be of what the approver read; only a change after the proposal breaks that, and an agent usually proposes right after editing
+- Applies to: sdk/src/cloudfall/decision.py, decisions approve, decision record
+- Enforced by: review
+- Zone: contract-change (notify, veto until 2026-11-16T16:10:00Z)
+
+## D-21: Each release has its own environment file
+
+- Decided: 2026-11-15, in cloudfall-dev/cloudfall#353
+- Rule: A deploy writes the component's environment to shared/env/<component>.<release>.env and the release's unit, release command and health check read that file, so a rescue or rollback that restores the previous unit restores the previous environment; a redeploy copy of the same release gets its own file, shared/env/<component>.<release>.redeploy-<time>.env, and a deploy without --env-file copies in the file the previous release reads; the legacy shared/env/<component>.env is never written or removed by a deploy, and retention removes a removed release's file
+- Why: Code, unit and environment must move together, or a rollback after a bad environment starts the previous release on the bad one
+- Applies to: engine/ansible/roles/cloudfall_deploy/*, deploy, rollback
+- Enforced by: review
+- Zone: contract-change (notify, veto until 2026-11-16T16:10:00Z)
+
+## D-22: Root's authorized_keys is shared, not exclusive
+
+- Decided: 2026-11-15, in cloudfall-dev/cloudfall#354
+- Rule: The baseline adds declared active keys and removes declared revoked keys from root's authorized_keys, and leaves undeclared keys in place
+- Why: Brownfield servers carry keys Cloudfall never declared (a provider's rescue key, a team member's); an exclusive file would lock them out on adoption
+- Applies to: engine/ansible/roles/cloudfall_access/*, SshPublicKey lifecycle
+- Enforced by: review
+- Zone: interpretation (notify, veto until 2026-11-16T16:10:00Z)
+
+## D-23: Releases wait for converge
+
+- Decided: 2026-11-16, in cloudfall-dev/cloudfall#361
+- Rule: release.yml and publish.yml run or require converge.yml on the same commit, and no release candidate or release is cut or published unless that converge run passed
+- Why: converge is the only check that runs the roles on a real Debian; a candidate cut from a commit whose converge failed ships broken roles, and the extra ~10 minutes per release is accepted
+- Applies to: .github/workflows/release.yml, .github/workflows/publish.yml, .github/workflows/converge.yml
+- Enforced by: review
+
+## D-24: Raw diffs and run logs of declared operations stay out of git
+
+- Decided: 2026-11-16, in cloudfall-dev/cloudfall#357
+- Rule: A declared operation's raw diff, execution log and verification log are written under the project's ignored tmp/ directory, and the committed decision record keeps only each file's sha256 and size; approve refuses when the raw diff is missing or its sha256 differs (D-20)
+- Why: a team playbook can print a secret Cloudfall doesn't know about (no no_log, diff: true), so only keeping its output out of the commit guarantees no record holds a secret value; the cost is that another clone sees hashes, not the diff text, and can't approve without the raw diff
+- Applies to: sdk/src/cloudfall/decision.py, decisions/, decision records
+- Enforced by: review
+
+## D-25: A PostgreSQL owner password converges by reusing the stored salt
+
+- Decided: 2026-11-16, in cloudfall-dev/cloudfall#398
+- Rule: To set a PostgreSQL role's password, the play reads the role's stored SCRAM-SHA-256 salt and iteration count from the host, the controller computes the verifier with them, and the ALTER ROLE runs and reports a change only when that verifier differs from the stored one; when the role has no SCRAM verifier a fresh salt is used; the plaintext stays on the controller as D-9 requires
+- Why: a fresh random salt on every run made every converge of an owner with a passwordRef report a change, so the second converge could never change nothing (D-17); salts aren't secret, and this needs no new secret and no weaker hash
+- Applies to: engine/ansible/roles/cloudfall_postgresql/*, sdk/src/cloudfall/secrets.py, PostgreSQL passwords
+- Enforced by: review

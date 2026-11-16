@@ -1,0 +1,212 @@
+---
+# Every refusal comes before the first task that changes the host (S-019-4).
+- name: Validate MariaDB service target and declaration
+  ansible.builtin.assert:
+    that:
+      - ansible_facts["distribution"] == "Debian"
+      - ansible_facts["service_mgr"] == "systemd"
+      - cloudfall_mariadb_service.serviceKind == "mariadb"
+      - cloudfall_mariadb_service.server == cloudfall_server_id
+      - cloudfall_mariadb_service.bind.address == "127.0.0.1"
+    fail_msg: >-
+      MariaDB deployment requires its declared Debian server and a
+      loopback-only bind address
+
+# replication (#423) is declared and validated, and converges in a later
+# release: a server is never left half-replicating.
+- name: Refuse replication, which this role does not converge yet
+  ansible.builtin.assert:
+    that:
+      - cloudfall_mariadb_service.mariadb.replication is not defined
+    fail_msg: >-
+      Service {{ cloudfall_mariadb_service.id }} declares replication, which
+      this Cloudfall release validates but does not converge yet; remove it
+      to converge a standalone server
+
+# The listener opens on listenAddress only to accounts from the allowed
+# sources, each requiring TLS; the firewall admits the port from those
+# sources only (S-019, Access).
+- name: Refuse remote access that is not narrowed to declared sources
+  ansible.builtin.assert:
+    that:
+      - cloudfall_mariadb_remote_access.listenAddress | length > 0
+      - >-
+        cloudfall_mariadb_remote_access.listenAddress
+        not in ['*', '0.0.0.0', '::', 'localhost']
+      - "',' not in cloudfall_mariadb_remote_access.listenAddress"
+      - cloudfall_mariadb_remote_access.allowedSources | length > 0
+      - >-
+        cloudfall_mariadb_remote_access.allowedSources
+        | select('in', ['0.0.0.0/0', '::/0'])
+        | list
+        | length == 0
+      - cloudfall_mariadb_remote_hosts | select('equalto', '') | list | length == 0
+      - cloudfall_mariadb_owners | length > 0
+    fail_msg: >-
+      remoteAccess of service {{ cloudfall_mariadb_service.id }} needs one
+      listen address that is not a wildcard, at least one source that is not
+      0.0.0.0/0 or ::/0, each an IPv4 network or one IPv6 address (MariaDB
+      matches no IPv6 network), and a database with an owner
+  vars:
+    cloudfall_mariadb_remote_access: >-
+      {{ cloudfall_mariadb_service.mariadb.remoteAccess }}
+  when: cloudfall_mariadb_service.mariadb.remoteAccess is defined
+
+- name: Refuse a buffer pool above three quarters of the server's memory
+  ansible.builtin.assert:
+    that:
+      - >-
+        (cloudfall_mariadb_service.mariadb.innodbBufferPoolMb | int) * 4
+        <= (ansible_facts['memtotal_mb'] | int) * 3
+    fail_msg: >-
+      innodbBufferPoolMb {{ cloudfall_mariadb_service.mariadb.innodbBufferPoolMb }}
+      of service {{ cloudfall_mariadb_service.id }} is above three quarters of
+      the {{ ansible_facts['memtotal_mb'] }} MB of {{ cloudfall_server_id }}:
+      lower innodbBufferPoolMb, or move the service to a server with more memory
+
+- name: Refuse a series MariaDB publishes no package of for this Debian release
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudfall_mariadb_series
+        in cloudfall_mariadb_debian_series.get(
+          ansible_facts['distribution_major_version'] | string, [])
+    fail_msg: >-
+      MariaDB {{ cloudfall_mariadb_service.mariadb.version }} of service
+      {{ cloudfall_mariadb_service.id }} has no package for Debian
+      {{ ansible_facts['distribution_major_version'] }}; MariaDB publishes
+      {{
+        cloudfall_mariadb_debian_series.get(
+          ansible_facts['distribution_major_version'] | string, [])
+        | join(', ') or 'no series'
+      }} for it
+
+- name: Require a staged hash for every owner
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudfall_mariadb_service.mariadb.databases
+        | selectattr('passwordRef', 'defined')
+        | map(attribute='owner')
+        | reject('in', cloudfall_mariadb_hash_files)
+        | list
+        | length == 0
+    fail_msg: >-
+      An owner of service {{ cloudfall_mariadb_service.id }} has no staged
+      hash; run services.yml through cloudfall (converge_services, operator
+      approve, or cloudfall-engine playbook run services.yml), which reads
+      each passwordRef from --secrets-dir
+
+- name: Read the installed MariaDB server package
+  ansible.builtin.command:
+    argv:
+      - dpkg-query
+      - --show
+      - --showformat=${db:Status-Status}|${Version}
+      - mariadb-server
+  register: cloudfall_mariadb_installed
+  # rc 1: dpkg knows no such package
+  failed_when: cloudfall_mariadb_installed.rc not in [0, 1]
+  changed_when: false
+  check_mode: false
+
+# A change of series is a new server seeded as a replica (S-019, Out of scope).
+- name: Refuse a version of another series than the installed one
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudfall_mariadb_installed_version == ''
+        or cloudfall_mariadb_installed_version.split('.')[:2] | join('.')
+        == cloudfall_mariadb_series
+    fail_msg: >-
+      {{ cloudfall_server_id }} runs MariaDB {{ cloudfall_mariadb_installed_version }};
+      service {{ cloudfall_mariadb_service.id }} declares
+      {{ cloudfall_mariadb_service.mariadb.version }} of another series, which
+      Cloudfall never installs over it: seed a new server as a replica of this
+      one, then promote it
+
+- name: Validate the declared backup and restore-drill calendar expressions
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemd-analyze
+      - calendar
+      - "{{ item }}"
+  loop: >-
+    {{
+      [cloudfall_mariadb_service.backup.onCalendar]
+      + ([cloudfall_mariadb_service.backup.restoreCheckOnCalendar]
+         if cloudfall_mariadb_service.backup.restoreCheckOnCalendar is defined
+         else [])
+    }}
+  changed_when: false
+  check_mode: false
+
+- name: Create, grow and mount the data volume
+  ansible.builtin.include_tasks: storage.yml
+
+- name: Install the pinned MariaDB server
+  ansible.builtin.include_tasks: package.yml
+
+# After the package, whose mysql account reads the key; before the settings
+# that name the files, so a configuration naming a missing file is never
+# written.
+- name: Install the server certificate for remote access
+  ansible.builtin.include_tasks: tls.yml
+  when: cloudfall_mariadb_service.mariadb.remoteAccess is defined
+
+- name: Install the managed server settings
+  ansible.builtin.template:
+    src: 90-cloudfall.cnf.j2
+    dest: "{{ cloudfall_mariadb_settings_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart MariaDB
+
+- name: Enable and start the MariaDB server
+  ansible.builtin.systemd_service:
+    name: mariadb.service
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply the managed settings
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for MariaDB readiness
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_admin }}"
+      - --silent
+      - ping
+  register: cloudfall_mariadb_readiness
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: cloudfall_mariadb_readiness.rc == 0
+  when: not ansible_check_mode
+
+# A patch release inside the series: the package restarted nothing (policy-rc.d),
+# the handler restarted the server once, and the system tables follow it.
+- name: Upgrade the system tables after a patch release
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/mariadb-upgrade
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - cloudfall_mariadb_package is changed
+    - cloudfall_mariadb_installed_version != ''
+
+- name: Converge the declared databases and users
+  ansible.builtin.include_tasks: accounts.yml
+  when: not ansible_check_mode
+
+# Runs without remoteAccess too: the accounts of a source, or of a
+# remoteAccess, no longer declared are locked, never dropped.
+- name: Converge each owner's accounts from the allowed sources
+  ansible.builtin.include_tasks: remote_accounts.yml
+  when: not ansible_check_mode
+
+- name: Install the dumps and the restore drill
+  ansible.builtin.include_tasks: backup.yml

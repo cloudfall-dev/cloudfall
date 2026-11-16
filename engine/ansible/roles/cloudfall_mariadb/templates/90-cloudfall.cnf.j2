@@ -1,0 +1,22 @@
+# Managed by Cloudfall for service {{ cloudfall_mariadb_service.id }}; a change
+# here is drift. Settings of your own go in a file that sorts before this one.
+[mariadbd]
+{% if cloudfall_mariadb_service.mariadb.remoteAccess is defined %}
+bind-address = {{ cloudfall_mariadb_service.bind.address }},{{ cloudfall_mariadb_service.mariadb.remoteAccess.listenAddress }}
+{% else %}
+bind-address = {{ cloudfall_mariadb_service.bind.address }}
+{% endif %}
+port = {{ cloudfall_mariadb_service.bind.port }}
+datadir = {{ cloudfall_mariadb_data_path }}
+innodb_buffer_pool_size = {{ cloudfall_mariadb_service.mariadb.innodbBufferPoolMb }}M
+character-set-server = utf8mb4
+# The data volume's ext4 root holds lost+found, which is no database.
+ignore-db-dirs = lost+found
+{% if cloudfall_mariadb_service.mariadb.remoteAccess is defined %}
+# remoteAccess: the server certificate from the project CA. Each owner's
+# account from an allowed source requires TLS; the socket and loopback stay
+# as they are.
+ssl_cert = {{ cloudfall_mariadb_certificate_path }}
+ssl_key = {{ cloudfall_mariadb_key_path }}
+ssl_ca = {{ cloudfall_mariadb_ca_path }}
+{% endif %}

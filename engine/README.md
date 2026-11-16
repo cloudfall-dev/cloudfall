@@ -37,7 +37,7 @@ The renderer consumes the SDK's typed inventory and creates host variables plus
 environment, application, and component groups. It never includes secret values or
 secret references.
 
-Active environment-scoped SSH public keys are rendered as
+Environment-scoped SSH public keys, active and revoked, are rendered as
 `cloudfall_ssh_public_keys`. Rendering alone does not change authorized keys.
 
 ## Running playbooks
@@ -120,7 +120,8 @@ service's `remoteAccess`) renders one `ip saddr`/`ip6 saddr` rule per source
 and never counts as the SSH port.
 
 The access role installs active environment-scoped `SshPublicKey` resources
-for root, validates the complete OpenSSH configuration, and only then
+for root, then removes the revoked ones (undeclared keys stay), validates the
+complete OpenSSH configuration, and only then
 disables password and keyboard-interactive authentication.
 
 ## Bootstrap role
@@ -226,8 +227,8 @@ then execute the engine's `deploy.yml`, `rollback.yml`, `restart.yml`, and
 A component's `release.command` (database migrations, say) runs once per
 deploy, on the first server of `deployment.servers`, which deploys before the
 others. It runs in a transient systemd unit as the application's user, in the
-new release directory (or its `workingDirectory`), with the component's
-`shared/env/<component>.env` loaded by the unit's own `EnvironmentFile=`
+new release directory (or its `workingDirectory`), with the new release's
+environment file (below) loaded by the unit's own `EnvironmentFile=`
 rules, and is stopped after `timeoutSeconds`. A failure or a timeout fails the
 deploy before any server's `current` moves; a success is recorded under
 `releaseCommand` in the release receipt of that deploy. The command must be
@@ -241,7 +242,10 @@ server), `null` for a component without one. Rollback never runs the release
 command, and its plan says so with `release_command_skipped: true`. Rollback activates an already-retained
 release without re-transferring an artifact and requires the declared health
 check to pass; it deliberately does not auto-restore on failure, because a
-failed rollback is an incident, not a deployment. A rollback to a release that
+failed rollback is an incident, not a deployment. Before the restart it points
+the unit's `EnvironmentFile=` line at the target release's own environment
+file, or at the legacy one when its deploy wrote none, so the release comes
+back with the environment it was deployed with. A rollback to a release that
 is no longer on the server (never deployed there, or removed by a deploy's
 cleanup) is refused with a message naming the releases still kept there.
 
@@ -257,9 +261,17 @@ materializes locked dependencies with a pinned `uv` (`uv sync --frozen
 `shared/` directory), optionally installs an environment file, runs the
 component's `release.command` when it declares one, renders the
 systemd unit from the declared service command, and then activates behind a
-health gate: symlink switch, restart, and the declared HTTP health check. If
-the health check fails, the previous release is restored with the service unit
-it ran under, restarted, and gated on its own health check, and the run fails;
+health gate: symlink switch, restart, and the declared HTTP health check. The
+environment file is the release's own,
+`shared/env/<component>.<release directory>.env`
+(`root:<application user>`, `0640`), which the release's unit,
+its release command and its command health check read; a redeploy copy gets
+one of its own. A deploy without an environment file names the legacy
+`shared/env/<component>.env` in the unit, as before, and no deploy writes or
+removes that file, so a release deployed before per-release files still finds
+it. If the health check fails, the previous release is restored with the
+service unit it ran under, and with it the environment file that unit names,
+restarted, and gated on its own health check, and the run fails;
 a restored release that fails that check fails the run with its own message. A
 first release with no predecessor is stopped instead. A component on several
 servers deploys one server at a time; when a later server fails its gate, the
@@ -296,7 +308,9 @@ which a rollback of that server takes) always stay, whatever the count and
 whatever their order, since after a rollback `current` need not be the newest;
 the other releases stay newest first by release id until the count is
 reached. A directory under `releases/` whose name is not a release id is
-never touched. The removed ids are that server's `removedReleases` in the
+never touched. A removed release's environment files under `shared/env/` go
+with it; the legacy `shared/env/<component>.env` stays. The removed ids are
+that server's `removedReleases` in the
 receipt (an empty list when nothing was removed). A failed gate removes
 nothing, and check mode only reports what a deploy would remove.
 
@@ -304,7 +318,8 @@ A `healthCheck` of `type: command` (a smoke check, say) is the gate's last
 step: after the switch and the restart, the command runs in a transient
 systemd unit, `cloudfall-health-<component>`, as the application's user, in
 `<installRoot>/current` (a relative first element of `command` resolves
-there), with the service unit's `EnvironmentFile=-` line, and is stopped
+there), with the environment file of the release `current` points to (the
+one its unit's `EnvironmentFile=-` line names), and is stopped
 after `timeoutSeconds`. It runs up to `attempts` times, 3 seconds apart, and
 passes at the first exit 0. Its stdout and stderr stay in the server's
 journal (`journalctl -u cloudfall-health-<component>`) and never reach the
@@ -350,7 +365,7 @@ rollback switches what it serves with no Nginx reload, and answers its
 matches answers 404. The role installs `acl` and grants the
 Nginx worker (`www-data`) traverse-only access (`user:www-data:--x`) from the
 application root to the install root and its `releases/`; the worker joins no
-group, so `shared/env/<component>.env` stays unreadable to it.
+group, so the environment files under `shared/env/` stay unreadable to it.
 
 The site role installs Nginx and Certbot, serves the ACME challenge webroot,
 and converges in two phases: until a certificate exists the route serves

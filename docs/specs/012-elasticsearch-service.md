@@ -59,7 +59,7 @@ spec:
 | `heapMb` | yes | `-Xms` and `-Xmx`, 512 to 31744 (above that the JVM loses compressed object pointers) |
 | `nodes` | no | The servers of the cluster; must contain `spec.server`. Absent means `[spec.server]` |
 | `clusterName` | no | `cluster.name`; absent means the service id |
-| `existingCluster` | no | `seedHosts` and `caCertificateFile` of a cluster Cloudfall did not create, which the nodes join (below) |
+| `existingCluster` | no | `seedHosts` and `caCertificateFile` of a cluster Cloudfall did not create, which the nodes join, and an optional `credentialsRef` the join check logs in with (below) |
 | `users` | no | Application users, each limited to its index patterns |
 | `remoteAccess` | no | `listenAddress` and `allowedSources`, the shape PostgreSQL uses (S-006) |
 | `snapshotRepository` | no | An S3-compatible repository; absent means a filesystem repository in `backup.directory` |
@@ -118,6 +118,7 @@ elasticsearch:
   existingCluster:
     seedHosts: ["10.0.0.11:9300", "10.0.0.12:9300"]
     caCertificateFile: pki/search-old-ca.pem
+    credentialsRef: { environment: production, path: /services/search-main, key: OLD_CLUSTER_MONITOR }
   snapshotRepository: { type: s3, bucket: search-snapshots, endpoint: s3.example.com, basePath: search, credentialsRef: { environment: production, path: /services/search-main, key: S3 } }
 ```
 
@@ -132,12 +133,24 @@ elasticsearch:
 - Before installing anything the role asks a seed host for the cluster's name and node
   versions, and refuses when the name differs from `clusterName`, when any node runs another
   major, or when any node is newer than `version`
+- That check is `GET /_nodes` over HTTPS on port 9200 of the seed hosts' addresses, verified
+  against `caCertificateFile`. It logs in with `credentialsRef` when declared: one key of
+  the project's store whose value is `<username>:<password>` on one line, an account the
+  team already has on the existing cluster with the `monitor` cluster privilege, so nobody
+  creates a user there by hand. Without `credentialsRef` it logs in as `cloudfall` with the
+  service's own password, which the team must then have granted `monitor` on the existing
+  cluster. A missing key, or a value not of that form, stops the converge before any
+  playbook runs, naming the file and the key; the value reaches no log, task output,
+  receipt or error. The account is used for this read only: nothing on the existing nodes
+  is changed with it
 - Cloudfall's own account works as on any node (the file realm is per node). The `elastic`
   password is left alone: it belongs to the cluster the team already has. Declared users are
   converged as usual, and users that exist already are left alone
 - When the old nodes are gone, the team removes `existingCluster` and converges: the foreign
   CA and seed hosts leave the configuration one node at a time, `verification_mode` returns
-  to `full`, and `clusterName` keeps the name
+  to `full`, and `clusterName` keeps the name. Each node waits for the cluster to be `green`
+  before the next one moves; when a single Cloudfall node is left, its replicas have nowhere
+  to go, so it waits for `yellow` instead, as for any restart of a cluster of one
 
 ### What each node needs
 
@@ -328,13 +341,18 @@ Touches `config/schemas/v1/service.schema.json`, `config/examples/services/`,
 - S-012-17: With a two-node cluster of a supported version that Cloudfall did not create and
   that trusts the project CA, converging a service with `existingCluster` adds its server as
   a third node of the same `cluster_uuid`; no index is lost, the `elastic` password is
-  unchanged, and `elasticsearch.yml` on the new node never held `cluster.initial_master_nodes`
+  unchanged, and `elasticsearch.yml` on the new node never held `cluster.initial_master_nodes`.
+  With `credentialsRef` naming an account of that cluster with `monitor`, the join check logs
+  in with it, with no `cloudfall` user added to the existing nodes; without it, the check
+  logs in as `cloudfall`
 - S-012-18: The converge of S-012-17 stops before installing the package when the cluster's
   name differs from `clusterName`, when a node of it runs another major, and when a node of
-  it is newer than `version`
+  it is newer than `version`; a `credentialsRef` whose key is missing from the store stops it
+  before any playbook, and the password of that account appears in no playbook output,
+  command answer or receipt
 - S-012-19: After the old nodes are stopped and `existingCluster` is removed, a converge
   leaves no foreign CA and no old seed host in the configuration, `cluster_name` is
-  unchanged, and the cluster is green
+  unchanged, and the cluster is green with two or more Cloudfall nodes, or yellow with one
 
 ## Out of scope
 

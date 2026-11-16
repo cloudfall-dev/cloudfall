@@ -1,0 +1,104 @@
+---
+# The exact release from MariaDB's archive, held so an unattended upgrade
+# never restarts the server (S-019, What the server needs).
+- name: Install MariaDB repository prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - gnupg
+      - python3-debian
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create APT keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Fetched only when missing, so a re-converge needs no network (#388).
+- name: Check for the MariaDB repository signing key
+  ansible.builtin.stat:
+    path: "{{ cloudfall_mariadb_repository_key_path }}"
+  register: cloudfall_mariadb_repository_key
+
+- name: Install MariaDB repository signing key
+  ansible.builtin.get_url:
+    url: "{{ cloudfall_mariadb_repository_key_url }}"
+    dest: "{{ cloudfall_mariadb_repository_key_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: cloudfall_mariadb_repository_key_download
+  until: cloudfall_mariadb_repository_key_download is succeeded
+  retries: 5
+  delay: 10
+  when: not cloudfall_mariadb_repository_key.stat.exists
+
+- name: Keep the installed MariaDB repository signing key's owner and mode
+  ansible.builtin.file:
+    path: "{{ cloudfall_mariadb_repository_key_path }}"
+    state: file
+    owner: root
+    group: root
+    mode: "0644"
+  when: cloudfall_mariadb_repository_key.stat.exists
+
+- name: Configure the archive repository of the declared release
+  ansible.builtin.deb822_repository:
+    name: mariadb
+    types:
+      - deb
+    uris:
+      - >-
+        {{ cloudfall_mariadb_repository_url }}/mariadb-{{
+          cloudfall_mariadb_service.mariadb.version }}/repo/debian
+    suites:
+      - "{{ ansible_facts['distribution_release'] }}"
+    components:
+      - main
+    signed_by: "{{ cloudfall_mariadb_repository_key_path }}"
+    state: present
+  register: cloudfall_mariadb_repository
+
+# A new release's repository is read now, not when the cache next expires;
+# a handler would run after the install that needs it.
+- name: Read the archive repository of a newly declared release  # noqa: no-handler
+  ansible.builtin.apt:
+    update_cache: true
+  when: cloudfall_mariadb_repository is changed
+
+# Debian ships its own mariadb-server: the archive's packages win, so a
+# dependency never comes from the other source.
+- name: Prefer the archive's MariaDB packages
+  ansible.builtin.copy:
+    dest: /etc/apt/preferences.d/cloudfall-mariadb.pref
+    content: |
+      # Managed by Cloudfall
+      Package: *
+      Pin: origin archive.mariadb.org
+      Pin-Priority: 1000
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the pinned MariaDB server
+  ansible.builtin.apt:
+    name: mariadb-server={{ cloudfall_mariadb_package_version }}
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    # A patch release inside the series replaces the held package.
+    allow_change_held_packages: true
+    # Nothing starts during the install: the handler restarts once.
+    policy_rc_d: 101
+  register: cloudfall_mariadb_package
+  notify: Restart MariaDB
+
+- name: Hold the MariaDB server package
+  ansible.builtin.dpkg_selections:
+    name: mariadb-server
+    selection: hold

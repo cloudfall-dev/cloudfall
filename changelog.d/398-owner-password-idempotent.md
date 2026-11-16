@@ -1,0 +1,3 @@
+### Fixed
+
+- A PostgreSQL owner role whose database names a `passwordRef` no longer reports a change on every services converge: the role reads the owner's stored verifier, computes the password's SCRAM-SHA-256 verifier on the controller with that verifier's salt and iteration count (a fresh salt when the role has no SCRAM verifier), and runs `ALTER ROLE` only when the two differ or the role can't log in, so a converge with the same password changes nothing (D-25). The controller now stages the password itself in its private `0600` file, which never leaves the controller; only the verifier reaches the host, as before (D-9). A stored password that is neither a SCRAM-SHA-256 nor an md5 verifier stops the run, naming the role, never the value (#398)

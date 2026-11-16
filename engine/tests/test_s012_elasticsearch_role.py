@@ -489,7 +489,9 @@ def test_s012_4_only_a_package_or_configuration_change_restarts_the_node() -> No
         if _module(task) == "ansible.builtin.uri"
         and "method" not in cast("dict[str, object]", task[_module(task)])
     ]
-    assert len(reads) == 2
+    # The health wait, the green wait once an existing cluster left (#315),
+    # and the memory lock read
+    assert len(reads) == 3
     assert all(task["no_log"] is True for task in reads)
 
 
@@ -532,16 +534,22 @@ def test_s012_4_the_elastic_password_is_set_once() -> None:
         for task in tasks
         if task["name"] == "Set the elastic password from its hash"
     )
-    condition = str(set_password["when"])
+    conditions = cast("list[str]", set_password["when"])
     scoped = {
         **_variables(),
         **cast("dict[str, object]", block["vars"]),
     }
 
+    def sets(variables: dict[str, object]) -> bool:
+        return all(
+            _templar(variables).evaluate_conditional(trust_as_template(condition))
+            for condition in conditions
+        )
+
     marked = {**scoped, "cloudfall_elasticsearch_elastic_set": _stat(exists=True)}
     unmarked = {**scoped, "cloudfall_elasticsearch_elastic_set": _stat(exists=False)}
-    assert not _templar(marked).evaluate_conditional(trust_as_template(condition))
-    assert _templar(unmarked).evaluate_conditional(trust_as_template(condition))
+    assert not sets(marked)
+    assert sets(unmarked)
     uri = cast("dict[str, object]", set_password["ansible.builtin.uri"])
     assert uri["body"] == {
         "password_hash": (
@@ -620,12 +628,19 @@ def test_this_release_refuses_what_later_slices_converge() -> None:
     }
 
     assert _holds(validate, _variables())
-    for service in (
-        _service(nodes=["h2", "h3"]),
-        _service(users=[user]),
-        _service(existingCluster={"seedHosts": ["10.0.0.11:9300"]}),
-    ):
-        assert not _holds(validate, _variables(cloudfall_elasticsearch_service=service))
+    # Declared users converge since #311.
+    with_users = _variables(cloudfall_elasticsearch_service=_service(users=[user]))
+    assert _holds(validate, with_users)
+    not_a_node = _service(nodes=["h2", "h3"])
+    assert not _holds(validate, _variables(cloudfall_elasticsearch_service=not_a_node))
+    # Joining an existing cluster is converged since #315.
+    joining = _service(
+        existingCluster={
+            "seedHosts": ["10.0.0.11:9300"],
+            "caCertificateFile": "pki/old-ca.pem",
+        }
+    )
+    assert _holds(validate, _variables(cloudfall_elasticsearch_service=joining))
     bookworm = _variables()
     facts = cast("dict[str, object]", bookworm["ansible_facts"])
     bookworm["ansible_facts"] = {**facts, "distribution_major_version": "12"}
@@ -646,6 +661,8 @@ def test_every_task_that_sees_a_password_or_its_hash_is_no_log() -> None:
         "Let replicas move again after the failed install",
         "Wait for the node to serve the cluster",
         "Reload the node's secure settings for its new S3 keys",
+        "Wait for the cluster to be green, or yellow on one node, without the "
+        "existing cluster",
         "Read whether the node locked its memory",
         "Set the elastic password from its hash",
     ]

@@ -40,23 +40,52 @@
 
 - name: Migrate and verify the declared database
   block:
-    - name: Stage the source connection URL on the target host
+    # The URL holds the password, so the clients get the connection from a
+    # 0600 libpq service file named in their environment, never on their
+    # command line, where /proc/<pid>/cmdline shows it to every local user.
+    - name: Check that the source URL can become a libpq service file
+      ansible.builtin.set_fact:
+        cloudfall_data_migration_url_problem: >-
+          {{
+            lookup('ansible.builtin.file',
+                   cloudfall_data_migration_source_url_file)
+            | cloudfall_pg_service_problem
+          }}
+      no_log: true
+
+    - name: Refuse a source URL libpq can't read
+      ansible.builtin.assert:
+        that:
+          - cloudfall_data_migration_url_problem | length == 0
+        fail_msg: "{{ cloudfall_data_migration_url_problem }}"
+
+    - name: Stage the source connection as a libpq service file
       ansible.builtin.copy:
-        src: "{{ cloudfall_data_migration_source_url_file }}"
-        dest: "{{ cloudfall_data_migration_url_path }}"
+        content: >-
+          {{
+            lookup('ansible.builtin.file',
+                   cloudfall_data_migration_source_url_file)
+            | cloudfall_pg_service(cloudfall_data_migration_pg_service)
+          }}
+        dest: "{{ cloudfall_data_migration_service_file_path }}"
         owner: root
         group: root
         mode: "0600"
       no_log: true
 
     - name: Read every non-system schema of the source
-      ansible.builtin.shell:
-        cmd: >-
-          psql
-          --dbname "$(cat {{ cloudfall_data_migration_url_path | quote }})"
-          --no-psqlrc --tuples-only --no-align
-          --set ON_ERROR_STOP=1
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/psql
+          - --no-psqlrc
+          - --tuples-only
+          - --no-align
+          - --set
+          - ON_ERROR_STOP=1
         stdin: "{{ cloudfall_data_migration_source_schemas_query }};"
+      environment:
+        PGSERVICEFILE: "{{ cloudfall_data_migration_service_file_path }}"
+        PGSERVICE: "{{ cloudfall_data_migration_pg_service }}"
       register: cloudfall_data_migration_source_schemas
       changed_when: false
       when: cloudfall_data_migration_schemas | length == 0
@@ -108,19 +137,25 @@
           tables; data migration refuses to overwrite existing data
 
     - name: Read what the selected schemas need from the source
-      ansible.builtin.shell:
-        cmd: >-
-          psql
-          --dbname "$(cat {{ cloudfall_data_migration_url_path | quote }})"
-          --no-psqlrc --tuples-only --no-align
-          --set ON_ERROR_STOP=1
-          --set {{ cloudfall_data_migration_schemas_variable | quote }}
-          --set {{
-            ('cloudfall_data_every_schema='
-              ~ (cloudfall_data_migration_schemas | length == 0) | string
-              | lower) | quote
-          }}
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/psql
+          - --no-psqlrc
+          - --tuples-only
+          - --no-align
+          - --set
+          - ON_ERROR_STOP=1
+          - --set
+          - "{{ cloudfall_data_migration_schemas_variable }}"
+          - --set
+          - >-
+            cloudfall_data_every_schema={{
+              (cloudfall_data_migration_schemas | length == 0) | string | lower
+            }}
         stdin: "{{ cloudfall_data_migration_source_preflight_query }};"
+      environment:
+        PGSERVICEFILE: "{{ cloudfall_data_migration_service_file_path }}"
+        PGSERVICE: "{{ cloudfall_data_migration_pg_service }}"
       register: cloudfall_data_migration_source_preflight
       changed_when: false
 
@@ -203,22 +238,29 @@
           {{ cloudfall_data_migration_findings.authReferences }}
 
     - name: Dump the source database on the target host
-      ansible.builtin.shell:
-        cmd: >-
-          pg_dump
-          --dbname "$(cat {{ cloudfall_data_migration_url_path | quote }})"
-          --no-owner --no-privileges --format custom
-          --file {{ cloudfall_data_migration_dump_path | quote }}{%
-            for schema in cloudfall_data_migration_schemas | unique | sort
-          %} --schema {{
-            ('"' ~ (schema | replace('"', '""')) ~ '"') | quote
-          }}{% endfor %}{%
-            if cloudfall_data_migration_schemas | length > 0
-          %}{%
-            for extension in cloudfall_data_migration_needs.extensions
-          %} --extension {{
-            ('"' ~ (extension | replace('"', '""')) ~ '"') | quote
-          }}{% endfor %}{% endif %}
+      ansible.builtin.command:
+        # Each name is one argument and one literal pg_dump pattern.
+        argv: >-
+          {%- set dump = namespace(argv=[
+                '/usr/bin/pg_dump', '--no-owner', '--no-privileges',
+                '--format', 'custom', '--file', cloudfall_data_migration_dump_path,
+              ]) -%}
+          {%- for schema in cloudfall_data_migration_schemas | unique | sort -%}
+          {%- set dump.argv = dump.argv + [
+                '--schema', '"' ~ (schema | replace('"', '""')) ~ '"'
+              ] -%}
+          {%- endfor -%}
+          {%- if cloudfall_data_migration_schemas | length > 0 -%}
+          {%- for extension in cloudfall_data_migration_needs.extensions -%}
+          {%- set dump.argv = dump.argv + [
+                '--extension', '"' ~ (extension | replace('"', '""')) ~ '"'
+              ] -%}
+          {%- endfor -%}
+          {%- endif -%}
+          {{ dump.argv }}
+      environment:
+        PGSERVICEFILE: "{{ cloudfall_data_migration_service_file_path }}"
+        PGSERVICE: "{{ cloudfall_data_migration_pg_service }}"
       register: cloudfall_data_migration_dump
       retries: 3
       delay: 10
@@ -233,14 +275,20 @@
         mode: "0600"
 
     - name: Read source table row counts
-      ansible.builtin.shell:
-        cmd: >-
-          psql
-          --dbname "$(cat {{ cloudfall_data_migration_url_path | quote }})"
-          --no-psqlrc --csv --tuples-only
-          --set ON_ERROR_STOP=1
-          --set {{ cloudfall_data_migration_schemas_variable | quote }}
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/psql
+          - --no-psqlrc
+          - --csv
+          - --tuples-only
+          - --set
+          - ON_ERROR_STOP=1
+          - --set
+          - "{{ cloudfall_data_migration_schemas_variable }}"
         stdin: "{{ cloudfall_data_migration_count_query }};"
+      environment:
+        PGSERVICEFILE: "{{ cloudfall_data_migration_service_file_path }}"
+        PGSERVICE: "{{ cloudfall_data_migration_pg_service }}"
       register: cloudfall_data_migration_source_counts
       changed_when: false
 
@@ -327,9 +375,9 @@
           {%- endfor -%}
           {{ result.tables }}
   always:
-    - name: Remove the staged source connection URL
+    - name: Remove the staged source connection
       ansible.builtin.file:
-        path: "{{ cloudfall_data_migration_url_path }}"
+        path: "{{ cloudfall_data_migration_service_file_path }}"
         state: absent
 
     - name: Remove the staged dump

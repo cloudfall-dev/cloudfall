@@ -7,8 +7,9 @@ declarations (alert rules, operator policies, logging stacks), and the
 ``pyproject.toml`` that pins the released Cloudfall the project runs with.
 Every ``cloudfall`` command runs inside a project: the current directory
 when it is one, else ``--project``, else ``CLOUDFALL_PROJECT``.
-Evidence, receipts, and rendered files land under ``tmp/`` inside the
-project and are never committed.
+Receipts and operator proposals land under ``record/``, which is committed
+like ``decisions/``; observations, rendered files, and other things that
+can be rebuilt land under ``tmp/`` and are never committed.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from cloudfall.commands import CommandEffect, commands_with_effect
 from cloudfall.domain import ResourceKind
+from cloudfall.project_format import SUPPORTED_FORMATS
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -72,7 +74,55 @@ _ERROR_GIT_FAILED = "project_git_failed"
 
 
 RUNTIME_DIRECTORY = "tmp"
-"""Project directory holding evidence and receipts; never a resource source."""
+"""Project directory holding what can be rebuilt; never a resource source."""
+
+RECORD_DIRECTORY = "record"
+"""Project directory holding receipts and proposals, committed like decisions/."""
+
+OUTPUT_DIRECTORY = "output"
+"""Folder under ``tmp/`` holding raw output a record cites, never committed."""
+
+RELEASE_OUTPUT_SUFFIX = ".log"
+"""A release command's output file is ``<component>.<release>.log``."""
+
+
+class RecordStore(Enum):
+    """One store of the record a project commits under ``record/`` (D-16).
+
+    The value is its folder inside ``record/``; before 0.8.0 the same folder
+    lay under ``tmp/``, from where ``cloudfall config upgrade`` moves it.
+    """
+
+    DEPLOYMENTS = "deployments"
+    RELEASES = "releases"
+    BACKUPS = "backups"
+    DATA_MIGRATIONS = "data-migrations"
+    ENVIRONMENT_RECEIPTS = "env-receipts"
+    PROPOSALS = "operator/proposals"
+
+    @property
+    def directory(self) -> str:
+        """Where the store is kept by default, relative to the project."""
+        return f"{RECORD_DIRECTORY}/{self.value}"
+
+    @property
+    def path(self) -> Path:
+        """The default directory as a relative path, for option defaults."""
+        return Path(self.directory)
+
+    @property
+    def legacy_directory(self) -> str:
+        """Where the store was kept before it moved into the record."""
+        return f"{RUNTIME_DIRECTORY}/{self.value}"
+
+    @property
+    def output_directory(self) -> str:
+        """Where raw output a record of this store cites is kept, uncommitted.
+
+        Raw output is the application's, so it may hold a secret value; a
+        record names the file and its SHA-256 and never holds the text.
+        """
+        return f"{RUNTIME_DIRECTORY}/{OUTPUT_DIRECTORY}/{self.value}"
 
 PROJECT_DIRECTORY_VARIABLE = "CLOUDFALL_PROJECT"
 """Environment variable naming the project when ``--project`` is absent."""
@@ -484,13 +534,18 @@ requires-python = ">=3.14"
 # the `cloudfall mcp serve` agent server.
 dependencies = ["cloudfall=={options.version}"]
 
+# The project format this Cloudfall writes; `cloudfall config upgrade` raises it.
+[tool.cloudfall]
+format = {SUPPORTED_FORMATS.current}
+
 [tool.uv]
 package = false
 """
 
 
-_GITIGNORE = f"""# Runtime state: evidence, receipts, rendered inventory, built
-# artifacts, rendered environment files, and the persisted migration plan
+_GITIGNORE = f"""# What can be rebuilt: observations, rendered inventory, built
+# artifacts, rendered environment files, and the persisted migration plan.
+# Receipts and operator proposals live in {RECORD_DIRECTORY}/, which is committed.
 {RUNTIME_DIRECTORY}/
 
 # Local environment and tooling
@@ -516,6 +571,7 @@ creation_rules:
 
 def _readme(options: InitOptions, git: GitSetup) -> str:
     tmp = RUNTIME_DIRECTORY
+    record = RECORD_DIRECTORY
     secrets = SECRETS_DIRECTORY
     browse = REPOSITORY_URL
     ref = f"v{options.version}"
@@ -558,9 +614,12 @@ elsewhere, pass `--project` or set `CLOUDFALL_PROJECT`.
 {rows}
 
 Only these directories are read as resources, so playbooks, roles, docs, and
-tooling files may live anywhere else in the project. `{tmp}/` holds evidence,
-receipts, rendered inventory, built artifacts, and rendered environment files
-and is ignored by git. Secret values never enter the resources: declare
+tooling files may live anywhere else in the project. `{record}/` holds the
+receipts of deploys, releases, backups, data migrations, and rendered
+environments, and the operator's proposals: it is the audit trail, so commit
+it, as `decisions/` is. `{tmp}/` holds what can be rebuilt (observations,
+rendered inventory, built artifacts, and rendered environment files) and is
+ignored by git. Secret values never enter the resources: declare
 `secretRefs` and keep sops-encrypted fragments in `{secrets}/`, which
 `.sops.yaml` encrypts to your age key once you put the key there (see the
 [secrets guide][secrets-guide]).
@@ -621,6 +680,7 @@ operating contract for AI agents here.
 
 def _agent_contract(options: InitOptions) -> str:
     tmp = RUNTIME_DIRECTORY
+    record = RECORD_DIRECTORY
     secrets = SECRETS_DIRECTORY
     kinds = textwrap.fill(
         ", ".join(f"`{kind.directory}/`" for kind in ResourceKind), width=72
@@ -653,8 +713,8 @@ server. These are the terms.
 Run every command as `uv run cloudfall …` (or `uv run cloudfall-engine …`)
 from this directory, which the CLI recognizes as the project. From
 elsewhere, pass `--project <dir>` or set `CLOUDFALL_PROJECT=<dir>`.
-Relative paths, including every `{tmp}/` default, resolve against the
-project either way. Run `uv sync` once after cloning and after any change
+Relative paths, including every `{tmp}/` and `{record}/` default, resolve
+against the project either way. Run `uv sync` once after cloning and after any change
 to the `cloudfall==<version>` pin in `pyproject.toml`.
 
 Resources are plain YAML, one document per file, in the kind directories,
@@ -668,9 +728,9 @@ addresses, key owners, git refs, and the like.
 
 ## Commands that change nothing on servers
 
-Run these whenever they help. They read the project and evidence, may
-probe servers and public endpoints read-only, and write only under
-`{tmp}/`.
+Run these whenever they help. They read the project, the record, and
+evidence, may probe servers and public endpoints read-only, and write only
+under `{tmp}/`.
 
 | Command | Does |
 |---|---|
@@ -727,11 +787,14 @@ snake_case code in `error.context.code`).
 
 ## Evidence
 
-`{tmp}/` holds everything derived or produced: observations, receipts,
-rendered inventory, built artifacts, rendered environment files, and the
-persisted migration plan. It is ignored by git. Read anything there to
-answer questions about state. Exception: `{tmp}/env/` and any other
-rendered environment file contain secret values; do not read or quote them.
+`{record}/` holds the record: the receipts of deploys, releases, backups,
+data migrations, and rendered environments, and the operator's proposals.
+It is committed, and no record there holds a secret value. `{tmp}/` holds
+what can be rebuilt: observations, rendered inventory, built artifacts,
+rendered environment files, and the persisted migration plan. It is ignored
+by git. Read anything in either to answer questions about state. Exception:
+`{tmp}/env/` and any other rendered environment file contain secret values;
+do not read or quote them.
 
 Status comes from evidence, never from assumption. A deployment counts as
 done when its receipt exists; a server counts as compliant when `audit`
@@ -748,8 +811,9 @@ command needs a secret file, ask the human to provide the path.
 
 ## Git
 
-Resources, `{secrets}/`, `.sops.yaml`, `pyproject.toml`, `uv.lock`, and the
-documents in this directory are committed. `{tmp}/` and `.venv/` are not.
+Resources, `{record}/`, `{secrets}/`, `.sops.yaml`, `pyproject.toml`,
+`uv.lock`, and the documents in this directory are committed. `{tmp}/` and
+`.venv/` are not.
 Commit resource changes with a message saying what changed and why; do not
 commit on the human's behalf unless asked.
 """

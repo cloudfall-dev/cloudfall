@@ -140,6 +140,9 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 4096
+            },
+            "credentialsRef": {
+              "$ref": "#/$defs/secretValueReference"
             }
           },
           "required": [
@@ -230,6 +233,165 @@
         "heapMb"
       ],
       "additionalProperties": false
+    },
+    "mariadbDatabaseName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "mariadbUserName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_.]*$"
+    },
+    "mariadb": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "innodbBufferPoolMb": {
+          "type": "integer",
+          "minimum": 128,
+          "maximum": 4194304
+        },
+        "databases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "$ref": "#/$defs/mariadbDatabaseName"
+              },
+              "application": {
+                "$ref": "common.schema.json#/$defs/resourceId"
+              },
+              "owner": {
+                "$ref": "#/$defs/mariadbUserName"
+              },
+              "passwordRef": {
+                "$ref": "#/$defs/secretValueReference"
+              },
+              "authentication": {
+                "enum": [
+                  "mysql_native_password",
+                  "ed25519"
+                ]
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false,
+            "oneOf": [
+              {
+                "required": [
+                  "application"
+                ]
+              },
+              {
+                "required": [
+                  "owner"
+                ]
+              }
+            ],
+            "dependentRequired": {
+              "owner": [
+                "passwordRef"
+              ]
+            },
+            "dependentSchemas": {
+              "application": {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "passwordRef"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "authentication"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "remoteAccess": {
+          "$ref": "#/$defs/remoteAccess"
+        },
+        "replication": {
+          "type": "object",
+          "properties": {
+            "role": {
+              "enum": [
+                "primary",
+                "replica"
+              ]
+            },
+            "serverId": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4294967295
+            },
+            "listenAddress": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 45
+            },
+            "primary": {
+              "$ref": "common.schema.json#/$defs/resourceId"
+            },
+            "source": {
+              "type": "object",
+              "properties": {
+                "host": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 253
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                "credentialsRef": {
+                  "$ref": "#/$defs/secretValueReference"
+                },
+                "caCertificateFile": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                }
+              },
+              "required": [
+                "host",
+                "credentialsRef"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "role",
+            "serverId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "version",
+        "innodbBufferPoolMb"
+      ],
+      "additionalProperties": false
     }
   },
   "type": "object",
@@ -250,7 +412,8 @@
           "enum": [
             "postgresql",
             "redis",
-            "elasticsearch"
+            "elasticsearch",
+            "mariadb"
           ]
         },
         "environment": {
@@ -402,6 +565,9 @@
         "elasticsearch": {
           "$ref": "#/$defs/elasticsearch"
         },
+        "mariadb": {
+          "$ref": "#/$defs/mariadb"
+        },
         "metrics": {
           "type": "object",
           "properties": {
@@ -493,6 +659,46 @@
             "not": {
               "required": [
                 "elasticsearch"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "serviceKind": {
+                "const": "mariadb"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mariadb"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "postgresql"
+                  ]
+                },
+                {
+                  "required": [
+                    "redis"
+                  ]
+                },
+                {
+                  "required": [
+                    "elasticsearch"
+                  ]
+                }
+              ]
+            }
+          },
+          "else": {
+            "not": {
+              "required": [
+                "mariadb"
               ]
             }
           }

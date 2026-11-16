@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -18,6 +24,8 @@ from cloudfall.app import app
 from cloudfall.catalog import RiskLevel, TargetScope, load_catalog
 from cloudfall.cli import main
 from cloudfall.decision import (
+    APPROVED_RUN_TIMEOUT_SECONDS,
+    CHECK_TIMEOUT_SECONDS,
     DECISION_DIRECTORY,
     HOST_STATS_VARIABLE,
     ApprovalChannel,
@@ -30,9 +38,11 @@ from cloudfall.decision import (
     Requirement,
     Targets,
     approve,
+    approved_runner,
     gate,
     mark_interrupted,
     propose,
+    raw_output_directory,
     read_basis,
     refuse_unapprovable,
     run_command,
@@ -46,7 +56,7 @@ from treaty import CommandPath
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
-    from cloudfall.decision import Decision
+    from cloudfall.decision import CheckRunner, Decision
     from cloudfall.record_files import UnreadableRecord
 
 SCHEMAS = default_schema_directory()
@@ -153,7 +163,9 @@ class _Runner:
     """A runner that writes what Ansible would write, stage by stage.
 
     An idempotent fleet changes on the run and changes nothing on the
-    verify that follows, so the two stages are modelled separately.
+    verify that follows, so the two stages are modelled separately. Every
+    stage observes the hosts the play touched, unless ``verify_observed``
+    names the only hosts the verify step observed.
     """
 
     def __init__(
@@ -161,10 +173,12 @@ class _Runner:
         exit_code: int = 0,
         changed: tuple[str, ...] = ("web-1",),
         verify_changed: tuple[str, ...] = (),
+        verify_observed: tuple[str, ...] | None = None,
     ) -> None:
         self.exit_code = exit_code
         self.changed = changed
         self.verify_changed = verify_changed
+        self.verify_observed = verify_observed
         self.recorded: list[tuple[str, ...]] = []
 
     def __call__(
@@ -176,11 +190,15 @@ class _Runner:
         host_stats = Path(environment[HOST_STATS_VARIABLE])
         verifying = self._verifying(host_stats)
         changed = self.verify_changed if verifying else self.changed
+        observed = (*self.changed, "web-2")
+        if verifying and self.verify_observed is not None:
+            observed = self.verify_observed
         self.recorded.append(tuple(argv))
         host_stats.mkdir(parents=True, exist_ok=True)
-        for host in changed:
-            _write_recap(host_stats / host, ok=3, changed=1)
-        _write_recap(host_stats / "web-2", ok=3, changed=0)
+        for host in dict.fromkeys((*observed, *changed)):
+            _write_recap(
+                host_stats / host, ok=3, changed=1 if host in changed else 0
+            )
         diff_path.write_text("--- before\n+++ after\n", encoding="utf-8")
         return self.exit_code
 
@@ -338,15 +356,63 @@ def test_a_recorded_decision_round_trips_through_the_store(
     ]
 
 
-def test_the_same_decision_is_never_overwritten(tmp_path: Path) -> None:
+def _target_diff(
+    argv: Sequence[str], environment: Mapping[str, str], diff_path: Path
+) -> int:
+    """Write a diff naming the run's target, so each proposal's diff is its own."""
+    Path(environment[HOST_STATS_VARIABLE]).mkdir(parents=True, exist_ok=True)
+    target = argv[list(argv).index("--limit") + 1]
+    diff_path.write_text(f"+++ {target}\n", encoding="utf-8")
+    return 0
+
+
+def test_two_proposals_in_one_second_each_keep_their_own_diff(
+    tmp_path: Path,
+) -> None:
+    """Two proposals of one operation in one second are two records (#356)."""
     repository = _repository(tmp_path)
     store = _store(repository)
-    propose(_proposal(repository), store, lambda: MOMENT, _Runner())
 
-    with pytest.raises(DecisionError) as error:
-        propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    first = propose(
+        _proposal(repository, target="web-1"), store, lambda: MOMENT, _target_diff
+    )
+    second = propose(
+        _proposal(repository, target="web-2"), store, lambda: MOMENT, _target_diff
+    )
 
-    assert error.value.code == "decision_exists"
+    assert first.decision_id.value == "deploy-20260921143012"
+    assert second.decision_id.value == "deploy-20260921143012-2"
+    assert {entry.decision_id for entry in store.list().records} == {
+        first.decision_id,
+        second.decision_id,
+    }
+    for decision, target in ((first, "web-1"), (second, "web-2")):
+        diff = repository / store.load(decision.decision_id).check.diff.path
+        assert diff.read_text(encoding="utf-8") == f"+++ {target}\n"
+    # No reservation outlives its proposal.
+    assert not list(store.directory.glob(".*.reserved"))
+
+
+def test_a_failed_proposal_leaves_no_record_and_frees_its_id(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+
+    def broken(
+        _argv: Sequence[str], _environment: Mapping[str, str], diff_path: Path
+    ) -> int:
+        diff_path.write_text("--- half\n", encoding="utf-8")
+        message = "the check run broke"
+        raise OSError(message)
+
+    with pytest.raises(OSError, match="the check run broke"):
+        propose(_proposal(repository), store, lambda: MOMENT, broken)
+
+    assert store.list().records == ()
+    assert not list(store.directory.glob(".*.reserved"))
+    retried = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    assert retried.decision_id.value == "deploy-20260921143012"
 
 
 def test_a_fleet_operation_takes_no_target(tmp_path: Path) -> None:
@@ -908,6 +974,353 @@ def test_an_approved_run_is_not_check_mode(tmp_path: Path) -> None:
     assert all("--check" not in argv for argv in run.recorded)
 
 
+def _approved(
+    repository: Path, store: DecisionStore, proposed: Decision, run: _Runner
+) -> Decision:
+    return approve(
+        ApprovalRequest(
+            decision=proposed, approver="roman", repository=repository, via=TERMINAL
+        ),
+        store,
+        lambda: MOMENT,
+        run,
+    )
+
+
+def _refused_as_changed(
+    repository: Path, store: DecisionStore, proposed: Decision
+) -> str:
+    """Approve, expecting a refusal before anything runs; return its message."""
+    run = _Runner()
+    with pytest.raises(DecisionError) as error:
+        _approved(repository, store, proposed, run)
+    assert error.value.code == "decision_binding_changed"
+    assert run.recorded == []
+    assert store.load(proposed.decision_id).status is DecisionStatus.PROPOSED
+    return error.value.detail
+
+
+def _git(repository: Path, *arguments: str) -> None:
+    git = shutil.which("git")
+    assert git is not None
+    subprocess.run(  # noqa: S603 - resolved binary, fixed arguments.
+        (
+            git,
+            *("-c", "user.name=Test", "-c", "user.email=test@example.invalid"),
+            *("-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"),
+            "-C",
+            str(repository),
+            *arguments,
+        ),
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+    )
+
+
+def _git_project(tmp_path: Path) -> Path:
+    """Return a project committed to git, with a role its playbook reads."""
+    repository = _repository(tmp_path)
+    role = repository / "roles" / "web" / "tasks"
+    role.mkdir(parents=True)
+    (role / "main.yml").write_text("---\n[]\n", encoding="utf-8")
+    _git(repository, "init", "--quiet")
+    _git(repository, "add", "--all")
+    _git(repository, "commit", "--quiet", "--message", "fleet")
+    return repository
+
+
+@pytest.mark.parametrize(
+    ("edited", "named"),
+    [
+        ("playbooks/deploy.yml", "the playbook playbooks/deploy.yml"),
+        ("playbooks/health.yml", "the verify playbook playbooks/health.yml"),
+        (
+            "tmp/output/decisions/deploy-20260921143012.diff",
+            "the diff file tmp/output/decisions/",
+        ),
+    ],
+    ids=["playbook", "verify-playbook", "diff"],
+)
+def test_an_edit_after_the_proposal_refuses_its_approval(
+    tmp_path: Path, edited: str, named: str
+) -> None:
+    """The approval is of what was checked: an edit since is refused (#352)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    assert proposed.binding is not None
+    assert proposed.binding.commit is None
+    assert proposed.binding.worktree_sha256 is None
+
+    (repository / edited).write_text("--- edited\n", encoding="utf-8")
+
+    message = _refused_as_changed(repository, store, proposed)
+    assert named in message
+    assert "propose it again" in message
+
+
+_SECRET = "hunter2-the-database-password"  # noqa: S105 - a fixture, printed on purpose.
+
+
+class _SecretRunner(_Runner):
+    """A team playbook that templates a password without ``no_log``: it prints it."""
+
+    def __call__(
+        self,
+        argv: Sequence[str],
+        environment: Mapping[str, str],
+        diff_path: Path,
+    ) -> int:
+        exit_code = super().__call__(argv, environment, diff_path)
+        diff_path.write_text(f"+password={_SECRET}\n", encoding="utf-8")
+        return exit_code
+
+
+def test_a_secret_a_playbook_prints_reaches_no_file_under_decisions(
+    tmp_path: Path,
+) -> None:
+    """The raw diff and run logs stay under the ignored tmp/ (#357, D-24)."""
+    repository = _git_project(tmp_path)
+    store = _store(repository)
+
+    proposed = propose(
+        _proposal(repository), store, lambda: MOMENT, _SecretRunner()
+    )
+    approved = _approved(repository, store, proposed, _SecretRunner())
+
+    assert approved.status is DecisionStatus.VERIFIED
+    assert approved.execution is not None
+    assert approved.verification is not None
+    committed = [path for path in store.directory.rglob("*") if path.is_file()]
+    assert committed
+    for path in committed:
+        assert _SECRET not in path.read_text(encoding="utf-8"), path
+    raw = repository / "tmp" / "output" / "decisions"
+    assert raw.stat().st_mode & 0o777 == 0o700
+    for artifact in (
+        proposed.check.diff,
+        approved.execution.log,
+        approved.verification.log,
+    ):
+        assert not artifact.path.is_absolute()
+        assert (repository / artifact.path).parent == raw
+        content = (repository / artifact.path).read_bytes()
+        assert _SECRET.encode() in content
+        assert artifact.size == len(content)
+        assert (repository / artifact.path).stat().st_mode & 0o777 == 0o600
+
+
+def test_approve_without_the_raw_diff_is_refused_naming_it(tmp_path: Path) -> None:
+    """Another clone has the record, not the diff: nobody approves unseen (#357)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    (repository / proposed.check.diff.path).unlink()
+    run = _Runner()
+
+    with pytest.raises(DecisionError) as error:
+        _approved(repository, store, proposed, run)
+
+    assert error.value.code == "decision_diff_missing"
+    assert str(proposed.check.diff.path) in error.value.detail
+    assert proposed.check.diff.sha256 in error.value.detail
+    assert run.recorded == []
+    assert store.load(proposed.decision_id).status is DecisionStatus.PROPOSED
+
+
+@pytest.mark.parametrize(
+    ("store", "output"),
+    [
+        ("decisions", "tmp/output/decisions"),
+        ("audit/decisions", "tmp/output/audit/decisions"),
+        ("tmp/eval/0/decisions", "tmp/eval/0/decisions"),
+    ],
+    ids=["default", "elsewhere-in-the-project", "already-ignored"],
+)
+def test_every_store_keeps_its_raw_output_out_of_git(
+    tmp_path: Path, store: str, output: str
+) -> None:
+    """A ``--decisions`` folder gets its own raw output folder under tmp/ (#357)."""
+    assert raw_output_directory(tmp_path, tmp_path / store) == tmp_path / output
+
+
+def test_a_record_whose_diff_is_beside_it_still_approves(tmp_path: Path) -> None:
+    """A record written before #357 cites its diff in decisions/, read in place."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    legacy = Path(DECISION_DIRECTORY) / f"{proposed.decision_id.value}.diff"
+    (repository / proposed.check.diff.path).rename(repository / legacy)
+    path = repository / DECISION_DIRECTORY / f"{proposed.decision_id.value}.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["spec"]["check"]["diff"]["path"] = legacy.as_posix()
+    path.write_text(json.dumps(document), encoding="utf-8")
+    older = store.load(proposed.decision_id)
+
+    approved = _approved(repository, store, older, _Runner())
+
+    assert approved.status is DecisionStatus.VERIFIED
+    assert approved.check.diff.path == legacy
+
+
+def test_a_role_edited_in_a_git_project_refuses_the_approval(
+    tmp_path: Path,
+) -> None:
+    """Roles, templates and inventory are bound through git (#352)."""
+    repository = _git_project(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    assert proposed.binding is not None
+    assert proposed.binding.commit is not None
+    assert proposed.binding.worktree_sha256 is not None
+
+    (repository / "roles" / "web" / "tasks" / "main.yml").write_text(
+        "---\n- name: Something else\n", encoding="utf-8"
+    )
+
+    message = _refused_as_changed(repository, store, proposed)
+    assert "the uncommitted changes in the project" in message
+
+
+def test_a_commit_after_the_proposal_refuses_the_approval(tmp_path: Path) -> None:
+    repository = _git_project(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+
+    (repository / "inventory.yml").write_text("all: {}\n", encoding="utf-8")
+    _git(repository, "add", "inventory.yml")
+    _git(repository, "commit", "--quiet", "--message", "inventory")
+
+    message = _refused_as_changed(repository, store, proposed)
+    assert "the git commit" in message
+
+
+def test_an_untouched_git_project_approves_as_before(tmp_path: Path) -> None:
+    """What propose writes itself, the record, diff and observations, is not a change.
+
+    The tree was dirty when the proposal was made, which is allowed: only a
+    change after it refuses the approval.
+    """
+    repository = _git_project(tmp_path)
+    (repository / "playbooks" / "uncommitted.yml").write_text(
+        "---\n[]\n", encoding="utf-8"
+    )
+    (repository / "record").mkdir()
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    (repository / "record" / "receipt.json").write_text("{}\n", encoding="utf-8")
+    (repository / "tmp" / "observed" / "web-2.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+
+    approved = _approved(repository, store, proposed, _Runner())
+
+    assert approved.status is DecisionStatus.VERIFIED
+    assert store.load(proposed.decision_id).binding == proposed.binding
+
+
+def test_a_git_project_with_no_commit_yet_binds_its_files(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _git(repository, "init", "--quiet")
+    _git(repository, "add", "--all")
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    assert proposed.binding is not None
+    assert proposed.binding.commit is None
+    assert proposed.binding.worktree_sha256 is not None
+
+    (repository / "operations" / "deploy.yml").write_text(
+        DEPLOY + "# edited\n", encoding="utf-8"
+    )
+
+    message = _refused_as_changed(repository, store, proposed)
+    assert "the uncommitted changes in the project" in message
+
+
+def test_an_edit_inside_a_dirty_submodule_refuses_the_approval(
+    tmp_path: Path,
+) -> None:
+    """A role kept as a submodule is bound by its content, not its dirty flag."""
+    role = tmp_path / "role"
+    (role / "tasks").mkdir(parents=True)
+    (role / "tasks" / "main.yml").write_text("---\n[]\n", encoding="utf-8")
+    _git(role, "init", "--quiet")
+    _git(role, "add", "--all")
+    _git(role, "commit", "--quiet", "--message", "role")
+    repository = _git_project(tmp_path)
+    _git(
+        repository,
+        *("-c", "protocol.file.allow=always", "submodule", "add", "--quiet"),
+        *(str(role), "roles/db"),
+    )
+    _git(repository, "commit", "--quiet", "--message", "db role")
+    task = repository / "roles" / "db" / "tasks" / "main.yml"
+    task.write_text("---\n- name: Reviewed\n", encoding="utf-8")
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+
+    task.write_text("---\n- name: Not what was reviewed\n", encoding="utf-8")
+
+    message = _refused_as_changed(repository, store, proposed)
+    assert "the uncommitted changes in the project" in message
+
+
+def test_binding_does_not_run_the_projects_fsmonitor_hook(tmp_path: Path) -> None:
+    """The project's git config runs no command while a proposal is bound."""
+    repository = _git_project(tmp_path)
+    marker = tmp_path / "fsmonitor-ran"
+    hook = tmp_path / "fsmonitor.sh"
+    hook.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    _git(repository, "config", "core.fsmonitor", str(hook))
+    store = _store(repository)
+
+    propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+
+    assert not marker.exists()
+
+
+def test_a_proposal_recorded_before_bindings_is_refused(tmp_path: Path) -> None:
+    """Nothing says what an older proposal was checked against (#352)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    path = repository / DECISION_DIRECTORY / f"{proposed.decision_id.value}.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    del document["spec"]["binding"]
+    path.write_text(json.dumps(document), encoding="utf-8")
+    older = store.load(proposed.decision_id)
+    assert older.binding is None
+
+    message = _refused_as_changed(repository, store, older)
+    assert "proposed before Cloudfall recorded" in message
+
+
+def test_the_cli_refuses_a_changed_proposal_before_asking_for_its_id(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    (repository / "playbooks" / "deploy.yml").write_text(
+        "--- edited\n", encoding="utf-8"
+    )
+
+    exit_code = main(
+        [
+            *("decisions", "approve", proposed.decision_id.value),
+            *("--repository", str(repository), "--approver", "roman"),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 4
+    assert payload["error"]["code"] == "PRECONDITION"
+    assert payload["error"]["context"]["code"] == "decision_binding_changed"
+    assert store.load(proposed.decision_id).status is DecisionStatus.PROPOSED
+
+
 def test_a_failed_run_is_recorded_as_failed_and_skips_verify(
     tmp_path: Path,
 ) -> None:
@@ -961,6 +1374,102 @@ def test_a_run_that_verify_rejects_is_not_verified(tmp_path: Path) -> None:
     assert approved.execution.exit_code == 0
     assert approved.verification is not None
     assert approved.verification.exit_code == 1
+
+
+# Prints, starts a child that outlives it unless its process group is
+# stopped, names that child's pid, then sleeps past any limit a test sets.
+_SLOW_PLAYBOOK = """\
+import subprocess, sys, time
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+print(f"started {child.pid}", flush=True)
+time.sleep(60)
+"""
+
+
+# Exits zero when it is told to stop, as a playbook that traps TERM might.
+_ZERO_ON_TERM_PLAYBOOK = """\
+import signal, sys, time
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+print("started", flush=True)
+time.sleep(60)
+"""
+
+
+def _slow_run(limit: int, script: str = _SLOW_PLAYBOOK) -> CheckRunner:
+    """Run the approved runner with a short limit on a script, not on Ansible."""
+    runner = approved_runner(timeout_seconds=limit)
+
+    def run(_: Sequence[str], environment: Mapping[str, str], log: Path) -> int:
+        return runner((sys.executable, "-c", script), environment, log)
+
+    return run
+
+
+def _gone(pid: int) -> bool:
+    """Return whether the process has exited, waiting a moment for it to be reaped."""
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_an_approved_run_past_its_limit_is_stopped_and_settled(
+    tmp_path: Path,
+) -> None:
+    """The record settles as failed and the log keeps what the run printed (#359)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+
+    approved = approve(
+        ApprovalRequest(
+            decision=proposed, approver="roman", repository=repository, via=TERMINAL
+        ),
+        store,
+        lambda: MOMENT,
+        _slow_run(1),
+    )
+
+    assert approved.status is DecisionStatus.FAILED
+    assert approved.verdict == "the run timed out after 1s and was stopped"
+    assert approved.verification is None
+    assert approved.execution is not None
+    assert approved.execution.exit_code == 128 + signal.SIGTERM
+    assert store.load(proposed.decision_id).status is DecisionStatus.FAILED
+    log = repository / approved.execution.log.path
+    started = log.read_text(encoding="utf-8")
+    assert started.startswith("started ")
+    assert approved.execution.log.size == len(started.encode())
+    assert _gone(int(started.split()[1]))
+
+
+def test_a_stopped_run_that_exits_zero_still_fails(tmp_path: Path) -> None:
+    """A run stopped at its limit did not finish, whatever its exit code says."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+
+    approved = approve(
+        ApprovalRequest(
+            decision=proposed, approver="roman", repository=repository, via=TERMINAL
+        ),
+        store,
+        lambda: MOMENT,
+        _slow_run(1, _ZERO_ON_TERM_PLAYBOOK),
+    )
+
+    assert approved.status is DecisionStatus.FAILED
+    assert approved.verdict == "the run timed out after 1s and was stopped"
+    assert approved.verification is None
+
+
+def test_the_approved_run_has_its_own_limit_and_the_check_keeps_its_own() -> None:
+    assert APPROVED_RUN_TIMEOUT_SECONDS == 21600
+    assert CHECK_TIMEOUT_SECONDS == 1800
 
 
 def test_an_operation_without_verify_is_executed_not_verified(
@@ -1803,6 +2312,63 @@ def test_a_verify_step_that_changes_the_fleet_did_not_verify_it(
     assert approved.verification.changed == ("web-1",)
     assert approved.verdict is not None
     assert "the verify step changed web-1" in approved.verdict
+
+
+@pytest.mark.parametrize(
+    ("observed", "unobserved"),
+    [((), "web-1, web-2"), (("web-1",), "web-2")],
+    ids=["no-host", "one-host-skipped"],
+)
+def test_a_verify_step_that_did_not_observe_a_target_did_not_verify_it(
+    tmp_path: Path, observed: tuple[str, ...], unobserved: str
+) -> None:
+    """A verify play that matched no host, or skipped one, proves nothing (#360)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+
+    approved = _approved(
+        repository, store, proposed, _Runner(verify_observed=observed)
+    )
+
+    assert approved.status is DecisionStatus.FAILED
+    assert approved.verification is not None
+    assert approved.verification.exit_code == 0
+    assert approved.verification.changed == ()
+    assert approved.verdict == (
+        f"the verify step did not observe {unobserved}, so nothing verified "
+        "those hosts"
+    )
+    assert store.load(proposed.decision_id).status is DecisionStatus.FAILED
+
+
+def test_a_run_that_observed_no_host_left_nothing_to_verify(tmp_path: Path) -> None:
+    """The callback wrote nothing for the run, so no host was verified (#360)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+
+    def silent(
+        argv: Sequence[str], environment: Mapping[str, str], diff_path: Path
+    ) -> int:
+        del argv, environment
+        diff_path.write_text("", encoding="utf-8")
+        return 0
+
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, silent)
+    approved = approve(
+        ApprovalRequest(
+            decision=proposed, approver="roman", repository=repository, via=TERMINAL
+        ),
+        store,
+        lambda: MOMENT,
+        silent,
+    )
+
+    assert approved.status is DecisionStatus.FAILED
+    assert approved.verdict == (
+        "neither the check nor the run observed any host, so the verify step "
+        "had nothing to verify"
+    )
 
 
 def test_every_outcome_says_why_in_the_record(tmp_path: Path) -> None:

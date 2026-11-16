@@ -243,6 +243,11 @@ def test_a_service_command_reaches_the_unit_file_as_declared(
                     "dest": str(unit),
                     "mode": "0644",
                 },
+                "vars": {
+                    "cloudfall_deploy_environment_path": (
+                        "/srv/apps/crm/backend/shared/env/crm-backend.env"
+                    )
+                },
             }
         ],
     )
@@ -283,6 +288,9 @@ def test_a_release_command_reaches_its_run_as_declared(tmp_path: Path) -> None:
                     "cloudfall_deploy_release": "20261027T000000Z-abcdef1",
                     "cloudfall_deploy_release_directory": str(tmp_path / "release"),
                     "cloudfall_deploy_shared_directory": str(tmp_path / "shared"),
+                    "cloudfall_deploy_environment_path": str(
+                        tmp_path / "shared" / "env" / "crm-backend.env"
+                    ),
                     "cloudfall_deploy_systemd_run": str(systemd_run),
                 },
             }

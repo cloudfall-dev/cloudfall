@@ -16,7 +16,8 @@ argument_specs:
         required: true
         description: >-
           Controller-side file whose only content is the source database
-          connection URL; the URL itself never crosses a command line
+          connection URL (postgresql:// or postgres://); the URL itself never
+          crosses a command line
       cloudfall_data_migration_schemas:
         type: list
         elements: str
@@ -33,10 +34,19 @@ argument_specs:
           Controller directory receiving the migration receipt, and before
           the dump the preflight findings file
           <service>-<database>.preflight.json
-      cloudfall_data_migration_url_path:
+      cloudfall_data_migration_service_file_path:
         type: path
         required: false
-        default: /root/.cloudfall-data-source-url
+        default: /root/.cloudfall-data-source.pgservice
+        description: >-
+          Target-host libpq service file, mode 0600, holding the source
+          connection while the copy runs; psql and pg_dump find it through
+          PGSERVICEFILE, so the password never reaches their command line
+      cloudfall_data_migration_pg_service:
+        type: str
+        required: false
+        default: cloudfall_data_source
+        description: Name of the service in that file, passed as PGSERVICE
       cloudfall_data_migration_dump_path:
         type: path
         required: false

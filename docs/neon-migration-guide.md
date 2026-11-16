@@ -145,8 +145,10 @@ toggled off. Keep `sslmode=require`. If the compute is suspended, any
 connection wakes it.
 
 The URL goes into a controller-side file whose only content is the URL;
-it is staged root-only on the target and removed afterwards, and it never
-enters the config:
+it is staged root-only on the target as a libpq service file and removed
+afterwards, it never reaches the command line of `psql` or `pg_dump`, and
+it never enters the config. Percent-encode a password character that has
+a meaning in a URL (`@` as `%40`, `:` as `%3A`, `/` as `%2F`, `#` as `%23`):
 
 ```console
 printf '%s\n' 'postgresql://user:pass@ep-xxx.eu-central-1.aws.neon.tech/app?sslmode=require' \
@@ -172,8 +174,8 @@ the plan; `--yes` runs it.
 
 The guided migration dumps from Neon on the target host, restores over
 the peer-authenticated socket as the declared owner, verifies per-table
-row counts match the source exactly, removes the staged URL file and the
-dump, and writes a `DataMigrationReceipt` with per-table counts. It
+row counts match the source exactly, removes the staged connection file
+and the dump, and writes a `DataMigrationReceipt` with per-table counts. It
 refuses a target database that already has tables in the copied schemas,
 so a re-run after a finished copy requires deliberately dropping what was
 restored. A restore that fails runs in one transaction and rolls back
@@ -243,6 +245,10 @@ frozen until the app is verified against the new database.
 - The backup timer, restore drill, and `BackupReceipt` replace Neon's
   managed backups; PITR arrives with roadmap M13 and a standby with the
   demand-gated M14
+- Schema migrations that ran as the application's `release.command` stay
+  applied when a deploy rolls back (automatically or through `cloudfall
+  rollback`): a rollback switches the code, not the database, so keep each
+  migration compatible with the release before it
 
 What you hold at the end is not just a database on your own server but
 its record: the migration receipt, every backup and drill receipt, and

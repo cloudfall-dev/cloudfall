@@ -239,8 +239,8 @@ jobs:
           name: cloudfall-${{ env.COMPONENT }}-${{ github.run_id }}
           path: |
             tmp/artifacts/**/*.json
-            tmp/releases/
-            tmp/env-receipts/
+            record/releases/
+            record/env-receipts/
           retention-days: 90
 ```
 
@@ -257,20 +257,25 @@ What each step does:
   written into it, and `SOPS_AGE_KEY_FILE` points sops at it, as on your own
   machine
 - **Render secrets.** Writes `tmp/env/<component>.env` (`0600`) and the
-  receipt `tmp/env-receipts/<component>.json`; the log shows key names and a
+  receipt `record/env-receipts/<component>.json`; the log shows key names and a
   hash, never a value
 - **Build the artifact.** Clones the component's repository at `REF` and
   packages it under `tmp/artifacts/<component>/`
 - **Show the plan.** `deploy` without `--yes` validates the release and
   prints which servers it would change, and changes nothing
 - **Deploy.** Ships the release behind the component's health check, and
-  writes the release receipt `tmp/releases/<component>.json`. A smoke check
+  writes the release receipt `record/releases/<component>.json`. A smoke check
   declared as a `type: command` health check runs on each server after its
   restart, so it gates the deploy and needs no CI step of its own: when it
   fails, the server goes back to the previous release, and so does every
   server that switched to the release earlier in the deploy; the deploy
   fails, and the receipt records the failure with `healthCheckPassed: false`
   in that server's entry and `rolledBack: true` in each entry rolled back.
+  The release already serves traffic while its check runs, since the check
+  comes after the switch and the restart. A rollback, this automatic one or
+  a later `cloudfall rollback`, does not undo the component's release
+  command (database migrations, say), which ran before any server switched,
+  so a migration must stay compatible with the release before it.
   `cloudfall restart`, `cloudfall rollback` and `cloudfall health` run the
   same check, so it must be safe to run against the live service at any time
 - **Remove the decrypted files.** GitHub-hosted runners are thrown away
@@ -416,41 +421,39 @@ claims a gate Cloudfall does not hold.
 
 ## Keeping the receipts
 
-`tmp/` is ignored by git, and the runner disappears with the job. The upload
-step keeps, for 90 days:
+The receipts land in `record/`, which the project commits, but the runner
+disappears with the job. The upload step keeps, for 90 days:
 
 - `tmp/artifacts/<component>/<release>.json`: the artifact metadata, with the
   commit and the archive's SHA-256
-- `tmp/releases/<component>.json`: the release receipt from `deploy`, with
+- `record/releases/<component>.json`: the release receipt from `deploy`, with
   one entry per server under `servers`; each entry's `release` names the
   release that server ended on (`null` when a first release was stopped)
-- `tmp/env-receipts/<component>.json`: the key names and hash of the
+- `record/env-receipts/<component>.json`: the key names and hash of the
   rendered environment file, never the values
 
 It never uploads `tmp/env/`, which holds the decrypted values. Add
 `tmp/artifacts/` whole if you want the archives kept as well.
 
-If you want the receipts in git, copy them to a tracked directory and commit
-them back from the job. Give the job `contents: write` and add a step after
-the deploy:
+To keep the receipts in git, commit `record/` back from the job. Give the
+job `contents: write` and add a step after the deploy:
 
 ```yaml
-      - name: Commit the receipt
+      - name: Commit the receipts
         env:
           RELEASE: ${{ steps.build.outputs.release }}
         run: |
-          mkdir -p receipts/releases
-          cp "tmp/releases/$COMPONENT.json" "receipts/releases/$COMPONENT-$RELEASE.json"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add receipts/releases
+          git add record
           git commit -m "Record $COMPONENT $RELEASE"
           git push
 ```
 
-Only the kind directories are read as resources, so `receipts/` is safe in
-the project. A push made with the workflow's own token does not start
-another workflow run, so this does not loop. A branch protection rule on
+Each deploy rewrites `record/releases/<component>.json`, so the git history
+of that file is the component's deploy history. A push made with the
+workflow's own token does not start another workflow run, so this does not
+loop. A branch protection rule on
 `main` will refuse the push unless it allows the workflow to bypass it.
 
 ## What this guide does not cover

@@ -179,6 +179,13 @@ def test_deploy_plan_composes_engine_contract_steps(tmp_path: Path) -> None:
     assert extra_vars["cloudfall_deploy_receipt_directory"] == str(
         tmp_path / "releases"
     )
+    # The release command's output stays under tmp/, out of the record (D-16).
+    assert extra_vars["cloudfall_deploy_output_directory"] == str(
+        (context.project_directory / "tmp" / "output" / "releases").resolve()
+    )
+    assert extra_vars["cloudfall_deploy_output_reference_directory"] == (
+        "tmp/output/releases"
+    )
 
 
 def test_health_plan_targets_the_health_playbook(tmp_path: Path) -> None:

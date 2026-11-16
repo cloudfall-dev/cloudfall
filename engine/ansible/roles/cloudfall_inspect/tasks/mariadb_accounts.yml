@@ -1,0 +1,57 @@
+---
+# The databases and users of one MariaDB service (S-019), read as root through
+# the unix socket: their names, which hold Cloudfall's marker role, which are
+# locked, and each remote account's TLS requirement (ssl_type). No password or
+# hash leaves the host.
+- name: Read the databases and users of the MariaDB server
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_inspect_mariadb_client }}"
+      - --batch
+      - --raw
+      - --skip-column-names
+      - --execute
+      - "{{ item.value }}"
+  loop: "{{ cloudfall_inspect_mariadb_queries | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: cloudfall_inspect_mariadb_read
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Attach the MariaDB server's databases and users
+  ansible.builtin.set_fact:
+    cloudfall_inspect_mariadb_accounts: >-
+      {{
+        cloudfall_inspect_mariadb_accounts | default([])
+        + [cloudfall_inspect_mariadb_evidence]
+      }}
+  vars:
+    cloudfall_inspect_mariadb_answers: >-
+      {{
+        cloudfall_inspect_mariadb_read.results
+        | selectattr('rc', 'defined')
+        | selectattr('rc', 'equalto', 0)
+        | list
+      }}
+    cloudfall_inspect_mariadb_available: >-
+      {{
+        cloudfall_inspect_mariadb_answers | length
+        == cloudfall_inspect_mariadb_queries | length
+      }}
+    cloudfall_inspect_mariadb_evidence: >-
+      {{
+        {
+          'service': cloudfall_inspect_mariadb_service.id,
+          'available': cloudfall_inspect_mariadb_available,
+        }
+        | combine(
+          dict(
+            cloudfall_inspect_mariadb_answers | map(attribute='item.key')
+            | zip(cloudfall_inspect_mariadb_answers
+                  | map(attribute='stdout_lines'))
+          )
+          if cloudfall_inspect_mariadb_available else {}
+        )
+      }}

@@ -90,8 +90,57 @@ jobs:
       - name: Baseline
         run: uv run cloudfall baseline converge --project . --yes
 
+      # A key that goes from active to revoked is gone after the next
+      # baseline run, and the declared active key still logs in (#354, D-22)
+      - name: Revoke a key, which the baseline removes
+        run: |
+          ssh-keygen -q -t ed25519 -N '' -C spare -f ~/.ssh/spare
+          spare="$(cut -d ' ' -f 2 ~/.ssh/spare.pub)"
+          uv run cloudfall add ssh-key ~/.ssh/spare.pub --owner spare --project .
+          uv run cloudfall-engine inventory render --project . --output tmp/ansible-inventory.json
+          uv run cloudfall baseline converge --project . --yes
+          ssh 127.0.0.1 grep --quiet --fixed-strings "${spare}" /root/.ssh/authorized_keys
+          sed -i 's/^  lifecycle: active$/  lifecycle: revoked/' ssh-public-keys/spare.yaml
+          grep --quiet '^  lifecycle: revoked$' ssh-public-keys/spare.yaml
+          uv run cloudfall config validate --project .
+          uv run cloudfall-engine inventory render --project . --output tmp/ansible-inventory.json
+          uv run cloudfall baseline converge --project . --yes
+          if ssh 127.0.0.1 grep --quiet --fixed-strings "${spare}" /root/.ssh/authorized_keys; then
+            echo "::error::the revoked key is still in root's authorized_keys"
+            exit 1
+          fi
+          ssh 127.0.0.1 true
+
+      # The ledger owner's password, sops-encrypted to a throwaway age key in
+      # sops' default key file, as an operator's secrets directory holds it
+      - name: Create the owner role password the services read
+        env:
+          SOPS_VERSION: v3.13.3
+          SOPS_SHA256: e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b
+        run: |
+          sudo apt-get update --quiet
+          sudo apt-get install --yes --quiet --no-install-recommends age
+          curl --fail --silent --show-error --location --output "${RUNNER_TEMP}/sops" \
+            "https://github.com/getsops/sops/releases/download/${SOPS_VERSION}/sops-${SOPS_VERSION}.linux.amd64"
+          echo "${SOPS_SHA256}  ${RUNNER_TEMP}/sops" | sha256sum --check --strict
+          sudo install -m 0755 "${RUNNER_TEMP}/sops" /usr/local/bin/sops
+          install --directory --mode=0700 ~/.config/sops/age tmp/env
+          age-keygen --output ~/.config/sops/age/keys.txt 2>/dev/null
+          recipient="$(age-keygen -y ~/.config/sops/age/keys.txt)"
+          (umask 077 && printf 'LEDGER_PASSWORD=%s\n' "$(openssl rand -hex 24)" > tmp/env/ledger.env)
+          install --directory secrets/production/postgresql-main
+          sops --encrypt --age "${recipient}" --input-type dotenv --output-type dotenv \
+            tmp/env/ledger.env > secrets/production/postgresql-main/ledger.env
+
       - name: Services
         run: uv run cloudfall-engine playbook run services
+
+      # The verifier the controller computed is one PostgreSQL accepts
+      - name: Log in as the owner role with its password
+        run: |
+          cut --delimiter='=' --fields=2- tmp/env/ledger.env \
+            | ssh 127.0.0.1 'PGPASSWORD="$(cat)" psql --host=127.0.0.1 --username=ledger --dbname=ledger --no-psqlrc --tuples-only --command="SELECT current_user"' \
+            | grep --quiet --word-regexp ledger
 
       - name: Build a healthy and a failing release
         run: |
@@ -107,15 +156,24 @@ jobs:
           git -C "${app}" -c user.name=converge -c user.email=converge@example.invalid \
             commit --quiet --all --message "A release that exits at start"
           git -C "${app}" tag failing
-          for ref in healthy failing; do
+          git -C "${app}" switch --quiet --detach healthy
+          git -C "${app}" -c user.name=converge -c user.email=converge@example.invalid \
+            commit --quiet --allow-empty --message "A second release of the healthy code"
+          git -C "${app}" tag second
+          for ref in healthy failing second; do
             release="$(uv run cloudfall-engine artifact build probe-web --project . \
               --ref "${ref}" --format json | jq --raw-output .data.release)"
             echo "${ref}=${release}" >> "${GITHUB_ENV}"
           done
+          # The app starts only on PROBE_START=serve
+          install -d -m 0700 tmp/env
+          printf 'PROBE_START=serve\n' > tmp/env/good.env
+          printf 'PROBE_START=refuse\n' > tmp/env/bad.env
 
       - name: Deploy the healthy release
         run: |
-          uv run cloudfall deploy probe-web --project . --release "${healthy}" --yes
+          uv run cloudfall deploy probe-web --project . --release "${healthy}" \
+            --env-file tmp/env/good.env --yes
           uv run cloudfall health probe-web --project .
           test "$(ssh 127.0.0.1 readlink /srv/apps/probe/web/current)" \
             = "/srv/apps/probe/web/releases/${healthy}"
@@ -133,14 +191,59 @@ jobs:
           fi
           uv run cloudfall health probe-web --project .
 
-      # The drill fails on a dump that holds no table (#225), so the database
+      # Each release reads its own environment file (#353, D-21): a deploy that
+      # fails only because of its new environment, as another release and as a
+      # redeploy of the current one, leaves the previous release running on
+      # its previous environment, through the rollback and the next restart
+      - name: Deploy healthy code with a bad environment, which rolls back
+        run: |
+          expected=/srv/apps/probe/web/shared/env/probe-web.${healthy}.env
+          for release in "${second}" "${healthy}"; do
+            if uv run cloudfall deploy probe-web --project . --release "${release}" \
+              --env-file tmp/env/bad.env --yes; then
+              echo "::error::release ${release} passed its health gate on a bad environment"
+              exit 1
+            fi
+            current="$(ssh 127.0.0.1 readlink /srv/apps/probe/web/current)"
+            if [ "${current}" != "/srv/apps/probe/web/releases/${healthy}" ]; then
+              echo "::error::current is ${current}, not the healthy release ${healthy}"
+              exit 1
+            fi
+            files="$(ssh 127.0.0.1 systemctl show --property=EnvironmentFiles --value probe-web)"
+            if [ "${files%% *}" != "${expected}" ]; then
+              echo "::error::the unit reads ${files}, not ${expected}"
+              exit 1
+            fi
+            test "$(ssh 127.0.0.1 cat "${expected}")" = "PROBE_START=serve"
+            uv run cloudfall health probe-web --project .
+            ssh 127.0.0.1 systemctl restart probe-web
+            uv run cloudfall health probe-web --project .
+          done
+          # The failed redeploy copy and its environment file are gone
+          test -z "$(ssh 127.0.0.1 find /srv/apps/probe/web/releases \
+            /srv/apps/probe/web/shared/env -name "'*.redeploy-*'")"
+
+      - name: Roll back to a release and get its environment back
+        run: |
+          uv run cloudfall deploy probe-web --project . --release "${second}" \
+            --env-file tmp/env/good.env --yes
+          uv run cloudfall rollback probe-web --project . --release "${healthy}" --yes
+          test "$(ssh 127.0.0.1 readlink /srv/apps/probe/web/current)" \
+            = "/srv/apps/probe/web/releases/${healthy}"
+          files="$(ssh 127.0.0.1 systemctl show --property=EnvironmentFiles --value probe-web)"
+          test "${files%% *}" = "/srv/apps/probe/web/shared/env/probe-web.${healthy}.env"
+          uv run cloudfall health probe-web --project .
+
+      # The drill fails on a dump that holds no table (#225), so each database
       # gets one first
       - name: Back up and run the restore drill
         run: |
-          ssh 127.0.0.1 runuser -u postgres -- psql --dbname=probe --set=ON_ERROR_STOP=1 <<'SQL'
+          for database in probe ledger; do
+            ssh 127.0.0.1 runuser -u postgres -- psql --dbname="${database}" --set=ON_ERROR_STOP=1 <<'SQL'
           CREATE TABLE IF NOT EXISTS visits (id integer PRIMARY KEY);
           INSERT INTO visits SELECT generate_series(1, 100) ON CONFLICT DO NOTHING;
           SQL
+          done
           for service in postgresql-main redis-cache; do
             uv run cloudfall backup run "${service}" --project .
             uv run cloudfall backup verify "${service}" --project .

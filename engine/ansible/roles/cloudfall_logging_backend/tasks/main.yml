@@ -111,6 +111,14 @@
     group: root
     mode: "0755"
 
+# get_url with force: false still asks the server whether the key changed
+# (If-Modified-Since), so a re-converge would need the network: fetch the key
+# only when it is missing, and keep the installed one's owner and mode (#388).
+- name: Check for the Grafana repository signing key
+  ansible.builtin.stat:
+    path: "{{ cloudfall_logging_backend_grafana_repository_key_path }}"
+  register: cloudfall_logging_backend_grafana_repository_key
+
 - name: Install Grafana repository signing key
   ansible.builtin.get_url:
     url: "{{ cloudfall_logging_backend_grafana_repository_key_url }}"
@@ -118,6 +126,20 @@
     owner: root
     group: root
     mode: "0644"
+  register: cloudfall_logging_backend_grafana_repository_key_download
+  until: cloudfall_logging_backend_grafana_repository_key_download is succeeded
+  retries: 5
+  delay: 10
+  when: not cloudfall_logging_backend_grafana_repository_key.stat.exists
+
+- name: Keep the installed Grafana repository signing key's owner and mode
+  ansible.builtin.file:
+    path: "{{ cloudfall_logging_backend_grafana_repository_key_path }}"
+    state: file
+    owner: root
+    group: root
+    mode: "0644"
+  when: cloudfall_logging_backend_grafana_repository_key.stat.exists
 
 - name: Configure stable Grafana package repository
   ansible.builtin.deb822_repository:

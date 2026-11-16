@@ -41,13 +41,20 @@ from cloudfall.inventory import PlatformInventory
 from cloudfall.lifecycle_error import (
     LifecycleError as LifecycleError,  # noqa: PLC0414 - re-exported for callers
 )
+from cloudfall.project import RecordStore
 from cloudfall.secret_store import SecretStore, sops_encrypt
 from cloudfall.secrets import (
     SecretsError,
     elasticsearch_account_passwords,
+    elasticsearch_existing_cluster_credentials,
+    elasticsearch_existing_cluster_logins,
     elasticsearch_s3_credentials,
     elasticsearch_services,
     elasticsearch_snapshot_credentials,
+    elasticsearch_user_passwords,
+    elasticsearch_users,
+    mariadb_owned_databases,
+    mariadb_owner_passwords,
     owned_databases,
     owned_role_passwords,
     sops_decrypt,
@@ -74,7 +81,10 @@ if TYPE_CHECKING:
     )
     from cloudfall.secrets import (
         ElasticsearchAccountPassword,
+        ElasticsearchExistingClusterLogin,
         ElasticsearchS3Credentials,
+        ElasticsearchUserPassword,
+        MariadbOwnerPassword,
         OwnedRolePassword,
         SopsSecretProvider,
     )
@@ -560,6 +570,13 @@ def plan_deploy(
         extra_vars["cloudfall_deploy_receipt_directory"] = str(
             options.receipt_directory.resolve()
         )
+        # The release command's output is the application's and may hold a
+        # secret: it stays under tmp/, and the committed receipt names it.
+        output = RecordStore.RELEASES.output_directory
+        extra_vars["cloudfall_deploy_output_directory"] = str(
+            (context.project_directory / output).resolve()
+        )
+        extra_vars["cloudfall_deploy_output_reference_directory"] = output
     return ExecutionPlan(
         action="deploy",
         component_id=component_id,
@@ -1101,6 +1118,9 @@ class ServicesSecrets:
     store: SecretStore | None = None
     """Where the project CA lives, which signs the nodes' transport certificates."""
     elasticsearch_s3: tuple[ElasticsearchS3Credentials, ...] = ()
+    elasticsearch_users: tuple[ElasticsearchUserPassword, ...] = ()
+    elasticsearch_existing: tuple[ElasticsearchExistingClusterLogin, ...] = ()
+    mariadb_owners: tuple[MariadbOwnerPassword, ...] = ()
 
 
 def services_passwords(
@@ -1109,9 +1129,11 @@ def services_passwords(
     """Decrypt every password ``services.yml`` sets before it may run.
 
     Those are each owner role's, the ``cloudfall`` and ``elastic``
-    passwords of each Elasticsearch service, and the S3 keys of each S3
-    snapshot repository. A missing file or key fails here, naming the
-    expected path and key, so the converge stops before any playbook starts.
+    passwords of each Elasticsearch service and each of its declared users',
+    the S3 keys of each S3 snapshot repository, the login of each
+    ``existingCluster`` that names a ``credentialsRef``, and each MariaDB
+    owner's. A missing file or key fails here, naming the expected path and
+    key, so the converge stops before any playbook starts.
     """
     state = validate_config(context.project_directory, context.schema_directory)
     inventory = PlatformInventory.from_state(state)
@@ -1129,47 +1151,81 @@ def services_passwords(
             elasticsearch_s3_credentials(
                 elasticsearch_snapshot_credentials(inventory), provider
             ),
+            elasticsearch_user_passwords(elasticsearch_users(inventory), provider),
+            elasticsearch_existing_cluster_logins(
+                elasticsearch_existing_cluster_credentials(inventory), provider
+            ),
+            mariadb_owner_passwords(mariadb_owned_databases(inventory), provider),
         )
     except SecretsError as error:
         raise LifecycleError(ERROR_SERVICES_SECRET, error.message) from error
 
 
-def run_services_playbook(context: EngineContext, secrets: ServicesSecrets) -> None:
+def run_services_playbook(
+    context: EngineContext,
+    secrets: ServicesSecrets,
+    limit: ResourceId | None = None,
+) -> None:
     """Run ``services.yml`` with each password's server form staged in a 0600 file.
 
     Before it, each Elasticsearch node's data volume is decided and its
     transport certificate signed (S-012); a node requirement that can't be
     met stops the run before any host changes. The files live in a private
     temp dir outside the project, removed when the run ends, whether it
-    passed or failed.
+    passed or failed. ``limit`` narrows every playbook of the run, the node
+    preparation's included, to one declared server.
     """
     state = validate_config(context.project_directory, context.schema_directory)
     inventory = PlatformInventory.from_state(state)
 
     def run(name: str, extra_vars: Mapping[str, object]) -> None:
-        run_engine_playbook(context, name, extra_vars)
+        run_engine_playbook(context, name, extra_vars, limit)
 
     nodes: AbstractContextManager[dict[str, object]] = (
-        prepared_nodes(run, inventory, secrets.store)
+        prepared_nodes(
+            run, inventory, secrets.store, context.project_directory, limit
+        )
         if secrets.store is not None
         else nullcontext({})
     )
     with (
         nodes as provided,
         staged_password_files(
-            secrets.owned_roles, secrets.elasticsearch, secrets.elasticsearch_s3
+            secrets.owned_roles,
+            secrets.elasticsearch,
+            secrets.elasticsearch_s3,
+            secrets.elasticsearch_users,
+            secrets.elasticsearch_existing,
+            secrets.mariadb_owners,
         ) as extra,
     ):
-        run_engine_playbook(context, "services.yml", {**extra, **provided})
+        run_engine_playbook(context, "services.yml", {**extra, **provided}, limit)
 
 
 def converge_services(
-    context: EngineContext, provider: SopsSecretProvider
+    context: EngineContext,
+    provider: SopsSecretProvider,
+    limit: ResourceId | None = None,
 ) -> tuple[OwnedRolePassword, ...]:
-    """Converge every declared service; return the owner passwords it set, by hash."""
+    """Converge the declared services; return the owner passwords it set, by hash.
+
+    ``limit`` converges one declared server's services alone, and only the
+    owner passwords of the services on it are returned. Every password is
+    still decrypted first, so a missing one fails before any playbook runs.
+    """
     secrets = services_passwords(context, provider)
-    run_services_playbook(context, secrets)
-    return secrets.owned_roles
+    run_services_playbook(context, secrets, limit)
+    if limit is None:
+        return secrets.owned_roles
+    state = validate_config(context.project_directory, context.schema_directory)
+    on_server = {
+        service.resource_id
+        for service in PlatformInventory.from_state(state).services
+        if service.server_id == limit
+    }
+    return tuple(
+        password for password in secrets.owned_roles if password.service in on_server
+    )
 
 
 def build_release_artifact(

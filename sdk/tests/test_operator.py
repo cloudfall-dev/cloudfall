@@ -5,24 +5,27 @@ from __future__ import annotations
 import io
 import itertools
 import json
+import shutil
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
 
 import pytest
+import yaml
 from cloudfall.app import app
 from cloudfall.audit import AuditCheck, AuditReport, AuditStatus, ServerAudit
 from cloudfall.cli import main
 from cloudfall.decision import ApprovalChannel
 from cloudfall.domain import ResourceId
 from cloudfall.inventory import PlatformInventory
-from cloudfall.lifecycle import LifecycleError
+from cloudfall.lifecycle import EngineContext, ExecutionStep, LifecycleError
 from cloudfall.operator import (
     ApproveOptions,
     AutonomyReport,
     DriftCheck,
     GatewayAlertFeed,
+    OperationKind,
     OperatorAlert,
     OperatorError,
     OperatorProposal,
@@ -36,13 +39,18 @@ from cloudfall.operator import (
     approve,
     drift_pass,
     drift_resolution_verifier,
+    engine_auditor,
+    engine_executor,
     fingerprint_of,
     parse_prometheus_alerts,
+    propose_for_drift,
     run_once,
     watch,
 )
 from cloudfall.operator import mark_interrupted as mark_proposal_interrupted
+from cloudfall.secrets import SopsSecretProvider
 from cloudfall.validation import SchemaCatalog, validate_config
+from examples_project import copy_examples
 from jsonschema.exceptions import ValidationError
 from test_decision import _Terminal
 from treaty import CommandPath
@@ -57,6 +65,7 @@ TERMINAL = ApprovalChannel.TERMINAL
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
 EXAMPLES = ROOT / "config" / "examples"
+ENGINE = ROOT / "engine"
 
 _LABELS = {
     "alertname": "postgresql_down",
@@ -449,6 +458,106 @@ def test_a_drift_proposal_confirmed_dead_is_proposed_again(tmp_path: Path) -> No
     assert len(again.proposed) == 1
 
 
+def _feed_unreachable(_proposal: object) -> bool:
+    code = "operator_feed_unreachable"
+    message = "alert feed unreachable: connection refused"
+    raise OperatorError(code, message)
+
+
+def test_a_verifier_that_raises_settles_the_receipt_failed(tmp_path: Path) -> None:
+    """An error from the verifier is an unverified run, never `executed` (#358)."""
+    store = _store(tmp_path)
+    _seed_verified_drift(store, "packages.required[git]")
+    _seed_verified_drift(store, "packages.required[rsync]")
+    failing = propose_for_drift(
+        ResourceId.from_boundary("h1"),
+        ("packages.required[acl]",),
+        OperationKind.CONVERGE_BASELINE,
+        "2026-09-10T11:00:00+00:00",
+    )
+    store.save(failing)
+
+    with pytest.raises(OperatorError) as caught:
+        approve(
+            store,
+            failing.resource_id,
+            lambda _proposal: None,
+            _feed_unreachable,
+            _FAST_APPROVE,
+            via=TERMINAL,
+        )
+    drift_pass(
+        lambda: _audit_report(("packages.required[curl]", AuditStatus.DRIFT)),
+        store,
+    )
+    from cloudfall.operator import autonomous_pass  # noqa: PLC0415 - test-local.
+
+    report = autonomous_pass(
+        store,
+        _policied_inventory(),
+        lambda _proposal: None,
+        lambda _proposal: lambda _p: True,
+        _FAST_APPROVE,
+        now=datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
+    )
+
+    assert caught.value.code == "operator_feed_unreachable"
+    failed = store.load(failing.resource_id)
+    assert failed.status is ProposalStatus.FAILED
+    assert failed.approval is not None
+    assert failed.outcome is not None
+    assert failed.outcome.verified_at is None
+    assert failed.outcome.detail == (
+        "verification failed: operator_feed_unreachable: "
+        "alert feed unreachable: connection refused"
+    )
+    assert report.executed == ()
+    assert "receipt failed" in report.withheld[0][1]
+
+
+def test_an_executed_receipt_confirmed_dead_is_closed_and_proposed_again(
+    tmp_path: Path,
+) -> None:
+    """A receipt left `executed` by an older release has a way out (#358)."""
+    store = _store(tmp_path)
+    auditor = lambda: _audit_report(  # noqa: E731
+        ("packages.required[curl]", AuditStatus.DRIFT)
+    )
+    first = drift_pass(auditor, store, now="2026-09-10T15:00:00+00:00")
+    proposal_id = ResourceId.from_boundary(first.proposed[0])
+
+    def _dies_verifying(_proposal: object) -> bool:
+        message = "killed while the verifier ran"
+        raise _KilledError(message)
+
+    with pytest.raises(_KilledError):
+        approve(
+            store,
+            proposal_id,
+            lambda _proposal: None,
+            _dies_verifying,
+            _FAST_APPROVE,
+            via=TERMINAL,
+        )
+    executed = store.load(proposal_id)
+    blocked = drift_pass(auditor, store, now="2026-09-10T15:30:00+00:00")
+
+    closed = mark_proposal_interrupted(
+        store, proposal_id, "alice", lambda: "2026-09-10T16:00:00+00:00"
+    )
+    again = drift_pass(auditor, store, now="2026-09-10T16:05:00+00:00")
+
+    assert executed.status is ProposalStatus.EXECUTED
+    assert blocked.proposed == ()
+    assert closed.status is ProposalStatus.INTERRUPTED
+    assert closed.interruption is not None
+    assert closed.interruption.confirmed_by == "alice"
+    assert closed.approval == executed.approval
+    assert closed.outcome == executed.outcome
+    assert store.load(proposal_id) == closed
+    assert len(again.proposed) == 1
+
+
 @pytest.mark.parametrize("status", ["proposed", "interrupted"])
 def test_only_a_running_proposal_is_closed_as_interrupted(
     tmp_path: Path, status: str
@@ -703,6 +812,125 @@ def test_approve_drift_proposal_fails_when_drift_persists(
     assert result.status is ProposalStatus.FAILED
 
 
+def _two_environment_project(tmp_path: Path) -> Path:
+    """Declare h1 in production and h2 in staging, each with one service."""
+    project = tmp_path / "project"
+    for kind in ("servers", "baselines", "services"):
+        (project / kind).mkdir(parents=True)
+    shutil.copy(EXAMPLES / "servers" / "h1.yaml", project / "servers" / "h1.yaml")
+    staging = (EXAMPLES / "servers" / "h2.yaml").read_text(encoding="utf-8")
+    (project / "servers" / "h2.yaml").write_text(
+        staging.replace("environment: production", "environment: staging"),
+        encoding="utf-8",
+    )
+    shutil.copy(
+        EXAMPLES / "baselines" / "debian-application.yaml",
+        project / "baselines" / "debian-application.yaml",
+    )
+    for server, environment in (("h1", "production"), ("h2", "staging")):
+        service = {
+            "apiVersion": "cloudfall/v1",
+            "kind": "Service",
+            "metadata": {"id": f"redis-{server}"},
+            "spec": {
+                "serviceKind": "redis",
+                "environment": environment,
+                "server": server,
+                "bind": {"address": "127.0.0.1", "port": 6379},
+                "redis": {"maxmemoryMb": 64, "appendOnly": True},
+                "backup": {
+                    "directory": f"/var/backups/cloudfall/redis-{server}",
+                    "onCalendar": "*-*-* 02:00:00 UTC",
+                    "retentionDays": 7,
+                },
+            },
+        }
+        (project / "services" / f"redis-{server}.yaml").write_text(
+            yaml.safe_dump(service, sort_keys=False), encoding="utf-8"
+        )
+    return project
+
+
+@dataclass
+class _RecordingRunner:
+    """Steps a run started; each exits 0 and prints nothing."""
+
+    steps: list[ExecutionStep] = field(default_factory=list)
+
+    def __call__(self, step: ExecutionStep) -> _Finished:
+        """Record the step."""
+        self.steps.append(step)
+        return _Finished()
+
+
+@dataclass(frozen=True)
+class _Finished:
+    returncode: int = 0
+    stdout: str = ""
+    stderr: str = ""
+
+
+def _playbook_limits(runner: _RecordingRunner) -> dict[str, str | None]:
+    """Name each playbook a run started and the server it was limited to."""
+    limits: dict[str, str | None] = {}
+    for step in runner.steps:
+        if "--extra-vars" not in step.argv:
+            continue
+        argv = list(step.argv)
+        limit = argv[argv.index("--limit") + 1] if "--limit" in argv else None
+        limits[Path(argv[-1]).name] = limit
+    return limits
+
+
+@pytest.mark.parametrize(
+    ("operation_kind", "playbook"),
+    [
+        (OperationKind.CONVERGE_SERVICES, "services.yml"),
+        (OperationKind.CONVERGE_BASELINE, "baseline.yml"),
+    ],
+)
+def test_a_staging_proposal_runs_and_verifies_on_its_server_alone(
+    tmp_path: Path, operation_kind: OperationKind, playbook: str
+) -> None:
+    """A proposal for the staging server leaves production out of the run (#350)."""
+    project = _two_environment_project(tmp_path)
+    runner = _RecordingRunner()
+    context = EngineContext(
+        project_directory=project,
+        schema_directory=SCHEMAS,
+        engine_directory=ENGINE,
+        inventory_file=project / "tmp" / "ansible-inventory.json",
+        run=runner,
+    )
+    observed = project / "tmp" / "observed"
+    observed.mkdir(parents=True)
+    inventory = PlatformInventory.from_state(validate_config(project, SCHEMAS))
+    store = _store(tmp_path)
+    proposal = propose_for_drift(
+        ResourceId("h2"),
+        ("packages.required[curl]",),
+        operation_kind,
+        "2026-11-15T10:00:00Z",
+    )
+    store.save(proposal)
+
+    approve(
+        store,
+        proposal.resource_id,
+        engine_executor(
+            context,
+            SopsSecretProvider(secrets_directory=project / "secrets"),
+        ),
+        drift_resolution_verifier(
+            engine_auditor(context, inventory, observed, proposal.operation_server)
+        ),
+        _FAST_APPROVE,
+        via=TERMINAL,
+    )
+
+    assert _playbook_limits(runner) == {playbook: "h2", "inspect.yml": "h2"}
+
+
 def test_cli_operator_list_emits_structured_output(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -722,11 +950,11 @@ def test_cli_operator_list_emits_structured_output(
     captured = capsys.readouterr()
     document = json.loads(captured.out)
     assert exit_code == 0
-    assert (document["ok"], document["error"], document["warnings"]) == (
-        True,
-        None,
-        [],
-    )
+    assert (document["ok"], document["error"]) == (True, None)
+    # The examples carry no [tool.cloudfall] format, so they read as format 0.
+    assert [warning["code"] for warning in document["warnings"]] == [
+        "PROJECT_FORMAT_OLD"
+    ]
     assert document["data"] == {"status": "ok", "proposals": []}
 
 
@@ -886,7 +1114,12 @@ def _policied_inventory() -> PlatformInventory:
 
 
 def _seed_verified_drift(
-    store: ProposalStore, check: str, kind: str = "converge-baseline"
+    store: ProposalStore,
+    check: str,
+    kind: str = "converge-baseline",
+    *,
+    server: str = "h1",
+    verified: bool = True,
 ) -> None:
     from cloudfall.operator import (  # noqa: PLC0415 - test-local.
         OperationKind,
@@ -894,7 +1127,7 @@ def _seed_verified_drift(
     )
 
     proposal = propose_for_drift(
-        ResourceId.from_boundary("h1"),
+        ResourceId.from_boundary(server),
         (check,),
         OperationKind(kind),
         "2026-09-10T10:00:00+00:00",
@@ -904,10 +1137,78 @@ def _seed_verified_drift(
         store,
         proposal.resource_id,
         lambda _proposal: None,
-        lambda _proposal: True,
+        lambda _proposal: verified,
         _FAST_APPROVE,
         via=TERMINAL,
     )
+
+
+def _staging_h3_inventory(tmp_path: Path) -> PlatformInventory:
+    """Return the examples plus h3 in staging; only production has a policy."""
+    project = copy_examples(tmp_path / "project")
+    staging = (EXAMPLES / "servers" / "h2.yaml").read_text(encoding="utf-8")
+    for old, new in (
+        ("h2", "h3"),
+        ("environment: production", "environment: staging"),
+        ("203.0.113.12", "203.0.113.13"),
+        ("2001:db8:12:", "2001:db8:13:"),
+    ):
+        staging = staging.replace(old, new)
+    (project / "servers" / "h3.yaml").write_text(staging, encoding="utf-8")
+    return PlatformInventory.from_state(validate_config(project, SCHEMAS))
+
+
+def _autonomous_pass_on_h1(
+    store: ProposalStore, inventory: PlatformInventory
+) -> AutonomyReport:
+    """Propose a production drift on h1 and run one autonomy pass over it."""
+    from cloudfall.operator import autonomous_pass  # noqa: PLC0415 - test-local.
+
+    drift_pass(
+        lambda: _audit_report(("packages.required[curl]", AuditStatus.DRIFT)),
+        store,
+    )
+    return autonomous_pass(
+        store,
+        inventory,
+        lambda _proposal: None,
+        lambda _proposal: lambda _p: True,
+        _FAST_APPROVE,
+        now=datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
+    )
+
+
+@pytest.mark.parametrize("server", ["h3", "h9"], ids=["staging", "undeclared"])
+def test_history_of_another_environment_earns_no_production_autonomy(
+    tmp_path: Path, server: str
+) -> None:
+    """Verified runs on staging, or on an undeclared server, do not count (#351)."""
+    store = _store(tmp_path)
+    _seed_verified_drift(store, "packages.required[git]", server=server)
+    _seed_verified_drift(store, "packages.required[rsync]", server=server)
+
+    report = _autonomous_pass_on_h1(store, _staging_h3_inventory(tmp_path))
+
+    assert report.executed == ()
+    [(_proposal, reason)] = report.withheld
+    assert reason == (
+        "insufficient verified history for converge-baseline in production: "
+        "0 of 2 required"
+    )
+
+
+def test_a_failed_staging_run_does_not_suspend_production(tmp_path: Path) -> None:
+    """Production's own history still grants after a later staging failure (#351)."""
+    store = _store(tmp_path)
+    _seed_verified_drift(store, "packages.required[git]")
+    _seed_verified_drift(store, "packages.required[rsync]")
+    _seed_verified_drift(store, "packages.required[acl]", server="h3", verified=False)
+
+    report = _autonomous_pass_on_h1(store, _staging_h3_inventory(tmp_path))
+
+    assert report.withheld == ()
+    [(_proposal, status)] = report.executed
+    assert status == "verified"
 
 
 def test_autonomy_withheld_without_verified_history(tmp_path: Path) -> None:
@@ -1622,6 +1923,7 @@ def _record_pre_baseline_proposal(tmp_path: Path) -> ResourceId:
     return ResourceId.from_boundary(proposal_id)
 
 
+# proves: S-017-11
 @pytest.mark.parametrize(
     ("baseline_status", "expected"),
     [
@@ -1632,7 +1934,10 @@ def _record_pre_baseline_proposal(tmp_path: Path) -> ResourceId:
 def test_a_proposal_naming_server_type_id_verifies_on_baseline_id(
     tmp_path: Path, baseline_status: AuditStatus, expected: ProposalStatus
 ) -> None:
-    """`server_type.id` became `baseline.id`; an old proposal waits on it (D-11)."""
+    """`server_type.id` became `baseline.id`; an old proposal waits on it (D-11).
+
+    A recorded proposal is a record, read with no removal date (S-017-11).
+    """
     proposal_id = _record_pre_baseline_proposal(tmp_path)
     auditor = lambda: _audit_report(  # noqa: E731
         ("baseline.id", baseline_status),

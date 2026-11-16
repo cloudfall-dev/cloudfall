@@ -1,0 +1,71 @@
+---
+# TLS for remoteAccess (S-019, Access): the server's one certificate from the
+# project CA, its key and that CA, at the paths of the server's S-011
+# requirement mariadb, which replication uses too. The server made its key
+# and never let it leave; the services converge had the project CA sign the
+# certificate, and stages it with the CA only when it is missing or due. A
+# renewed certificate is loaded with FLUSH SSL, without a restart.
+- name: Install the server certificate and the project CA
+  ansible.builtin.copy:
+    src: "{{ item.source }}"
+    dest: "{{ item.path }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+    force: "{{ item.force }}"
+  loop: "{{ cloudfall_mariadb_delivered_files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  notify: Reload the MariaDB server certificate
+
+- name: Look for the server certificate, its key and the project CA
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: true
+    get_checksum: false
+  loop:
+    - "{{ cloudfall_mariadb_certificate_path }}"
+    - "{{ cloudfall_mariadb_key_path }}"
+    - "{{ cloudfall_mariadb_ca_path }}"
+  register: cloudfall_mariadb_tls_files
+
+- name: Require the server certificate before the server uses TLS
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+    fail_msg: >-
+      {{ item.item }} is missing on {{ cloudfall_server_id }}: remoteAccess of
+      service {{ cloudfall_mariadb_service.id }} serves TLS with the server's
+      certificate from the project CA (requirement mariadb). Converge the
+      service through cloudfall, which has the server make its key and the
+      project CA sign its certificate; this converge stops here, before any
+      setting names the file
+  loop: "{{ cloudfall_mariadb_tls_files.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  # A dry run does not issue the certificate, so only a real run can tell.
+  when: not ansible_check_mode
+
+# The key is the server's alone: the mysql account reads it, nobody else.
+- name: Let MariaDB alone read the server key
+  ansible.builtin.file:
+    path: "{{ cloudfall_mariadb_key_path }}"
+    state: file
+    owner: mysql
+    group: mysql
+    mode: "0600"
+  notify: Reload the MariaDB server certificate
+  when: not ansible_check_mode
+
+- name: Keep the server certificate and the project CA readable
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: file
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - "{{ cloudfall_mariadb_certificate_path }}"
+    - "{{ cloudfall_mariadb_ca_path }}"
+  when: not ansible_check_mode

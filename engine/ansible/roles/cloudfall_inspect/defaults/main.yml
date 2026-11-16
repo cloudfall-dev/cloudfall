@@ -18,5 +18,37 @@ cloudfall_inspect_alerting_root: /etc/cloudfall/alerting
 cloudfall_inspect_alerting_sender: /usr/local/sbin/cloudfall-alert
 cloudfall_inspect_mdadm_conf: /etc/mdadm/mdadm.conf
 cloudfall_inspect_smartd_conf: /etc/smartd.conf
+# The Elasticsearch services whose home is this server (S-012): their users
+# and roles are read here, once per cluster
+cloudfall_inspect_elasticsearch_services: []
+cloudfall_inspect_elasticsearch_password_path: /etc/elasticsearch/cloudfall-password
+# The project CA a node with remoteAccess serves HTTPS under
+# (elasticsearch_cluster.TRANSPORT_CA_PATH)
+cloudfall_inspect_elasticsearch_ca_path: /etc/elasticsearch/certs/ca.crt
+# The MariaDB services of this server (S-019): their databases and users are
+# read as root through the socket, never a password or hash
+cloudfall_inspect_mariadb_services: []
+cloudfall_inspect_mariadb_client: /usr/bin/mariadb
+cloudfall_inspect_mariadb_queries:
+  users: >-
+    SELECT CONCAT(User, '@', Host) FROM mysql.global_priv WHERE Host <> ''
+  managedUsers: >-
+    SELECT CONCAT(User, '@', Host) FROM mysql.roles_mapping
+    WHERE Role = 'cloudfall-managed' AND Admin_option = 'N'
+  lockedUsers: >-
+    SELECT CONCAT(User, '@', Host) FROM mysql.global_priv
+    WHERE JSON_VALUE(Priv, '$.account_locked') = 'true'
+  # Each remote account's TLS requirement as "user@host TYPE": an absent
+  # ssl_type is 0 (NONE); REQUIRE SSL, which converge sets, is 1 (ANY)
+  sslTypes: >-
+    SELECT CONCAT(User, '@', Host, ' ',
+    ELT(IFNULL(JSON_VALUE(Priv, '$.ssl_type'), '0') + 1,
+    'NONE', 'ANY', 'X509', 'SPECIFIED'))
+    FROM mysql.global_priv WHERE Host NOT IN ('', 'localhost')
+  databases: SELECT SCHEMA_NAME FROM information_schema.SCHEMATA
+  managedDatabases: >-
+    SELECT DISTINCT REPLACE(d.Db, '\\_', '_') FROM mysql.db d
+    JOIN mysql.roles_mapping m ON m.User = d.User AND m.Host = d.Host
+    WHERE m.Role = 'cloudfall-managed' AND m.Admin_option = 'N'
 # The bundled Grafana dashboards on a logging backend (S-016); the backend role writes here
 cloudfall_inspect_grafana_dashboards: /etc/grafana/dashboards/cloudfall

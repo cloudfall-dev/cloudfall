@@ -138,8 +138,10 @@ from cloudfall.decision import (
     Staleness,
     Targets,
     approve,
+    approved_runner,
     mark_interrupted,
     propose,
+    refuse_changed,
     refuse_replayed,
     refuse_unapprovable,
 )
@@ -153,6 +155,7 @@ from cloudfall.domain import (
     TcpPort,
 )
 from cloudfall.elasticsearch import WARNING_VERSION_ENDING, ElasticsearchAccount
+from cloudfall.format_check import check_format, declare_format_exit
 from cloudfall.importer import (
     ImportTargets,
     RenderImportError,
@@ -244,6 +247,10 @@ from cloudfall.logging_open import (
     require_free_port,
     start_forward,
 )
+from cloudfall.mariadb import (
+    WARNING_REPLICATION_UNENCRYPTED as MARIADB_WARNING_REPLICATION_UNENCRYPTED,
+)
+from cloudfall.mariadb import WARNING_VERSION_ENDING as MARIADB_WARNING_VERSION_ENDING
 from cloudfall.migrate import MigrateError, MigrateOptions, execute_migration
 from cloudfall.observation import load_observations
 from cloudfall.observe import (
@@ -288,6 +295,7 @@ from cloudfall.project import (
     ProjectDescription,
     ProjectError,
     ProjectName,
+    RecordStore,
     init_project,
     initialize_git,
     is_project,
@@ -373,6 +381,8 @@ from cloudfall.validation import (
     SchemaCatalog,
     ValidatedConfig,
     elasticsearch_versions_ending,
+    mariadb_unencrypted_sources,
+    mariadb_versions_ending,
     validate_config,
 )
 from cloudfall.volumes import ACTIONS_VARIABLE as VOLUME_ACTIONS_VARIABLE
@@ -436,7 +446,12 @@ app = App(
         commands=served_commands,
         bind=bound_arguments,
         instructions=server_instructions,
-        exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "INVENTORY_UNREADABLE"],
+        exit_codes=[
+            "PROJECT_INVALID",
+            "PROJECT_FORMAT_UNSUPPORTED",
+            "CONFIG_INVALID",
+            "INVENTORY_UNREADABLE",
+        ],
     ),
 )
 app.scalar(
@@ -497,6 +512,7 @@ app.exit_code(
     retryable=False,
     side_effects="none",
 )
+declare_format_exit(app)
 app.exit_code(
     "RECORD_INVALID",
     86,
@@ -674,21 +690,23 @@ class Fleet:
     """The team's Ansible inventory the fleet was read from, if any."""
 
     @classmethod
-    def acquire(cls, args: ProjectArgs, _ctx: Ctx) -> Self:
-        """Resolve and validate the project before the handler runs."""
-        return cls._project(args)
+    def acquire(cls, args: ProjectArgs, ctx: Ctx) -> Self:
+        """Resolve the project, check its format, then validate it (S-017).
+
+        A format outside the supported range stops the command before any
+        resource is read; a format below the current one adds one
+        ``PROJECT_FORMAT_OLD`` warning.
+        """
+        return cls._project(args, ctx)
 
     @classmethod
-    def _project(cls, args: ProjectArgs) -> Self:
+    def _project(cls, args: ProjectArgs, ctx: Ctx) -> Self:
+        return cls._validated(_checked_project_directory(args, ctx), args)
+
+    @classmethod
+    def _validated(cls, directory: Path, args: ProjectArgs) -> Self:
         try:
-            directory = resolve_project_directory(
-                args.project, os.environ, Path.cwd()
-            )
             return cls(directory, validate_config(directory, args.schemas))
-        except ProjectError as error:
-            raise Exit.PROJECT_INVALID(
-                error.detail, context={"code": error.code}
-            ) from error
         except ConfigValidationError as error:
             raise _config_invalid(error) from error
 
@@ -702,6 +720,27 @@ class Fleet:
         return PlatformInventory.from_state(self.state)
 
 
+def _project_directory(args: ProjectArgs) -> Path:
+    """Return the project directory the command runs in."""
+    try:
+        return resolve_project_directory(args.project, os.environ, Path.cwd())
+    except ProjectError as error:
+        raise Exit.PROJECT_INVALID(
+            error.detail, context={"code": error.code}
+        ) from error
+
+
+def _checked_project_directory(args: ProjectArgs, ctx: Ctx) -> Path:
+    """Return the project directory once its format is one this release reads.
+
+    Every command that reads a project starts here (S-017): the format is
+    checked before anything else reads or writes the project.
+    """
+    directory = _project_directory(args)
+    check_format(ctx, directory)
+    return directory
+
+
 @dataclass(frozen=True, slots=True)
 class InventoryFleet(Fleet):
     """A fleet a command may also read from a team's own Ansible inventory.
@@ -713,13 +752,13 @@ class InventoryFleet(Fleet):
     @classmethod
     # Narrower than Fleet.acquire on purpose: only --inventory commands take it.
     def acquire(  # type: ignore[override]
-        cls, args: FleetArgs, _ctx: Ctx
+        cls, args: FleetArgs, ctx: Ctx
     ) -> Self:
         """Read the team's inventory when one applies, else the project."""
         try:
             source = _inventory_source(args)
             if source is None:
-                return cls._project(args)
+                return cls._project(args, ctx)
             read = read_fleet(read_inventory(source), args.schemas)
         except AnsibleReadError as error:
             raise Exit.INVENTORY_UNREADABLE(
@@ -776,21 +815,51 @@ class ValidatedPayload(Payload):
     "validate",
     description="Validate every resource against the schemas and cross-references",
     danger_level="safe",
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID"],
+    exit_codes=["PROJECT_INVALID", "PROJECT_FORMAT_UNSUPPORTED", "CONFIG_INVALID"],
     examples=[("Validate the project in this directory", "cloudfall config validate")],
 )
-def config_validate(_args: ProjectArgs, ctx: Ctx, fleet: Fleet) -> ValidatedPayload:
+def config_validate(
+    _args: ProjectArgs, ctx: Ctx, fleet: Fleet
+) -> ValidatedPayload:
     """Answer the validation summary of the resolved project.
 
-    A file read under a deprecated name still validates; each such file
-    gets one ``DEPRECATED_NAME`` warning naming its old names and the
+    The project's format is checked first: one outside the formats this
+    release reads exits ``PROJECT_FORMAT_UNSUPPORTED``, and one below the
+    current format gets one ``PROJECT_FORMAT_OLD`` warning. A file read
+    under a deprecated name still validates; each such file gets one
+    ``DEPRECATED_NAME`` warning naming its old names and the
     command that rewrites them. An Elasticsearch service whose line ends
     within 90 days, or has ended, gets one ``ELASTICSEARCH_VERSION_ENDING``
-    warning naming the date.
+    warning naming the date; a MariaDB service the same, as
+    ``MARIADB_VERSION_ENDING``. A MariaDB replica of an outside source
+    declared without a CA file gets ``MARIADB_REPLICATION_UNENCRYPTED``.
     """
+    today = datetime.now(UTC).date()
     _warn_deprecated_names(ctx, fleet)
-    _warn_elasticsearch_versions_ending(ctx, fleet.state, datetime.now(UTC).date())
+    _warn_elasticsearch_versions_ending(ctx, fleet.state, today)
+    _warn_mariadb(ctx, fleet.state, today)
     return ValidatedPayload(fleet.state.as_dict())
+
+
+def _warn_mariadb(ctx: Ctx, state: ValidatedConfig, today: date) -> None:
+    """Warn per MariaDB service whose series is ending, or whose link is plain."""
+    for ending in mariadb_versions_ending(state, today):
+        ctx.warn(
+            MARIADB_WARNING_VERSION_ENDING,
+            ending.message(today),
+            service=ending.service.value,
+            version=ending.version.value,
+            series=ending.series.label,
+            endOfLife=ending.series.end_of_life.isoformat(),
+        )
+    for service in mariadb_unencrypted_sources(state):
+        ctx.warn(
+            MARIADB_WARNING_REPLICATION_UNENCRYPTED,
+            f"Service/{service} replicates from a source declared without "
+            "caCertificateFile, so the link is not encrypted; add the "
+            "certificate of the CA that signed the source's certificate",
+            service=service.value,
+        )
 
 
 def _warn_elasticsearch_versions_ending(
@@ -841,13 +910,20 @@ class UpgradedPayload(Payload):
     description=(
         "Rewrite the project's files from deprecated names to current ones: "
         "server-types/ to baselines/, kind ServerType to Baseline, "
-        "spec.serverType to spec.baseline; comments and formatting are kept, "
-        "and a second run changes nothing"
+        "spec.serverType to spec.baseline; comments and formatting are kept. "
+        "Move receipts and operator proposals from tmp/ into the committed "
+        "record/, refusing to overwrite a different file there. A second run "
+        "changes nothing"
     ),
     danger_level="mutating",
     timeout=60,
     idempotent=True,
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "CONFLICT"],
+    exit_codes=[
+        "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
+        "CONFIG_INVALID",
+        "CONFLICT",
+    ],
     examples=[("Rewrite the project in this directory", "cloudfall config upgrade")],
 )
 def config_upgrade(args: ProjectArgs, _ctx: Ctx, fleet: Fleet) -> UpgradedPayload:
@@ -879,6 +955,7 @@ class InventoryPayload(Payload):
     danger_level="safe",
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "INVENTORY_UNREADABLE",
     ],
@@ -943,7 +1020,12 @@ class RequirementsPayload(Payload):
         "the project only: secret states come from key names, never values"
     ),
     danger_level="safe",
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PRECONDITION"],
+    exit_codes=[
+        "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
+        "CONFIG_INVALID",
+        "PRECONDITION",
+    ],
     examples=[
         ("Show the project's host requirements", "cloudfall requirements show")
     ],
@@ -1238,8 +1320,10 @@ class ProposalArgs(ProjectArgs):
     """Options of a command that reads the operator's proposal receipts."""
 
     proposals: Path = Flag(
-        default=Path("tmp/operator/proposals"),
-        description="Proposal receipt directory (default: tmp/operator/proposals)",
+        default=RecordStore.PROPOSALS.path,
+        description=(
+            f"Proposal receipt directory (default: {RecordStore.PROPOSALS.directory})"
+        ),
     )
 
     def __post_init__(self) -> None:
@@ -1277,7 +1361,13 @@ class ProposalPayload(Payload):
     "list",
     description="List proposal receipts, oldest first",
     danger_level="safe",
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "RECORD_INVALID", "NOT_FOUND"],
+    exit_codes=[
+        "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
+        "CONFIG_INVALID",
+        "RECORD_INVALID",
+        "NOT_FOUND",
+    ],
     examples=[("List the operator's proposals", "cloudfall operator list")],
 )
 def operator_list(args: ProposalArgs, ctx: Ctx, fleet: Fleet) -> ProposalsPayload:
@@ -1299,7 +1389,13 @@ def operator_list(args: ProposalArgs, ctx: Ctx, fleet: Fleet) -> ProposalsPayloa
     "show",
     description="Show one proposal receipt",
     danger_level="safe",
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "RECORD_INVALID", "NOT_FOUND"],
+    exit_codes=[
+        "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
+        "CONFIG_INVALID",
+        "RECORD_INVALID",
+        "NOT_FOUND",
+    ],
     examples=[("Show one proposal", "cloudfall operator show nginx-down-20260101")],
 )
 def operator_show(args: ShowProposalArgs, _ctx: Ctx, fleet: Fleet) -> ProposalPayload:
@@ -1325,10 +1421,10 @@ class AuditArgs(FleetArgs):
         ),
     )
     env_receipts: Path = Flag(
-        default=Path("tmp/env-receipts"),
+        default=RecordStore.ENVIRONMENT_RECEIPTS.path,
         description=(
             "Rendered environment receipt directory used for env-file drift "
-            "checks (default: tmp/env-receipts)"
+            f"checks (default: {RecordStore.ENVIRONMENT_RECEIPTS.directory})"
         ),
     )
 
@@ -1353,6 +1449,7 @@ class AuditPayload(Payload):
     danger_level="safe",
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "INVENTORY_UNREADABLE",
         "DRIFT",
@@ -1406,8 +1503,11 @@ class EvidenceArgs(ProjectArgs):
         description="Domain observation directory (default: tmp/observed-services)",
     )
     deployments: Path = Flag(
-        default=Path("tmp/deployments"),
-        description="Deployment receipt directory (default: tmp/deployments)",
+        default=RecordStore.DEPLOYMENTS.path,
+        description=(
+            "Deployment receipt directory "
+            f"(default: {RecordStore.DEPLOYMENTS.directory})"
+        ),
     )
 
     def __post_init__(self) -> None:
@@ -1446,7 +1546,7 @@ class ServicesPayload(Payload):
     "status",
     description="Derive service lifecycle status from current evidence",
     danger_level="safe",
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID"],
+    exit_codes=["PROJECT_INVALID", "PROJECT_FORMAT_UNSUPPORTED", "CONFIG_INVALID"],
     examples=[
         (
             "Report each service from fresh snapshots",
@@ -1591,14 +1691,9 @@ class ProjectDirectory:
     path: Path
 
     @classmethod
-    def acquire(cls, args: ProjectArgs, _ctx: Ctx) -> Self:
-        """Resolve the project directory before the handler runs."""
-        try:
-            return cls(resolve_project_directory(args.project, os.environ, Path.cwd()))
-        except ProjectError as error:
-            raise Exit.PROJECT_INVALID(
-                error.detail, context={"code": error.code}
-            ) from error
+    def acquire(cls, args: ProjectArgs, ctx: Ctx) -> Self:
+        """Resolve the project directory and check its format (S-017)."""
+        return cls(_checked_project_directory(args, ctx))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -1742,6 +1837,7 @@ def _authoring_failed(error: AuthoringError) -> Exception:
 
 _ADD_EXIT_CODES = [
     "PROJECT_INVALID",
+    "PROJECT_FORMAT_UNSUPPORTED",
     "CONFIG_INVALID",
     "CONFLICT",
     "PERMISSION_DENIED",
@@ -1885,7 +1981,12 @@ class DashboardPayload(Payload):
     supports_raw_payload=True,
     project_root=PROJECT_MARKERS,
     filesystem_side_effects=[SideEffect("{project_root}/tmp/dashboard/", "output")],
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PERMISSION_DENIED"],
+    exit_codes=[
+        "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
+        "CONFIG_INVALID",
+        "PERMISSION_DENIED",
+    ],
     examples=[
         (
             "Build the dashboard from fresh snapshots",
@@ -1969,7 +2070,12 @@ class ServingPayload(Payload):
     danger_level="safe",
     streaming=True,
     timeout=None,
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PRECONDITION"],
+    exit_codes=[
+        "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
+        "CONFIG_INVALID",
+        "PRECONDITION",
+    ],
     examples=[
         (
             "Serve the dashboard on the default port",
@@ -2052,7 +2158,12 @@ class InspectedPayload(Payload):
     filesystem_side_effects=[
         SideEffect("{project_root}/tmp/observed-services/", "output")
     ],
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PERMISSION_DENIED"],
+    exit_codes=[
+        "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
+        "CONFIG_INVALID",
+        "PERMISSION_DENIED",
+    ],
     examples=[("Probe every declared domain", "cloudfall services observe")],
 )
 def services_observe(
@@ -2220,6 +2331,7 @@ class HealthPayload(Payload):
     danger_level="safe",
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "PRECONDITION",
         "ENGINE_STEP_FAILED",
@@ -2255,8 +2367,10 @@ class BackupArgs(EngineArgs):
 
     service: ResourceId = Arg(description="Declared service to back up")
     backups: Path = Flag(
-        default=Path("tmp/backups"),
-        description="Backup receipt directory (default: tmp/backups)",
+        default=RecordStore.BACKUPS.path,
+        description=(
+            f"Backup receipt directory (default: {RecordStore.BACKUPS.directory})"
+        ),
     )
 
     def __post_init__(self) -> None:
@@ -2286,6 +2400,7 @@ def _backed_up(body: Mapping[str, object]) -> BackedUp:
 
 _BACKUP_EXIT_CODES = [
     "PROJECT_INVALID",
+    "PROJECT_FORMAT_UNSUPPORTED",
     "CONFIG_INVALID",
     "PRECONDITION",
     "ENGINE_STEP_FAILED",
@@ -2569,6 +2684,8 @@ def decisions_approve(args: ApproveDecisionArgs, ctx: Ctx) -> Decided:
     try:
         refuse_replayed(decision)
         refuse_unapprovable(decision)
+        # Nobody types an id for a proposal whose project changed since (D-20).
+        refuse_changed(decision, args.root, store.directory)
     except DecisionError as error:
         raise _decision_failed(error) from error
     try:
@@ -2593,7 +2710,8 @@ def decisions_approve(args: ApproveDecisionArgs, ctx: Ctx) -> Decided:
                 via=ApprovalChannel(attestation.channel),
             ),
             store,
-            run=_check_runner(ctx, args.root),
+            # Its own limit, and its log written as it runs (#359).
+            run=approved_runner(cwd=args.root),
         )
     except DecisionError as error:
         raise _decision_failed(error) from error
@@ -2901,7 +3019,9 @@ def agent_investigate(
     catalog = args.catalog()
     try:
         replay = (
-            None if args.replay is None else Recording.load(args.root / args.replay)
+            None
+            if args.replay is None
+            else Recording.load(args.root / args.replay, args.root)
         )
     except RecordingError as error:
         raise Exit.PRECONDITION(error.detail, context={"code": error.code}) from error
@@ -3179,23 +3299,37 @@ class OperatorEngineArgs(ProposalArgs):
             run=_step_runner(ctx, fleet.directory),
         )
 
-    def auditor(self, fleet: Fleet, ctx: Ctx) -> Callable[[], AuditReport]:
-        """Return the audited drift check over the operator's observations."""
+    def auditor(
+        self, fleet: Fleet, ctx: Ctx, limit: ResourceId | None = None
+    ) -> Callable[[], AuditReport]:
+        """Return the audited drift check over the operator's observations.
+
+        ``limit`` inspects one declared server alone.
+        """
         return engine_auditor(
-            self.context(fleet, ctx), fleet.inventory, fleet.path(self.observed)
+            self.context(fleet, ctx),
+            fleet.inventory,
+            fleet.path(self.observed),
+            limit,
         )
 
     def verifier_for(
         self, fleet: Fleet, ctx: Ctx, feed: Callable[[], AlertFeed]
     ) -> Callable[[OperatorProposal], Callable[[OperatorProposal], bool]]:
-        """Return how a proposal's resolution is verified, by its trigger."""
+        """Return how a proposal's resolution is verified, by its trigger.
+
+        A drift proposal's verify step inspects the proposal's server alone,
+        the one its execution was limited to.
+        """
 
         def verifier(
             proposal: OperatorProposal,
         ) -> Callable[[OperatorProposal], bool]:
             if proposal.trigger_kind is TriggerKind.ALERT:
                 return alert_resolution_verifier(feed())
-            return drift_resolution_verifier(self.auditor(fleet, ctx))
+            return drift_resolution_verifier(
+                self.auditor(fleet, ctx, proposal.operation_server)
+            )
 
         return verifier
 
@@ -3295,6 +3429,7 @@ class Approved:
     danger_level="mutating",
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "NOT_FOUND",
         "PRECONDITION",
@@ -3359,7 +3494,9 @@ def operator_approve(
 class MarkProposalInterruptedArgs(ProposalArgs):
     """Arguments of ``operator mark-interrupted``."""
 
-    proposal: ResourceId = Arg(description="Proposal id of a running receipt")
+    proposal: ResourceId = Arg(
+        description="Proposal id of a running or executed receipt"
+    )
     confirm_dead: bool = Flag(default=False, description=_CONFIRM_DEAD_DESCRIPTION)
     by: str | None = Flag(default=None, description=_BY_DESCRIPTION)
 
@@ -3377,13 +3514,14 @@ class MarkProposalInterruptedArgs(ProposalArgs):
     # tool stands in for it, as with approve.
     mcp=False,
     description=(
-        "Close a running proposal as interrupted once you confirmed its "
-        "execution is dead, so the operator may propose it again; nothing on "
-        "the servers changes"
+        "Close a running or executed proposal as interrupted once you "
+        "confirmed its execution is dead, so the operator may propose it "
+        "again; nothing on the servers changes"
     ),
     danger_level="mutating",
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "NOT_FOUND",
         "PRECONDITION",
@@ -3399,7 +3537,7 @@ class MarkProposalInterruptedArgs(ProposalArgs):
 def operator_mark_interrupted(
     args: MarkProposalInterruptedArgs, ctx: Ctx, fleet: Fleet
 ) -> Approved:
-    """Close a running receipt as interrupted, naming who confirmed it."""
+    """Close a running or executed receipt as interrupted, naming who confirmed it."""
     by = args.by if args.by is not None else ctx.env.get("USER", "")
     try:
         closed = mark_proposal_interrupted(args.store(fleet), args.proposal, by)
@@ -3475,6 +3613,7 @@ class OperatorPassPayload(Payload):
     supports_raw_payload=True,
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "NOT_FOUND",
         "PRECONDITION",
@@ -3554,12 +3693,17 @@ class MigrateArgs(EngineArgs):
         description="Domain observation directory (default: tmp/observed-services)",
     )
     deployments: Path = Flag(
-        default=Path("tmp/deployments"),
-        description="Deployment receipt directory (default: tmp/deployments)",
+        default=RecordStore.DEPLOYMENTS.path,
+        description=(
+            "Deployment receipt directory "
+            f"(default: {RecordStore.DEPLOYMENTS.directory})"
+        ),
     )
     releases: Path = Flag(
-        default=Path("tmp/releases"),
-        description="Release receipt directory (default: tmp/releases)",
+        default=RecordStore.RELEASES.path,
+        description=(
+            f"Release receipt directory (default: {RecordStore.RELEASES.directory})"
+        ),
     )
     artifacts: Path = Flag(
         default=Path("tmp/artifacts"),
@@ -3743,6 +3887,7 @@ class Migration:
     danger_level="mutating",
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "PRECONDITION",
         "PARTIAL_FAILURE",
@@ -3994,6 +4139,7 @@ def _playbook_runner(
     ],
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "INVENTORY_UNREADABLE",
         "PRECONDITION",
@@ -4060,8 +4206,11 @@ class SecretsRenderArgs(EngineArgs):
         description="Environment file to write (default: tmp/env/<component>.env)",
     )
     env_receipts: Path = Flag(
-        default=Path("tmp/env-receipts"),
-        description="Environment receipt directory (default: tmp/env-receipts)",
+        default=RecordStore.ENVIRONMENT_RECEIPTS.path,
+        description=(
+            "Environment receipt directory "
+            f"(default: {RecordStore.ENVIRONMENT_RECEIPTS.directory})"
+        ),
     )
 
     def __post_init__(self) -> None:
@@ -4143,7 +4292,12 @@ class SecretsInputPayload(SecretsWrittenPayload):
         "never overwritten. The answer names references and hashes, never values"
     ),
     danger_level="mutating",
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PRECONDITION"],
+    exit_codes=[
+        "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
+        "CONFIG_INVALID",
+        "PRECONDITION",
+    ],
     timeout=120,
     subprocess=Subprocess("sops"),
     examples=[("Generate the missing secrets", "cloudfall secrets generate")],
@@ -4222,6 +4376,7 @@ class SecretsInputArgs(SecretsDirArgs):
     interactive=True,
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "PRECONDITION",
         "NOT_FOUND",
@@ -4302,7 +4457,12 @@ def _input_secret(
         "file; the answer names keys and hashes, never values"
     ),
     danger_level="mutating",
-    exit_codes=["PROJECT_INVALID", "CONFIG_INVALID", "PRECONDITION"],
+    exit_codes=[
+        "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
+        "CONFIG_INVALID",
+        "PRECONDITION",
+    ],
     timeout=120,
     subprocess=Subprocess("sops"),
     required_tools={"sops": "3.8.0"},
@@ -4413,6 +4573,7 @@ class ImportedApiPayload(Payload):
 
 _IMPORT_EXIT_CODES = [
     "PROJECT_INVALID",
+    "PROJECT_FORMAT_UNSUPPORTED",
     "CONFIG_INVALID",
     "PRECONDITION",
     "PERMISSION_DENIED",
@@ -4555,8 +4716,10 @@ class DeployArgs(ComponentArgs):
         description="Optional controller-side environment file for the component",
     )
     releases: Path = Flag(
-        default=Path("tmp/releases"),
-        description="Release receipt directory (default: tmp/releases)",
+        default=RecordStore.RELEASES.path,
+        description=(
+            f"Release receipt directory (default: {RecordStore.RELEASES.directory})"
+        ),
     )
     approvals: Path = Flag(
         default=Path(APPROVALS_DIRECTORY),
@@ -4607,8 +4770,11 @@ class DataMigrateArgs(EngineArgs):
         ),
     )
     data_migrations: Path = Flag(
-        default=Path("tmp/data-migrations"),
-        description="Migration receipt directory (default: tmp/data-migrations)",
+        default=RecordStore.DATA_MIGRATIONS.path,
+        description=(
+            "Migration receipt directory "
+            f"(default: {RecordStore.DATA_MIGRATIONS.directory})"
+        ),
     )
     yes: bool = Flag(
         default=False,
@@ -4673,6 +4839,7 @@ def _plan(preview: LifecyclePreview) -> dict[str, object]:
 
 _LIFECYCLE_EXIT_CODES = [
     "PROJECT_INVALID",
+    "PROJECT_FORMAT_UNSUPPORTED",
     "CONFIG_INVALID",
     "PRECONDITION",
     "ENGINE_STEP_FAILED",
@@ -4888,6 +5055,7 @@ class LockClearPayload(Payload):
     danger_level="mutating",
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "CONFLICT",
         "RECORD_INVALID",
@@ -5293,6 +5461,7 @@ def _logging_open_failed(error: LoggingOpenError) -> Exception:
     timeout=None,
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "PRECONDITION",
         "NOT_FOUND",
@@ -5507,6 +5676,7 @@ class ReleaseApproved:
     danger_level="mutating",
     exit_codes=[
         "PROJECT_INVALID",
+        "PROJECT_FORMAT_UNSUPPORTED",
         "CONFIG_INVALID",
         "PRECONDITION",
         "PERMISSION_DENIED",
@@ -5649,8 +5819,11 @@ class DomainApplyArgs(EngineArgs):
         ),
     )
     deployments: Path = Flag(
-        default=Path("tmp/deployments"),
-        description="Deployment receipt directory (default: tmp/deployments)",
+        default=RecordStore.DEPLOYMENTS.path,
+        description=(
+            "Deployment receipt directory "
+            f"(default: {RecordStore.DEPLOYMENTS.directory})"
+        ),
     )
     yes: bool = Flag(
         default=False,
@@ -5735,8 +5908,11 @@ class DomainObserveArgs(ProjectArgs):
         description="Engine directory containing ansible contracts (default: bundled)",
     )
     deployments: Path = Flag(
-        default=Path("tmp/deployments"),
-        description="Deployment receipt directory (default: tmp/deployments)",
+        default=RecordStore.DEPLOYMENTS.path,
+        description=(
+            "Deployment receipt directory "
+            f"(default: {RecordStore.DEPLOYMENTS.directory})"
+        ),
     )
 
     def __post_init__(self) -> None:

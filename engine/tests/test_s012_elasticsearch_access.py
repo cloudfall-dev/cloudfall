@@ -203,6 +203,15 @@ def _snapshot(  # noqa: PLR0913 - one observation, each hand change a keyword.
             _node_configuration(service) if configuration is None else configuration
         ),
     }
+    # The cluster answered as the cloudfall account, with no declared users.
+    spec["elasticsearchUsers"] = [
+        {
+            "service": "search-main",
+            "available": True,
+            "users": {"managed": [], "unmanaged": []},
+            "roles": {"managed": [], "unmanaged": []},
+        }
+    ]
     if firewall is not None:
         spec["firewall"]["managedTableJson"] = firewall
     return cast("dict[str, object]", document)
@@ -234,6 +243,7 @@ COMPLIANT_NODE = {
     "elasticsearch.line[search-main]": "compliant",
     "elasticsearch.unit[search-main]": "compliant",
     "elasticsearch.configuration[search-main]": "compliant",
+    "elasticsearch.users[search-main]": "compliant",
     "services.bind[search-main]": "compliant",
 }
 
@@ -709,9 +719,9 @@ def test_s012_14_the_role_calls_its_api_over_https_verifying_the_project_ca(
         if "ansible.builtin.uri" in task
     ]
 
-    # The health wait, the secure settings reload, the memory lock read and
-    # the elastic password
-    assert len(calls) == 4
+    # The health wait, the secure settings reload, the green wait once an
+    # existing cluster left, the memory lock read and the elastic password
+    assert len(calls) == 5
     for task in calls:
         uri = cast("dict[str, str]", task["ansible.builtin.uri"])
         assert uri["url"].strip().startswith("{{ cloudfall_elasticsearch_api_url")

@@ -157,6 +157,42 @@ def test_ssh_public_key_algorithm_must_match_wire_payload(
     assert error.value.issue.code == "ssh_public_key_invalid"
 
 
+@pytest.mark.parametrize(
+    ("environment", "lifecycle", "refused"),
+    [
+        ("production", "revoked", True),
+        ("staging", "revoked", False),
+        ("production", "active", False),
+    ],
+    ids=["revoked-same-environment", "revoked-other-environment", "both-active"],
+)
+def test_ssh_public_key_declared_active_and_revoked_is_refused(
+    tmp_path: Path, environment: str, lifecycle: str, *, refused: bool
+) -> None:
+    """The baseline would install the key and remove it on every run (#354)."""
+    project_directory = tmp_path / "config"
+    copy_examples(project_directory)
+    key_directory = project_directory / "ssh-public-keys"
+    example_key = (key_directory / "example-admin.yaml").read_text(encoding="utf-8")
+    twin = (
+        example_key.replace("id: example-admin", "id: example-twin")
+        .replace("environment: production", f"environment: {environment}")
+        .replace("lifecycle: active", f"lifecycle: {lifecycle}")
+        # Another comment is still the same key
+        .replace(" example\n", " a different comment\n")
+    )
+    (key_directory / "example-twin.yaml").write_text(twin, encoding="utf-8")
+
+    if not refused:
+        validate_config(project_directory, SCHEMAS)
+        return
+    with pytest.raises(ConfigValidationError) as error:
+        validate_config(project_directory, SCHEMAS)
+
+    assert error.value.issue.code == "ssh_public_key_lifecycle_conflict"
+    assert error.value.issue.field_path == ("spec", "lifecycle")
+
+
 def test_baseline_rejects_duplicate_firewall_rules(
     tmp_path: Path,
 ) -> None:
@@ -349,11 +385,11 @@ def test_cli_emits_structured_success(
     captured = capsys.readouterr()
     document = json.loads(captured.out)
     assert exit_code == 0
-    assert (document["ok"], document["error"], document["warnings"]) == (
-        True,
-        None,
-        [],
-    )
+    assert (document["ok"], document["error"]) == (True, None)
+    # The examples are a resource set with no pyproject.toml, so format 0.
+    assert [warning["code"] for warning in document["warnings"]] == [
+        "PROJECT_FORMAT_OLD"
+    ]
     assert document["meta"]["command"] == "config.validate"
     assert document["data"] == {
         "status": "ok",

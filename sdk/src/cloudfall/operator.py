@@ -145,8 +145,10 @@ _BLOCKING_STATUSES = frozenset(
 )
 
 # The audit check ``server_type.id`` is ``baseline.id`` since 0.8.0 (D-11). A
-# proposal recorded before names the old id; until 0.9.0 its verifier and the
-# drift pass's duplicate check read it as the new one.
+# proposal recorded before names the old id; its verifier and the drift pass's
+# duplicate check read it as the new one. This read has no ``removed_in``: a
+# proposal is a record, and a record's fields are never deprecated within
+# ``cloudfall/v1`` (spec 017, S-017-11).
 _RENAMED_CHECKS: Mapping[str, str] = {"server_type.id": "baseline.id"}
 
 
@@ -593,18 +595,19 @@ class ProposalStore:
     def interrupt(
         self, proposal_id: ResourceId, interruption: Interruption
     ) -> OperatorProposal:
-        """Close a ``running`` receipt as interrupted, if it is still running.
+        """Close a ``running`` or ``executed`` receipt as interrupted.
 
-        The receipt on disk is read again under the store's lock: an
+        An ``executed`` receipt is one whose verification never recorded an
+        outcome. The receipt on disk is read again under the store's lock: an
         execution that recorded its outcome since keeps that outcome.
         """
         with record_files.locked(self.directory):
             current = self.load(proposal_id)
-            if current.status is not ProposalStatus.RUNNING:
+            if current.status not in _INTERRUPTIBLE_STATUSES:
                 message = (
                     f"proposal {proposal_id.value} is {current.status.value}, not "
-                    "running, so there is no started execution to close as "
-                    "interrupted"
+                    "running or executed, so there is no started execution to "
+                    "close as interrupted"
                 )
                 raise OperatorError(ERROR_PROPOSAL_NOT_RUNNING, message)
             closed = replace(
@@ -919,10 +922,14 @@ def engine_executor(
     context: EngineContext,
     secrets: SopsSecretProvider,
 ) -> Executor:
-    """Executor running the proposal's engine entry point.
+    """Executor running the proposal's engine entry point on its server alone.
 
-    ``converge-services`` reads every owner role's password from ``secrets``
-    first, so a missing one fails before any playbook runs.
+    The proposal names one server, and the policy that approved it was
+    chosen by that server's environment, so every playbook of the run is
+    limited to it; an operation kind with no playbook that can be limited
+    is refused before anything runs. ``converge-services`` reads every owner
+    role's password from ``secrets`` first, so a missing one fails before
+    any playbook runs.
     """
 
     def _execute(proposal: OperatorProposal) -> tuple[OwnedRoleRecord, ...]:
@@ -933,10 +940,11 @@ def engine_executor(
                 f"{proposal.operation_kind.value}"
             )
             raise OperatorError(_ERROR_OPERATION_UNSUPPORTED, message)
+        server = proposal.operation_server
         if proposal.operation_kind is OperationKind.CONVERGE_SERVICES:
-            passwords = converge_services(context, secrets)
+            passwords = converge_services(context, secrets, server)
             return tuple(password.record() for password in passwords)
-        run_engine_playbook(context, playbook, {})
+        run_engine_playbook(context, playbook, {}, server)
         return ()
 
     return _execute
@@ -946,8 +954,13 @@ def engine_auditor(
     context: EngineContext,
     inventory: PlatformInventory,
     observation_directory: Path,
+    limit: ResourceId | None = None,
 ) -> Callable[[], AuditReport]:
-    """Auditor refreshing observations through the inspect playbook."""
+    """Auditor refreshing observations through the inspect playbook.
+
+    ``limit`` refreshes one declared server's observation alone, as a
+    proposal's verify step does; the others keep their last one.
+    """
 
     def _audit() -> AuditReport:
         run_engine_playbook(
@@ -958,6 +971,7 @@ def engine_auditor(
                     observation_directory.resolve()
                 )
             },
+            limit,
         )
         observations = load_observations(
             observation_directory, context.schema_directory
@@ -1090,13 +1104,15 @@ def mark_interrupted(
     return store.interrupt(proposal_id, interruption)
 
 
-def _execution_failure_detail(error: OperatorError | LifecycleError) -> str:
+def _execution_failure_detail(
+    error: OperatorError | LifecycleError, stage: str = "execution"
+) -> str:
     """Name the failure's code and keep the end of its message within the receipt cap.
 
     An engine failure carries the tail of the Ansible output, and the last
     lines, the failing task and the play recap, are the ones that say why.
     """
-    head = f"execution failed: {error.code}: "
+    head = f"{stage} failed: {error.code}: "
     message = str(error).removeprefix(f"{error.code}: ")
     if len(head) + len(message) <= _OUTCOME_DETAIL_MAX:
         return head + message
@@ -1148,7 +1164,25 @@ def _execute_and_verify(  # noqa: PLR0913 - internal execution contract.
     store.update(executed)
     waited = 0.0
     while True:
-        if verifier(proposal):
+        try:
+            resolved = verifier(proposal)
+        except (OperatorError, LifecycleError) as error:
+            # An error from the verifier is an unverified run: the receipt
+            # settles failed, which suspends autonomy for the kind (#358).
+            failed = replace(
+                executed,
+                status=ProposalStatus.FAILED,
+                outcome=ProposalOutcome(
+                    executed_at=executed_at,
+                    verified_at=None,
+                    result="failed",
+                    detail=_execution_failure_detail(error, "verification"),
+                    owned_roles=owned_roles,
+                ),
+            )
+            store.update(failed)
+            raise
+        if resolved:
             verified = replace(
                 executed,
                 status=ProposalStatus.VERIFIED,
@@ -1209,6 +1243,13 @@ on the server is unknown.
 _SETTLED_STATUSES = frozenset({ProposalStatus.VERIFIED}) | _SUSPENDING_STATUSES
 """Receipts whose run is over, the autonomy history of their kind."""
 
+_INTERRUPTIBLE_STATUSES = frozenset({ProposalStatus.RUNNING, ProposalStatus.EXECUTED})
+"""Receipts whose run started and recorded no final outcome a person may close.
+
+An ``executed`` one is left by a verification that never settled, such as one
+an older release did not guard.
+"""
+
 
 def _rate_limit_moment(receipt: OperatorProposal) -> str | None:
     """When a receipt's run counts in the hourly rate limit, if it does.
@@ -1229,8 +1270,16 @@ def autonomy_decision(
     policy: OperatorPolicyInventory,
     store: ProposalStore,
     now: datetime,
+    environments_by_server: Mapping[ResourceId, ResourceId],
 ) -> AutonomyDecision:
-    """Decide whether the declared policy licenses this execution now."""
+    """Decide whether the declared policy licenses this execution now.
+
+    Autonomy is earned per environment (D-19): the history the grant is
+    judged on, and the suspension rule, count only the settled receipts of
+    servers in the policy's environment, which is the proposal's server's.
+    ``environments_by_server`` maps each declared server to its environment;
+    a receipt of a server no longer declared counts for no environment.
+    """
     grant = policy.grant_for(proposal.operation_kind.value)
     if grant is None:
         reason = (
@@ -1245,6 +1294,8 @@ def autonomy_decision(
         if receipt.operation_kind is proposal.operation_kind
         and receipt.resource_id != proposal.resource_id
         and receipt.status in _SETTLED_STATUSES
+        and environments_by_server.get(receipt.operation_server)
+        == policy.environment
     ]
     verified = sum(
         1
@@ -1254,15 +1305,16 @@ def autonomy_decision(
     if verified < grant.required_verified_runs.value:
         reason = (
             f"insufficient verified history for "
-            f"{proposal.operation_kind.value}: {verified} of "
-            f"{grant.required_verified_runs.value} required"
+            f"{proposal.operation_kind.value} in {policy.environment.value}: "
+            f"{verified} of {grant.required_verified_runs.value} required"
         )
         return AutonomyDecision(granted=False, reason=reason)
     if history and history[-1].status in _SUSPENDING_STATUSES:
         last = history[-1].status
         outcome = "failed" if last is ProposalStatus.FAILED else "was interrupted"
         reason = (
-            f"most recent {proposal.operation_kind.value} receipt {outcome}; "
+            f"most recent {proposal.operation_kind.value} receipt {outcome} "
+            f"in {policy.environment.value}; "
             "autonomy suspended until a human-approved run verifies"
         )
         return AutonomyDecision(granted=False, reason=reason)
@@ -1370,7 +1422,9 @@ def autonomous_pass(  # noqa: PLR0913 - boundary mirrors approve().
         decision = (
             _incomplete_history(listing.unreadable)
             if listing.unreadable
-            else autonomy_decision(proposal, policy, store, moment)
+            else autonomy_decision(
+                proposal, policy, store, moment, environments_by_server
+            )
         )
         if not decision.granted:
             withheld.append((proposal.resource_id.value, decision.reason))

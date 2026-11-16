@@ -57,7 +57,7 @@ line carrying `meta.end`; stopping a watcher (Ctrl-C or SIGTERM) ends it
 with a `CANCELLED` line and exit 130 or 143.
 
 Every proposal is a schema-validated receipt in `--proposals`
-(default `tmp/operator/proposals`): the trigger evidence (alert labels or
+(default `record/operator/proposals`): the trigger evidence (alert labels or
 drifted checks), a diagnosis, the exact operation, and later its outcome.
 An open, running, executed or failed proposal blocks duplicates for the
 same trigger — a failed remediation deliberately stays visible until a
@@ -86,6 +86,51 @@ operation or time window; for a decision an agent asked for through
 `agent investigate`, it also tells the turn and the model's reasoning
 there. The operator's receipts here are the older
 form of the same entry and are not yet read by `cloudfall why`.
+
+### Where the record lives
+
+A project keeps the record in `record/`, which is committed like
+`decisions/`: the operator's proposals in `record/operator/proposals/`, and
+the receipts of deploys, releases, backups, data migrations and rendered
+environments in `record/deployments/`, `record/releases/`,
+`record/backups/`, `record/data-migrations/` and `record/env-receipts/`.
+`tmp/` keeps only what can be rebuilt (observations, rendered inventory,
+built artifacts, rendered environment files) and is ignored by git. No
+record holds a secret value: an environment receipt names keys and a hash,
+and a proposal names the hash of an owner password, never the password.
+A decision's check diff and run logs are raw Ansible output, so they stay
+in `tmp/output/decisions/` (`0600`) and the decision record names each
+file with its SHA-256 and size; `decisions approve` refuses a proposal
+whose diff is not on the machine.
+A release command's output is the application's own and may print a
+secret, so its last 2000 characters stay in
+`tmp/output/releases/<component>.<release>.log` (`0600`) and the release
+receipt names that file and its SHA-256 under `releaseCommand.output`. The
+file is not committed: on another host, or after `tmp/` is cleared, it is
+gone, and a file there whose SHA-256 differs is not that run's output.
+
+A project from before 0.8.0 kept its receipts and proposals under `tmp/`.
+Run `cloudfall config upgrade` once: it moves each file into `record/`,
+reports every move, drops a file whose identical copy is already there, and
+refuses, naming both paths and moving nothing, when a different file is.
+An old release receipt that holds `releaseCommand.outputTail` has the tail
+moved to its file under `tmp/output/releases/` on the way, whether it is
+still under `tmp/` or already in `record/`. A second run changes nothing. A `--proposals`, `--deployments` or other
+receipt path you pass explicitly keeps working as before.
+
+Commit `record/` after each run that wrote to it, so the record survives
+losing the management host. A management host with no git remote can sync
+the directory to another machine or to object storage instead, for example
+from a systemd timer:
+
+```bash
+rsync -a /opt/my-project/record/ backup-host:/srv/cloudfall-record/my-project/
+# or
+rclone copy /opt/my-project/record remote:cloudfall-record/my-project
+```
+
+Both only add and update files (no `rsync --delete`, no `rclone sync`), so
+a record lost on the host is not deleted from the copy too.
 
 To run persistently, wrap the command in a systemd service on the
 management host:
@@ -135,8 +180,16 @@ stop firing, a drift-triggered proposal must see its drifted checks audit
 compliant again (`--verify-timeout`, default 180 s). The receipt records
 `verified` or `failed` with timestamps either way — the operator never
 reports success it cannot prove. A playbook that ran is not an outcome; the
-verify step is. Gateway TLS flags are only needed when approving
+verify step is. A verify step that cannot check (the alert feed or the
+audit errors) records `failed` with that error, and the command fails with
+it. Gateway TLS flags are only needed when approving
 alert-triggered proposals; drift approvals verify through the audit.
+
+A proposal names one server, and its run touches that server alone: every
+playbook it starts, a converge's Elasticsearch node preparation included,
+runs with `--limit <server>`, and a drift proposal's verify step inspects
+that server only. The receipt names the owner passwords set on that server,
+not those of services elsewhere.
 
 ## A run that died midway
 
@@ -157,8 +210,9 @@ uv run cloudfall operator mark-interrupted op-20260910t150000-abcdef1234567890 \
   --confirm-dead
 ```
 
-Without `--confirm-dead` nothing is written. Only a `running` receipt can be
-closed this way. The receipt turns `interrupted` and records
+Without `--confirm-dead` nothing is written. Only a `running` receipt, or an
+`executed` one whose verification never recorded an outcome, can be closed
+this way. The receipt turns `interrupted` and records
 `interruption.confirmedBy` (`--by`, default the `USER` environment
 variable) and `interruption.confirmedAt`; the approval stays as it was.
 Nothing runs on the servers. On its next pass the operator proposes again
@@ -201,9 +255,15 @@ Autonomy is earned, bounded, and revocable:
 - **Earned by receipts**: an operation kind executes autonomously only after
   `requiredVerifiedRuns` verified receipts for that kind exist in the
   proposal store — human-approved runs build the trust history
-- **Suspended on failure**: if the most recent receipt for a kind failed,
-  or was closed as `interrupted` because its run died midway, autonomy for
-  that kind is withheld until a human-approved run verifies again
+- **Earned per environment**: only the receipts of servers in the policy's
+  environment count, so verified runs on any staging server build the
+  staging policy's history and never the production one's. A receipt of a
+  server no longer declared counts for no environment
+- **Suspended on failure**: if the most recent receipt for a kind in the
+  policy's environment failed, or was closed as `interrupted` because its
+  run died midway, autonomy for that kind there is withheld until a
+  human-approved run verifies again; a failure on staging leaves production
+  as it was
 - **Rate-limited and time-bounded**: at most `maxAutonomousPerHour`
   autonomous executions, and none during declared quiet hours; an
   autonomous run closed as `interrupted` counts from when it was confirmed

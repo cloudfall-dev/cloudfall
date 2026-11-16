@@ -36,3 +36,12 @@ argument_specs:
       cloudfall_inspect_elasticsearch_configuration:
         type: str
         default: ""
+      cloudfall_inspect_elasticsearch_services:
+        type: list
+        elements: dict
+        default: []
+      cloudfall_inspect_mariadb_services:
+        type: list
+        elements: dict
+        default: []
+        description: The MariaDB services of this server, whose accounts are read

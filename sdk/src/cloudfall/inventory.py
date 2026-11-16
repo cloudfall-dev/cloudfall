@@ -101,6 +101,15 @@ from cloudfall.elasticsearch import (
     S3Bucket,
     S3Endpoint,
 )
+from cloudfall.mariadb import (
+    DEFAULT_SOURCE_PORT,
+    MariadbAuthentication,
+    MariadbDatabaseName,
+    MariadbReplicationRole,
+    MariadbServerId,
+    MariadbUserName,
+    MariadbVersion,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -1010,17 +1019,26 @@ class ElasticsearchUser:
 
 @dataclass(frozen=True, slots=True)
 class ElasticsearchExistingCluster:
-    """A cluster Cloudfall did not create, which the declared nodes join."""
+    """A cluster Cloudfall did not create, which the declared nodes join.
+
+    ``credentials_ref`` names the login of an account the team already has on
+    that cluster, with the ``monitor`` privilege, which the join check uses;
+    without it the check logs in as Cloudfall's own ``cloudfall`` account.
+    """
 
     seed_hosts: tuple[ElasticsearchSeedHost, ...]
     ca_certificate_file: ProjectFilePath
+    credentials_ref: SecretValueReference | None = None
 
     def as_dict(self) -> dict[str, object]:
-        """Serialize the seed hosts and the project path of the foreign CA."""
-        return {
+        """Serialize the seed hosts, the foreign CA's path and the login reference."""
+        result: dict[str, object] = {
             "seedHosts": [host.value for host in self.seed_hosts],
             "caCertificateFile": self.ca_certificate_file.value,
         }
+        if self.credentials_ref is not None:
+            result["credentialsRef"] = self.credentials_ref.as_dict()
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -1086,6 +1104,139 @@ class ElasticsearchService:
 
 
 @dataclass(frozen=True, slots=True)
+class MariadbApplicationDatabase:
+    """A MariaDB database whose user is an application's Linux user (S-019).
+
+    The user authenticates by the unix socket only, so it has no password.
+    """
+
+    name: MariadbDatabaseName
+    application_id: ResourceId
+    owner: LinuxUser
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the database with its resolved user."""
+        return {
+            "name": self.name.value,
+            "application": self.application_id.value,
+            "owner": self.owner.value,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class MariadbOwnedDatabase:
+    """A MariaDB database owned by a declared user with a password (S-019).
+
+    The password stays behind ``passwordRef``; only its hash, computed on the
+    controller, ever reaches the host (D-9).
+    """
+
+    name: MariadbDatabaseName
+    owner: MariadbUserName
+    password_ref: SecretValueReference
+    authentication: MariadbAuthentication
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the database with its user and password reference."""
+        return {
+            "name": self.name.value,
+            "owner": self.owner.value,
+            "passwordRef": self.password_ref.as_dict(),
+            "authentication": self.authentication.value,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class MariadbReplicationSource:
+    """A server Cloudfall does not manage, which a replica follows (S-019).
+
+    ``credentials_ref`` names the ``<username>:<password>`` of an account the
+    team made on it; without ``ca_certificate_file`` the link is not encrypted.
+    """
+
+    host: ConnectionAddress
+    port: TcpPort
+    credentials_ref: SecretValueReference
+    ca_certificate_file: ProjectFilePath | None
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the source with its credentials reference, never a password."""
+        result: dict[str, object] = {
+            "host": self.host.value,
+            "port": self.port.value,
+            "credentialsRef": self.credentials_ref.as_dict(),
+        }
+        if self.ca_certificate_file is not None:
+            result["caCertificateFile"] = self.ca_certificate_file.value
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class MariadbReplication:
+    """A server's place in a pair: a primary, or a replica of one source."""
+
+    role: MariadbReplicationRole
+    server_id: MariadbServerId
+    listen_address: IpAddress | None = None
+    primary: ResourceId | None = None
+    source: MariadbReplicationSource | None = None
+
+    def __post_init__(self) -> None:
+        """Reject a role whose fields contradict it; validation refuses it first."""
+        if self.role is MariadbReplicationRole.PRIMARY:
+            consistent = (
+                self.listen_address is not None
+                and self.primary is None
+                and self.source is None
+            )
+        else:
+            consistent = self.listen_address is None and (
+                (self.primary is None) != (self.source is None)
+            )
+        if not consistent:
+            message = f"MariaDB replication fields contradict role {self.role.value}"
+            raise ValueError(message)
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the role and what it names."""
+        result: dict[str, object] = {
+            "role": self.role.value,
+            "serverId": self.server_id.value,
+        }
+        if self.listen_address is not None:
+            result["listenAddress"] = self.listen_address.value
+        if self.primary is not None:
+            result["primary"] = self.primary.value
+        if self.source is not None:
+            result["source"] = self.source.as_dict()
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class MariadbService:
+    """MariaDB-specific service contract (S-019)."""
+
+    version: MariadbVersion
+    innodb_buffer_pool_mb: PositiveCount
+    databases: tuple[MariadbApplicationDatabase | MariadbOwnedDatabase, ...]
+    remote_access: PostgresRemoteAccess | None = None
+    replication: MariadbReplication | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the server contract without secret material."""
+        result: dict[str, object] = {
+            "version": self.version.value,
+            "innodbBufferPoolMb": self.innodb_buffer_pool_mb.value,
+            "databases": [database.as_dict() for database in self.databases],
+        }
+        if self.remote_access is not None:
+            result["remoteAccess"] = self.remote_access.as_dict()
+        if self.replication is not None:
+            result["replication"] = self.replication.as_dict()
+        return result
+
+
+@dataclass(frozen=True, slots=True)
 class ServiceBackup:
     """Scheduled dump-and-prune backup contract."""
 
@@ -1109,6 +1260,7 @@ class ServiceInventory:
     backup: ServiceBackup
     metrics_enabled: bool
     elasticsearch: ElasticsearchService | None = None
+    mariadb: MariadbService | None = None
 
     def __post_init__(self) -> None:
         """Reject services whose payload contradicts the declared kind."""
@@ -1116,6 +1268,7 @@ class ServiceInventory:
             (self.postgresql, ServiceKind.POSTGRESQL),
             (self.redis, ServiceKind.REDIS),
             (self.elasticsearch, ServiceKind.ELASTICSEARCH),
+            (self.mariadb, ServiceKind.MARIADB),
         )
         if any(
             (payload is not None) is not (self.service_kind is kind)
@@ -1176,6 +1329,8 @@ class ServiceInventory:
             result["redis"] = redis
         if self.elasticsearch is not None:
             result["elasticsearch"] = self.elasticsearch.as_dict()
+        if self.mariadb is not None:
+            result["mariadb"] = self.mariadb.as_dict()
         if self.metrics_enabled:
             result["metrics"] = {"enabled": True}
         return result
@@ -2290,6 +2445,96 @@ def _service_inventory(
         ),
         metrics_enabled=_service_metrics_enabled(spec, document),
         elasticsearch=elasticsearch,
+        mariadb=(
+            _mariadb_service(_mapping(spec, "mariadb"), applications_by_id)
+            if service_kind is ServiceKind.MARIADB
+            else None
+        ),
+    )
+
+
+def _mariadb_service(
+    content: Mapping[str, object],
+    applications_by_id: Mapping[ResourceId, ApplicationInventory],
+) -> MariadbService:
+    return MariadbService(
+        version=MariadbVersion.from_boundary(content.get("version")),
+        innodb_buffer_pool_mb=PositiveCount.from_boundary(
+            content.get("innodbBufferPoolMb")
+        ),
+        databases=tuple(
+            _mariadb_database(item, applications_by_id)
+            for item in _mapping_list(
+                content.get("databases", []), "MariaDB databases"
+            )
+        ),
+        remote_access=(
+            _postgres_remote_access(_mapping(content, "remoteAccess"))
+            if "remoteAccess" in content
+            else None
+        ),
+        replication=(
+            _mariadb_replication(_mapping(content, "replication"))
+            if "replication" in content
+            else None
+        ),
+    )
+
+
+def _mariadb_database(
+    content: Mapping[str, object],
+    applications_by_id: Mapping[ResourceId, ApplicationInventory],
+) -> MariadbApplicationDatabase | MariadbOwnedDatabase:
+    name = MariadbDatabaseName.from_boundary(content.get("name"))
+    if "owner" in content:
+        return MariadbOwnedDatabase(
+            name=name,
+            owner=MariadbUserName.from_boundary(content.get("owner")),
+            password_ref=_secret_value_reference(_mapping(content, "passwordRef")),
+            authentication=MariadbAuthentication.from_boundary(
+                content.get(
+                    "authentication",
+                    MariadbAuthentication.MYSQL_NATIVE_PASSWORD.value,
+                )
+            ),
+        )
+    application_id = ResourceId.from_boundary(content.get("application"))
+    application = applications_by_id.get(application_id)
+    if application is None:
+        message = (
+            f"service database references an unknown application: {application_id}"
+        )
+        raise KeyError(message)
+    return MariadbApplicationDatabase(
+        name=name, application_id=application_id, owner=application.linux_user
+    )
+
+
+def _mariadb_replication(content: Mapping[str, object]) -> MariadbReplication:
+    source = None
+    if "source" in content:
+        raw_source = _mapping(content, "source")
+        raw_ca = raw_source.get("caCertificateFile")
+        source = MariadbReplicationSource(
+            host=ConnectionAddress.from_boundary(raw_source.get("host")),
+            port=TcpPort.from_boundary(raw_source.get("port", DEFAULT_SOURCE_PORT)),
+            credentials_ref=_secret_value_reference(
+                _mapping(raw_source, "credentialsRef")
+            ),
+            ca_certificate_file=(
+                None if raw_ca is None else ProjectFilePath.from_boundary(raw_ca)
+            ),
+        )
+    raw_listen = content.get("listenAddress")
+    raw_primary = content.get("primary")
+    return MariadbReplication(
+        role=MariadbReplicationRole.from_boundary(content.get("role")),
+        server_id=MariadbServerId.from_boundary(content.get("serverId")),
+        listen_address=(
+            None if raw_listen is None else IpAddress.from_boundary(raw_listen)
+        ),
+        primary=None if raw_primary is None else ResourceId.from_boundary(raw_primary),
+        source=source,
     )
 
 
@@ -2332,6 +2577,11 @@ def _elasticsearch_service(
             ),
             ca_certificate_file=ProjectFilePath.from_boundary(
                 raw_existing.get("caCertificateFile")
+            ),
+            credentials_ref=(
+                _secret_value_reference(_mapping(raw_existing, "credentialsRef"))
+                if "credentialsRef" in raw_existing
+                else None
             ),
         )
     snapshot_repository = None
@@ -2805,10 +3055,13 @@ def service_remote_access(
 ) -> PostgresRemoteAccess | None:
     """Return the ``remoteAccess`` a service opens on ``server_id``, if any.
 
-    PostgreSQL opens it on its server; Elasticsearch on each of its nodes.
+    PostgreSQL and MariaDB open it on their server; Elasticsearch on each of
+    its nodes.
     """
     if service.postgresql is not None and service.server_id == server_id:
         return service.postgresql.remote_access
+    if service.mariadb is not None and service.server_id == server_id:
+        return service.mariadb.remote_access
     if service.elasticsearch is not None and server_id in service.elasticsearch.nodes:
         return service.elasticsearch.remote_access
     return None

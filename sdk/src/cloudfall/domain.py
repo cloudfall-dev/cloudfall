@@ -615,6 +615,7 @@ class ServiceKind(StrEnum):
     POSTGRESQL = "postgresql"
     REDIS = "redis"
     ELASTICSEARCH = "elasticsearch"
+    MARIADB = "mariadb"
 
     @classmethod
     def from_boundary(cls, value: object) -> ServiceKind:

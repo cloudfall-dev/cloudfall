@@ -7,12 +7,34 @@
         | selectattr('lifecycle', 'equalto', 'active')
         | list
       }}
+    cloudfall_access_revoked_keys: >-
+      {{
+        cloudfall_access_ssh_public_keys
+        | selectattr('lifecycle', 'equalto', 'revoked')
+        | list
+      }}
 
 - name: Require at least one active declared SSH key
   ansible.builtin.assert:
     that:
       - cloudfall_access_active_keys | length > 0
     fail_msg: Refusing to disable password access without an active SSH key
+
+# A key is its type and base64 body; the comment is not part of it
+- name: Refuse a key declared both active and revoked
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudfall_access_active_keys
+        | map(attribute='publicKey')
+        | map('regex_replace', '^(\\S+\\s+\\S+).*$', '\\1')
+        | intersect(
+            cloudfall_access_revoked_keys
+            | map(attribute='publicKey')
+            | map('regex_replace', '^(\\S+\\s+\\S+).*$', '\\1')
+          )
+        | length == 0
+    fail_msg: An SSH key is declared both active and revoked; keep one lifecycle
 
 - name: Create root SSH configuration directory
   ansible.builtin.file:
@@ -31,6 +53,20 @@
     group: root
     mode: "0600"
   loop: "{{ cloudfall_access_active_keys }}"
+  loop_control:
+    label: "{{ item.id }}"
+
+# After the active keys are in, so root keeps a key. The match is the key's
+# type and body, with or without options before it or a comment after it;
+# undeclared keys stay (D-22)
+- name: Remove revoked root SSH keys
+  ansible.builtin.lineinfile:
+    path: /root/.ssh/authorized_keys
+    regexp: >-
+      ^(?:.*\s)?{{ (item.publicKey.split())[0] | regex_escape }}\s+{{
+      (item.publicKey.split())[1] | regex_escape }}(?:\s.*)?$
+    state: absent
+  loop: "{{ cloudfall_access_revoked_keys }}"
   loop_control:
     label: "{{ item.id }}"
 

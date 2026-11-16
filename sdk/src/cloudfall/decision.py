@@ -16,10 +16,12 @@ it, and what came of it.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -35,6 +37,15 @@ from cloudfall.ansible_api import callback_plugin_path
 from cloudfall.ansible_data import as_ansible_data
 from cloudfall.catalog import RiskLevel, TargetScope
 from cloudfall.domain import ResourceId
+from cloudfall.project import OUTPUT_DIRECTORY, RUNTIME_DIRECTORY
+from cloudfall.proposal_binding import (
+    Binding,
+    BindingError,
+    BoundProject,
+    bind,
+    changes,
+    file_sha256,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -51,14 +62,25 @@ DECISION_SCHEMA = "operation-decision.schema.json"
 DECISION_SCHEMAS: Mapping[str, str] = MappingProxyType({API_VERSION: DECISION_SCHEMA})
 """The schema a record is read with, by its ``apiVersion``: a v2 sits beside v1."""
 DECISION_DIRECTORY = "decisions"
-"""Where decision records and their artifacts land inside the repository.
+"""Where decision records land inside the repository.
 
 Beside the operations rather than under ``tmp/``: the record is what the
 team keeps, and the runtime directory is what they throw away. Commit the
-records; the diffs and logs beside them are raw Ansible output, so they
-belong in git only in a repository whose tasks set ``no_log`` where it
-matters.
+records. The check diff and the run logs are raw Ansible output, which may
+print a secret a task renders without ``no_log``, so they are kept under
+``DECISION_OUTPUT_DIRECTORY`` instead and the record names each file with
+its sha256 and size (D-24).
 """
+
+DECISION_OUTPUT_DIRECTORY = (
+    f"{RUNTIME_DIRECTORY}/{OUTPUT_DIRECTORY}/{DECISION_DIRECTORY}"
+)
+"""Where the default store's raw diffs and run logs are kept, uncommitted."""
+
+_RAW_FILE_MODE = 0o600
+"""Raw output may hold a secret, so only its owner reads it."""
+_RAW_DIRECTORY_MODE = 0o700
+"""Nor does anyone else list the folder it is kept in."""
 
 _HOST_STATS_DIRECTORY = "host-stats"
 HOST_STATS_CALLBACK = "cloudfall_host_stats"
@@ -69,9 +91,19 @@ HOST_STATS_VARIABLE = "CLOUDFALL_HOST_STATS_DIR"
 
 _CALLBACK_PLUGIN_DIRECTORY = Path(__file__).parent / "callback_plugins"
 _DIFF_SUFFIX = ".diff"
+_RESERVATION_SUFFIX = ".reserved"
 _ANSIBLE_CONFIG_FILE = "ansible.cfg"
 CHECK_TIMEOUT_SECONDS = 1800
+APPROVED_RUN_TIMEOUT_SECONDS = 21600
+"""How long an approved run, or its verify step, may take before it is stopped.
+
+A rolling upgrade or a data move can outlast a check, so the limit is its
+own: six hours, where check mode keeps ``CHECK_TIMEOUT_SECONDS`` (#359).
+"""
+_STOP_GRACE_SECONDS = 30
+"""How long a stopped run's process group has to exit before it is killed."""
 _CHANGED_KEY = "changed"
+_OK_KEY = "ok"
 _ERROR_HOST_STATS_INVALID = "decision_host_stats_invalid"
 
 _ERROR_ANSIBLE_MISSING = "decision_ansible_missing"
@@ -85,6 +117,10 @@ ERROR_DECISION_MISSING = "decision_missing"
 _ERROR_NOT_PROPOSED = "decision_not_proposed"
 ERROR_DECISION_REPLAYED = "decision_replayed"
 ERROR_DECISION_INTERRUPTED = "decision_run_interrupted"
+ERROR_BINDING_CHANGED = "decision_binding_changed"
+"""What a proposal was checked against changed, or its record binds nothing."""
+ERROR_DIFF_MISSING = "decision_diff_missing"
+"""The raw diff a record cites is not on this machine, so nobody could read it."""
 ERROR_NOT_RUNNING = "decision_not_running"
 ERROR_CONFIRMER_INVALID = "record_confirmer_invalid"
 _CONFIRMER_MAX_LENGTH = 128
@@ -110,6 +146,16 @@ class DecisionError(RuntimeError):
             "status": "error",
             "error": {"code": self.code, "message": self.detail},
         }
+
+
+class RunTimedOutError(RuntimeError):
+    """A run reached its time limit and was stopped; its log keeps what it printed."""
+
+    def __init__(self, seconds: int, exit_code: int) -> None:
+        """Record the limit it reached and the exit code its stop left."""
+        self.seconds = seconds
+        self.exit_code = exit_code
+        super().__init__(f"the run timed out after {seconds}s and was stopped")
 
 
 class Requirement(StrEnum):
@@ -241,6 +287,8 @@ class RunRecord:
     changed: tuple[str, ...]
     unchanged: tuple[str, ...]
     log: DiffArtifact
+    timed_out_after: int | None = field(default=None, compare=False)
+    """The limit, in seconds, a stopped run reached; the verdict keeps it, not this."""
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the run for the record."""
@@ -487,6 +535,8 @@ class Decision:
     """The recording its check output was played back from; None when live."""
     interruption: Interruption | None = None
     """Who closed its ``running`` record as interrupted, and when."""
+    binding: Binding | None = None
+    """What its check ran against; None in a record made before #352."""
 
     def same_call(self, other: Decision) -> bool:
         """Return whether both name the same operation, targets and inputs."""
@@ -515,28 +565,36 @@ class Decision:
             "check": self.check.as_dict(),
             "status": self.status.value,
         }
-        if self.approval is not None:
-            spec["approval"] = self.approval.as_dict()
-        if self.execution is not None:
-            spec["execution"] = self.execution.as_dict()
-        if self.verification is not None:
-            spec["verify"] = self.verification.as_dict()
-        if self.verdict is not None:
-            spec["verdict"] = self.verdict
-        if self.ran_exit_code is not None:
-            spec["ranExitCode"] = self.ran_exit_code
-        if self.superseded_by is not None:
-            spec["supersededBy"] = self.superseded_by.value
-        if self.replay is not None:
-            spec["replay"] = self.replay
-        if self.interruption is not None:
-            spec["interruption"] = self.interruption.as_dict()
+        if self.binding is not None:
+            spec["binding"] = self.binding.as_dict()
+        spec.update(self._fate())
         return {
             "apiVersion": API_VERSION,
             "kind": DECISION_KIND,
             "metadata": {"id": self.decision_id.value},
             "spec": spec,
         }
+
+    def _fate(self) -> dict[str, object]:
+        """Return the fields set as the decision moves on from proposed."""
+        fate: dict[str, object] = {}
+        if self.approval is not None:
+            fate["approval"] = self.approval.as_dict()
+        if self.execution is not None:
+            fate["execution"] = self.execution.as_dict()
+        if self.verification is not None:
+            fate["verify"] = self.verification.as_dict()
+        if self.verdict is not None:
+            fate["verdict"] = self.verdict
+        if self.ran_exit_code is not None:
+            fate["ranExitCode"] = self.ran_exit_code
+        if self.superseded_by is not None:
+            fate["supersededBy"] = self.superseded_by.value
+        if self.replay is not None:
+            fate["replay"] = self.replay
+        if self.interruption is not None:
+            fate["interruption"] = self.interruption.as_dict()
+        return fate
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the decision for system boundaries."""
@@ -561,6 +619,35 @@ class DecisionStore:
                 message = f"decision already exists: {path}"
                 raise DecisionError(_ERROR_DECISION_EXISTS, message) from error
         return path
+
+    def reserve(self, operation_id: ResourceId, moment: datetime) -> ResourceId:
+        """Take a decision id no record or other proposal holds, before any file.
+
+        The id is ``<operation>-<stamp>``; a second proposal of the same
+        operation in the same second takes ``<operation>-<stamp>-2``, then
+        ``-3``. The reservation is a dot file no listing reads as a record,
+        so the diff and host stats written under the id are this proposal's
+        alone. ``release`` removes it once the record is saved or the
+        proposal failed.
+        """
+        stamp = moment.strftime("%Y%m%d%H%M%S")
+        attempt = 1
+        with record_files.locked(self.directory):
+            while True:
+                decision_id = _decision_identifier(operation_id, stamp, attempt)
+                attempt += 1
+                if self._path(decision_id).exists():
+                    continue
+                try:
+                    self._reservation(decision_id).touch(exist_ok=False)
+                except FileExistsError:
+                    continue
+                return decision_id
+
+    def release(self, decision_id: ResourceId) -> None:
+        """Remove the reservation of one id; the record, if saved, keeps it taken."""
+        with record_files.locked(self.directory):
+            self._reservation(decision_id).unlink(missing_ok=True)
 
     def update(self, decision: Decision) -> Path:
         """Persist a state change of an existing decision."""
@@ -676,6 +763,9 @@ class DecisionStore:
     def _path(self, decision_id: ResourceId) -> Path:
         return self.directory / f"{decision_id.value}.json"
 
+    def _reservation(self, decision_id: ResourceId) -> Path:
+        return self.directory / f".{decision_id.value}{_RESERVATION_SUFFIX}"
+
     def _replace(self, decision: Decision) -> Path:
         """Replace one existing record; the caller holds the store's lock."""
         path = self._path(decision.decision_id)
@@ -738,44 +828,65 @@ def propose(
             skipped(unreadable)
     recorded = listing.records
     moment = (now or _utc_now)()
-    decision_id = _decision_identifier(operation.operation_id, moment)
-    diff_path = store.directory / f"{decision_id.value}{_DIFF_SUFFIX}"
-    host_stats = store.directory / _HOST_STATS_DIRECTORY / decision_id.value
-    argv, environment = run_command(
-        PlaybookInvocation(
-            playbook=operation.playbook,
-            repository=request.repository,
-            host_stats=host_stats,
-            pattern=pattern,
-            inputs=declared,
-        ),
-        check=True,
-    )
-    diff_path.parent.mkdir(parents=True, exist_ok=True)
-    exit_code = (run or _run_check)(argv, environment, diff_path)
-    requirement, reason = gate(operation.risk)
-    ran = requirement is Requirement.RUNS_FREELY
-    decision = Decision(
-        decision_id=decision_id,
-        proposed_at=_timestamp(moment),
-        operation_id=operation.operation_id,
-        playbook=operation.playbook,
-        risk=operation.risk,
-        verify_playbook=(
+    # The id is taken before the check run writes its diff under it, so two
+    # proposals in one second never share a diff (#356).
+    decision_id = store.reserve(operation.operation_id, moment)
+    try:
+        diff_path = _raw_file(
+            raw_output_directory(request.repository, store.directory)
+            / f"{decision_id.value}{_DIFF_SUFFIX}"
+        )
+        host_stats = store.directory / _HOST_STATS_DIRECTORY / decision_id.value
+        argv, environment = run_command(
+            PlaybookInvocation(
+                playbook=operation.playbook,
+                repository=request.repository,
+                host_stats=host_stats,
+                pattern=pattern,
+                inputs=declared,
+            ),
+            check=True,
+        )
+        verify_playbook = (
             operation.verify.playbook if operation.verify is not None else None
-        ),
-        targets=Targets(scope=request.targets.scope, pattern=pattern),
-        inputs=declared,
-        requirement=requirement,
-        reason=reason,
-        basis=read_basis(request.observations, request.repository),
-        check=_preview(exit_code, host_stats, diff_path, request.repository),
-        status=DecisionStatus.RAN if ran else DecisionStatus.PROPOSED,
-        verdict=_ran_verdict(exit_code, request.replay) if ran else None,
-        ran_exit_code=exit_code if ran else None,
-        replay=request.replay,
-    )
-    store.save(decision)
+        )
+        # Bound before the check runs, so the approval is of what was checked.
+        binding = _bound(
+            lambda: bind(
+                BoundProject(
+                    repository=request.repository, decisions=store.directory
+                ),
+                operation.playbook,
+                verify_playbook,
+            )
+        )
+        exit_code = (run or _run_check)(argv, environment, diff_path)
+        requirement, reason = gate(operation.risk)
+        ran = requirement is Requirement.RUNS_FREELY
+        decision = Decision(
+            decision_id=decision_id,
+            proposed_at=_timestamp(moment),
+            operation_id=operation.operation_id,
+            playbook=operation.playbook,
+            risk=operation.risk,
+            verify_playbook=verify_playbook,
+            targets=Targets(scope=request.targets.scope, pattern=pattern),
+            inputs=declared,
+            requirement=requirement,
+            reason=reason,
+            basis=read_basis(request.observations, request.repository),
+            check=_preview(exit_code, host_stats, diff_path, request.repository),
+            status=DecisionStatus.RAN if ran else DecisionStatus.PROPOSED,
+            verdict=_ran_verdict(exit_code, request.replay) if ran else None,
+            ran_exit_code=exit_code if ran else None,
+            replay=request.replay,
+            binding=binding,
+        )
+        store.save(decision)
+    finally:
+        # Saved or failed, the reservation goes: a failed proposal leaves
+        # no record, and a saved one is held by its record.
+        store.release(decision_id)
     for older in recorded:
         # A replay never closes a live proposal and a live run never closes
         # a replayed one: only a record of the same replay value is replaced.
@@ -848,9 +959,14 @@ def approve(
     """Record who let one proposal through, run it, and verify it.
 
     Everything the run needs comes from the record rather than from the
-    caller or the catalog: the approval is of what was proposed, so the
-    playbook, the targets and the inputs cannot change between the diff a
-    human read and the run that follows it.
+    caller or the catalog: the targets and the inputs are the ones that
+    were proposed. The playbook and the verify playbook are read from the
+    project, so before anything runs their sha256 and the diff's are
+    compared with what the record bound at propose time, and so are the
+    git commit and the uncommitted changes when the project is in git: any
+    difference refuses the approval and leaves the record proposed (D-20).
+    Roles, templates and inventory are bound only through git; outside git
+    only the two playbooks and the diff are.
     """
     decision = request.decision
     refuse_replayed(decision)
@@ -864,8 +980,9 @@ def approve(
             "unknown channel"
         )
         raise DecisionError(_ERROR_CHANNEL_UNKNOWN, message)
+    refuse_changed(decision, request.repository, store.directory)
     clock = now or _utc_now
-    stage = _Stage(request=request, store=store, runner=run or _run_check)
+    stage = _Stage(request=request, store=store, runner=run or approved_runner())
     moment = clock()
     # Nothing has run yet, so a missing Ansible leaves the decision open.
     _ansible_playbook()
@@ -884,10 +1001,16 @@ def approve(
     execution = _run_stage(stage, decision.playbook, "execution", moment)
     verification = (
         _run_stage(stage, decision.verify_playbook, "verify", clock())
-        if decision.verify_playbook is not None and execution.exit_code == 0
+        if decision.verify_playbook is not None and _succeeded(execution)
         else None
     )
-    status, verdict = _outcome(execution, verification, decision.verify_playbook)
+    status, verdict = _outcome(
+        execution,
+        verification,
+        decision.verify_playbook,
+        decision.check,
+        _ran_on(_stage_host_stats(stage, "verify")),
+    )
     approved = replace(
         running,
         execution=execution,
@@ -948,6 +1071,68 @@ def refuse_unapprovable(decision: Decision) -> None:
     raise DecisionError(_ERROR_NOT_PROPOSED, message)
 
 
+def refuse_changed(decision: Decision, repository: Path, decisions: Path) -> None:
+    """Refuse a proposal whose project or diff changed since it was checked.
+
+    The playbooks, the diff file and, in git, the commit and the uncommitted
+    changes are compared with what the record bound. A record with no
+    binding was proposed before Cloudfall bound proposals, so nothing says
+    what it was checked against: it is refused too, and so is one whose raw
+    diff is not on this machine (D-24). Callers that ask a person for the
+    decision id check this first.
+    """
+    binding = decision.binding
+    if binding is None:
+        message = (
+            f"decision {decision.decision_id} was proposed before Cloudfall "
+            "recorded what a proposal was checked against, so its approval "
+            "cannot be bound to it; propose it again"
+        )
+        raise DecisionError(ERROR_BINDING_CHANGED, message)
+    diff = decision.check.diff.path
+    diff_path = diff if diff.is_absolute() else repository / diff
+    if not diff_path.is_file():
+        # The record is committed and the raw diff is not (D-24): another
+        # clone has the hash, never the text anyone approves against.
+        message = (
+            f"decision {decision.decision_id}'s check diff {diff} is not on "
+            "this machine: the record keeps only its sha256 "
+            f"{decision.check.diff.sha256} and size, because raw Ansible "
+            "output may hold a secret. Approve it where it was proposed, or "
+            "propose it again here"
+        )
+        raise DecisionError(ERROR_DIFF_MISSING, message)
+    found = list(
+        _bound(
+            lambda: changes(
+                binding,
+                BoundProject(repository=repository, decisions=decisions),
+                decision.playbook,
+                decision.verify_playbook,
+            )
+        )
+    )
+    current = file_sha256(diff_path)
+    if current is None or current.value != decision.check.diff.sha256:
+        found.append(f"the diff file {diff}")
+    if not found:
+        return
+    message = (
+        f"decision {decision.decision_id} changed since it was proposed: "
+        f"{'; '.join(found)}. The approval would run something other than "
+        "what was checked; propose it again"
+    )
+    raise DecisionError(ERROR_BINDING_CHANGED, message)
+
+
+def _bound[T](read: Callable[[], T]) -> T:
+    """Read a binding, answering a git failure as a decision error."""
+    try:
+        return read()
+    except BindingError as error:
+        raise DecisionError(error.code, error.detail) from error
+
+
 def refuse_not_running(decision: Decision) -> None:
     """Refuse to close a decision as interrupted unless its record is ``running``."""
     if decision.status is DecisionStatus.RUNNING:
@@ -999,18 +1184,21 @@ def _outcome(
     execution: RunRecord,
     verification: RunRecord | None,
     verify_playbook: Path | None,
+    check: CheckPreview,
+    verify_ran_on: frozenset[str],
 ) -> tuple[DecisionStatus, str]:
     """Return the status one run earned, and why, for the record.
 
     Verification is a claim about the fleet's state, so a verify run that
     changed something did not verify anything: it found the fleet not as
     the operation left it and converged it further. Exiting zero is not
-    enough.
+    enough, and neither is changing nothing: a verify play that matched no
+    host, or skipped one the decision targets, observed nothing there.
     """
-    if execution.exit_code != 0:
+    if not _succeeded(execution):
         return (
             DecisionStatus.FAILED,
-            f"the run exited {execution.exit_code}",
+            _exit_reason("the run", execution),
         )
     if verify_playbook is None:
         return (
@@ -1019,10 +1207,10 @@ def _outcome(
         )
     if verification is None:  # pragma: no cover - callers verify after a clean run
         return (DecisionStatus.FAILED, "the verify step did not run")
-    if verification.exit_code != 0:
+    if not _succeeded(verification):
         return (
             DecisionStatus.FAILED,
-            f"the verify step exited {verification.exit_code}",
+            _exit_reason("the verify step", verification),
         )
     if verification.changed:
         changed = ", ".join(verification.changed)
@@ -1031,10 +1219,50 @@ def _outcome(
             "the verify step changed "
             f"{changed}, so the fleet was not in the state the run claimed",
         )
+    unobserved = _unobserved(check, execution, verify_ran_on)
     return (
-        DecisionStatus.VERIFIED,
-        "the run succeeded and the verify step changed nothing",
+        (DecisionStatus.FAILED, unobserved)
+        if unobserved is not None
+        else (
+            DecisionStatus.VERIFIED,
+            "the run succeeded and the verify step changed nothing",
+        )
     )
+
+
+def _observed(run: CheckPreview | RunRecord) -> frozenset[str]:
+    """Return every host one run left recap counts for."""
+    return frozenset((*run.changed, *run.unchanged))
+
+
+def _unobserved(
+    check: CheckPreview, execution: RunRecord, verify_ran_on: frozenset[str]
+) -> str | None:
+    """Return why the run or its verify step did not observe the targets, if so.
+
+    The targeted hosts are the ones the check run and the approved run left
+    recap counts for: the pattern alone names no host without the inventory.
+    Each must have counts from the run, and the verify step must have run a
+    task on it: a host whose every verify task was skipped is in the recap
+    with nothing observed (#360).
+    """
+    targeted = _observed(check) | _observed(execution)
+    if not targeted:
+        return (
+            "neither the check nor the run observed any host, so the verify "
+            "step had nothing to verify"
+        )
+    missed: list[str] = []
+    for name, seen in (
+        ("the run", _observed(execution)),
+        ("the verify step", verify_ran_on),
+    ):
+        hosts = sorted(targeted - seen)
+        if hosts:
+            missed.append(f"{name} did not observe {', '.join(hosts)}")
+    if not missed:
+        return None
+    return f"{'; '.join(missed)}, so nothing verified those hosts"
 
 
 def _run_stage(
@@ -1043,19 +1271,24 @@ def _run_stage(
     """Run one stage of an approved decision and record what it did."""
     decision = stage.request.decision
     identifier = decision.decision_id.value
-    log_path = stage.store.directory / f"{identifier}-{name}.log"
+    log_path = _raw_file(
+        raw_output_directory(stage.request.repository, stage.store.directory)
+        / f"{identifier}-{name}.log"
+    )
     invocation = PlaybookInvocation(
         playbook=playbook,
         repository=stage.request.repository,
-        host_stats=(
-            stage.store.directory / _HOST_STATS_DIRECTORY / f"{identifier}-{name}"
-        ),
+        host_stats=_stage_host_stats(stage, name),
         pattern=decision.targets.pattern,
         inputs=decision.inputs,
     )
     argv, environment = run_command(invocation)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    exit_code = stage.runner(argv, environment, log_path)
+    timed_out_after: int | None = None
+    try:
+        exit_code = stage.runner(argv, environment, log_path)
+    except RunTimedOutError as stopped:
+        # Settled as failed with what its log and host stats hold so far.
+        exit_code, timed_out_after = stopped.exit_code, stopped.seconds
     preview = _preview(
         exit_code, invocation.host_stats, log_path, stage.request.repository
     )
@@ -1065,6 +1298,7 @@ def _run_stage(
         changed=preview.changed,
         unchanged=preview.unchanged,
         log=preview.diff,
+        timed_out_after=timed_out_after,
     )
 
 
@@ -1121,6 +1355,38 @@ def repository_relative(path: Path, repository: Path) -> Path:
         return path.resolve().relative_to(repository.resolve())
     except ValueError:
         return path
+
+
+def raw_output_directory(repository: Path, decisions: Path) -> Path:
+    """Return where a decision store's raw diffs and run logs are kept (D-24).
+
+    Raw Ansible output may print a secret a team's task renders without
+    ``no_log``, so it never lands in a directory the project commits. The
+    default store's output goes to ``DECISION_OUTPUT_DIRECTORY``; a store
+    elsewhere in the project gets the same path under ``tmp/output/``, so
+    two stores never share a file; a store already under ``tmp/`` keeps its
+    output beside its records, where git does not see it either; a store
+    outside the project uses the default.
+    """
+    root = repository.resolve()
+    store = decisions.resolve()
+    if store.is_relative_to(root / RUNTIME_DIRECTORY):
+        return decisions
+    output = repository / RUNTIME_DIRECTORY / OUTPUT_DIRECTORY
+    if store.is_relative_to(root) and store != root:
+        return output / store.relative_to(root)
+    return repository / DECISION_OUTPUT_DIRECTORY
+
+
+def _raw_file(path: Path) -> Path:
+    """Create one raw output file, empty and readable by its owner only.
+
+    A runner opening it for writing keeps the mode, whichever runner it is.
+    """
+    path.parent.mkdir(mode=_RAW_DIRECTORY_MODE, parents=True, exist_ok=True)
+    path.touch(mode=_RAW_FILE_MODE)
+    path.chmod(_RAW_FILE_MODE)
+    return path
 
 
 def read_basis(observations: Path, repository: Path | None = None) -> Basis:
@@ -1184,12 +1450,38 @@ def _preview(
 
 def _changed_count(path: Path) -> int:
     """Return how many tasks changed the host one recap file names."""
+    return _recap_count(path, _CHANGED_KEY)
+
+
+def _recap_count(path: Path, key: str) -> int:
+    """Return one count of the host's recap one file holds."""
     document = cast("object", json.loads(path.read_text(encoding="utf-8")))
-    count = document.get(_CHANGED_KEY) if isinstance(document, dict) else None
+    count = document.get(key) if isinstance(document, dict) else None
     if not isinstance(count, int) or isinstance(count, bool):
-        message = f"{path} holds no {_CHANGED_KEY} count of a host's recap"
+        message = f"{path} holds no {key} count of a host's recap"
         raise DecisionError(_ERROR_HOST_STATS_INVALID, message)
     return count
+
+
+def _stage_host_stats(stage: _Stage, name: str) -> Path:
+    """Return where one stage of an approved decision leaves its recap counts."""
+    identifier = stage.request.decision.decision_id.value
+    return stage.store.directory / _HOST_STATS_DIRECTORY / f"{identifier}-{name}"
+
+
+def _ran_on(host_stats: Path) -> frozenset[str]:
+    """Return the hosts a run completed a task on, from their recap counts.
+
+    Ansible counts a changed task as ok too, so a host with no ok count had
+    every task skipped, failed or unreachable: the run observed nothing there.
+    """
+    if not host_stats.is_dir():
+        return frozenset()
+    return frozenset(
+        path.name
+        for path in host_stats.iterdir()
+        if path.is_file() and _recap_count(path, _OK_KEY) > 0
+    )
 
 
 def _validated_targets(operation: Operation, targets: Targets) -> str | None:
@@ -1273,9 +1565,12 @@ def _canonical(inputs: Mapping[str, object]) -> str:
     return json.dumps(dict(inputs), sort_keys=True)
 
 
-def _decision_identifier(operation_id: ResourceId, moment: datetime) -> ResourceId:
-    stamp = moment.strftime("%Y%m%d%H%M%S")
-    return ResourceId.from_boundary(f"{operation_id.value}-{stamp}")
+def _decision_identifier(
+    operation_id: ResourceId, stamp: str, attempt: int
+) -> ResourceId:
+    """Return ``<operation>-<stamp>``, suffixed ``-<attempt>`` past the first."""
+    suffix = "" if attempt == 1 else f"-{attempt}"
+    return ResourceId.from_boundary(f"{operation_id.value}-{stamp}{suffix}")
 
 
 def _timestamp(moment: datetime) -> str:
@@ -1301,6 +1596,87 @@ def _run_check(
             timeout=CHECK_TIMEOUT_SECONDS,
         )
     return completed.returncode
+
+
+def approved_runner(
+    cwd: Path | None = None, timeout_seconds: int = APPROVED_RUN_TIMEOUT_SECONDS
+) -> CheckRunner:
+    """Return the runner of an approved run and its verify step.
+
+    The output goes to the log as it comes, so a run cut short keeps what it
+    printed. The playbook runs in its own process group: one that reaches
+    ``timeout_seconds``, or whose caller is interrupted, is stopped with
+    everything it started, and a timeout raises ``RunTimedOutError`` (#359).
+    """
+
+    def run(
+        argv: Sequence[str], environment: Mapping[str, str], log_path: Path
+    ) -> int:
+        with (
+            log_path.open("w", encoding="utf-8") as stream,
+            subprocess.Popen(  # noqa: S603 - resolved binary, built argv.
+                tuple(argv),
+                env={**os.environ, **environment},
+                cwd=cwd,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                process_group=0,
+            ) as process,
+        ):
+            try:
+                return process.wait(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                _stop(process)
+                raise RunTimedOutError(
+                    timeout_seconds, _exit_code(process.returncode)
+                ) from None
+            finally:
+                _stop(process)
+
+    return run
+
+
+def _stop(process: subprocess.Popen[bytes]) -> None:
+    """Stop a run's process group if it still runs: TERM, then KILL after a grace.
+
+    The KILL goes to the group whether or not its leader exited on TERM, so
+    nothing the playbook started outlives it.
+    """
+    if process.poll() is not None:
+        return
+    _signal_group(process.pid, signal.SIGTERM)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=_STOP_GRACE_SECONDS)
+    _signal_group(process.pid, signal.SIGKILL)
+    process.wait()
+
+
+def _signal_group(group: int, number: signal.Signals) -> None:
+    """Signal a process group; one whose processes are all gone needs nothing."""
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(group, number)
+
+
+def _exit_code(returncode: int) -> int:
+    """Return a stopped run's exit code as a shell reports it: 128 + the signal."""
+    return 128 - returncode if returncode < 0 else min(returncode, 255)
+
+
+def _succeeded(run: RunRecord) -> bool:
+    """Return whether a run finished on its own and exited zero.
+
+    A run stopped at its limit did not finish, even when it exited zero on
+    the stop signal.
+    """
+    return run.timed_out_after is None and run.exit_code == 0
+
+
+def _exit_reason(name: str, run: RunRecord) -> str:
+    """Return why a run that did not exit zero failed, for the verdict."""
+    if run.timed_out_after is not None:
+        return f"{name} timed out after {run.timed_out_after}s and was stopped"
+    return f"{name} exited {run.exit_code}"
 
 
 def _run_from_document(recorded: object) -> RunRecord | None:
@@ -1376,6 +1752,7 @@ def _decision_from_document(document: Mapping[str, object]) -> Decision:
         verification=_run_from_document(spec.get("verify")),
         approval=_approval_from_document(approval),
         interruption=Interruption.from_record(spec.get("interruption")),
+        binding=Binding.from_record(spec.get("binding")),
     )
 
 

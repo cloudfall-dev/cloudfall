@@ -52,7 +52,8 @@ class CommandEffect(Enum):
     """The furthest a command's side effects reach."""
 
     READ = "read"
-    """Reads the project, evidence under ``tmp/``, or servers; writes nothing
+    """Reads the project, its ``record/``, evidence under ``tmp/``, or servers;
+    writes nothing
     but evidence and reports under ``tmp/``."""
 
     PROJECT = "project"
@@ -262,7 +263,8 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "config upgrade",
         CommandEffect.PROJECT,
         "rewrite the project's deprecated names (`ServerType`, `server-types/`, "
-        "`serverType`) to the current ones",
+        "`serverType`) to the current ones and move receipts and proposals "
+        "from `tmp/` into `record/`",
         output=(_shape("status", "project", "upgraded"),),
     ),
     CommandContract(
@@ -530,9 +532,10 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "cloudfall",
         "operator mark-interrupted",
         CommandEffect.PROJECT,
-        "close a `running` proposal as `interrupted` once a person confirmed "
-        "its execution is dead (`--confirm-dead`), recording who and when, so "
-        "the operator may propose it again; nothing on the servers changes",
+        "close a `running` or `executed` proposal as `interrupted` once a "
+        "person confirmed its execution is dead (`--confirm-dead`), recording "
+        "who and when, so the operator may propose it again; nothing on the "
+        "servers changes",
         output=_PROPOSAL,
     ),
     CommandContract(

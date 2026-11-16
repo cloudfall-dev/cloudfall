@@ -144,6 +144,47 @@ def test_a_host_changed_early_is_changed_in_check_run_and_verify(
     assert "the verify step changed localhost" in approved.verdict
 
 
+# Every task is skipped on the host, so the recap lists it with no ok count.
+ALL_SKIPPED = (
+    "---\n- hosts: localhost\n  connection: local\n  gather_facts: false\n"
+    "  tasks:\n"
+    "    - name: Check\n      ansible.builtin.debug:\n        msg: ok\n"
+    "      when: false\n"
+)
+
+
+def test_a_verify_step_that_skipped_every_task_did_not_verify_the_host(
+    tmp_path: Path,
+) -> None:
+    """A host listed in the recap with no task run on it was not observed (#360)."""
+    repository = _repository(tmp_path)
+    (repository / "playbooks" / "deploy.yml").write_text(
+        CHANGED_EARLY, encoding="utf-8"
+    )
+    (repository / "playbooks" / "health.yml").write_text(
+        ALL_SKIPPED, encoding="utf-8"
+    )
+    store = _store(repository)
+
+    proposed = propose(_proposal(repository, target="localhost"), store, lambda: MOMENT)
+    approved = approve(
+        ApprovalRequest(
+            decision=proposed,
+            approver="roman",
+            repository=repository,
+            via=ApprovalChannel.TERMINAL,
+        ),
+        store,
+        lambda: MOMENT,
+    )
+
+    assert approved.verification is not None
+    assert approved.verification.exit_code == 0
+    assert approved.status is DecisionStatus.FAILED
+    assert approved.verdict is not None
+    assert "the verify step did not observe localhost" in approved.verdict
+
+
 def test_a_recap_without_a_changed_count_is_refused(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
 

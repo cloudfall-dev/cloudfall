@@ -1,0 +1,13 @@
+# Managed by Cloudfall. Local changes will be overwritten.
+[Unit]
+Description=Cloudfall MariaDB backup for {{ cloudfall_mariadb_service.id }}
+After=mariadb.service
+Requires=mariadb.service
+
+[Service]
+Type=oneshot
+# root through the unix socket, Cloudfall's own account on the server (S-019)
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/local/sbin/cloudfall-mariadb-backup

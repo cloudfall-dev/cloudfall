@@ -40,7 +40,7 @@ the unit file changes. It runs:
 
 - as the application's `linuxUser` (`application_user` in the rendered inventory)
 - in `<installRoot>/releases/<release>`, or in `workingDirectory` under it
-- with the environment the unit gets: `<installRoot>/shared/env/<component>.env`, the file the unit names in `EnvironmentFile=-` and that `deploy --env-file` installs. The file is parsed by systemd's own rules (for example a transient `systemd-run` unit with the same `EnvironmentFile=`), so quoting means what it means for the service. A missing file gives no extra variables, as for the unit. The variables from `environment` and `secretRefs` are there when the operator rendered them with `secrets render` and passed the file to this or an earlier deploy
+- with the environment the unit gets: the new release's own `<installRoot>/shared/env/<component>.<release>.env` (D-21), the file the unit names in `EnvironmentFile=-` and that `deploy --env-file` installs; a deploy without `--env-file` copies in the file the previous release reads, and with no environment at all the unit names the legacy `<installRoot>/shared/env/<component>.env`. The file is parsed by systemd's own rules (for example a transient `systemd-run` unit with the same `EnvironmentFile=`), so quoting means what it means for the service. A missing file gives no extra variables, as for the unit. The variables from `environment` and `secretRefs` are there when the operator rendered them with `secrets render` and passed the file to this or an earlier deploy
 
 **Once per deploy**
 
@@ -99,7 +99,7 @@ Touches `config/schemas/v1/component.schema.json`,
 
 - S-005-1: A component with `release.command` that creates a table deploys with `cloudfall deploy --yes`, the table exists afterwards, and the release receipt has `releaseCommand` with the command, `exitCode: 0` and an `outputTail`
 - S-005-2: The command runs after the `Materialize locked dependencies for the release` task and before the `Install the managed service unit` and `Switch the current release symlink` tasks, as the application's `linuxUser`, with the new release directory (or its `workingDirectory`) as its working directory
-- S-005-3: A release command that prints every variable sees each key of the installed `<installRoot>/shared/env/<component>.env`, values with the same quoting rules the unit applies
+- S-005-3: A release command that prints every variable sees each key of the release's installed environment file (`<installRoot>/shared/env/<component>.<release>.env`, D-21), values with the same quoting rules the unit applies
 - S-005-4: A release command that exits 1 makes `deploy --yes` exit `ENGINE_STEP_FAILED` with an `error.message` naming the release command and exit code 1; `current` still points at the previous release on every server, the unit file is unchanged, the service was not restarted, and no release receipt was written
 - S-005-5: A release command still running after `timeoutSeconds` is stopped and fails the deploy the same way, with an `error.message` naming the timeout
 - S-005-6: With `deployment.servers: [b, a]`, the command runs once, on `b`, before either server's `current` moves, and every release receipt from that deploy names `b` in `releaseCommand.server`
