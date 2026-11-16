@@ -1,0 +1,20 @@
+{
+  "apiVersion": "cloudfall/v1",
+  "kind": "EnvironmentReceipt",
+  "metadata": {
+    "id": "crm-backend",
+    "description": "Rendered environment receipt"
+  },
+  "spec": {
+    "component": "crm-backend",
+    "sha256": "d0d94682b12e9c356903e7532dcb066f3bb4ec8e45370a13d29893dffe3bb9b9",
+    "renderedAt": "2026-11-15T18:02:10+00:00",
+    "keys": [
+      "FEATURE_SIGNUPS",
+      "LOG_LEVEL",
+      "REDIS_URL",
+      "SENTRY_DSN",
+      "STRIPE_KEY"
+    ]
+  }
+}

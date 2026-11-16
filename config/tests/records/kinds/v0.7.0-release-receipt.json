@@ -1,0 +1,17 @@
+{
+    "apiVersion": "cloudfall/v1",
+    "kind": "ReleaseReceipt",
+    "metadata": {
+        "description": "Release receipt written by cloudfall_deploy",
+        "id": "crm-backend"
+    },
+    "spec": {
+        "artifactSha256": "4c40ede91a214673c5e12bd374792dba25bbe555675b18a48000fc31469c87c5",
+        "component": "crm-backend",
+        "deployedAt": "2026-11-15T18:10:42Z",
+        "healthCheckPassed": true,
+        "previousRelease": null,
+        "release": "20261115T180212Z-4d20124",
+        "server": "h2"
+    }
+}

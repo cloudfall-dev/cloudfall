@@ -1,0 +1,36 @@
+{
+  "apiVersion": "cloudfall/v1",
+  "kind": "ObservedDomain",
+  "metadata": {
+    "description": "Read-only domain route evidence collected by Cloudfall",
+    "id": "crm-site"
+  },
+  "spec": {
+    "dns": {
+      "addresses": [
+        "192.0.2.10"
+      ],
+      "edgeDetected": false,
+      "error": null,
+      "proxyAddressObserved": true
+    },
+    "domain": "crm-site",
+    "observedAt": "2026-09-08T12:00:00Z",
+    "origin": {
+      "error": null,
+      "reachable": true,
+      "status": null
+    },
+    "public": {
+      "error": null,
+      "reachable": true,
+      "status": null
+    },
+    "tls": {
+      "available": false,
+      "error": null,
+      "expiresAt": null,
+      "valid": false
+    }
+  }
+}

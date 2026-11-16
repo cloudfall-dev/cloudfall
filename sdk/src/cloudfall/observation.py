@@ -126,7 +126,14 @@ def _current_names(
     """Read a snapshot recorded before 0.8.0, whose spec says ``serverType``.
 
     The inspect role wrote ``spec.serverType`` until the Baseline rename
-    (D-11); such a snapshot is read as ``spec.baseline`` until 0.9.0.
+    (D-11); such a snapshot is read as ``spec.baseline``, and the schema
+    accepts either field, never both.
+
+    This read has no ``removed_in`` and warns nothing: a snapshot is a
+    record, and a record's fields are never deprecated within
+    ``cloudfall/v1`` (spec 017, S-017-11). The deprecated-name removal
+    checks cover project config in ``validation.py`` and
+    ``ansible_reader.py`` only; do not extend them to this function.
     """
     spec = content.get("spec")
     if not isinstance(spec, dict) or LEGACY_BASELINE_FIELD not in spec:
@@ -136,7 +143,7 @@ def _current_names(
             code=ERROR_OBSERVATION_BASELINE_CONFLICT,
             message=(
                 f"spec sets both {BASELINE_FIELD} and {LEGACY_BASELINE_FIELD}, "
-                f"its deprecated name; a snapshot carries {BASELINE_FIELD} only"
+                "its name before 0.8.0; a snapshot carries one of the two"
             ),
             source=source,
             field_path=("spec", LEGACY_BASELINE_FIELD),

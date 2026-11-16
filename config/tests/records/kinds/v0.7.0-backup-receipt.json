@@ -1,0 +1,15 @@
+{
+    "apiVersion": "cloudfall/v1",
+    "kind": "BackupReceipt",
+    "metadata": {
+        "description": "Backup operation receipt written by backup.yml",
+        "id": "postgresql-main-restore-check"
+    },
+    "spec": {
+        "action": "restore-check",
+        "executedAt": "2026-11-15T18:10:42Z",
+        "server": "h1",
+        "service": "postgresql-main",
+        "summary": "restore check passed for crm: /var/backups/cloudfall/postgresql-main/crm-20261115T020000Z.dump (412 catalog relations)"
+    }
+}
