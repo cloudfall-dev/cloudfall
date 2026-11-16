@@ -49,7 +49,10 @@ ROOT = Path(__file__).parents[2]
 ENGINE = ROOT / "engine"
 COMPLIANT = ROOT / "config" / "tests" / "observed" / "compliant"
 REMOTE_ACCESS = {"listenAddress": "10.0.0.2", "allowedSources": ["10.0.0.0/24"]}
-SECRETS = "BILLING_PASSWORD=synthetic-billing-value\n"
+SECRETS = (
+    "BILLING_PASSWORD=synthetic-billing-value\n"
+    "REPLICATION_PASSWORD=synthetic-replication-value-0123\n"
+)
 SEARCH_SECRETS = (
     "CLOUDFALL_PASSWORD=synthetic-cloudfall\nELASTIC_PASSWORD=synthetic-elastic\n"
 )
@@ -204,28 +207,35 @@ def test_an_elasticsearch_node_and_a_mariadb_server_get_their_own_files(
     }
 
 
-@pytest.mark.parametrize(
-    "replicated",
-    [
-        pytest.param(False, id="no remoteAccess"),
-        pytest.param(True, id="replication, refused by the role"),
-    ],
-)
-def test_no_certificate_is_asked_for_without_remote_access_alone(
+def test_no_certificate_is_asked_for_without_remote_access_or_replication(
     tmp_path: Path,
-    replicated: bool,  # noqa: FBT001 - a parametrized case
 ) -> None:
-    service = (
-        mariadb_service(remoteAccess=REMOTE_ACCESS, replication=primary_replication())
-        if replicated
-        else mariadb_service()
-    )
-    project = write_project(tmp_path / "project", service)
+    project = write_project(tmp_path / "project", mariadb_service())
 
     recorder, _ = _converge(project)
 
     assert "logging-requests.yml" not in recorder.nodes.playbooks
     assert MARIADB_DELIVERED_VARIABLE not in recorder.services
+
+
+# proves: S-019-12
+def test_s019_12_a_primary_with_remote_access_gets_one_certificate_for_both(
+    tmp_path: Path,
+) -> None:
+    service = mariadb_service(
+        remoteAccess=REMOTE_ACCESS, replication=primary_replication()
+    )
+    project = write_project(tmp_path / "project", service)
+
+    recorder, _ = _converge(project)
+
+    # Replication converges now (#423): the server makes its key, and the
+    # project CA signs one certificate for its client and its replicas
+    assert recorder.nodes.playbooks.count("logging-requests.yml") == 1
+    assert set(recorder.delivered[MARIADB_DELIVERED_VARIABLE]) == {
+        f"h1:{MARIADB_CERTIFICATE_PATH.value}",
+        f"h1:{MARIADB_CA_PATH.value}",
+    }
 
 
 @pytest.mark.parametrize(

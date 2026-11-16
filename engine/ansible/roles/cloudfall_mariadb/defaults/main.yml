@@ -119,6 +119,101 @@ cloudfall_mariadb_remote_state_queries:
   grants: >-
     SELECT CONCAT(User, '@', Host, '|', Db) FROM mysql.db
     WHERE Host NOT IN ('localhost', '')
+# Replication (S-019, Replication). What the services converge staged for
+# this service: on a primary 'hash', the controller path of the
+# mysql_native_password hash of its cloudfall_repl password; on a replica
+# 'password', the controller path of its primary's cloudfall_repl password,
+# copied 0600 for the run only (D-9 for the primary's side).
+cloudfall_mariadb_replication_files: {}
+# Where the role reports each replication outcome, a controller directory
+# the services converge reads ('' reports nothing): a refusal turns into
+# PRECONDITION, a promotion names the last GTID it applied.
+cloudfall_mariadb_report_directory: ""
+cloudfall_mariadb_replication_user: cloudfall_repl
+cloudfall_mariadb_dump_client: /usr/bin/mariadb-dump
+# standalone, primary or replica, as declared
+cloudfall_mariadb_declared_role: >-
+  {{
+    cloudfall_mariadb_service.mariadb.replication.role
+    if cloudfall_mariadb_service.mariadb.replication is defined
+    else 'standalone'
+  }}
+# The pair as the inventory renders it for this service: 'primary' (a
+# replica's: service, server, serverId, host, port), 'replicas' (a
+# primary's: service, server, serverId, hosts) and 'peers' (every MariaDB
+# service with replication of the environment but this one: service,
+# server, serverId, role and, for a replica, primary).
+cloudfall_mariadb_links: >-
+  {{ (cloudfall_mariadb_replication | default({})).get(cloudfall_mariadb_service.id, {}) }}
+# The account hosts of cloudfall_repl on a primary: each replica's IPv4.
+cloudfall_mariadb_replica_hosts: >-
+  {{
+    (cloudfall_mariadb_links.replicas | default([]))
+    | map(attribute='hosts') | flatten | unique | list
+  }}
+# What cloudfall_repl may do: follow the binary log and read every database,
+# because it also seeds a replica (a consistent dump records its position).
+cloudfall_mariadb_replication_privileges:
+  - REPLICATION SLAVE
+  - BINLOG MONITOR
+  - SELECT
+  - SHOW VIEW
+  - TRIGGER
+  - EVENT
+  - RELOAD
+cloudfall_mariadb_system_databases:
+  - information_schema
+  - mysql
+  - performance_schema
+  - sys
+# How long a replica may take to reach its source's position: after a seed,
+# and before a promotion from a read-only source.
+cloudfall_mariadb_catch_up_seconds: 600
+cloudfall_mariadb_promotion_wait_seconds: 60
+# How often, 30 times, the role looks whether a new link's threads run.
+cloudfall_mariadb_link_poll_seconds: 2
+# One line, '|' between fields: read_only, server_id, the binary log's
+# position and state, the applied position, the current position, and how
+# many databases are not MariaDB's own.
+cloudfall_mariadb_replication_state_query: >-
+  SELECT CONCAT_WS('|', @@global.read_only, @@global.server_id,
+  @@global.gtid_binlog_pos, @@global.gtid_binlog_state,
+  @@global.gtid_slave_pos, @@global.gtid_current_pos,
+  (SELECT COUNT(*) FROM information_schema.SCHEMATA
+  WHERE SCHEMA_NAME NOT IN ('{{ cloudfall_mariadb_system_databases | join("', '") }}')))
+cloudfall_mariadb_replication_state_fields:
+  - readOnly
+  - serverId
+  - binlogPos
+  - binlogState
+  - slavePos
+  - currentPos
+  - databases
+# The databases of a server that are not MariaDB's own, and how many tables
+# each holds, as database|count.
+cloudfall_mariadb_databases_query: >-
+  SELECT SCHEMA_NAME FROM information_schema.SCHEMATA
+  WHERE SCHEMA_NAME NOT IN ('{{ cloudfall_mariadb_system_databases | join("', '") }}')
+  ORDER BY SCHEMA_NAME
+cloudfall_mariadb_table_counts_query: >-
+  SELECT CONCAT(s.SCHEMA_NAME, '|', COUNT(t.TABLE_NAME))
+  FROM information_schema.SCHEMATA s LEFT JOIN information_schema.TABLES t
+  ON t.TABLE_SCHEMA = s.SCHEMA_NAME
+  WHERE s.SCHEMA_NAME NOT IN ('{{ cloudfall_mariadb_system_databases | join("', '") }}')
+  GROUP BY s.SCHEMA_NAME ORDER BY s.SCHEMA_NAME
+# A replica is read-only for every user but root; so is a server whose
+# promotion waits for its source to turn read-only.
+cloudfall_mariadb_read_only: >-
+  {{
+    cloudfall_mariadb_declared_role == 'replica'
+    or (cloudfall_mariadb_plan | default({})).get('action') == 'wait-promotion'
+  }}
+# Whether this server takes writes, so converges its databases and users.
+cloudfall_mariadb_writer: >-
+  {{
+    (cloudfall_mariadb_plan | default({'action': cloudfall_mariadb_declared_role})).action
+    in ['standalone', 'primary', 'promote']
+  }}
 # What accounts.yml reads before it changes anything, one column each.
 cloudfall_mariadb_state_queries:
   users: SELECT User FROM mysql.global_priv WHERE Host = 'localhost'

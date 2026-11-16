@@ -267,7 +267,7 @@ def test_s019_1_standalone_server_needs_its_volume_and_package(
     }
 
 
-def test_s019_1_primary_needs_its_port_certificate_and_replication_secret(
+def test_s019_1_primary_needs_its_port_and_certificate(
     tmp_path: Path,
 ) -> None:
     project = _pair(tmp_path)
@@ -288,15 +288,10 @@ def test_s019_1_primary_needs_its_port_certificate_and_replication_secret(
     certificate = primary[(RequirementType.CERTIFICATE, "mariadb")]
     assert certificate["usage"] == "server"
     assert certificate["subjectNames"] == ["h1.example.internal", "203.0.113.11"]
-    assert primary[(RequirementType.SECRET, "mariadb-replication-password")] == {
-        "source": "generate",
-        "path": "/etc/mysql/cloudfall/replication-password",
-        "reference": {
-            "environment": "production",
-            "path": "/services/mariadb-main",
-            "key": "REPLICATION_PASSWORD",
-        },
-    }
+    # The replication password lands on no host: the primary gets its hash,
+    # a replica the value for one run (#423), so it is no requirement;
+    # `secrets generate` makes it all the same
+    assert (RequirementType.SECRET, "mariadb-replication-password") not in primary
     replica = {
         (item.spec.requirement_type, item.spec.name.value) for item in h2.requirements
     }

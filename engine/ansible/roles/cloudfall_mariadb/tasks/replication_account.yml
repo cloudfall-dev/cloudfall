@@ -1,0 +1,120 @@
+---
+# A primary's one replication account, cloudfall_repl, at the IPv4 of each
+# replica's server, requiring TLS (S-019, Replication). Its password is
+# generated into the store; the controller computes its
+# mysql_native_password hash, and only the hash reaches this server (D-9),
+# through owner_password.yml as an owner's does. It follows the binary log
+# and reads every database, because it also seeds a replica. An account of a
+# server that is no longer a replica is locked, never dropped. Written on
+# the primary, the account reaches each replica by replication too.
+- name: Require the staged hash of the replication account
+  ansible.builtin.assert:
+    that:
+      - cloudfall_mariadb_replication_files.hash is defined
+    fail_msg: >-
+      The replication account of service {{ cloudfall_mariadb_service.id }}
+      has no staged hash; run services.yml through cloudfall
+      (converge_services, operator approve, or cloudfall-engine playbook run
+      services.yml), which reads its generated password from --secrets-dir
+  when: cloudfall_mariadb_replica_hosts | length > 0
+
+- name: Set the replication account's password from each replica
+  ansible.builtin.include_tasks: owner_password.yml
+  vars:
+    cloudfall_mariadb_owner:
+      owner: "{{ cloudfall_mariadb_replication_user }}"
+      authentication: mysql_native_password
+    cloudfall_mariadb_owner_host: "{{ cloudfall_mariadb_replica_host }}"
+    cloudfall_mariadb_hash_files: >-
+      {{ {cloudfall_mariadb_replication_user: cloudfall_mariadb_replication_files.hash} }}
+  loop: "{{ cloudfall_mariadb_replica_hosts }}"
+  loop_control:
+    loop_var: cloudfall_mariadb_replica_host
+
+- name: Read the replication account's hosts and privileges
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --raw
+      - --skip-column-names
+      - --execute
+      - "{{ item.value }}"
+  loop:
+    - key: hosts
+      value: >-
+        SELECT Host FROM mysql.global_priv
+        WHERE User = '{{ cloudfall_mariadb_replication_user }}'
+    - key: locked
+      value: >-
+        SELECT Host FROM mysql.global_priv
+        WHERE User = '{{ cloudfall_mariadb_replication_user }}'
+        AND JSON_VALUE(Priv, '$.account_locked') = 'true'
+    - key: privileges
+      value: >-
+        SELECT CONCAT(GRANTEE, '|', PRIVILEGE_TYPE)
+        FROM information_schema.USER_PRIVILEGES
+        WHERE GRANTEE LIKE '''{{ cloudfall_mariadb_replication_user }}''@%'
+  loop_control:
+    label: "{{ item.key }}"
+  register: cloudfall_mariadb_replication_account_read
+  changed_when: false
+
+- name: Keep the replication account's hosts and privileges
+  ansible.builtin.set_fact:
+    cloudfall_mariadb_replication_account: >-
+      {{
+        dict(
+          cloudfall_mariadb_replication_account_read.results | map(attribute='item.key')
+          | zip(cloudfall_mariadb_replication_account_read.results
+                | map(attribute='stdout_lines'))
+        )
+      }}
+
+- name: Give the replication account what following and seeding need
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --execute
+      - >-
+        GRANT {{ cloudfall_mariadb_replication_privileges | join(', ') }} ON *.*
+        TO '{{ cloudfall_mariadb_replication_user }}'@'{{ item }}'
+  loop: "{{ cloudfall_mariadb_replica_hosts }}"
+  changed_when: true
+  when: >-
+    cloudfall_mariadb_replication_privileges
+    | map('regex_replace', '^', "'" ~ cloudfall_mariadb_replication_user ~ "'@'" ~ item ~ "'|")
+    | reject('in', cloudfall_mariadb_replication_account.privileges)
+    | list | length > 0
+
+- name: Unlock the replication account of a declared replica
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --execute
+      - ALTER USER '{{ cloudfall_mariadb_replication_user }}'@'{{ item }}' ACCOUNT UNLOCK
+  loop: "{{ cloudfall_mariadb_replica_hosts }}"
+  changed_when: true
+  when: item in cloudfall_mariadb_replication_account.locked
+
+# A server of the pair that is no replica now keeps its account: in the
+# change that promotes it, which a converge may stop, it still follows here.
+- name: Lock the replication account of a server that left the pair
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --execute
+      - ALTER USER '{{ cloudfall_mariadb_replication_user }}'@'{{ item }}' ACCOUNT LOCK
+  loop: >-
+    {{
+      cloudfall_mariadb_replication_account.hosts
+      | reject('in', cloudfall_mariadb_replica_hosts)
+      | reject('in', (cloudfall_mariadb_links.peers | default([]))
+                     | map(attribute='hosts') | flatten)
+      | reject('in', cloudfall_mariadb_replication_account.locked)
+      | list
+    }}
+  changed_when: true

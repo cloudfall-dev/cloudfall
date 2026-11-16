@@ -333,9 +333,11 @@ from cloudfall.render_api import (
 )
 from cloudfall.requirements import (
     ELASTIC_PASSWORD_NAME,
+    MARIADB_REPLICATION_PASSWORD_NAME,
     SecretRequirement,
     SecretSource,
     elasticsearch_account_reference,
+    mariadb_replication_reference,
     requirements_of,
 )
 from cloudfall.resources import default_engine_directory, default_schema_directory
@@ -357,6 +359,7 @@ from cloudfall.secrets import (
     SopsSecretProvider,
     elasticsearch_services,
     load_environment_receipts,
+    mariadb_replication_pairs,
     render_environment,
 )
 from cloudfall.server_locks import (
@@ -414,6 +417,7 @@ if TYPE_CHECKING:
 
     from cloudfall.audit import AuditReport
     from cloudfall.catalog import Operation
+    from cloudfall.mariadb_replication import ReplicationOutcome
     from cloudfall.operator import OperatorProposal
     from cloudfall.record_files import UnreadableRecord
 
@@ -4325,6 +4329,15 @@ def secrets_generate(
         )
         for service_id, environment in elasticsearch_services(fleet.inventory)
     )
+    # Nor does a host keep a MariaDB primary's replication password: the
+    # primary gets its hash, a replica the value for one run (S-019).
+    generated.extend(
+        (
+            MARIADB_REPLICATION_PASSWORD_NAME,
+            mariadb_replication_reference(pair.environment, pair.primary),
+        )
+        for pair in mariadb_replication_pairs(fleet.inventory)
+    )
     try:
         for name, reference in generated:
             if store.holds(reference):
@@ -6125,13 +6138,18 @@ class ServicesConverged:
     """``converge_services``: the playbook run and each owner password it set.
 
     ``owned_roles`` names each role's ``passwordRef``, its key, and the
-    value's SHA-256; never the value.
+    value's SHA-256; never the value. ``mariadb_replication`` names what
+    replication did for each MariaDB service of a pair: a seed, an attach, a
+    promotion with the last GTID it applied, or a wait (S-019).
     """
 
     status: str
     action: str
     playbook: str
     owned_roles: list[dict[str, object]] = Out(
+        default_factory=list, ordered=True, high_entropy=False
+    )
+    mariadb_replication: list[dict[str, object]] = Out(
         default_factory=list, ordered=True, high_entropy=False
     )
 
@@ -6194,8 +6212,11 @@ def _converge_services_handler(
             secrets_directory=root.path(args.secrets_dir),
             decrypt=_sops_decrypt(call),
         )
+        replication: list[ReplicationOutcome] = []
         try:
-            passwords = converge_services(context(call), provider)
+            passwords = converge_services(
+                context(call), provider, replication=replication
+            )
         except LifecycleError as error:
             raise _lifecycle_failed(error) from error
         except ConfigValidationError as error:
@@ -6207,6 +6228,10 @@ def _converge_services_handler(
             owned_roles=[
                 cast("dict[str, object]", snake_case_keys(password.as_dict()))
                 for password in passwords
+            ],
+            mariadb_replication=[
+                cast("dict[str, object]", snake_case_keys(outcome.as_dict()))
+                for outcome in replication
             ],
         )
 

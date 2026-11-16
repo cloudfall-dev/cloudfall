@@ -17,6 +17,12 @@ from cloudfall.inventory import (
     remote_access_rules_for_server,
 )
 from cloudfall.logging_deploy import alertmanager_token_path
+from cloudfall.mariadb import MariadbReplicationRole
+from cloudfall.mariadb_replication import (
+    LINKS_VARIABLE,
+    replication_links_for_server,
+    replication_rules_for_server,
+)
 from cloudfall.requirements import (
     CertificateRequirement,
     VolumeRequirement,
@@ -196,6 +202,15 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
                 )
             ],
             **(
+                {LINKS_VARIABLE: links}
+                if (
+                    links := replication_links_for_server(
+                        server, inventory.servers, inventory.services
+                    )
+                )
+                else {}
+            ),
+            **(
                 {"cloudfall_elasticsearch_transport": transport}
                 if (
                     transport := transport_for_server(
@@ -224,12 +239,19 @@ def _rollout_order(inventory: PlatformInventory) -> list[ServerInventory]:
 
     A play over ``cloudfall_servers`` runs its hosts in this order, one at a
     time: the home node of an Elasticsearch cluster of two or more moves its
-    transport off loopback before a new node looks for it there.
+    transport off loopback before a new node looks for it there, and the
+    server of a MariaDB primary runs before its replicas, which are seeded
+    from it (S-019).
     """
     homes = {
         service.server_id
         for service in inventory.services
-        if service.elasticsearch is not None and len(service.elasticsearch.nodes) > 1
+        if (service.elasticsearch is not None and len(service.elasticsearch.nodes) > 1)
+        or (
+            service.mariadb is not None
+            and service.mariadb.replication is not None
+            and service.mariadb.replication.role is MariadbReplicationRole.PRIMARY
+        )
     }
     return sorted(inventory.servers, key=lambda server: server.resource_id not in homes)
 
@@ -320,7 +342,16 @@ def _host_firewall(
     transport = transport_rules_for_server(
         server, inventory.servers, inventory.services
     )
+    replication = replication_rules_for_server(
+        server, inventory.servers, inventory.services
+    )
     if baseline.firewall is None:
+        if replication:
+            message = (
+                "a MariaDB primary with replicas needs a firewall on its server: "
+                f"{server.resource_id.value}"
+            )
+            raise ValueError(message)
         if remote_access:
             message = (
                 "remoteAccess needs a firewall on its server: "
@@ -349,6 +380,7 @@ def _host_firewall(
                 *(rule.as_dict() for rule in remote_access),
                 *(rule.as_dict() for rule in gateway),
                 *(rule.as_dict() for rule in transport),
+                *(rule.as_dict() for rule in replication),
             ],
         }
     }

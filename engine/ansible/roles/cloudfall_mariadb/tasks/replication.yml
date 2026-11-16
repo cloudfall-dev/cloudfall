@@ -1,0 +1,59 @@
+---
+# Carry out what replication_check.yml decided, once the managed settings
+# (server_id, the row-based binary log with GTIDs in strict mode, read_only
+# on a replica) are in force (S-019, Replication).
+- name: Turn writes off on a server that becomes a replica
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --execute
+      - SET GLOBAL read_only = ON
+  changed_when: true
+  when:
+    - cloudfall_mariadb_read_only | bool
+    - cloudfall_mariadb_local.readOnly != '1'
+    - cloudfall_mariadb_plan.action != 'wait-promotion'
+
+- name: Promote this replica
+  ansible.builtin.include_tasks: replication_promote.yml
+  when: cloudfall_mariadb_plan.action == 'promote'
+
+# After a promotion, so the account is written by a primary, never by a
+# replica, whose own writes would be GTIDs its primary never saw.
+- name: Converge the replication account of a primary
+  ansible.builtin.include_tasks: replication_account.yml
+  when:
+    - cloudfall_mariadb_declared_role == 'primary'
+    - cloudfall_mariadb_plan.action in ['primary', 'promote']
+
+- name: Link this replica to its primary
+  ansible.builtin.include_tasks: replication_link.yml
+  when: >-
+    cloudfall_mariadb_plan.action in ['seed', 'attach']
+    or (cloudfall_mariadb_plan.action == 'follow'
+        and not (cloudfall_mariadb_link.Slave_IO_Running == 'Yes'
+                 and cloudfall_mariadb_link.Slave_SQL_Running == 'Yes'))
+
+- name: Say why this server's replication waits
+  ansible.builtin.debug:
+    msg: >-
+      {{ cloudfall_mariadb_service.id }}: {{ cloudfall_mariadb_plan.action }},
+      {{ cloudfall_mariadb_plan.reason }}; converge again once it has
+  when: cloudfall_mariadb_plan.action in ['demote', 'wait-promotion']
+
+- name: Report the replication outcome to the services converge
+  ansible.builtin.copy:
+    content: >-
+      {{ {'service': cloudfall_mariadb_service.id,
+          'server': cloudfall_server_id,
+          'outcome': cloudfall_mariadb_plan.action}
+         | combine(cloudfall_mariadb_outcome | default({})) | to_json }}
+    dest: >-
+      {{ cloudfall_mariadb_report_directory }}/{{ cloudfall_mariadb_service.id }}.json
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when:
+    - cloudfall_mariadb_report_directory | length > 0
+    - cloudfall_mariadb_plan.action in ['seed', 'attach', 'demote', 'promote', 'wait-promotion']

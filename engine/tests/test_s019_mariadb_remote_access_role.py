@@ -351,10 +351,14 @@ def test_s019_11_the_certificate_is_installed_before_the_settings_name_it() -> N
     names = [task["name"] for task in main]
     tls = _tasks("tasks/tls.yml")
 
-    install = _task("Install the server certificate for remote access", main)
+    install = _task(
+        "Install the server certificate for remote access and replication", main
+    )
     assert install["ansible.builtin.include_tasks"] == "tls.yml"
+    # Replication needs it too (#423): the link verifies it against the CA
     assert install["when"] == (
         "cloudfall_mariadb_service.mariadb.remoteAccess is defined"
+        " or cloudfall_mariadb_service.mariadb.replication is defined"
     )
     assert (
         names.index("Install the pinned MariaDB server")
@@ -390,7 +394,8 @@ def test_a_renewed_certificate_is_loaded_without_a_restart() -> None:
     copy = _task("Install the server certificate and the project CA", tls)
     assert copy["notify"] == "Reload the MariaDB server certificate"
     reload = _task("Reload the MariaDB server certificate", handlers)
-    assert reload["ansible.builtin.command"]["argv"][-1] == "FLUSH SSL"
+    # LOCAL: never a GTID of a replica's own (S-019, Replication)
+    assert reload["ansible.builtin.command"]["argv"][-1] == "FLUSH LOCAL SSL"
     # Notified together on the first converge, the restart comes first
     assert [handler["name"] for handler in handlers] == [
         "Restart MariaDB",

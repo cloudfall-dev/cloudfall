@@ -109,6 +109,17 @@
             (cloudfall_services_mariadb_files | default({}))
             [cloudfall_service_item.id] | default({})
           }}
+        # The controller paths of the replication account's hash, on a
+        # primary, or of its password, on a replica (S-019, Replication).
+        cloudfall_mariadb_replication_files: >-
+          {{
+            (cloudfall_services_mariadb_replication_files | default({}))
+            [cloudfall_service_item.id] | default({})
+          }}
+        # Where each replication outcome is reported, for the converge's
+        # answer: a refusal is PRECONDITION, a promotion names its last GTID.
+        cloudfall_mariadb_report_directory: >-
+          {{ cloudfall_services_mariadb_report_directory | default('') }}
       loop: >-
         {{
           cloudfall_services | default([])

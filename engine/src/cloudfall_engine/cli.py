@@ -10,6 +10,7 @@ import dataclasses
 import json
 import os
 import shutil
+import tempfile
 import time
 from dataclasses import dataclass
 from functools import partial
@@ -43,7 +44,13 @@ from cloudfall.inventory import (
 from cloudfall.mariadb import (
     MariadbAuthentication,
     MariadbDatabaseName,
+    MariadbReplicationRole,
     MariadbUserName,
+)
+from cloudfall.mariadb_replication import (
+    REPORT_DIRECTORY_VARIABLE,
+    read_outcomes,
+    refusal,
 )
 from cloudfall.project import (
     PROJECT_DIRECTORY_VARIABLE,
@@ -54,6 +61,7 @@ from cloudfall.resources import default_engine_directory, default_schema_directo
 from cloudfall.secrets import (
     ERROR_DECRYPT_FAILED,
     ERROR_SOPS_MISSING,
+    MariadbReplicationPair,
     SecretsError,
     SopsSecretProvider,
     elasticsearch_account_passwords,
@@ -61,6 +69,7 @@ from cloudfall.secrets import (
     elasticsearch_s3_credentials,
     elasticsearch_user_passwords,
     mariadb_owner_passwords,
+    mariadb_replication_passwords,
     owned_role_passwords,
     staged_password_files,
 )
@@ -109,6 +118,7 @@ if TYPE_CHECKING:
         ElasticsearchS3Credentials,
         ElasticsearchUserPassword,
         MariadbOwnerPassword,
+        MariadbReplicationPassword,
         OwnedRolePassword,
     )
     from treaty import Completed
@@ -598,6 +608,11 @@ class Played:
     )
     """Each owner role password services.yml set: its passwordRef, its key,
     and the value's SHA-256, never the value"""
+    mariadb_replication: list[dict[str, object]] = Out(
+        default_factory=list, ordered=True, high_entropy=False
+    )
+    """What replication did for each MariaDB service of a pair: a seed, an
+    attach, a promotion with the last GTID it applied, or a wait (S-019)"""
 
 
 SERVICES_PLAYBOOK = "services.yml"
@@ -675,6 +690,32 @@ def _rendered_mariadb_owned_databases(
             if "passwordRef" in database
         )
     return tuple(owned)
+
+
+def _rendered_mariadb_replication_pairs(
+    inventory_file: Path,
+) -> tuple[MariadbReplicationPair, ...]:
+    """Read each MariaDB primary and the services that replicate it (S-019)."""
+    services = _rendered_services(inventory_file, "mariadb")
+    pairs: dict[str, MariadbReplicationPair] = {}
+    for service in services:
+        replication = _nested(service, "mariadb", "replication")
+        if replication.get("role") != MariadbReplicationRole.PRIMARY.value:
+            continue
+        primary = ResourceId.from_boundary(service.get("id"))
+        pairs[primary.value] = MariadbReplicationPair(
+            primary=primary,
+            environment=ResourceId.from_boundary(service.get("environment")),
+            replicas=tuple(
+                dict.fromkeys(
+                    ResourceId.from_boundary(other.get("id"))
+                    for other in services
+                    if _nested(other, "mariadb", "replication").get("primary")
+                    == primary.value
+                )
+            ),
+        )
+    return tuple(pairs.values())
 
 
 def _rendered_elasticsearch_services(
@@ -838,6 +879,7 @@ class _ServicesSecrets:
     users: tuple[ElasticsearchUserPassword, ...] = ()
     existing: tuple[ElasticsearchExistingClusterLogin, ...] = ()
     mariadb: tuple[MariadbOwnerPassword, ...] = ()
+    replication: tuple[MariadbReplicationPassword, ...] = ()
 
 
 def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesSecrets:
@@ -846,8 +888,8 @@ def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesS
     Those are each owner role's password, the ``cloudfall`` and ``elastic``
     passwords of each Elasticsearch service and each of its declared users',
     the S3 keys of each S3 snapshot repository, the login of each
-    ``existingCluster`` that names a ``credentialsRef``, and each MariaDB
-    owner's.
+    ``existingCluster`` that names a ``credentialsRef``, each MariaDB
+    owner's, and each MariaDB primary's replication password.
     """
     # An engine without services.yml still runs its other playbooks (#296).
     services = playbook_directory(args.engine) / SERVICES_PLAYBOOK
@@ -860,10 +902,11 @@ def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesS
         users = _rendered_elasticsearch_users(args.inventory)
         logins = _rendered_existing_cluster_credentials(args.inventory)
         mariadb = _rendered_mariadb_owned_databases(args.inventory)
+        pairs = _rendered_mariadb_replication_pairs(args.inventory)
     except (TypeError, ValueError) as error:
         message = f"the inventory declares a malformed service: {error}"
         raise ParseError(message, context={"flag": "inventory"}) from error
-    if not databases and not clusters and not mariadb:
+    if not databases and not clusters and not mariadb and not pairs:
         return _ServicesSecrets()
     provider = SopsSecretProvider(
         secrets_directory=args.secrets_dir, decrypt=_sops_decrypt(ctx)
@@ -876,6 +919,7 @@ def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesS
             elasticsearch_user_passwords(users, provider),
             elasticsearch_existing_cluster_logins(logins, provider),
             mariadb_owner_passwords(mariadb, provider),
+            mariadb_replication_passwords(pairs, provider),
         )
     except SecretsError as error:
         raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
@@ -916,23 +960,71 @@ def run_playbook(args: RunArgs, ctx: Ctx) -> Played:
     """
     secrets = _services_passwords(args, _playbook_run(args), ctx)
     passwords = secrets.owned_roles
-    with staged_password_files(
-        passwords,
-        secrets.accounts,
-        secrets.s3,
-        secrets.users,
-        secrets.existing,
-        secrets.mariadb,
-    ) as staged:
-        played = _run_ansible(
-            args, ctx, _playbook_run(args, (json.dumps(staged),) if staged else ())
+    services = _is_services_run(args)
+    with (
+        staged_password_files(
+            passwords,
+            secrets.accounts,
+            secrets.s3,
+            secrets.users,
+            secrets.existing,
+            secrets.mariadb,
+            secrets.replication,
+        ) as staged,
+        tempfile.TemporaryDirectory(prefix="cloudfall-replication-") as reports,
+    ):
+        staged_vars = (
+            {**staged, REPORT_DIRECTORY_VARIABLE: reports} if services else staged
         )
+        try:
+            played = _run_ansible(
+                args,
+                ctx,
+                _playbook_run(
+                    args, (json.dumps(staged_vars),) if staged_vars else ()
+                ),
+            )
+        except CliExit as error:
+            failed = services and error.name == ExitCodeName("PLAYBOOK_FAILED")
+            refused = refusal(read_outcomes(Path(reports))) if failed else None
+            if refused is None:
+                raise
+            # A refusal the MariaDB role reported before it changed anything
+            raise Exit.PRECONDITION(
+                refused.get("message"),
+                context={
+                    "code": refused.get("code"),
+                    "service": refused.service,
+                    "server": refused.server,
+                    "sourcePosition": refused.get("sourcePosition"),
+                    "replicaPosition": refused.get("replicaPosition"),
+                },
+            ) from error
+        outcomes = read_outcomes(Path(reports)) if services else ()
     return dataclasses.replace(
         played,
         owned_roles=[
             cast("dict[str, object]", snake_case_keys(password.as_dict()))
             for password in passwords
         ],
+        mariadb_replication=[
+            cast("dict[str, object]", snake_case_keys(outcome.as_dict()))
+            for outcome in outcomes
+        ],
+    )
+
+
+def _is_services_run(args: RunArgs) -> bool:
+    """Return whether this run is the bundled services.yml with MariaDB, for real.
+
+    Only then does the role report replication outcomes; any other run is
+    handed nothing more than before.
+    """
+    services = playbook_directory(args.engine) / SERVICES_PLAYBOOK
+    return (
+        not args.syntax_check
+        and _playbook_run(args).playbook == services
+        and bool(_rendered_services(args.inventory, "mariadb"))
     )
 
 

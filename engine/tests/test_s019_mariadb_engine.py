@@ -172,6 +172,59 @@ def test_s019_6_the_run_hands_over_a_hash_file_and_prints_no_password(
     assert json.loads(done.stdout)["data"]["owned_roles"] == []
 
 
+FAKE_ANSIBLE = """\
+#!{python}
+import json, pathlib, sys
+if "--version" in sys.argv:
+    print("ansible-playbook [core 2.21.2]")
+    sys.exit(0)
+extra = {{}}
+for index, item in enumerate(sys.argv):
+    if item == "--extra-vars" and sys.argv[index + 1].startswith("{{"):
+        extra.update(json.loads(sys.argv[index + 1]))
+directory = pathlib.Path(extra["cloudfall_services_mariadb_report_directory"])
+(directory / "mariadb-main.json").write_text({report!r})
+print("fatal: [h1]: FAILED! PRECONDITION", file=sys.stderr)
+sys.exit(2)
+"""
+
+
+# proves: S-019-14
+def test_s019_14_a_refusal_the_role_reports_answers_precondition(
+    tmp_path: Path,
+) -> None:
+    inventory = _inventory(tmp_path)
+    secrets = tmp_path / "secrets"
+    source = secrets / "production" / "services" / "mariadb-main.env"
+    source.parent.mkdir(parents=True)
+    source.write_text(f"BILLING_PASSWORD={PASSWORD}\n", encoding="utf-8")
+    report = {
+        "service": "mariadb-main",
+        "server": "h1",
+        "outcome": "refused",
+        "action": "refuse",
+        "code": "service_mariadb_promotion_unsafe",
+        "message": "the source is at GTID 0-1-12, this replica has applied 0-1-9",
+        "sourcePosition": "0-1-12",
+        "replicaPosition": "0-1-9",
+    }
+    directory = tmp_path / "bin"
+    directory.mkdir()
+    ansible = directory / "ansible-playbook"
+    ansible.write_text(
+        FAKE_ANSIBLE.format(python=sys.executable, report=json.dumps(report)),
+        encoding="utf-8",
+    )
+    ansible.chmod(0o700)
+
+    done = _engine(inventory, secrets)
+
+    error = json.loads(done.stdout)["error"]
+    assert error["code"] == "PRECONDITION", done.stdout + done.stderr
+    assert "0-1-12" in error["message"]
+    assert "0-1-9" in error["message"]
+
+
 def test_inspect_reads_the_mariadb_services_of_its_server_only() -> None:
     play = cast(
         "list[dict[str, Any]]",

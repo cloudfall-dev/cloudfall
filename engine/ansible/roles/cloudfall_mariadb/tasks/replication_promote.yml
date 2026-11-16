@@ -1,0 +1,60 @@
+---
+# A promotion (S-019, Promotion): the replica applies what it already
+# received, then its link is stopped and forgotten and it takes writes. The
+# outcome names the last GTID it applied: what it holds of its source.
+- name: Let the replica apply what it already received
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --raw
+      - --skip-column-names
+      - --execute
+      - >-
+        SELECT MASTER_GTID_WAIT('{{ cloudfall_mariadb_link.Gtid_IO_Pos
+        | default('') }}', {{ cloudfall_mariadb_promotion_wait_seconds }})
+  changed_when: false
+  when: cloudfall_mariadb_link.Gtid_IO_Pos | default('') | length > 0
+
+- name: Stop and forget the link to the source
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --execute
+      - STOP SLAVE; RESET SLAVE ALL
+  changed_when: true
+
+- name: Read the last GTID the replica applied
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --raw
+      - --skip-column-names
+      - --execute
+      - SELECT @@global.gtid_slave_pos
+  register: cloudfall_mariadb_promoted_position
+  changed_when: false
+
+- name: Let the promoted server take writes
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --execute
+      - SET GLOBAL read_only = OFF
+  changed_when: true
+
+- name: Keep the promotion's outcome
+  ansible.builtin.set_fact:
+    cloudfall_mariadb_outcome:
+      reason: "{{ cloudfall_mariadb_plan.reason }}"
+      lastAppliedGtid: "{{ cloudfall_mariadb_promoted_position.stdout | trim }}"
+
+- name: Name the last GTID the promoted server applied
+  ansible.builtin.debug:
+    msg: >-
+      {{ cloudfall_mariadb_service.id }} is promoted ({{ cloudfall_mariadb_plan.reason }}):
+      writable, no replication configured, last GTID applied
+      {{ cloudfall_mariadb_outcome.lastAppliedGtid or '(none)' }}
