@@ -433,6 +433,8 @@ def test_the_filter_names_a_bad_stored_password_without_quoting_it() -> None:
         f"x|{VERIFIER}",
         "t|SCRAM-SHA-256$4096:@@@@$" + keys,
         f"t|SCRAM-SHA-256$4096:{salt}$" + keys.replace(":", ":AAAA"),
+        # Above PostgreSQL's int range: PBKDF2 would hang the controller
+        f"t|SCRAM-SHA-256$2147483648:{salt}$" + keys,
         "t|md5" + "0" * 31,
         "t|cleartext",
     ):

@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 ITERATIONS = 4096
 SALT_BYTES = 16
 KEY_BYTES = 32
+# PostgreSQL keeps the iteration count in an int (scram_iterations' maximum)
+MAX_ITERATIONS = 2**31 - 1
 _BASE64 = r"[A-Za-z0-9+/]+={0,2}"
 SCRAM = re.compile(
     rf"SCRAM-SHA-256\$([1-9][0-9]{{0,9}}):({_BASE64})\$({_BASE64}):({_BASE64})"
@@ -80,7 +82,14 @@ def stored_salt(stored: str) -> tuple[int, bytes] | None:
     if not salt or len(stored_key) != KEY_BYTES or len(server_key) != KEY_BYTES:
         message = "the role's stored SCRAM-SHA-256 verifier has a key of a wrong size"
         raise StoredPasswordError(message)
-    return int(match[1]), salt
+    iterations = int(match[1])
+    if iterations > MAX_ITERATIONS:
+        message = (
+            "the role's stored SCRAM-SHA-256 iteration count is above the "
+            "most PostgreSQL keeps"
+        )
+        raise StoredPasswordError(message)
+    return iterations, salt
 
 
 def stored_password_problem(stored: str) -> str:
