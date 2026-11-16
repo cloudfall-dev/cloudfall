@@ -98,6 +98,10 @@ environments in `record/deployments/`, `record/releases/`,
 built artifacts, rendered environment files) and is ignored by git. No
 record holds a secret value: an environment receipt names keys and a hash,
 and a proposal names the hash of an owner password, never the password.
+A decision's check diff and run logs are raw Ansible output, so they stay
+in `tmp/output/decisions/` (`0600`) and the decision record names each
+file with its SHA-256 and size; `decisions approve` refuses a proposal
+whose diff is not on the machine.
 A release command's output is the application's own and may print a
 secret, so its last 2000 characters stay in
 `tmp/output/releases/<component>.<release>.log` (`0600`) and the release

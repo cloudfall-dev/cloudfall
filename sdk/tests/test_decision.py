@@ -42,6 +42,7 @@ from cloudfall.decision import (
     gate,
     mark_interrupted,
     propose,
+    raw_output_directory,
     read_basis,
     refuse_unapprovable,
     run_command,
@@ -1034,7 +1035,10 @@ def _git_project(tmp_path: Path) -> Path:
     [
         ("playbooks/deploy.yml", "the playbook playbooks/deploy.yml"),
         ("playbooks/health.yml", "the verify playbook playbooks/health.yml"),
-        ("decisions/deploy-20260921143012.diff", "the diff file decisions/"),
+        (
+            "tmp/output/decisions/deploy-20260921143012.diff",
+            "the diff file tmp/output/decisions/",
+        ),
     ],
     ids=["playbook", "verify-playbook", "diff"],
 )
@@ -1054,6 +1058,110 @@ def test_an_edit_after_the_proposal_refuses_its_approval(
     message = _refused_as_changed(repository, store, proposed)
     assert named in message
     assert "propose it again" in message
+
+
+_SECRET = "hunter2-the-database-password"  # noqa: S105 - a fixture, printed on purpose.
+
+
+class _SecretRunner(_Runner):
+    """A team playbook that templates a password without ``no_log``: it prints it."""
+
+    def __call__(
+        self,
+        argv: Sequence[str],
+        environment: Mapping[str, str],
+        diff_path: Path,
+    ) -> int:
+        exit_code = super().__call__(argv, environment, diff_path)
+        diff_path.write_text(f"+password={_SECRET}\n", encoding="utf-8")
+        return exit_code
+
+
+def test_a_secret_a_playbook_prints_reaches_no_file_under_decisions(
+    tmp_path: Path,
+) -> None:
+    """The raw diff and run logs stay under the ignored tmp/ (#357, D-24)."""
+    repository = _git_project(tmp_path)
+    store = _store(repository)
+
+    proposed = propose(
+        _proposal(repository), store, lambda: MOMENT, _SecretRunner()
+    )
+    approved = _approved(repository, store, proposed, _SecretRunner())
+
+    assert approved.status is DecisionStatus.VERIFIED
+    assert approved.execution is not None
+    assert approved.verification is not None
+    committed = [path for path in store.directory.rglob("*") if path.is_file()]
+    assert committed
+    for path in committed:
+        assert _SECRET not in path.read_text(encoding="utf-8"), path
+    raw = repository / "tmp" / "output" / "decisions"
+    assert raw.stat().st_mode & 0o777 == 0o700
+    for artifact in (
+        proposed.check.diff,
+        approved.execution.log,
+        approved.verification.log,
+    ):
+        assert not artifact.path.is_absolute()
+        assert (repository / artifact.path).parent == raw
+        content = (repository / artifact.path).read_bytes()
+        assert _SECRET.encode() in content
+        assert artifact.size == len(content)
+        assert (repository / artifact.path).stat().st_mode & 0o777 == 0o600
+
+
+def test_approve_without_the_raw_diff_is_refused_naming_it(tmp_path: Path) -> None:
+    """Another clone has the record, not the diff: nobody approves unseen (#357)."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    (repository / proposed.check.diff.path).unlink()
+    run = _Runner()
+
+    with pytest.raises(DecisionError) as error:
+        _approved(repository, store, proposed, run)
+
+    assert error.value.code == "decision_diff_missing"
+    assert str(proposed.check.diff.path) in error.value.detail
+    assert proposed.check.diff.sha256 in error.value.detail
+    assert run.recorded == []
+    assert store.load(proposed.decision_id).status is DecisionStatus.PROPOSED
+
+
+@pytest.mark.parametrize(
+    ("store", "output"),
+    [
+        ("decisions", "tmp/output/decisions"),
+        ("audit/decisions", "tmp/output/audit/decisions"),
+        ("tmp/eval/0/decisions", "tmp/eval/0/decisions"),
+    ],
+    ids=["default", "elsewhere-in-the-project", "already-ignored"],
+)
+def test_every_store_keeps_its_raw_output_out_of_git(
+    tmp_path: Path, store: str, output: str
+) -> None:
+    """A ``--decisions`` folder gets its own raw output folder under tmp/ (#357)."""
+    assert raw_output_directory(tmp_path, tmp_path / store) == tmp_path / output
+
+
+def test_a_record_whose_diff_is_beside_it_still_approves(tmp_path: Path) -> None:
+    """A record written before #357 cites its diff in decisions/, read in place."""
+    repository = _repository(tmp_path)
+    store = _store(repository)
+    proposed = propose(_proposal(repository), store, lambda: MOMENT, _Runner())
+    legacy = Path(DECISION_DIRECTORY) / f"{proposed.decision_id.value}.diff"
+    (repository / proposed.check.diff.path).rename(repository / legacy)
+    path = repository / DECISION_DIRECTORY / f"{proposed.decision_id.value}.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["spec"]["check"]["diff"]["path"] = legacy.as_posix()
+    path.write_text(json.dumps(document), encoding="utf-8")
+    older = store.load(proposed.decision_id)
+
+    approved = _approved(repository, store, older, _Runner())
+
+    assert approved.status is DecisionStatus.VERIFIED
+    assert approved.check.diff.path == legacy
 
 
 def test_a_role_edited_in_a_git_project_refuses_the_approval(

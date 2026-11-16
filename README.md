@@ -63,7 +63,9 @@ The verify step at 2026-09-22T19:40:39Z exited 0 and changed no host; the log is
 It ended verified: the run succeeded and the verify step changed nothing.
 ```
 
-Every sentence is drawn from a field of the record. `--format html` renders
+Every sentence is drawn from a field of the record. This decision predates
+0.8.0; a decision recorded now keeps its diff and logs under the ignored
+`tmp/output/decisions/`, so raw Ansible output never reaches git. `--format html` renders
 the same answer as one page, and agents get it as the `why` tool.
 
 ## An on-call agent on NVIDIA Nemotron

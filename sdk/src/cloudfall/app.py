@@ -2988,7 +2988,9 @@ def agent_investigate(
     catalog = args.catalog()
     try:
         replay = (
-            None if args.replay is None else Recording.load(args.root / args.replay)
+            None
+            if args.replay is None
+            else Recording.load(args.root / args.replay, args.root)
         )
     except RecordingError as error:
         raise Exit.PRECONDITION(error.detail, context={"code": error.code}) from error

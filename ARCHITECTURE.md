@@ -98,7 +98,10 @@ rendered environment files, the persisted migration plan) lands under `tmp/`
 and is never committed. The record is committed: receipts and the
 operator's proposals land in `record/`, and what an agent proposed through
 a declared operation and who approved it lands in `decisions/` beside the
-operations (D-16). No record holds a secret value. `cloudfall init` lays out a new project and
+operations (D-16). No record holds a secret value: a decision's check diff
+and run logs are raw Ansible output, so they stay under
+`tmp/output/decisions/` and the record keeps each file's path, sha256 and
+size (D-24). `cloudfall init` lays out a new project and
 `cloudfall add` declares its first fleet resources.
 
 Proposed, not built: for a team that already runs Ansible, the project is
