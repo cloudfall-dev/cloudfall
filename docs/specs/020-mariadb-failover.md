@@ -65,9 +65,10 @@ starts one.
 ### The manager
 
 On the `manager` server, a new role `cloudfall_replication_manager` installs
-replication-manager's open-source build at the one version this Cloudfall release was
-proven with, held like every pinned package (S-011), and renders one cluster section per
-pair. Nothing in it is set by hand:
+`replication-manager-osc`, the open-source build, from Signal18's APT repository, which
+serves Debian 12 and 13 on amd64 and arm64 and keeps earlier versions. It installs the one
+version this Cloudfall release was proven with, held like every pinned package (S-011), and
+renders one cluster section per pair. Nothing in it is set by hand:
 
 | Setting | Value | Why |
 |---|---|---|
@@ -78,15 +79,19 @@ pair. Nothing in it is set by hand:
 | `force-slave-heartbeat` | on, with its three-second period | The manager's check that the replica lost the primary reads this heartbeat |
 | `failover-falsepositive-ping-counter` | Enough two-second pings to cover `fenceSeconds` plus ten seconds | The wait when the primary stops answering |
 | `failover-falsepositive-heartbeat-timeout` | `fenceSeconds` plus five seconds | The wait when the replica's link is lost; with the heartbeat period and the manager's ticker it is `fenceSeconds` plus ten |
+| `api-bind` | `127.0.0.1` | The manager's default is every address |
+| `api-credentials` | A generated login | The default login is public and the package accepts it |
 | External arbitration, Cloud18 registration | Off | One manager is its own arbitrator; nothing is sent to a hosted service |
 
-The manager's API and web interface listen on loopback of the manager server only, and its
-default API login is replaced with a generated one, sops-encrypted in the project.
+The manager's API and web interface so listen on loopback of the manager server only, and
+the generated login is sops-encrypted in the project. The package ships its configuration
+readable by everyone; the role makes it `0600`, owned by the manager's user.
 
 With `failover` declared, converge also creates two accounts on the primary, which reach the
-replica by replication: `cloudfall_failover` for the manager, with the grants its
-documentation lists for MariaDB 10.5 and later and no others, and `cloudfall_watch` for the
-watchdogs (status only). Their generated passwords are sops-encrypted in the project and the
+replica by replication: `cloudfall_failover` for the manager, and `cloudfall_watch` for the
+watchdogs (status only). The manager's account gets the grants its documentation lists for
+MariaDB 10.5 and later, plus `SLAVE MONITOR`, and no others: without that one the manager
+can't read a replica's status on MariaDB 11.8 and promotes nothing, which the bench showed. Their generated passwords are sops-encrypted in the project and the
 servers hold hashes (D-9). The manager needs the plaintext of its own account and of the
 replication account to log in; they land in its configuration, a `0600` file owned by its
 user on the manager server, and nowhere else. Both servers admit `bind.port` from the
@@ -101,7 +106,11 @@ former primary that returns after a failover never takes a write by itself.
 With `fence: watchdog`, a systemd unit the role installs on each database server only ever
 turns writes off. It looks every second for a witness:
 
-- **the manager:** it reached this server within the last `fenceSeconds`, or
+- **the manager:** one of its sessions on this server ran a statement within the last
+  `fenceSeconds`. The watchdog reads that from the server's own process list, so it needs no
+  way to the manager: the manager polls every two seconds, and on the bench the idle time
+  of its sessions never passed two seconds while it reached the server and grew without
+  limit once it was cut off, or
 - **the replica:** asked within the last `fenceSeconds`, it answered that it is read-only and
   its link to this server is running
 
@@ -307,4 +316,5 @@ Touches `config/schemas/v1/service.schema.json`, a new
 
 No criterion is verified yet. The bench run of 2026-11-16 exercised the manager and a
 hand-written watchdog in containers and is the ground for the design, not a proof of any
-criterion.
+criterion. Its second part installed the package on Debian 12 and 13, ran the manager with
+the grants above, and watched its sessions from the server.

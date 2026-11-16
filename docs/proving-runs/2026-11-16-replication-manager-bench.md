@@ -51,13 +51,40 @@ network pair carries a remote client.
 - The watchdog bounds the loss to the fence time; it does not remove it
 - A replica's connect retry should be far below sixty seconds
 
+## Second part: the package, the grants, the witness
+
+Run the same day, with the manager installed from Signal18's package instead of its image.
+
+- **Installation.** `https://repo.signal18.io/deb`, component `3.1`, serves
+  `replication-manager-osc` for bookworm and trixie on amd64 and arm64; checked in clean
+  `debian:12` and `debian:13` containers of both architectures. `=3.1.48-1` installs and
+  holds, and versions back to 3.1.43 are there; 3.1.49, two days old, was not yet. The
+  signing key is `AA79 F8FA 35BF E809 9FD7 4A76 28A4 86AA FAE2 0E50`. The package depends
+  only on `replication-manager-client`, is 210 MB to download, installs the unit
+  `replication-manager.service` running `replication-manager-osc --user repman monitor`,
+  creates the user `repman` with a shell and an `.ssh` directory, and ships
+  `/etc/replication-manager/config.toml` as `0644`
+- **The API.** `api-bind` defaults to `0.0.0.0`, and the default login `admin:repman` is
+  accepted on a fresh install
+- **Grants.** With the list from the manager's documentation for MariaDB 10.5 and later,
+  the manager could not read the replica's status on 11.8.9 (`Access denied; you need the
+  SLAVE MONITOR privilege`), saw no replica, and after declaring the primary failed promoted
+  nothing. With `SLAVE MONITOR` added from the start, a read-only primary was reopened two
+  seconds after its restart and a killed primary was replaced after 22 s (ping counter 10).
+  The manager still logs once that its user "must have SUPER"; nothing failed for it. A
+  grant given while the manager is connected does not reach its open sessions
+- **The witness.** The manager keeps two sessions on each server and runs statements on
+  them every two seconds. Their idle time in `information_schema.processlist` stayed under
+  two seconds while the manager reached the server, grew second by second from the moment
+  it was cut off (23 s after 23 s), and was back under two seconds after the link returned.
+  A watchdog can so tell that the manager reached its server without any way to the manager
+
 ## Not covered
 
 - Real hosts, a real power loss, and a cut that passes packets one way only
 - A restart of the manager during a promotion
-- The manager's installation on Debian as a package, and its build for arm64: the published
-  image is amd64 only
-- The grants the manager needs: the bench gave its account every privilege
+- The unit under systemd: the package was installed in containers and the manager started
+  by hand
 
 ## The bench watchdog
 
