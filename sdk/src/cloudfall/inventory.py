@@ -3055,10 +3055,13 @@ def service_remote_access(
 ) -> PostgresRemoteAccess | None:
     """Return the ``remoteAccess`` a service opens on ``server_id``, if any.
 
-    PostgreSQL opens it on its server; Elasticsearch on each of its nodes.
+    PostgreSQL and MariaDB open it on their server; Elasticsearch on each of
+    its nodes.
     """
     if service.postgresql is not None and service.server_id == server_id:
         return service.postgresql.remote_access
+    if service.mariadb is not None and service.server_id == server_id:
+        return service.mariadb.remote_access
     if service.elasticsearch is not None and server_id in service.elasticsearch.nodes:
         return service.elasticsearch.remote_access
     return None

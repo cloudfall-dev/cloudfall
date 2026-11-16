@@ -12,17 +12,45 @@
       MariaDB deployment requires its declared Debian server and a
       loopback-only bind address
 
-# remoteAccess (#421) and replication (#423) are declared and validated, and
-# converge in later releases: a server is never left half-opened.
-- name: Refuse remote access and replication, which this role does not converge yet
+# replication (#423) is declared and validated, and converges in a later
+# release: a server is never left half-replicating.
+- name: Refuse replication, which this role does not converge yet
   ansible.builtin.assert:
     that:
-      - cloudfall_mariadb_service.mariadb.remoteAccess is not defined
       - cloudfall_mariadb_service.mariadb.replication is not defined
     fail_msg: >-
-      Service {{ cloudfall_mariadb_service.id }} declares remoteAccess or
-      replication, which this Cloudfall release validates but does not
-      converge yet; remove them to converge a standalone loopback server
+      Service {{ cloudfall_mariadb_service.id }} declares replication, which
+      this Cloudfall release validates but does not converge yet; remove it
+      to converge a standalone server
+
+# The listener opens on listenAddress only to accounts from the allowed
+# sources, each requiring TLS; the firewall admits the port from those
+# sources only (S-019, Access).
+- name: Refuse remote access that is not narrowed to declared sources
+  ansible.builtin.assert:
+    that:
+      - cloudfall_mariadb_remote_access.listenAddress | length > 0
+      - >-
+        cloudfall_mariadb_remote_access.listenAddress
+        not in ['*', '0.0.0.0', '::', 'localhost']
+      - "',' not in cloudfall_mariadb_remote_access.listenAddress"
+      - cloudfall_mariadb_remote_access.allowedSources | length > 0
+      - >-
+        cloudfall_mariadb_remote_access.allowedSources
+        | select('in', ['0.0.0.0/0', '::/0'])
+        | list
+        | length == 0
+      - cloudfall_mariadb_remote_hosts | select('equalto', '') | list | length == 0
+      - cloudfall_mariadb_owners | length > 0
+    fail_msg: >-
+      remoteAccess of service {{ cloudfall_mariadb_service.id }} needs one
+      listen address that is not a wildcard, at least one source that is not
+      0.0.0.0/0 or ::/0, each an IPv4 network or one IPv6 address (MariaDB
+      matches no IPv6 network), and a database with an owner
+  vars:
+    cloudfall_mariadb_remote_access: >-
+      {{ cloudfall_mariadb_service.mariadb.remoteAccess }}
+  when: cloudfall_mariadb_service.mariadb.remoteAccess is defined
 
 - name: Refuse a buffer pool above three quarters of the server's memory
   ansible.builtin.assert:
@@ -103,6 +131,13 @@
 - name: Install the pinned MariaDB server
   ansible.builtin.include_tasks: package.yml
 
+# After the package, whose mysql account reads the key; before the settings
+# that name the files, so a configuration naming a missing file is never
+# written.
+- name: Install the server certificate for remote access
+  ansible.builtin.include_tasks: tls.yml
+  when: cloudfall_mariadb_service.mariadb.remoteAccess is defined
+
 - name: Install the managed server settings
   ansible.builtin.template:
     src: 90-cloudfall.cnf.j2
@@ -149,4 +184,10 @@
 
 - name: Converge the declared databases and users
   ansible.builtin.include_tasks: accounts.yml
+  when: not ansible_check_mode
+
+# Runs without remoteAccess too: the accounts of a source, or of a
+# remoteAccess, no longer declared are locked, never dropped.
+- name: Converge each owner's accounts from the allowed sources
+  ansible.builtin.include_tasks: remote_accounts.yml
   when: not ansible_check_mode

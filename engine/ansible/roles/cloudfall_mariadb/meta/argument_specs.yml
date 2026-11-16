@@ -1,7 +1,7 @@
 ---
 argument_specs:
   main:
-    short_description: Converge one declared standalone MariaDB service
+    short_description: Converge one declared standalone MariaDB service, with its remote access
     options:
       cloudfall_mariadb_service:
         type: dict
@@ -75,6 +75,14 @@ argument_specs:
                       - ed25519
               remoteAccess:
                 type: dict
+                options:
+                  listenAddress:
+                    type: str
+                    required: true
+                  allowedSources:
+                    type: list
+                    elements: str
+                    required: true
               replication:
                 type: dict
           backup:
@@ -88,6 +96,18 @@ argument_specs:
         description: >-
           Controller path of each owner's staged hash file, by owner; never
           the password
+      cloudfall_mariadb_certificate_path:
+        type: path
+        default: /etc/mysql/cloudfall/server.crt
+        description: Server certificate of remoteAccess, from the project CA
+      cloudfall_mariadb_key_path:
+        type: path
+        default: /etc/mysql/cloudfall/server.key
+        description: Its key, made on the server, 0600 mysql
+      cloudfall_mariadb_ca_path:
+        type: path
+        default: /etc/mysql/cloudfall/ca.crt
+        description: The project CA certificate
       cloudfall_mariadb_data_path:
         type: path
         default: /var/lib/mysql

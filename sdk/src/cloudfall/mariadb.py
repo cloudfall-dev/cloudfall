@@ -16,6 +16,11 @@ import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 from enum import StrEnum
+from ipaddress import IPv4Network, ip_network
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from cloudfall.domain import IpNetworkCidr
 
 _VERSION_PART = r"(0|[1-9][0-9]{0,3})"
 _VERSION_PATTERN = re.compile(rf"{_VERSION_PART}\.{_VERSION_PART}\.{_VERSION_PART}")
@@ -221,6 +226,25 @@ It holds no privilege. A role travels with the server's grants, so a replica
 promoted later still tells Cloudfall's users from those made by hand, and its
 hyphen keeps it out of the names a declaration can use.
 """
+
+
+def account_host(source: IpNetworkCidr) -> str | None:
+    """Return the host part of an owner's account for one allowed source.
+
+    With ``remoteAccess`` an owner has one account per allowed source, each
+    requiring TLS (S-019, Access). MariaDB matches an IPv4 network in its
+    netmask form, ``10.0.0.0/255.255.255.0``, and one address as itself. It
+    has no netmask form for IPv6, so an IPv6 source is an account only when it
+    is one address; any other gives ``None``, and the role refuses it before
+    it changes anything. The role's ``cloudfall_mariadb_host`` filter computes
+    the same.
+    """
+    network = ip_network(source.value)
+    if network.num_addresses == 1:
+        return str(network.network_address)
+    if isinstance(network, IPv4Network):
+        return f"{network.network_address}/{network.netmask}"
+    return None
 
 
 def mysql_native_password_hash(password: str) -> str:

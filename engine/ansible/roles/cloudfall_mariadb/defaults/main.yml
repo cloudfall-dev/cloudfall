@@ -74,6 +74,49 @@ cloudfall_mariadb_owners: >-
     | selectattr('passwordRef', 'defined')
     | unique(attribute='owner') | list
   }}
+# remoteAccess (S-019, Access): the server certificate from the project CA,
+# its key, made on this host, and the CA, at the paths of the server's S-011
+# certificate requirement mariadb, which replication uses too.
+cloudfall_mariadb_certificate_path: /etc/mysql/cloudfall/server.crt
+cloudfall_mariadb_key_path: /etc/mysql/cloudfall/server.key
+cloudfall_mariadb_ca_path: /etc/mysql/cloudfall/ca.crt
+# What the services converge signed and staged for this server: the
+# certificate and the CA, only when they are missing or due.
+cloudfall_mariadb_delivered_files: >-
+  {{ (cloudfall_services_mariadb_delivered_files | default({}))
+     .get(cloudfall_server_id, []) }}
+# The account host of each allowed source: 10.0.0.0/255.255.255.0, or one
+# address as itself; '' for an IPv6 network, which MariaDB cannot match.
+cloudfall_mariadb_remote_hosts: >-
+  {{
+    cloudfall_mariadb_service.mariadb.remoteAccess.allowedSources
+    | map('cloudfall_mariadb_host') | list
+    if cloudfall_mariadb_service.mariadb.remoteAccess is defined
+    else []
+  }}
+# Each owner's account from each allowed source, as user@host.
+cloudfall_mariadb_remote_accounts: >-
+  {{
+    cloudfall_mariadb_owners | map(attribute='owner')
+    | product(cloudfall_mariadb_remote_hosts) | map('join', '@') | list
+  }}
+# What remote_accounts.yml reads: the accounts at a host other than
+# localhost, as user@host, and their grants as user@host|database.
+cloudfall_mariadb_remote_state_queries:
+  users: >-
+    SELECT CONCAT(User, '@', Host) FROM mysql.global_priv
+    WHERE Host NOT IN ('localhost', '')
+  locked_users: >-
+    SELECT CONCAT(User, '@', Host) FROM mysql.global_priv
+    WHERE Host NOT IN ('localhost', '')
+    AND JSON_VALUE(Priv, '$.account_locked') = 'true'
+  managed_users: >-
+    SELECT CONCAT(User, '@', Host) FROM mysql.roles_mapping
+    WHERE Host NOT IN ('localhost', '')
+    AND Role = '{{ cloudfall_mariadb_managed_role }}' AND Admin_option = 'N'
+  grants: >-
+    SELECT CONCAT(User, '@', Host, '|', Db) FROM mysql.db
+    WHERE Host NOT IN ('localhost', '')
 # What accounts.yml reads before it changes anything, one column each.
 cloudfall_mariadb_state_queries:
   users: SELECT User FROM mysql.global_priv WHERE Host = 'localhost'
