@@ -9,7 +9,7 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from cloudfall.audit import AuditCheck, AuditStatus, audit_inventory
@@ -19,6 +19,7 @@ from cloudfall.validation import validate_config
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from mariadb_project import (
     SCHEMAS,
+    SOURCE_CREDENTIALS_REF,
     mariadb_service,
     primary_replication,
     replica_service,
@@ -64,6 +65,21 @@ def _pair(tmp_path: Path) -> PlatformInventory:
         replica_service(),
         servers=("h1", "h2"),
     )
+    return PlatformInventory.from_state(validate_config(project, SCHEMAS))
+
+
+def _source_replica(tmp_path: Path) -> PlatformInventory:
+    """Return h2's replica of a server Cloudfall does not manage."""
+    replica = replica_service()
+    spec = cast("dict[str, Any]", replica["spec"])
+    replication = spec["mariadb"]["replication"]
+    del replication["primary"]
+    replication["source"] = {
+        "host": "10.0.0.11",
+        "port": 3306,
+        "credentialsRef": SOURCE_CREDENTIALS_REF,
+    }
+    project = write_project(tmp_path / "project", replica, servers=("h2",))
     return PlatformInventory.from_state(validate_config(project, SCHEMAS))
 
 
@@ -182,6 +198,37 @@ def test_a_replica_converged_as_declared_is_compliant_and_reports_its_lag(
     lag = checks["mariadb.lag[mariadb-replica]"]
     assert lag.observed == {"seconds": 4}
     assert lag.message == "the replica is 4 seconds behind its primary"
+
+
+# proves: S-019-19
+def test_s019_19_a_replica_of_an_outside_source_converged_as_declared_is_compliant(
+    tmp_path: Path,
+) -> None:
+    inventory = _source_replica(tmp_path)
+    evidence = _evidence(
+        inventory,
+        "mariadb-replica",
+        read_only=True,
+        replication={**RUNNING, "secondsBehindMaster": 0},
+    )
+    assert "replicate_wild_ignore_table = mysql.%" in cast(
+        "str", evidence["configuration"]
+    )
+    removed = copy.deepcopy(evidence)
+    removed["configuration"] = cast("str", evidence["configuration"]).replace(
+        "replicate_wild_ignore_table = mysql.%\n", ""
+    )
+
+    checks = _checks(tmp_path / "kept", inventory, "h2", evidence)
+    edited = _checks(tmp_path / "removed", inventory, "h2", removed)
+
+    assert checks["mariadb.configuration[mariadb-replica]"].status is (
+        AuditStatus.COMPLIANT
+    )
+    # The filter that keeps the source's users out is managed: its loss is drift
+    assert edited["mariadb.configuration[mariadb-replica]"].status is (
+        AuditStatus.DRIFT
+    )
 
 
 # proves: S-019-19

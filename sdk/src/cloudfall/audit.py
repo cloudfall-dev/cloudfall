@@ -1597,7 +1597,8 @@ def mariadb_managed_settings(service: ServiceInventory) -> dict[str, str]:
 
     The same keys and values as ``90-cloudfall.cnf.j2``, each name with
     ``_`` for ``-``, as MariaDB reads both alike. ``read_only`` is the
-    declared role's: a replica is read-only.
+    declared role's: a replica is read-only. A replica of a ``source``
+    Cloudfall does not manage ignores ``mysql.%``.
     """
     mariadb = service.mariadb
     if mariadb is None:
@@ -1635,6 +1636,9 @@ def mariadb_managed_settings(service: ServiceInventory) -> dict[str, str]:
         }
         if replication.role is MariadbReplicationRole.REPLICA:
             settings["read_only"] = "ON"
+        if replication.source is not None:
+            # A source Cloudfall does not manage: its users are not applied.
+            settings["replicate_wild_ignore_table"] = "mysql.%"
     return settings
 
 
