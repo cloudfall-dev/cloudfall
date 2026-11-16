@@ -278,6 +278,7 @@ class Pair:
                     "cloudfall_mariadb_report_directory": str(reports),
                     "cloudfall_mariadb_link_poll_seconds": 0,
                     "cloudfall_mariadb_promotion_wait_seconds": 1,
+                    "cloudfall_mariadb_source_probe_seconds": 1,
                 },
                 "tasks": [
                     {
@@ -369,6 +370,16 @@ class Pair:
             text=True,
             timeout=60,
         )
+
+    def route(self, host: str, *, reachable: bool) -> None:
+        """Let other servers reach ``host``'s port, or cut it off, as a firewall."""
+        network = json.loads(self.network.read_text(encoding="utf-8"))
+        key = f"{ADDRESSES[host]}:3306"
+        if reachable:
+            network[key] = str(self.hosts[host]["state"])
+        else:
+            network.pop(key)
+        self.network.write_text(json.dumps(network), encoding="utf-8")
 
     def write(self, host: str, user: str, table: str, rows: int) -> bool:
         """Write ``rows`` rows into ``billing.<table>`` as ``user``; True if taken."""
@@ -681,6 +692,41 @@ def test_s019_14_with_the_primary_running_and_writable_the_promotion_stops(
     assert pair.state("h2")["databases"]["billing"]["invoices"] == 9
 
 
+# proves: S-019-14
+def test_s019_14_an_unconnected_link_is_not_promoted_over_a_writable_primary(
+    pair: Pair,
+) -> None:
+    _seeded(pair)
+    assert pair.write("h1", "billing", "invoices", 4)
+    # h2's IO thread can't reach h1 (a firewall change): it keeps connecting
+    # and reports no source server_id, while h1 runs and takes writes
+    pair.route("h1", reachable=False)
+    link = pair.state("h2")["link"]
+    assert (link["io"], link["masterServerId"]) == ("Connecting", 0)
+    source = pair.state("h1")
+    replica = pair.state("h2")
+    _promote_replica(pair)
+
+    run = pair.converge(limit="h2", succeed=False)
+
+    refused = run.outcomes["mariadb-replica"]
+    assert refused.outcome == "refused"
+    assert refused.get("code") == "service_mariadb_promotion_unsafe"
+    assert "PRECONDITION service_mariadb_promotion_unsafe" in run.done.stdout
+    source_position = ",".join(
+        f"{key}-{value}" for key, value in source["binlogState"].items()
+    )
+    assert refused.get("sourcePosition") == source_position
+    assert refused.get("replicaPosition") == replica["slavePos"]
+    assert "writable" in refused.get("message")
+    # Nothing changed: still a read-only replica, which follows once it connects
+    assert pair.state("h2")["readOnly"] is True
+    pair.route("h1", reachable=True)
+    _assert_follows(pair, "h2", "h1")
+    assert pair.write("h1", "billing", "invoices", 2)
+    assert pair.state("h2")["databases"]["billing"]["invoices"] == 9
+
+
 # proves: S-019-15
 @pytest.mark.parametrize("order", ["inventory", "reverse_inventory"])
 def test_s019_15_a_role_swap_ends_within_two_converges_with_no_row_lost(
@@ -788,12 +834,13 @@ def _state(**fields: str) -> dict[str, str]:
 
 
 @pytest.mark.parametrize(
-    ("link", "peer", "other", "action"),
+    ("link", "peer", "other", "reached", "action"),
     [
         pytest.param(
             {"Master_Server_Id": "1", "Slave_IO_Running": "Connecting"},
             {"service": "mariadb-main", "server": "h1", "role": "primary"},
             {},
+            False,
             "promote",
             id="source down",
         ),
@@ -801,13 +848,23 @@ def _state(**fields: str) -> dict[str, str]:
             {"Master_Server_Id": "9", "Slave_IO_Running": "No"},
             {},
             {},
+            False,
             "promote",
-            id="undeclared source, link down",
+            id="undeclared source, link down, unreachable",
+        ),
+        pytest.param(
+            {"Master_Server_Id": "0", "Slave_IO_Running": "Connecting"},
+            {},
+            {},
+            True,
+            "refuse",
+            id="undeclared source, link down, reachable",
         ),
         pytest.param(
             {"Master_Server_Id": "9", "Slave_IO_Running": "Yes"},
             {},
             {},
+            False,
             "refuse",
             id="undeclared source, link running",
         ),
@@ -815,13 +872,18 @@ def _state(**fields: str) -> dict[str, str]:
             {"Master_Server_Id": "1", "Slave_IO_Running": "Yes"},
             {"service": "mariadb-main", "server": "h1", "role": "primary"},
             _state(readOnly="1", serverId="1", binlogPos="0-1-12"),
+            False,
             "refuse",
             id="read-only source not applied",
         ),
     ],
 )
 def test_removing_replication_promotes_only_as_a_role_change_does(
-    link: dict[str, str], peer: dict[str, str], other: dict[str, str], action: str
+    link: dict[str, str],
+    peer: dict[str, str],
+    other: dict[str, str],
+    reached: bool,  # noqa: FBT001 - a parameter of the table.
+    action: str,
 ) -> None:
     plan = _plugin().replication_plan(
         _state(),
@@ -832,12 +894,118 @@ def test_removing_replication_promotes_only_as_a_role_change_does(
         peer=peer,
         other=other,
         other_link={},
+        source_reached=reached,
     )
 
     assert plan["action"] == action
     if action == "refuse":
         assert plan["code"] == "service_mariadb_promotion_unsafe"
         assert "0-1-10" in plan["message"]
+
+
+_PEERS = [
+    {
+        "service": "mariadb-main",
+        "server": "h1",
+        "serverId": 1,
+        "role": "primary",
+        "addresses": ["h1.example.internal", "203.0.113.11", "2001:db8::11"],
+        "port": 3306,
+    },
+    {
+        "service": "mariadb-other",
+        "server": "h3",
+        "serverId": 3,
+        "role": "replica",
+        "primary": "mariadb-main",
+        "addresses": ["h3.example.internal", "203.0.113.13"],
+        "port": 3307,
+    },
+]
+
+
+# proves: S-019-14
+@pytest.mark.parametrize(
+    ("link", "service"),
+    [
+        pytest.param(
+            {"Master_Server_Id": "3", "Master_Host": "203.0.113.11"},
+            "mariadb-other",
+            id="the server_id it reports first",
+        ),
+        pytest.param(
+            {"Master_Server_Id": "0", "Master_Host": "203.0.113.11"},
+            "mariadb-main",
+            id="not connected: listen address and port",
+        ),
+        pytest.param(
+            {"Master_Server_Id": "0", "Master_Host": "2001:DB8:0::11"},
+            "mariadb-main",
+            id="an IPv6 address in another form",
+        ),
+        pytest.param(
+            {"Master_Server_Id": "0", "Master_Host": "H1.Example.Internal."},
+            "mariadb-main",
+            id="the hostname in another case, with the root dot",
+        ),
+        pytest.param(
+            {"Master_Server_Id": "0", "Master_Host": "203.0.113.13",
+             "Master_Port": "3307"},
+            "mariadb-other",
+            id="a former primary declared a replica, by its server's address",
+        ),
+        pytest.param(
+            {"Master_Server_Id": "0", "Master_Host": "203.0.113.11",
+             "Master_Port": "3307"},
+            "",
+            id="another port",
+        ),
+        pytest.param(
+            {"Master_Server_Id": "0", "Master_Host": "db.example.internal"},
+            "",
+            id="a name no peer has, never resolved",
+        ),
+    ],
+)
+def test_s019_14_a_link_is_matched_to_its_source_by_server_id_or_host_and_port(
+    link: dict[str, str], service: str
+) -> None:
+    found = _plugin().link_peer({"Master_Port": "3306", **link}, _PEERS)
+
+    assert found.get("service", "") == service
+
+
+# proves: S-019-14
+def test_s019_14_a_link_reporting_server_id_0_is_not_promoted_over_its_source() -> (
+    None
+):
+    plugin = _plugin()
+    # The replica restarted and its IO thread still connects: no server_id
+    link = {
+        "Master_Server_Id": "0",
+        "Master_Host": "203.0.113.11",
+        "Master_Port": "3306",
+        "Slave_IO_Running": "Connecting",
+    }
+    peer = plugin.link_peer(link, _PEERS)
+
+    plan = plugin.replication_plan(
+        _state(readOnly="1"),
+        service="mariadb-replica",
+        declared="primary",
+        link=link,
+        links={"peers": _PEERS},
+        peer=peer,
+        other=_state(readOnly="0", serverId="1", binlogPos="0-1-12"),
+        other_link={},
+        source_reached=False,
+    )
+
+    assert peer["service"] == "mariadb-main"
+    assert plan["action"] == "refuse"
+    assert plan["code"] == "service_mariadb_promotion_unsafe"
+    assert "running and writable" in plan["message"]
+    assert (plan["sourcePosition"], plan["replicaPosition"]) == ("0-1-12", "0-1-10")
 
 
 def test_the_rendered_pair_names_the_primary_and_its_replicas(pair: Pair) -> None:
@@ -861,6 +1029,16 @@ def test_the_rendered_pair_names_the_primary_and_its_replicas(pair: Pair) -> Non
     }
     assert [peer["service"] for peer in replica["mariadb-replica"]["peers"]] == [
         "mariadb-main"
+    ]
+    # A link names one of the names of its primary's certificate, and its port
+    peer = replica["mariadb-replica"]["peers"][0]
+    assert (peer["addresses"], peer["port"]) == (
+        ["h1.example.internal", "203.0.113.11"],
+        3306,
+    )
+    assert primary["mariadb-main"]["peers"][0]["addresses"] == [
+        "h2.example.internal",
+        "203.0.113.12",
     ]
     # The primary's server runs first, so its replica is seeded from it
     assert pair.inventory is not None

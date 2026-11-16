@@ -17,6 +17,9 @@ grow along one history.
   has, on the replica, the same GTID or a higher sequence (S-019-14)
 - ``cloudfall_mariadb_vertical(stdout)``: the first row of ``--vertical``
   output (``SHOW SLAVE STATUS``) as a mapping; ``{}`` with no row
+- ``cloudfall_mariadb_link_peer(link, peers)``: the declared service a link
+  replicates from, by the ``server_id`` it reports, else by the host and
+  port it names; ``{}`` when it is none of them (#440)
 
 Ansible loads this file itself, into ``ansible-playbook``; it imports nothing
 from the SDK, so it works whichever interpreter runs it.
@@ -25,6 +28,7 @@ from the SDK, so it works whichever interpreter runs it.
 from __future__ import annotations
 
 import re
+from ipaddress import ip_address
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -144,7 +148,7 @@ def _mapping(value: object, name: str) -> dict[str, object]:
     return value
 
 
-def replication_plan(  # noqa: C901, PLR0911, PLR0913 - one decision table, read top down.
+def replication_plan(  # noqa: C901, PLR0911, PLR0912, PLR0913 - one decision table, read top down.
     local: dict[str, object],
     *,
     service: str,
@@ -154,17 +158,25 @@ def replication_plan(  # noqa: C901, PLR0911, PLR0913 - one decision table, read
     peer: dict[str, object],
     other: dict[str, object],
     other_link: dict[str, object],
+    source_reached: bool,
 ) -> dict[str, str]:
     """Decide what replication does on a server; see replication_check.yml.
 
     ``local`` and ``other`` are this server's and the other server's state
     (``other`` empty when it can't be reached), ``link`` and ``other_link``
     their ``SHOW SLAVE STATUS`` rows, ``peer`` the declared service the other
-    server holds, and ``links`` the pair as rendered for this service.
+    server holds, ``links`` the pair as rendered for this service, and
+    ``source_reached`` whether the controller reached the port of a source
+    that is no declared service.
     """
     if declared not in _DECLARED_ROLES:
         message = f"unknown declared replication role: {declared!r}"
         raise ValueError(message)
+    if not isinstance(source_reached, bool):
+        message = (
+            f"source_reached must be a boolean, got {type(source_reached).__name__}"
+        )
+        raise TypeError(message)
     mine = _state(local, "this server's state", required=True)
     theirs = _state(other, "the other server's state", required=False)
     link = {key: str(value) for key, value in _mapping(link, "link").items()}
@@ -204,6 +216,7 @@ def replication_plan(  # noqa: C901, PLR0911, PLR0913 - one decision table, read
             link=link,
             peer=peer,
             positions=positions,
+            source_reached=source_reached,
         )
     if declared != "replica":
         return {"action": declared}
@@ -274,7 +287,58 @@ def replication_plan(  # noqa: C901, PLR0911, PLR0913 - one decision table, read
     return act("attach")
 
 
-def _promotion(  # noqa: PLR0913 - the promotion's inputs, named.
+def link_host(value: object) -> str:
+    """Return a host as a link names it, in one form to compare.
+
+    An IP address in its canonical form (``2001:DB8::1`` and ``2001:db8::1``
+    are one), a name in lowercase without a trailing dot. A name is never
+    resolved: a link to a name matches a peer only by that name.
+    """
+    if not isinstance(value, str):
+        message = f"a host must be a string, got {type(value).__name__}"
+        raise TypeError(message)
+    text = value.strip()
+    try:
+        return str(ip_address(text))
+    except ValueError:
+        return text.lower().removesuffix(".")
+
+
+def link_peer(link: dict[str, object], peers: list[object]) -> dict[str, object]:
+    """Return the declared service a link replicates from, or ``{}``.
+
+    A link names its source's ``server_id`` once its IO thread connected; a
+    link that has not (``Master_Server_Id`` 0) names only the host and port
+    it was given, so the source is found by those too: ``Master_Host`` among
+    a peer's ``addresses``, compared by :func:`link_host`, and
+    ``Master_Port`` its ``port`` (#440).
+    """
+    fields = {key: str(value) for key, value in _mapping(link, "link").items()}
+    if not isinstance(peers, list):
+        message = f"peers must be a list, got {type(peers).__name__}"
+        raise TypeError(message)
+    declared = [_mapping(peer, "peer") for peer in peers]
+    server_id = int(fields.get("Master_Server_Id", "0") or "0")
+    by_id = [peer for peer in declared if server_id and peer["serverId"] == server_id]
+    if by_id:
+        return by_id[0]
+    host = link_host(fields.get("Master_Host", ""))
+    port = int(fields.get("Master_Port", "0") or "0")
+    for peer in declared:
+        addresses = peer.get("addresses", [])
+        if not isinstance(addresses, list):
+            message = f"addresses of peer {peer.get('service')} must be a list"
+            raise TypeError(message)
+        if (
+            host
+            and host in {link_host(address) for address in addresses}
+            and port == int(str(peer["port"]))
+        ):
+            return peer
+    return {}
+
+
+def _promotion(  # noqa: PLR0911, PLR0913 - the promotion's table and inputs, named.
     *,
     mine: dict[str, str],
     theirs: dict[str, str],
@@ -282,19 +346,36 @@ def _promotion(  # noqa: PLR0913 - the promotion's inputs, named.
     link: dict[str, str],
     peer: dict[str, object],
     positions: dict[str, str],
+    source_reached: bool,
 ) -> dict[str, str]:
     """Decide a promotion: a replica declared primary or standalone (S-019-14)."""
     applied = mine["slavePos"] or "(none)"
     if not peer:
+        source = (
+            f"server_id {link.get('Master_Server_Id')} at "
+            f"{link.get('Master_Host')}:{link.get('Master_Port')}"
+        )
         if link.get("Slave_IO_Running") == "Yes":
             return {
                 "action": "refuse",
                 "code": _UNSAFE,
                 "message": (
-                    f"service {service} replicates from server_id "
-                    f"{link.get('Master_Server_Id')} at {link.get('Master_Host')}, "
-                    "no declared MariaDB service, and its link to it is running: "
-                    "Cloudfall can not tell that it is read-only. Stop it, then "
+                    f"service {service} replicates from {source}, no declared "
+                    "MariaDB service, and its link to it is running: Cloudfall "
+                    "can not tell that it is read-only. Stop it, then converge "
+                    f"again; nothing changed. This replica has applied {applied}"
+                ),
+                **positions,
+            }
+        if source_reached:
+            return {
+                "action": "refuse",
+                "code": _UNSAFE,
+                "message": (
+                    f"service {service} replicates from {source}, no declared "
+                    "MariaDB service; its link is not connected, but the "
+                    "controller reaches that port, so Cloudfall can not tell "
+                    "that the source is stopped or read-only. Stop it, then "
                     f"converge again; nothing changed. This replica has applied "
                     f"{applied}"
                 ),
@@ -363,5 +444,6 @@ class FilterModule:
             "cloudfall_mariadb_gtid_unseen": gtid_unseen,
             "cloudfall_mariadb_gtid_applied": gtid_applied,
             "cloudfall_mariadb_vertical": vertical,
+            "cloudfall_mariadb_link_peer": link_peer,
             "cloudfall_mariadb_replication_plan": replication_plan,
         }
