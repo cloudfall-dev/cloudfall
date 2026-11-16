@@ -305,6 +305,10 @@ server, a primary and a replica, so a team can take its backups on the replica.
 - a server whose baseline declares no storage pool, several, or one without a secondary
   physical volume: the S-014 codes
 - `remoteAccess` under the S-006 rules; on a replica it needs no `owner` database of its own
+- an IPv6 network in `remoteAccess.allowedSources`, such as `2001:db8::/64`
+  (`service_mariadb_remote_access_ipv6`): a MariaDB account host has no netmask form for
+  IPv6, so the message names the source and says a single IPv6 address (`/128`) or an IPv4
+  network is accepted. This rule is MariaDB's only; PostgreSQL keeps S-006's (D-26)
 
 ### Audit and metrics
 
@@ -435,6 +439,8 @@ ROADMAP.md, ARCHITECTURE.md, and the guide.
 
 - D-9: an owner password reaches the server only as a hash computed on the controller;
   stated for PostgreSQL, applied here to MariaDB owners
+- D-26: `remoteAccess.allowedSources` of a MariaDB service refuses an IPv6 network at
+  validation; a single IPv6 address and IPv4 networks stay accepted
 
 ## Issues
 

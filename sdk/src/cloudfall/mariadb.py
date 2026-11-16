@@ -235,9 +235,9 @@ def account_host(source: IpNetworkCidr) -> str | None:
     requiring TLS (S-019, Access). MariaDB matches an IPv4 network in its
     netmask form, ``10.0.0.0/255.255.255.0``, and one address as itself. It
     has no netmask form for IPv6, so an IPv6 source is an account only when it
-    is one address; any other gives ``None``, and the role refuses it before
-    it changes anything. The role's ``cloudfall_mariadb_host`` filter computes
-    the same.
+    is one address; any other gives ``None``: ``config validate`` refuses it
+    (D-26), and the role refuses it again before it changes anything. The
+    role's ``cloudfall_mariadb_host`` filter computes the same.
     """
     network = ip_network(source.value)
     if network.num_addresses == 1:
