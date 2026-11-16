@@ -1,6 +1,6 @@
 # S-019: MariaDB service
 
-status: draft
+status: approved
 serves: G-1, G-3
 
 ## Problem
