@@ -1,0 +1,51 @@
+{
+  "config/examples": {
+    "tools": [
+      "add_baseline",
+      "add_server",
+      "add_ssh-key",
+      "audit",
+      "backup_run",
+      "backup_verify",
+      "build_artifact",
+      "config_upgrade",
+      "config_validate",
+      "converge_baseline",
+      "converge_domains",
+      "converge_services",
+      "data_copy",
+      "deploy",
+      "domains_apply",
+      "domains_observe",
+      "health",
+      "import_render",
+      "import_render-api",
+      "inventory_show",
+      "migrate",
+      "observe",
+      "operator_list",
+      "operator_show",
+      "restart",
+      "rollback",
+      "secrets_render",
+      "services_observe",
+      "services_status"
+    ],
+    "deprecated": {}
+  },
+  "ansible-repository": {
+    "tools": [
+      "audit",
+      "decisions_list",
+      "decisions_show",
+      "inventory_show",
+      "observe",
+      "operation_purge",
+      "operation_write_marker",
+      "operations_list",
+      "operations_show",
+      "why"
+    ],
+    "deprecated": {}
+  }
+}
