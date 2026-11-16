@@ -177,6 +177,10 @@ cloudfall_mariadb_promotion_wait_seconds: 60
 cloudfall_mariadb_source_probe_seconds: 10
 # How often, 30 times, the role looks whether a new link's threads run.
 cloudfall_mariadb_link_poll_seconds: 2
+# A directory in the data directory that is no database, such as a data
+# volume's lost+found, shows as #mysql50#<name> until the managed settings
+# ignore it (#449): never a database of the server. '#' is no LIKE wildcard.
+cloudfall_mariadb_no_database_pattern: "#mysql50#%"
 # One line, '|' between fields: read_only, server_id, the binary log's
 # position and state, the applied position, the current position, and how
 # many databases are not MariaDB's own.
@@ -185,7 +189,8 @@ cloudfall_mariadb_replication_state_query: >-
   @@global.gtid_binlog_pos, @@global.gtid_binlog_state,
   @@global.gtid_slave_pos, @@global.gtid_current_pos,
   (SELECT COUNT(*) FROM information_schema.SCHEMATA
-  WHERE SCHEMA_NAME NOT IN ('{{ cloudfall_mariadb_system_databases | join("', '") }}')))
+  WHERE SCHEMA_NAME NOT IN ('{{ cloudfall_mariadb_system_databases | join("', '") }}')
+  AND SCHEMA_NAME NOT LIKE '{{ cloudfall_mariadb_no_database_pattern }}'))
 cloudfall_mariadb_replication_state_fields:
   - readOnly
   - serverId
@@ -199,12 +204,14 @@ cloudfall_mariadb_replication_state_fields:
 cloudfall_mariadb_databases_query: >-
   SELECT SCHEMA_NAME FROM information_schema.SCHEMATA
   WHERE SCHEMA_NAME NOT IN ('{{ cloudfall_mariadb_system_databases | join("', '") }}')
+  AND SCHEMA_NAME NOT LIKE '{{ cloudfall_mariadb_no_database_pattern }}'
   ORDER BY SCHEMA_NAME
 cloudfall_mariadb_table_counts_query: >-
   SELECT CONCAT(s.SCHEMA_NAME, '|', COUNT(t.TABLE_NAME))
   FROM information_schema.SCHEMATA s LEFT JOIN information_schema.TABLES t
   ON t.TABLE_SCHEMA = s.SCHEMA_NAME
   WHERE s.SCHEMA_NAME NOT IN ('{{ cloudfall_mariadb_system_databases | join("', '") }}')
+  AND s.SCHEMA_NAME NOT LIKE '{{ cloudfall_mariadb_no_database_pattern }}'
   GROUP BY s.SCHEMA_NAME ORDER BY s.SCHEMA_NAME
 # A replica is read-only for every user but root; so is a server whose
 # promotion waits for its source to turn read-only.

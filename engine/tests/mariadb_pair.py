@@ -356,9 +356,19 @@ def apply(statement):
     sys.exit("unknown statement: " + statement)
 
 
+def listed(name, sql):
+    # Whether a SCHEMATA read lists ``name``: not MariaDB's own, and a
+    # directory that is no database (#mysql50#lost+found) only if the query
+    # does not leave those out.
+    if name in SYSTEM:
+        return False
+    return not (name.startswith("#mysql50#")
+                and "SCHEMA_NAME NOT LIKE '#mysql50#%'" in sql)
+
+
 def answer(sql):
     if "@@global.gtid_binlog_state" in sql:
-        databases = [name for name in state["databases"] if name not in SYSTEM]
+        databases = [name for name in state["databases"] if listed(name, sql)]
         return ["|".join([
             "1" if state["readOnly"] else "0", str(state["serverId"]),
             text(binlog_pos(state)), text(binlog_state(state)), state["slavePos"],
@@ -399,11 +409,11 @@ def answer(sql):
                 ("Gtid_IO_Pos", link["ioPos"]),
             )]
     if sql.startswith("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA"):
-        return sorted(name for name in state["databases"] if name not in SYSTEM)
+        return sorted(name for name in state["databases"] if listed(name, sql))
     if sql.startswith("SELECT CONCAT(s.SCHEMA_NAME, '|', COUNT(t.TABLE_NAME))"):
         return ["%s|%d" % (name, len(tables))
                 for name, tables in sorted(state["databases"].items())
-                if name not in SYSTEM]
+                if listed(name, sql)]
     match = re.search(r"WHERE Host = '([^']+)' AND User = '([^']+)'", sql)
     if sql.startswith("SELECT CONCAT_WS('|', IFNULL(JSON_VALUE(Priv") and match:
         user = state["users"].get(match[2] + "@" + match[1])

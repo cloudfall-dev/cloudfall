@@ -640,6 +640,32 @@ def test_s019_13_a_replica_holding_a_database_that_can_not_attach_stops(
     assert "DROP" not in pair.sourced("h2") + pair.arguments("h2")
 
 
+# proves: S-019-12
+def test_s019_12_a_replica_showing_lost_found_of_its_volume_is_seeded(
+    tmp_path: Path,
+) -> None:
+    pair = Pair(tmp_path)
+    _primary_with_data(pair)
+    # A fresh ext4 data volume: before the managed settings ignore it, MariaDB
+    # shows its lost+found directory as a database (#449)
+    lost_found = "#mysql50#lost+found"
+    pair.edit("h2", databases={lost_found: {}})
+    pair.declare(_primary(), replica_service())
+
+    run = _seeded(pair)
+
+    assert refusal(tuple(run.outcomes.values())) is None
+    replica = pair.state("h2")
+    assert {
+        name: tables for name, tables in replica["databases"].items()
+        if name != lost_found
+    } == pair.state("h1")["databases"]
+    # The seed dumped the primary's databases only, and left the directory be
+    assert lost_found not in pair.arguments("h2")
+    assert lost_found in replica["databases"]
+    _assert_follows(pair, "h2", "h1")
+
+
 def _promote_replica(pair: Pair) -> None:
     """Declare h2's service primary beside h1's, as an operator promoting it."""
     pair.declare(_primary(), _new_primary())

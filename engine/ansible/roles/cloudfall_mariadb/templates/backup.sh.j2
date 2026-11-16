@@ -135,11 +135,13 @@ prune_database() {
 {% if cloudfall_mariadb_service.mariadb.replication is defined
       and cloudfall_mariadb_service.mariadb.replication.role == 'replica' %}
 # A replica's databases are its primary's and arrive by replication (S-019,
-# Backups): the ones it holds now, not MariaDB's own nor the drill's scratch.
+# Backups): the ones it holds now, not MariaDB's own nor the drill's scratch,
+# nor a directory that is no database, such as lost+found (#449).
 held="$(mariadb --batch --raw --skip-column-names --execute "
   SELECT SCHEMA_NAME FROM information_schema.SCHEMATA
   WHERE SCHEMA_NAME NOT IN ('information_schema', 'mysql',
     'performance_schema', 'sys', 'cloudfall-restore-check')
+    AND SCHEMA_NAME NOT LIKE '{{ cloudfall_mariadb_no_database_pattern }}'
   ORDER BY SCHEMA_NAME")"
 if [ -z "${held}" ]; then
   echo "replica {{ cloudfall_mariadb_service.id }} holds no database to back up" >&2

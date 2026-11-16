@@ -171,10 +171,14 @@ if sql is None:
         write()
     sys.exit(0)
 if "information_schema.SCHEMATA" in sql and "SCHEMA_NAME NOT IN" in sql:
-    # A replica lists the databases it holds, but those the query excludes
-    excluded = re.findall(r"'([^']+)'", sql.split("NOT IN", 1)[1])
+    # A replica lists the databases it holds, but those the query excludes:
+    # the names NOT IN lists, and those a NOT LIKE 'prefix%' matches
+    names, _, rest = sql.split("NOT IN", 1)[1].partition(")")
+    excluded = re.findall(r"'([^']+)'", names)
+    prefixes = [like.removesuffix("%")
+                for like in re.findall(r"NOT LIKE '([^']+%)'", rest)]
     for name in sorted(databases):
-        if name not in excluded:
+        if name not in excluded and not name.startswith(tuple(prefixes)):
             print(name)
 elif "information_schema.SCHEMATA" in sql:
     name = re.search(r"SCHEMA_NAME = '([^']+)'", sql)[1]
@@ -240,7 +244,11 @@ def _render(
         keep_trailing_newline=True,
         trim_blocks=True,
     )
+    defaults = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text("utf-8"))
     return environment.get_template(template).render(
+        cloudfall_mariadb_no_database_pattern=defaults[
+            "cloudfall_mariadb_no_database_pattern"
+        ],
         cloudfall_mariadb_service={
             "id": "mariadb-main",
             "serviceKind": "mariadb",
@@ -660,6 +668,8 @@ def test_s019_8_a_replica_backs_up_and_drills_every_database_it_holds(
         "tables": {},
         "comment": "cloudfall restore drill",
     }
+    # Nor is its data volume's lost+found, shown as a database (#449)
+    databases["#mysql50#lost+found"] = {"tables": {}}
     host.update(databases=databases)
 
     done = host.backup()
@@ -671,6 +681,7 @@ def test_s019_8_a_replica_backs_up_and_drills_every_database_it_holds(
     dumps = [call for call in host.calls() if call[0] == "mariadb-dump"]
     assert [call[-1] for call in dumps] == ["billing", "crm"]
     assert not _dumps(host, "cloudfall-restore-check")
+    assert "lost+found" not in done.stdout
     databases = host.state["databases"]
     del databases["cloudfall-restore-check"]
     host.update(databases=databases)
