@@ -109,8 +109,10 @@ def test_s017_8_upgrade_rewrites_the_old_names_and_writes_the_current_format(
         ("", f"[tool.cloudfall]\nformat = {CURRENT}\n"),
         (
             '[project]\r\nname = "fleet"',
-            '[project]\r\nname = "fleet"\r\n\r\n'
-            f"[tool.cloudfall]\r\nformat = {CURRENT}\r\n",
+            (
+                '[project]\r\nname = "fleet"\r\n\r\n'
+                f"[tool.cloudfall]\r\nformat = {CURRENT}\r\n"
+            ),
         ),
         (
             "[tool.cloudfall]\nformat = 0  # written by hand\n\n[tool.uv]\n",
