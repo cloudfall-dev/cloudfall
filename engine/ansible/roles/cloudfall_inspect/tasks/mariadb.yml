@@ -1,0 +1,109 @@
+---
+# The server of one MariaDB service (S-019), for audit: the managed settings
+# file as text, so a hand edit is drift before the server restarts with it,
+# and, read as root through the unix socket, whether the server is read-only
+# and its link to a primary. The link's fields are the threads' states, the
+# lag and the source's server_id; never a password.
+- name: Look for the managed MariaDB settings
+  ansible.builtin.stat:
+    path: "{{ cloudfall_inspect_mariadb_settings_path }}"
+    get_checksum: false
+  register: cloudfall_inspect_mariadb_settings_file
+
+- name: Read the managed MariaDB settings
+  ansible.builtin.slurp:
+    src: "{{ cloudfall_inspect_mariadb_settings_path }}"
+  register: cloudfall_inspect_mariadb_settings_content
+  when: cloudfall_inspect_mariadb_settings_file.stat.isreg | default(false)
+
+- name: Read whether the MariaDB server is read-only
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_inspect_mariadb_client }}"
+      - --batch
+      - --raw
+      - --skip-column-names
+      - --execute
+      - SELECT @@global.read_only
+  register: cloudfall_inspect_mariadb_read_only
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Read the MariaDB server's link to a primary
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_inspect_mariadb_client }}"
+      - --vertical
+      - --execute
+      - SHOW SLAVE STATUS
+  register: cloudfall_inspect_mariadb_link
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Attach MariaDB server evidence
+  ansible.builtin.set_fact:
+    cloudfall_inspect_snapshot: >-
+      {{
+        cloudfall_inspect_snapshot | combine(
+          {'spec': {'mariadb': cloudfall_inspect_mariadb_evidence}},
+          recursive=true
+        )
+      }}
+  vars:
+    cloudfall_inspect_mariadb_answered: >-
+      {{
+        cloudfall_inspect_mariadb_read_only.rc | default(1) == 0
+        and cloudfall_inspect_mariadb_link.rc | default(1) == 0
+        and cloudfall_inspect_mariadb_read_only.stdout | trim in ['0', '1']
+      }}
+    # SHOW SLAVE STATUS prints one "Field: value" line per field, and nothing
+    # on a server with no link.
+    cloudfall_inspect_mariadb_link_fields: >-
+      {{
+        dict(
+          cloudfall_inspect_mariadb_link.stdout_lines | default([])
+          | select('match', cloudfall_inspect_mariadb_link_pattern)
+          | map('regex_replace', cloudfall_inspect_mariadb_link_pattern, '\1|\2')
+          | map('split', '|')
+        )
+      }}
+    cloudfall_inspect_mariadb_evidence:
+      service: "{{ cloudfall_inspect_mariadb_service.id }}"
+      configurationPath: "{{ cloudfall_inspect_mariadb_settings_path }}"
+      configuration: >-
+        {{
+          cloudfall_inspect_mariadb_settings_content.content | b64decode
+          if cloudfall_inspect_mariadb_settings_file.stat.isreg | default(false)
+          else none
+        }}
+      available: "{{ cloudfall_inspect_mariadb_answered }}"
+      readOnly: >-
+        {{
+          (cloudfall_inspect_mariadb_read_only.stdout | trim == '1')
+          if cloudfall_inspect_mariadb_answered
+          else none
+        }}
+      replication: >-
+        {{
+          {
+            'ioRunning': cloudfall_inspect_mariadb_link_fields.Slave_IO_Running,
+            'sqlRunning': cloudfall_inspect_mariadb_link_fields.Slave_SQL_Running,
+            'secondsBehindMaster': (
+              cloudfall_inspect_mariadb_link_fields.Seconds_Behind_Master | int
+              if cloudfall_inspect_mariadb_link_fields.Seconds_Behind_Master
+              is match('^[0-9]+$')
+              else none
+            ),
+            'sourceServerId': (
+              cloudfall_inspect_mariadb_link_fields.Master_Server_Id | int
+              if cloudfall_inspect_mariadb_link_fields.Master_Server_Id
+              is match('^[0-9]+$')
+              else none
+            ),
+          }
+          if cloudfall_inspect_mariadb_answered
+          and 'Slave_IO_Running' in cloudfall_inspect_mariadb_link_fields
+          else none
+        }}

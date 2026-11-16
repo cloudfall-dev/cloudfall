@@ -717,6 +717,13 @@
       }}
   when: cloudfall_inspect_elasticsearch_services | length > 0
 
+- name: Collect MariaDB server evidence
+  ansible.builtin.include_tasks: mariadb.yml
+  loop: "{{ cloudfall_inspect_mariadb_services }}"
+  loop_control:
+    loop_var: cloudfall_inspect_mariadb_service
+    label: "{{ cloudfall_inspect_mariadb_service.id }}"
+
 - name: Collect MariaDB account evidence
   ansible.builtin.include_tasks: mariadb_accounts.yml
   loop: "{{ cloudfall_inspect_mariadb_services }}"

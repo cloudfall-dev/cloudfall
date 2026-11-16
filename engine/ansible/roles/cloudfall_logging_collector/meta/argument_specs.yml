@@ -121,6 +121,10 @@ argument_specs:
       cloudfall_logging_collector_metrics_role:
         type: str
         default: alloy
+      cloudfall_logging_collector_mariadb_socket:
+        type: path
+        default: /run/mysqld/mysqld.sock
+        description: The socket a MariaDB service's exporter connects to
       cloudfall_logging_collector_credentials_directory:
         type: path
         default: /run/credentials/alloy.service

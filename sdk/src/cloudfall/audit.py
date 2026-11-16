@@ -26,11 +26,18 @@ from cloudfall.inventory import (
 )
 from cloudfall.mariadb import RESERVED_USER_NAMES as RESERVED_MARIADB_USER_NAMES
 from cloudfall.mariadb import SYSTEM_DATABASES as MARIADB_SYSTEM_DATABASES
+from cloudfall.mariadb import MariadbReplicationRole
 from cloudfall.mariadb import account_host as mariadb_account_host
+from cloudfall.mariadb import supported_series as mariadb_supported_series
 from cloudfall.mariadb_replication import replication_rules_for_server
 from cloudfall.pki import RENEW_BEFORE, certificate_names
 from cloudfall.requirements import (
     ELASTICSEARCH_PACKAGE,
+    MARIADB_CA_PATH,
+    MARIADB_CERTIFICATE_PATH,
+    MARIADB_KEY_PATH,
+    MARIADB_PACKAGE,
+    MARIADB_VOLUME_PATH,
     CertificateRequirement,
     PackageRequirement,
     VolumeRequirement,
@@ -54,6 +61,7 @@ if TYPE_CHECKING:
         ElasticsearchService,
         FirewallRequirement,
         LoggingStackInventory,
+        MariadbService,
         PlatformInventory,
         RaidRequirement,
         ServerInventory,
@@ -71,6 +79,14 @@ _LOOPBACK_ADDRESSES = frozenset({"127.0.0.1", "::1"})
 _ANY_SOURCE = ""
 _MINIMUM_SOCKET_FIELDS = 5
 ELASTICSEARCH_UNIT = "elasticsearch.service"
+MARIADB_UNIT = "mariadb.service"
+MARIADB_SETTINGS_PATH = "/etc/mysql/mariadb.conf.d/90-cloudfall.cnf"
+"""The one file the MariaDB role writes its managed settings to (S-019)."""
+MARIADB_LAG_LIMIT_SECONDS = 300
+"""A replica further behind its primary than this is a finding (S-019)."""
+_MARIADB_UPSTREAM_VERSION = re.compile(r"^(?:\d+:)?(\d+\.\d+\.\d+)")
+_MARIADB_SETTINGS_SECTION = "mariadbd"
+_MARIADB_THREAD_RUNNING = "Yes"
 
 
 class AuditStatus(StrEnum):
@@ -314,6 +330,8 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
     for service in elasticsearch_nodes:
         checks.extend(_audit_elasticsearch_node(service, snapshot))
     checks.extend(_audit_elasticsearch_users(services, snapshot))
+    for service in services:
+        checks.extend(_audit_mariadb_server(service, snapshot))
     checks.extend(_audit_mariadb_accounts(services, snapshot))
     checks.extend(_audit_alert_rules(alert_rules, snapshot))
     checks.extend(
@@ -1540,6 +1558,303 @@ def _mariadb_accounts_check(
         desired=desired,
         observed=observed,
         message=message,
+    )
+
+
+def mariadb_managed_settings(service: ServiceInventory) -> dict[str, str]:
+    """Return the settings the role writes to the managed file (S-019).
+
+    The same keys and values as ``90-cloudfall.cnf.j2``, each name with
+    ``_`` for ``-``, as MariaDB reads both alike. ``read_only`` is the
+    declared role's: a replica is read-only.
+    """
+    mariadb = service.mariadb
+    if mariadb is None:
+        message = f"not a MariaDB service: {service.resource_id.value}"
+        raise ValueError(message)
+    replication = mariadb.replication
+    listeners = [service.bind.address.value]
+    if mariadb.remote_access is not None:
+        listeners.append(mariadb.remote_access.listen_address.value)
+    if replication is not None and replication.listen_address is not None:
+        listeners.append(replication.listen_address.value)
+    settings = {
+        "bind_address": ",".join(dict.fromkeys(listeners)),
+        "port": str(service.bind.port.value),
+        "datadir": MARIADB_VOLUME_PATH.value,
+        "innodb_buffer_pool_size": f"{mariadb.innodb_buffer_pool_mb.value}M",
+        "character_set_server": "utf8mb4",
+        "ignore_db_dirs": "lost+found",
+    }
+    if mariadb.remote_access is not None or replication is not None:
+        settings |= {
+            "ssl_cert": MARIADB_CERTIFICATE_PATH.value,
+            "ssl_key": MARIADB_KEY_PATH.value,
+            "ssl_ca": MARIADB_CA_PATH.value,
+        }
+    if replication is not None:
+        settings |= {
+            "server_id": str(replication.server_id.value),
+            "log_bin": "mariadb-bin",
+            "log_slave_updates": "ON",
+            "binlog_format": "ROW",
+            "gtid_strict_mode": "ON",
+            "binlog_expire_logs_seconds": "604800",
+            "relay_log": "mariadb-relay-bin",
+        }
+        if replication.role is MariadbReplicationRole.REPLICA:
+            settings["read_only"] = "ON"
+    return settings
+
+
+def _audit_mariadb_server(
+    service: ServiceInventory, snapshot: ObservedServerSnapshot
+) -> tuple[AuditCheck, ...]:
+    """Check one MariaDB service's server; every check only reads (S-019).
+
+    The installed package against ``version``, its series against the end of
+    its community binaries, the unit, the managed file as it holds its
+    settings, and the server's role: whether it is read-only and whom it
+    replicates from. A replica's lag is a finding above five minutes.
+    """
+    mariadb = service.mariadb
+    if mariadb is None:
+        return ()
+    service_id = service.resource_id.value
+    installed = [
+        _string(entry, "version")
+        for entry in _mapping_sequence(snapshot.spec, "packages")
+        if _string(entry, "name") == MARIADB_PACKAGE.value
+    ]
+    upstream = [
+        match[1] if (match := _MARIADB_UPSTREAM_VERSION.match(version)) else version
+        for version in installed
+    ]
+    unit = _optional_mapping(_mapping(snapshot.spec, "services").get(MARIADB_UNIT))
+    unit_observed = (
+        None
+        if unit is None
+        else {"state": _string(unit, "state"), "status": _string(unit, "status")}
+    )
+    unit_desired = {"state": "running", "status": "enabled"}
+    evidence = _optional_mapping(snapshot.spec.get("mariadb"))
+    if evidence is not None and _string(evidence, "service") != service_id:
+        evidence = None
+    checks = [
+        _comparison(
+            f"mariadb.version[{service_id}]",
+            {"version": mariadb.version.value},
+            {"versions": installed} if installed else None,
+            matches=upstream == [mariadb.version.value],
+        ),
+        _audit_mariadb_series(service, snapshot),
+        _comparison(
+            f"mariadb.unit[{service_id}]",
+            {"unit": MARIADB_UNIT, **unit_desired},
+            unit_observed,
+            matches=unit_observed == unit_desired,
+        ),
+        _audit_mariadb_settings(service, evidence),
+        _audit_mariadb_role(service, evidence),
+    ]
+    replication = mariadb.replication
+    if replication is not None and replication.role is MariadbReplicationRole.REPLICA:
+        checks.append(_audit_mariadb_lag(service, evidence))
+    return tuple(checks)
+
+
+def _audit_mariadb_series(
+    service: ServiceInventory, snapshot: ObservedServerSnapshot
+) -> AuditCheck:
+    """Report a service whose series is past its end of life (S-019)."""
+    mariadb = cast("MariadbService", service.mariadb)
+    check = f"mariadb.series[{service.resource_id.value}]"
+    series = mariadb_supported_series(mariadb.version)
+    observed_on = datetime.fromisoformat(_string(snapshot.spec, "observedAt")).date()
+    if series is None:
+        return AuditCheck(
+            check=check,
+            status=AuditStatus.DRIFT,
+            desired={"supported": True},
+            observed={"version": mariadb.version.value, "series": None},
+            message=(
+                f"MariaDB {mariadb.version.value} is of no supported series; "
+                "Cloudfall installs only long-term series MariaDB still maintains"
+            ),
+        )
+    ended = observed_on >= series.end_of_life
+    return AuditCheck(
+        check=check,
+        status=AuditStatus.DRIFT if ended else AuditStatus.COMPLIANT,
+        desired={"series": series.label, "endOfLife": series.end_of_life.isoformat()},
+        observed={"version": mariadb.version.value, "on": observed_on.isoformat()},
+        message=(
+            f"the server runs an unsupported version: series {series.label} "
+            f"reached its end of life on {series.end_of_life.isoformat()}"
+            if ended
+            else f"series {series.label} is maintained until "
+            f"{series.end_of_life.isoformat()}"
+        ),
+    )
+
+
+def _audit_mariadb_settings(
+    service: ServiceInventory, evidence: Mapping[str, object] | None
+) -> AuditCheck:
+    desired = {_MARIADB_SETTINGS_SECTION: mariadb_managed_settings(service)}
+    check = f"mariadb.configuration[{service.resource_id.value}]"
+    if evidence is None:
+        return AuditCheck(
+            check=check,
+            status=AuditStatus.UNKNOWN,
+            desired=desired,
+            observed=None,
+            message=(
+                "the observation carries no MariaDB server evidence; inspect "
+                "again with this release"
+            ),
+        )
+    content = evidence.get("configuration")
+    if not isinstance(content, str):
+        return _comparison(check, desired, {"present": False}, matches=False)
+    settings = _mariadb_settings(content)
+    if settings is None:
+        return _comparison(
+            check, desired, {"present": True, "readable": False}, matches=False
+        )
+    return _comparison(check, desired, settings, matches=settings == desired)
+
+
+def _mariadb_settings(content: str) -> dict[str, dict[str, str]] | None:
+    """Read an option file into its sections, each name with ``_`` for ``-``.
+
+    An option without ``=`` is a switch, read as ``""``. ``None`` when a
+    setting comes before any section, or the file includes another.
+    """
+    sections: dict[str, dict[str, str]] = {}
+    current: dict[str, str] | None = None
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line or line[0] in "#;":
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            current = sections.setdefault(line[1:-1].strip(), {})
+            continue
+        if current is None or line.startswith("!"):
+            return None
+        name, _, value = line.partition("=")
+        value = value.strip()
+        if len(value) > 1 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        current[name.strip().replace("-", "_")] = value
+    return sections
+
+
+def _mariadb_link(evidence: Mapping[str, object]) -> Mapping[str, object] | None:
+    return _optional_mapping(evidence.get("replication"))
+
+
+def _audit_mariadb_role(
+    service: ServiceInventory, evidence: Mapping[str, object] | None
+) -> AuditCheck:
+    """Compare the server's role with the declared one (S-019, Audit and metrics).
+
+    A replica is read-only and both its replication threads run; a
+    standalone server or a primary replicates from nowhere.
+    """
+    mariadb = cast("MariadbService", service.mariadb)
+    check = f"mariadb.role[{service.resource_id.value}]"
+    role = (
+        "standalone" if mariadb.replication is None else mariadb.replication.role.value
+    )
+    replica = role == MariadbReplicationRole.REPLICA.value
+    desired: dict[str, object] = (
+        {"role": role, "readOnly": True, "replicating": True}
+        if replica
+        else {"role": role, "replicating": False}
+    )
+    if evidence is None or evidence.get("available") is not True:
+        return AuditCheck(
+            check=check,
+            status=AuditStatus.UNKNOWN,
+            desired=desired,
+            observed=None,
+            message=(
+                "the server's role was not read; inspect again once MariaDB "
+                "answers root through its socket"
+            ),
+        )
+    read_only = evidence.get("readOnly")
+    link = _mariadb_link(evidence)
+    observed: dict[str, object] = {
+        "readOnly": read_only,
+        "replication": None
+        if link is None
+        else {
+            "ioRunning": _string(link, "ioRunning"),
+            "sqlRunning": _string(link, "sqlRunning"),
+            "sourceServerId": link.get("sourceServerId"),
+        },
+    }
+    problems: list[str] = []
+    if replica:
+        if read_only is not True:
+            problems.append("the replica is writable: read_only is off")
+        if link is None:
+            problems.append("the replica replicates from nowhere")
+        else:
+            stopped = [
+                f"{thread} thread {_string(link, key)}"
+                for thread, key in (("IO", "ioRunning"), ("SQL", "sqlRunning"))
+                if _string(link, key) != _MARIADB_THREAD_RUNNING
+            ]
+            if stopped:
+                problems.append("replication is stopped: " + ", ".join(stopped))
+    elif link is not None:
+        problems.append(
+            f"the {role} server replicates from server id "
+            f"{link.get('sourceServerId')}"
+        )
+    return AuditCheck(
+        check=check,
+        status=AuditStatus.DRIFT if problems else AuditStatus.COMPLIANT,
+        desired=desired,
+        observed=observed,
+        message="; ".join(problems) if problems else "desired state matches",
+    )
+
+
+def _audit_mariadb_lag(
+    service: ServiceInventory, evidence: Mapping[str, object] | None
+) -> AuditCheck:
+    """Report a replica's lag, as a finding above five minutes (S-019)."""
+    check = f"mariadb.lag[{service.resource_id.value}]"
+    desired = {"maxSeconds": MARIADB_LAG_LIMIT_SECONDS}
+    link = None if evidence is None else _mariadb_link(evidence)
+    seconds = None if link is None else link.get("secondsBehindMaster")
+    if (
+        evidence is None
+        or evidence.get("available") is not True
+        or not isinstance(seconds, int)
+        or isinstance(seconds, bool)
+    ):
+        return AuditCheck(
+            check=check,
+            status=AuditStatus.UNKNOWN,
+            desired=desired,
+            observed=None,
+            message=(
+                "the replica's lag is unknown: its replication was not read "
+                "or is not running"
+            ),
+        )
+    behind = seconds > MARIADB_LAG_LIMIT_SECONDS
+    return AuditCheck(
+        check=check,
+        status=AuditStatus.DRIFT if behind else AuditStatus.COMPLIANT,
+        desired=desired,
+        observed={"seconds": seconds},
+        message=f"the replica is {seconds} seconds behind its primary",
     )
 
 

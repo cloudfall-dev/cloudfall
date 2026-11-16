@@ -29,6 +29,11 @@ cloudfall_inspect_elasticsearch_ca_path: /etc/elasticsearch/certs/ca.crt
 # read as root through the socket, never a password or hash
 cloudfall_inspect_mariadb_services: []
 cloudfall_inspect_mariadb_client: /usr/bin/mariadb
+# The one file the MariaDB role writes its managed settings to
+cloudfall_inspect_mariadb_settings_path: /etc/mysql/mariadb.conf.d/90-cloudfall.cnf
+# The fields of SHOW SLAVE STATUS audit reads, one "Field: value" line each
+cloudfall_inspect_mariadb_link_pattern: >-
+  ^\s*(Slave_IO_Running|Slave_SQL_Running|Seconds_Behind_Master|Master_Server_Id):\s*(.*?)\s*$
 cloudfall_inspect_mariadb_queries:
   users: >-
     SELECT CONCAT(User, '@', Host) FROM mysql.global_priv WHERE Host <> ''

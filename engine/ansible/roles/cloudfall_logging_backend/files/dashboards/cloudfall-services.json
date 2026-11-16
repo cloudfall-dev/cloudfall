@@ -1,7 +1,7 @@
 {
   "uid": "cloudfall-services",
   "title": "Services",
-  "description": "PostgreSQL and Redis services with metrics declared (Cloudfall S-016); empty when there are none",
+  "description": "PostgreSQL, Redis and MariaDB services with metrics declared (Cloudfall S-016, S-019); empty when there are none",
   "tags": [
     "cloudfall"
   ],
@@ -47,10 +47,10 @@
           "uid": "cloudfall-prometheus"
         },
         "query": {
-          "query": "label_values({__name__=~\"pg_up|redis_up\", environment=\"$environment\"}, service)",
+          "query": "label_values({__name__=~\"pg_up|redis_up|mysql_up\", environment=\"$environment\"}, service)",
           "refId": "service-var"
         },
-        "definition": "label_values({__name__=~\"pg_up|redis_up\", environment=\"$environment\"}, service)",
+        "definition": "label_values({__name__=~\"pg_up|redis_up|mysql_up\", environment=\"$environment\"}, service)",
         "refresh": 2,
         "sort": 1,
         "includeAll": true,
@@ -427,6 +427,207 @@
       "gridPos": {
         "x": 16,
         "y": 12,
+        "w": 8,
+        "h": 8
+      }
+    },
+    {
+      "type": "stat",
+      "title": "MariaDB up",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "mysql_up{environment=\"$environment\", service=~\"$service\"}",
+          "refId": "A",
+          "legendFormat": "{{service}}",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "id": 8,
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 24,
+        "h": 4
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "MariaDB connections",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "sum by (service) (mysql_global_status_threads_connected{environment=\"$environment\", service=~\"$service\"})",
+          "refId": "A",
+          "legendFormat": "{{service}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 9,
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 8,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "MariaDB queries",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "sum by (service) (rate(mysql_global_status_queries{environment=\"$environment\", service=~\"$service\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{service}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 10,
+      "gridPos": {
+        "x": 8,
+        "y": 24,
+        "w": 8,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "MariaDB replication lag",
+      "description": "Seconds a replica is behind its primary; audit reports a replica more than five minutes behind",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cloudfall-prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cloudfall-prometheus"
+          },
+          "expr": "max by (service) (mysql_slave_status_seconds_behind_master{environment=\"$environment\", service=~\"$service\"})",
+          "refId": "A",
+          "legendFormat": "{{service}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 11,
+      "gridPos": {
+        "x": 16,
+        "y": 24,
         "w": 8,
         "h": 8
       }
