@@ -9,8 +9,9 @@ each service of an environment where a MariaDB service replicates, its
 primary, its replicas, and every other such service by ``serverId``, the
 hosts a link to it may name and its port: the server a replica follows is
 found by the ``server_id`` it reports, after its declaration has changed
-too, or, while its link has not connected and reports none, by the host and
-port the link names (#440).
+too, or, when the server_id it reports is no declared service's (none while
+its link has not connected), by the host and port the link names (#440,
+#446).
 
 The IPv6 networks of a replica's server are not admitted: MariaDB matches
 no IPv6 network in an account's host, so they would open a port no account
