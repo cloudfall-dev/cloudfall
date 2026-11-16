@@ -1,6 +1,6 @@
 # S-020: Automatic failover for a MariaDB pair
 
-status: draft
+status: approved
 serves: G-2, G-3
 
 ## Problem
