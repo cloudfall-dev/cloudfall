@@ -13,6 +13,8 @@ are about:
   the password whose ``mysql_native_password`` hash the account holds, over
   TLS only, and only when the replica verifies the primary's certificate
   (the address it connects to is a name of it) against the CA that signed it
+- a link reports its source's ``server_id`` only while its IO thread is
+  connected; before that, ``Master_Server_Id`` is 0
 - a link starts after the replica's GTID position in the primary's binary
   log; a position the log does not hold stops it with error 1236, and in
   strict mode a GTID not above the replica's own stops its SQL thread
@@ -162,14 +164,17 @@ def pump(state):
     if not link or not link["started"]:
         return
     path, primary = resolve(link["host"], link["port"])
+    # The source's server_id is learned when the IO thread connects: a link
+    # that has not connected reports 0, as after a restart of the replica.
     if primary is None:
-        link.update(io="Connecting", ioErrno=2003,
+        link.update(io="Connecting", ioErrno=2003, masterServerId=0,
                     ioError="Can't connect to server on '%s'" % link["host"])
         return
     error = authenticate(primary, state["address"], link["user"], link["password"],
                          link["ssl"], link["sslCa"], link["verify"], link["host"])
     if error:
-        link.update(io="Connecting", ioErrno=error[0], ioError=error[1])
+        link.update(io="Connecting", ioErrno=error[0], ioError=error[1],
+                    masterServerId=0)
         return
     link["masterServerId"] = primary["serverId"]
     position = parse(state["slavePos"])

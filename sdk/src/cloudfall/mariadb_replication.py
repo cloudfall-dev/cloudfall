@@ -6,9 +6,11 @@ A replica connects to its primary's ``listenAddress`` at the primary's port
 and verifies its certificate against the project CA. The role reads the
 other server of its pair on that server itself, so the inventory names, for
 each service of an environment where a MariaDB service replicates, its
-primary, its replicas, and every other such service by ``serverId``: the
-server a replica follows is found by the ``server_id`` it reports, after its
-declaration has changed too.
+primary, its replicas, and every other such service by ``serverId``, the
+hosts a link to it may name and its port: the server a replica follows is
+found by the ``server_id`` it reports, after its declaration has changed
+too, or, while its link has not connected and reports none, by the host and
+port the link names (#440).
 
 The IPv6 networks of a replica's server are not admitted: MariaDB matches
 no IPv6 network in an account's host, so they would open a port no account
@@ -25,11 +27,12 @@ from cloudfall.domain import IpNetworkCidr, NetworkProtocol
 from cloudfall.elasticsearch_cluster import transport_address
 from cloudfall.inventory import SourceRestrictedFirewallRule
 from cloudfall.mariadb import MariadbReplicationRole
+from cloudfall.requirements import mariadb_server_names
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from cloudfall.domain import ResourceId
+    from cloudfall.domain import Hostname, IpAddress, ResourceId
     from cloudfall.inventory import ServerInventory, ServiceInventory
 
 LINKS_VARIABLE = "cloudfall_mariadb_replication"
@@ -189,10 +192,40 @@ def _peer(item: _Declared) -> dict[str, object]:
         # even while it is not its replica, so a converge that stops a
         # promotion leaves the replica able to reconnect.
         "hosts": [] if address is None else [str(address)],
+        # Where a link to it connects: a link that has not connected yet
+        # reports no server_id, only the host and port it was given (#440).
+        "addresses": [name.value for name in _link_names(item)],
+        "port": item.service.bind.port.value,
     }
     if replication.primary is not None:
         peer["primary"] = replication.primary.value
     return peer
+
+
+def _link_names(item: _Declared) -> tuple[Hostname | IpAddress, ...]:
+    """Return every host a replica's link to ``item`` may name.
+
+    A replica verifies its primary's certificate against the host it
+    connects to, so a link that ever connected names one of the names of the
+    primary's certificate: the server's hostname, its IPv4, an IP ``address``
+    of another family, and its listen addresses. A server that was a primary
+    and is declared a replica now has no ``listenAddress``; its link names
+    one of the others.
+    """
+    mariadb = item.service.mariadb
+    listen = tuple(
+        address
+        for address in (
+            None
+            if mariadb is None or mariadb.remote_access is None
+            else mariadb.remote_access.listen_address,
+            None
+            if mariadb is None or mariadb.replication is None
+            else mariadb.replication.listen_address,
+        )
+        if address is not None
+    )
+    return mariadb_server_names(item.server, listen)
 
 
 def _primary(primary_id: ResourceId, declared: list[_Declared]) -> dict[str, object]:
