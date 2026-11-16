@@ -1,0 +1,10 @@
+# Managed by Cloudfall. Local changes will be overwritten.
+[Unit]
+Description=Cloudfall MariaDB restore-drill schedule for {{ cloudfall_mariadb_service.id }}
+
+[Timer]
+OnCalendar={{ cloudfall_mariadb_service.backup.restoreCheckOnCalendar }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

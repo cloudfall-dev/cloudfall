@@ -1,0 +1,10 @@
+# Managed by Cloudfall. Local changes will be overwritten.
+[Unit]
+Description=Cloudfall MariaDB backup schedule for {{ cloudfall_mariadb_service.id }}
+
+[Timer]
+OnCalendar={{ cloudfall_mariadb_service.backup.onCalendar }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

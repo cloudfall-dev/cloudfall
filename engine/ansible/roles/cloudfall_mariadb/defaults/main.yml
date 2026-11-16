@@ -29,6 +29,8 @@ cloudfall_mariadb_admin: /usr/bin/mariadb-admin
 # The host directory an owner's statement, holding its hash, is staged in,
 # 0700 root, the file removed after the run.
 cloudfall_mariadb_state_directory: /var/lib/cloudfall/mariadb
+# The backup root every service's backup directory shares, root-owned 0755.
+cloudfall_mariadb_backup_root: /var/backups/cloudfall
 cloudfall_mariadb_repository_key_url: https://mariadb.org/mariadb_release_signing_key.pgp
 cloudfall_mariadb_repository_key_path: /etc/apt/keyrings/mariadb-keyring.pgp
 # MariaDB's archive keeps every release; the series repository keeps only the

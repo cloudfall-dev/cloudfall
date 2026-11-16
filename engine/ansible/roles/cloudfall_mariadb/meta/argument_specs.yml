@@ -125,6 +125,10 @@ argument_specs:
         type: path
         default: /var/lib/cloudfall/mariadb
         description: Host directory an owner's statement is staged in, 0700
+      cloudfall_mariadb_backup_root:
+        type: path
+        default: /var/backups/cloudfall
+        description: The backup root every service's backup directory shares, root-owned 0755
       cloudfall_mariadb_repository_key_url:
         type: str
         default: https://mariadb.org/mariadb_release_signing_key.pgp
