@@ -155,7 +155,11 @@ from cloudfall.domain import (
     TcpPort,
 )
 from cloudfall.elasticsearch import WARNING_VERSION_ENDING, ElasticsearchAccount
-from cloudfall.format_check import check_format, declare_format_exit
+from cloudfall.format_check import (
+    check_format,
+    declare_format_exit,
+    project_format_unsupported,
+)
 from cloudfall.importer import (
     ImportTargets,
     RenderImportError,
@@ -303,6 +307,7 @@ from cloudfall.project import (
     resolve_installed_version,
     resolve_project_directory,
 )
+from cloudfall.project_format import SUPPORTED_FORMATS, ProjectFormatError
 from cloudfall.recording import Recording, RecordingError
 from cloudfall.release_approval import (
     APPROVALS_DIRECTORY,
@@ -373,7 +378,7 @@ from cloudfall.service_evidence import (
     load_deployment_receipts,
     load_domain_observations,
 )
-from cloudfall.upgrade import UpgradeError, upgrade_project
+from cloudfall.upgrade import UpgradeError, upgradable_format, upgrade_project
 from cloudfall.validation import (
     UPGRADE_COMMAND,
     ConfigValidationError,
@@ -720,6 +725,26 @@ class Fleet:
         return PlatformInventory.from_state(self.state)
 
 
+@dataclass(frozen=True, slots=True)
+class UpgradableFleet(Fleet):
+    """A project ``config upgrade`` may run on (S-017).
+
+    Its format is checked before it is validated, like every other
+    command's, but without the too-old refusal: the upgrade is the way
+    forward for that project. A too-new or unreadable format still stops it.
+    """
+
+    @classmethod
+    def acquire(cls, args: ProjectArgs, _ctx: Ctx) -> Self:
+        """Resolve the project, check its format may be upgraded, validate it."""
+        directory = _project_directory(args)
+        try:
+            upgradable_format(directory, SUPPORTED_FORMATS)
+        except ProjectFormatError as error:
+            raise project_format_unsupported(error) from error
+        return cls._validated(directory, args)
+
+
 def _project_directory(args: ProjectArgs) -> Path:
     """Return the project directory the command runs in."""
     try:
@@ -899,7 +924,7 @@ def _warn_deprecated_names(ctx: Ctx, fleet: Fleet) -> None:
 
 
 class UpgradedPayload(Payload):
-    """``config upgrade``: the files rewritten to the current names."""
+    """``config upgrade``: the files rewritten, and the format written."""
 
     command = "config upgrade"
     writes = True
@@ -908,12 +933,15 @@ class UpgradedPayload(Payload):
 @config.command(
     "upgrade",
     description=(
-        "Rewrite the project's files from deprecated names to current ones: "
+        "Bring the project to the current format: run each rewrite from the "
+        "project's format, then write [tool.cloudfall] format into its "
+        "pyproject.toml, keeping every other line. From format 0: rewrite "
         "server-types/ to baselines/, kind ServerType to Baseline, "
-        "spec.serverType to spec.baseline; comments and formatting are kept. "
-        "Move receipts and operator proposals from tmp/ into the committed "
-        "record/, refusing to overwrite a different file there. A second run "
-        "changes nothing"
+        "spec.serverType to spec.baseline, keeping comments and formatting, "
+        "and move receipts and operator proposals from tmp/ into the "
+        "committed record/, refusing to overwrite a different file there. "
+        "Runs on a project too old for other commands; refuses one written "
+        "by a newer Cloudfall. A second run changes nothing"
     ),
     danger_level="mutating",
     timeout=60,
@@ -924,19 +952,23 @@ class UpgradedPayload(Payload):
         "CONFIG_INVALID",
         "CONFLICT",
     ],
-    examples=[("Rewrite the project in this directory", "cloudfall config upgrade")],
+    examples=[("Upgrade the project in this directory", "cloudfall config upgrade")],
 )
-def config_upgrade(args: ProjectArgs, _ctx: Ctx, fleet: Fleet) -> UpgradedPayload:
-    """Rewrite a validated project's deprecated names, then validate it again."""
+def config_upgrade(
+    args: ProjectArgs, _ctx: Ctx, fleet: UpgradableFleet
+) -> UpgradedPayload:
+    """Bring a validated project to the current format, then validate it again."""
     try:
-        result = upgrade_project(fleet.directory)
+        result = upgrade_project(fleet.directory, SUPPORTED_FORMATS)
+    except ProjectFormatError as error:
+        raise project_format_unsupported(error) from error
     except UpgradeError as error:
         raise Exit.CONFLICT(error.detail, context={"code": error.code}) from error
     try:
         validate_config(fleet.directory, args.schemas)
     except ConfigValidationError as error:
         raise _config_invalid(error) from error
-    effect = "updated" if result.files else "noop"
+    effect = "updated" if result.changed else "noop"
     return UpgradedPayload({**result.as_dict(), "effect": effect})
 
 
