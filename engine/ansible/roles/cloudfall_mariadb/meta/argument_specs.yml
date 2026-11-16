@@ -1,7 +1,7 @@
 ---
 argument_specs:
   main:
-    short_description: Converge one declared standalone MariaDB service, with its remote access
+    short_description: Converge one declared MariaDB service, with its remote access and replication
     options:
       cloudfall_mariadb_service:
         type: dict
@@ -96,6 +96,19 @@ argument_specs:
         description: >-
           Controller path of each owner's staged hash file, by owner; never
           the password
+      cloudfall_mariadb_replication_files:
+        type: dict
+        default: {}
+        description: >-
+          Controller paths of what replication needs: on a primary 'hash', the
+          hash of its cloudfall_repl password; on a replica 'password', its
+          primary's cloudfall_repl password, staged 0600 for the run only
+      cloudfall_mariadb_report_directory:
+        type: str
+        default: ""
+        description: >-
+          Controller directory the role reports each replication outcome to,
+          one JSON file per service; empty reports nothing
       cloudfall_mariadb_certificate_path:
         type: path
         default: /etc/mysql/cloudfall/server.crt

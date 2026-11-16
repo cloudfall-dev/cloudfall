@@ -99,7 +99,7 @@ The kind yields S-011 requirements, so nothing below is prepared by hand:
 | `volume` | `mariadb`, 10G unless overridden, `mirrored`, mounted at `/var/lib/mysql`, needed by `mariadb.service` |
 | `port` | with `remoteAccess`, `bind.port` from `allowedSources` only; on a primary, `bind.port` from the servers of its replicas only |
 | `certificate` | with `remoteAccess` or `replication`, one server certificate from the project CA, names: the server's hostname and addresses |
-| `secret` | `generate`, on a primary: the password of the replication account |
+| `secret` | none on the host: the password of the replication account is generated on the controller (`cloudfall secrets generate`); the primary holds only its hash, as D-9 has it for owners |
 
 The role writes the managed settings to one file, `/etc/mysql/mariadb.conf.d/90-cloudfall.cnf`:
 the listener, the buffer pool, `utf8mb4` as the server character set, the TLS files and the

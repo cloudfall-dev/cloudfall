@@ -10,8 +10,8 @@ certificate is missing or due, so a private key never leaves its host. The
 signed certificates and the CA are staged in a private temp dir, removed
 when the run ends, and the role copies them. A service that joins an
 ``existingCluster`` also stages that cluster's CA certificate, read from the
-project, for each of its nodes. A MariaDB server with ``remoteAccess`` gets
-its server certificate the same way (S-019).
+project, for each of its nodes. A MariaDB server with ``remoteAccess`` or
+``replication`` gets its server certificate the same way (S-019).
 """
 
 from __future__ import annotations
@@ -114,8 +114,8 @@ def mariadb_volume_requirements(
     """Return the data volume each MariaDB service places on its server (S-019).
 
     Only the volume: the server certificate comes with
-    ``mariadb_certificate_requirements``, and a primary's port and replication
-    secret with ``replication``, which this converge does not meet yet.
+    ``mariadb_certificate_requirements``, and a primary's port with the
+    baseline's firewall.
     """
     services = {
         service.resource_id
@@ -128,18 +128,26 @@ def mariadb_volume_requirements(
 def mariadb_certificate_requirements(
     inventory: PlatformInventory,
 ) -> tuple[ServerRequirements, ...]:
-    """Return the server certificate of each MariaDB service with ``remoteAccess``.
+    """Return the server certificate of each MariaDB service that needs one.
 
-    A service that also declares ``replication`` is left out: the role refuses
-    replication before it changes anything (#423), so its server is not asked
-    to make a key either.
+    A service with ``remoteAccess`` serves TLS to its owners' clients, and one
+    with ``replication`` to the other server of its pair, which verifies it
+    against the project CA. A replica of a source Cloudfall does not manage
+    is left out: the role refuses it before it changes anything (#424), so
+    its server is not asked to make a key either.
     """
     services = {
         service.resource_id
         for service in inventory.services
         if service.mariadb is not None
-        and service.mariadb.remote_access is not None
-        and service.mariadb.replication is None
+        and (
+            service.mariadb.remote_access is not None
+            or service.mariadb.replication is not None
+        )
+        and (
+            service.mariadb.replication is None
+            or service.mariadb.replication.source is None
+        )
     }
     return _owned(inventory, services, CertificateRequirement)
 

@@ -604,10 +604,13 @@ MARIADB_REPLICATION_NAME = RequirementName("mariadb-replication")
 MARIADB_CERTIFICATE_PATH = AbsolutePath("/etc/mysql/cloudfall/server.crt")
 MARIADB_KEY_PATH = AbsolutePath("/etc/mysql/cloudfall/server.key")
 MARIADB_CA_PATH = AbsolutePath("/etc/mysql/cloudfall/ca.crt")
-MARIADB_REPLICATION_PASSWORD_NAME = RequirementName("mariadb-replication-password")
-MARIADB_REPLICATION_PASSWORD_PATH = AbsolutePath(
-    "/etc/mysql/cloudfall/replication-password"
-)
+MARIADB_REPLICATION_PASSWORD_NAME = "mariadb-replication-password"  # noqa: S105 - a name
+"""How ``secrets generate`` names a primary's ``cloudfall_repl`` password.
+
+No host keeps it, so it is no requirement: the primary holds only its hash,
+which the controller computes (D-9), and a replica the password in a 0600
+file for the run, then where MariaDB keeps it (S-019, Replication).
+"""
 MARIADB_REPLICATION_PASSWORD_KEY = SecretKeyName("REPLICATION_PASSWORD")
 
 
@@ -629,9 +632,10 @@ def _mariadb_requirements(
 
     Every server needs its mirrored data volume and its package at the
     declared version. A primary needs its port open to the servers of its
-    replicas only, and the generated password of its replication account. A
-    server with ``remoteAccess`` or ``replication`` needs one server
-    certificate from the project CA, named after its hostname and addresses.
+    replicas only. A server with ``remoteAccess`` or ``replication`` needs
+    one server certificate from the project CA, named after its hostname and
+    addresses. The generated password of a primary's replication account is
+    no requirement: no host keeps it (``MARIADB_REPLICATION_PASSWORD_NAME``).
     """
     mariadb = service.mariadb
     if mariadb is None:
@@ -694,17 +698,6 @@ def _mariadb_requirements(
                 MARIADB_CERTIFICATE_PATH,
                 MARIADB_KEY_PATH,
                 MARIADB_CA_PATH,
-            )
-        )
-    if primary:
-        specs.append(
-            SecretRequirement(
-                MARIADB_REPLICATION_PASSWORD_NAME,
-                SecretSource.GENERATE,
-                MARIADB_REPLICATION_PASSWORD_PATH,
-                mariadb_replication_reference(
-                    service.environment, service.resource_id
-                ),
             )
         )
     return [(service.server_id, Requirement(owner, spec)) for spec in specs]

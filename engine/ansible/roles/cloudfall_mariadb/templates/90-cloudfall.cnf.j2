@@ -1,11 +1,16 @@
 # Managed by Cloudfall for service {{ cloudfall_mariadb_service.id }}; a change
 # here is drift. Settings of your own go in a file that sorts before this one.
 [mariadbd]
-{% if cloudfall_mariadb_service.mariadb.remoteAccess is defined %}
-bind-address = {{ cloudfall_mariadb_service.bind.address }},{{ cloudfall_mariadb_service.mariadb.remoteAccess.listenAddress }}
-{% else %}
-bind-address = {{ cloudfall_mariadb_service.bind.address }}
-{% endif %}
+{% set cloudfall_mariadb_listeners = (
+     [cloudfall_mariadb_service.bind.address]
+     + ([cloudfall_mariadb_service.mariadb.remoteAccess.listenAddress]
+        if cloudfall_mariadb_service.mariadb.remoteAccess is defined else [])
+     + ([cloudfall_mariadb_service.mariadb.replication.listenAddress]
+        if cloudfall_mariadb_service.mariadb.replication is defined
+        and cloudfall_mariadb_service.mariadb.replication.listenAddress is defined
+        else [])
+   ) | unique | list %}
+bind-address = {{ cloudfall_mariadb_listeners | join(',') }}
 port = {{ cloudfall_mariadb_service.bind.port }}
 datadir = {{ cloudfall_mariadb_data_path }}
 innodb_buffer_pool_size = {{ cloudfall_mariadb_service.mariadb.innodbBufferPoolMb }}M
@@ -19,4 +24,28 @@ ignore-db-dirs = lost+found
 ssl_cert = {{ cloudfall_mariadb_certificate_path }}
 ssl_key = {{ cloudfall_mariadb_key_path }}
 ssl_ca = {{ cloudfall_mariadb_ca_path }}
+{% elif cloudfall_mariadb_service.mariadb.replication is defined %}
+# replication: the server certificate from the project CA; the link is
+# encrypted and each side verifies the other's against that CA.
+ssl_cert = {{ cloudfall_mariadb_certificate_path }}
+ssl_key = {{ cloudfall_mariadb_key_path }}
+ssl_ca = {{ cloudfall_mariadb_ca_path }}
+{% endif %}
+{% if cloudfall_mariadb_service.mariadb.replication is defined %}
+# replication ({{ cloudfall_mariadb_service.mariadb.replication.role }}): a
+# row-based binary log with GTIDs in strict mode, kept seven days. A replica
+# logs what it applies too, so either server can be promoted and the other
+# follow it by GTID.
+server_id = {{ cloudfall_mariadb_service.mariadb.replication.serverId }}
+log_bin = mariadb-bin
+log_slave_updates = ON
+binlog_format = ROW
+gtid_strict_mode = ON
+binlog_expire_logs_seconds = 604800
+relay_log = mariadb-relay-bin
+{% if cloudfall_mariadb_read_only %}
+# Read-only for every user but root: its databases and users arrive by
+# replication.
+read_only = ON
+{% endif %}
 {% endif %}

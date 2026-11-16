@@ -27,6 +27,7 @@ from cloudfall.inventory import (
 from cloudfall.mariadb import RESERVED_USER_NAMES as RESERVED_MARIADB_USER_NAMES
 from cloudfall.mariadb import SYSTEM_DATABASES as MARIADB_SYSTEM_DATABASES
 from cloudfall.mariadb import account_host as mariadb_account_host
+from cloudfall.mariadb_replication import replication_rules_for_server
 from cloudfall.pki import RENEW_BEFORE, certificate_names
 from cloudfall.requirements import (
     ELASTICSEARCH_PACKAGE,
@@ -623,7 +624,11 @@ def _audit_firewall(
 def _gateway_rules(
     server: ServerInventory, inventory: PlatformInventory
 ) -> tuple[SourceRestrictedFirewallRule, ...]:
-    """Return the logging gateway rules the engine renders for ``server`` (S-011)."""
+    """Return the source-restricted rules the engine renders for ``server``.
+
+    Those are the logging gateway's (S-011) and a MariaDB primary's port,
+    opened to its replicas' servers (S-019).
+    """
     baseline = inventory.baseline(server.baseline_id)
     if baseline.firewall is None:
         return ()
@@ -631,8 +636,11 @@ def _gateway_rules(
         (rule.port.value, rule.protocol)
         for rule in firewall_rules_for_server(baseline.firewall, server.ssh_port)
     )
-    return logging_gateway_rules_for_server(
-        server, inventory.servers, inventory.logging_stacks, open_ports
+    return (
+        *logging_gateway_rules_for_server(
+            server, inventory.servers, inventory.logging_stacks, open_ports
+        ),
+        *replication_rules_for_server(server, inventory.servers, inventory.services),
     )
 
 

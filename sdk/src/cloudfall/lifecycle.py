@@ -16,12 +16,13 @@ import socket
 import ssl
 import subprocess
 import sys
+import tempfile
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from ipaddress import ip_address
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Protocol, cast
 
 from jsonschema.exceptions import ValidationError
@@ -41,6 +42,11 @@ from cloudfall.inventory import PlatformInventory
 from cloudfall.lifecycle_error import (
     LifecycleError as LifecycleError,  # noqa: PLC0414 - re-exported for callers
 )
+from cloudfall.mariadb_replication import (
+    REPORT_DIRECTORY_VARIABLE,
+    read_outcomes,
+    refusal,
+)
 from cloudfall.project import RecordStore
 from cloudfall.secret_store import SecretStore, sops_encrypt
 from cloudfall.secrets import (
@@ -55,6 +61,8 @@ from cloudfall.secrets import (
     elasticsearch_users,
     mariadb_owned_databases,
     mariadb_owner_passwords,
+    mariadb_replication_pairs,
+    mariadb_replication_passwords,
     owned_databases,
     owned_role_passwords,
     sops_decrypt,
@@ -65,7 +73,6 @@ from cloudfall.validation import SchemaCatalog, validate_config
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
-    from pathlib import Path
 
     from cloudfall.domain import (
         CommandArgv,
@@ -79,12 +86,14 @@ if TYPE_CHECKING:
         ServerInventory,
         ServiceInventory,
     )
+    from cloudfall.mariadb_replication import ReplicationOutcome
     from cloudfall.secrets import (
         ElasticsearchAccountPassword,
         ElasticsearchExistingClusterLogin,
         ElasticsearchS3Credentials,
         ElasticsearchUserPassword,
         MariadbOwnerPassword,
+        MariadbReplicationPassword,
         OwnedRolePassword,
         SopsSecretProvider,
     )
@@ -1121,6 +1130,7 @@ class ServicesSecrets:
     elasticsearch_users: tuple[ElasticsearchUserPassword, ...] = ()
     elasticsearch_existing: tuple[ElasticsearchExistingClusterLogin, ...] = ()
     mariadb_owners: tuple[MariadbOwnerPassword, ...] = ()
+    mariadb_replication: tuple[MariadbReplicationPassword, ...] = ()
 
 
 def services_passwords(
@@ -1131,9 +1141,10 @@ def services_passwords(
     Those are each owner role's, the ``cloudfall`` and ``elastic``
     passwords of each Elasticsearch service and each of its declared users',
     the S3 keys of each S3 snapshot repository, the login of each
-    ``existingCluster`` that names a ``credentialsRef``, and each MariaDB
-    owner's. A missing file or key fails here, naming the expected path and
-    key, so the converge stops before any playbook starts.
+    ``existingCluster`` that names a ``credentialsRef``, each MariaDB
+    owner's, and each MariaDB primary's replication password. A missing file
+    or key fails here, naming the expected path and key, so the converge
+    stops before any playbook starts.
     """
     state = validate_config(context.project_directory, context.schema_directory)
     inventory = PlatformInventory.from_state(state)
@@ -1156,6 +1167,9 @@ def services_passwords(
                 elasticsearch_existing_cluster_credentials(inventory), provider
             ),
             mariadb_owner_passwords(mariadb_owned_databases(inventory), provider),
+            mariadb_replication_passwords(
+                mariadb_replication_pairs(inventory), provider
+            ),
         )
     except SecretsError as error:
         raise LifecycleError(ERROR_SERVICES_SECRET, error.message) from error
@@ -1165,7 +1179,7 @@ def run_services_playbook(
     context: EngineContext,
     secrets: ServicesSecrets,
     limit: ResourceId | None = None,
-) -> None:
+) -> tuple[ReplicationOutcome, ...]:
     """Run ``services.yml`` with each password's server form staged in a 0600 file.
 
     Before it, each Elasticsearch node's data volume is decided and its
@@ -1174,6 +1188,12 @@ def run_services_playbook(
     temp dir outside the project, removed when the run ends, whether it
     passed or failed. ``limit`` narrows every playbook of the run, the node
     preparation's included, to one declared server.
+
+    The MariaDB role reports what replication did for each service of a
+    pair; a refusal it reported (a promotion over a writable source, a
+    replica that can't attach or diverged) stops the run as that refusal,
+    which the command answers with ``PRECONDITION``, rather than as a failed
+    playbook. The outcomes are returned.
     """
     state = validate_config(context.project_directory, context.schema_directory)
     inventory = PlatformInventory.from_state(state)
@@ -1197,24 +1217,51 @@ def run_services_playbook(
             users=secrets.elasticsearch_users,
             existing=secrets.elasticsearch_existing,
             mariadb=secrets.mariadb_owners,
+            replication=secrets.mariadb_replication,
         ) as extra,
+        tempfile.TemporaryDirectory(prefix="cloudfall-replication-") as reports,
     ):
-        run_engine_playbook(context, "services.yml", {**extra, **provided}, limit)
+        extra_vars: dict[str, object] = {**extra, **provided}
+        # A project without MariaDB runs as it did
+        if any(service.mariadb is not None for service in inventory.services):
+            extra_vars[REPORT_DIRECTORY_VARIABLE] = reports
+        try:
+            run_engine_playbook(context, "services.yml", extra_vars, limit)
+        except LifecycleError as error:
+            refused = refusal(read_outcomes(Path(reports)))
+            if refused is None:
+                raise
+            raise LifecycleError(
+                refused.get("code"),
+                refused.get("message"),
+                {
+                    "service": refused.service,
+                    "server": refused.server,
+                    "sourcePosition": refused.get("sourcePosition"),
+                    "replicaPosition": refused.get("replicaPosition"),
+                },
+            ) from error
+        return read_outcomes(Path(reports))
 
 
 def converge_services(
     context: EngineContext,
     provider: SopsSecretProvider,
     limit: ResourceId | None = None,
+    replication: list[ReplicationOutcome] | None = None,
 ) -> tuple[OwnedRolePassword, ...]:
     """Converge the declared services; return the owner passwords it set, by hash.
 
     ``limit`` converges one declared server's services alone, and only the
     owner passwords of the services on it are returned. Every password is
     still decrypted first, so a missing one fails before any playbook runs.
+    ``replication``, when given, receives what replication did for each
+    MariaDB service of a pair, a promotion with the last GTID it applied.
     """
     secrets = services_passwords(context, provider)
-    run_services_playbook(context, secrets, limit)
+    outcomes = run_services_playbook(context, secrets, limit)
+    if replication is not None:
+        replication.extend(outcomes)
     if limit is None:
         return secrets.owned_roles
     state = validate_config(context.project_directory, context.schema_directory)

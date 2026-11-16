@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Managed by Cloudfall. Local changes will be overwritten.
 # Loads the newest dump of every declared database of service
-# {{ cloudfall_mariadb_service.id }} into a scratch database, compares its
+# {{ cloudfall_mariadb_service.id }} (on a replica, which declares none: of
+# every database it holds that is not MariaDB's own, read when it runs) into
+# a scratch database, compares its
 # tables and the rows of each with the count file written beside the dump,
 # and drops the scratch database again, also when the drill fails. The count
 # file was counted from the dump, so writes to the source since then cannot
@@ -122,7 +124,26 @@ drill() {
     "($(totals "${expected}"), as in the count file)"
 }
 
-{% if cloudfall_mariadb_service.mariadb.databases | length == 0 %}
+{% if cloudfall_mariadb_service.mariadb.replication is defined
+      and cloudfall_mariadb_service.mariadb.replication.role == 'replica' %}
+# The same set the backup took on a replica: the databases it holds now.
+held="$(client --execute "
+  SELECT SCHEMA_NAME FROM information_schema.SCHEMATA
+  WHERE SCHEMA_NAME NOT IN ('information_schema', 'mysql',
+    'performance_schema', 'sys', '${scratch}')
+  ORDER BY SCHEMA_NAME")"
+if [ -z "${held}" ]; then
+  echo "replica {{ cloudfall_mariadb_service.id }} holds no database to check" >&2
+  exit 1
+fi
+databases=()
+while IFS= read -r database; do
+  databases+=("${database}")
+done <<<"${held}"
+for database in "${databases[@]}"; do
+  drill "${database}"
+done
+{% elif cloudfall_mariadb_service.mariadb.databases | length == 0 %}
 echo "service {{ cloudfall_mariadb_service.id }} declares no database to check" >&2
 exit 1
 {% else %}

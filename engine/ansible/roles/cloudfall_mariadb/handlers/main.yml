@@ -6,11 +6,13 @@
     daemon_reload: true
 
 # After a restart, when both are notified: the server already read the files.
+# LOCAL keeps it out of the binary log: on a replica a statement of its own
+# would be a GTID its primary never saw.
 - name: Reload the MariaDB server certificate
   ansible.builtin.command:
     argv:
       - "{{ cloudfall_mariadb_client }}"
       - --batch
       - --execute
-      - FLUSH SSL
+      - FLUSH LOCAL SSL
   changed_when: true

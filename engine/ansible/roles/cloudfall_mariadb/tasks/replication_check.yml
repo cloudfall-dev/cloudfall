@@ -1,0 +1,205 @@
+---
+# Decide what replication does on this server, from what it and its peer
+# hold now, before the settings change anything (S-019, Replication). It
+# only reads: this server as root through the socket, and the other server
+# of the pair the same way, on that server (delegated), so no password is
+# needed to read either. The plan is one of:
+#
+# - standalone, primary: nothing replicates into this server
+# - follow: a replica already linked to its declared primary
+# - seed: an empty replica that never replicated; it is loaded from one
+#   consistent dump of its primary
+# - attach: a replica that holds data whose GTIDs its primary saw all of;
+#   it follows from its own position, with no new copy
+# - demote: a former primary declared the replica of a server that still
+#   follows it: it turns read-only now and attaches once that one is promoted
+# - promote: a replica declared primary or standalone whose source can't be
+#   reached, or is read-only and applied
+# - wait-promotion: the same, while its source is writable but is declared
+#   this one's replica in the same change: nothing changes until it turns
+#   read-only
+#
+# Anything else is refused here, with nothing changed: a promotion over a
+# running, writable source (PRECONDITION naming both positions, S-019-14), a
+# server that holds data and can't attach (S-019-13), and a former primary
+# whose GTIDs its new primary never saw (S-019-16). A server is never seeded
+# over data and never emptied.
+- name: Read this server's replication position and databases
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --raw
+      - --skip-column-names
+      - --execute
+      - "{{ cloudfall_mariadb_replication_state_query }}"
+  register: cloudfall_mariadb_local_read
+  changed_when: false
+  check_mode: false
+
+- name: Read this server's link to a primary
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --vertical
+      - --execute
+      - SHOW SLAVE STATUS
+  register: cloudfall_mariadb_link_read
+  changed_when: false
+  check_mode: false
+
+- name: Keep this server's replication state
+  ansible.builtin.set_fact:
+    cloudfall_mariadb_local: >-
+      {{
+        dict(cloudfall_mariadb_replication_state_fields
+             | zip(cloudfall_mariadb_local_read.stdout.split('|')))
+      }}
+    cloudfall_mariadb_link: >-
+      {{ cloudfall_mariadb_link_read.stdout | cloudfall_mariadb_vertical }}
+
+# The server it follows now, found by the source's server_id among the
+# declared services; otherwise, for a replica, the primary it declares.
+- name: Name the other server of the pair
+  ansible.builtin.set_fact:
+    cloudfall_mariadb_peer: >-
+      {{
+        (cloudfall_mariadb_links.peers | default([])
+         | selectattr('serverId', 'equalto',
+                      cloudfall_mariadb_link.Master_Server_Id | int)
+         | first | default({}))
+        if cloudfall_mariadb_link
+        else (cloudfall_mariadb_links.primary | default({}))
+      }}
+
+- name: Read the other server's replication position and databases
+  ansible.builtin.command:
+    argv:
+      - >-
+        {{ hostvars[cloudfall_mariadb_peer.server].cloudfall_mariadb_client
+           | default(cloudfall_mariadb_client) }}
+      - --batch
+      - --raw
+      - --skip-column-names
+      - --execute
+      - "{{ cloudfall_mariadb_replication_state_query }}"
+  # Evaluated before the condition: a server with no peer names itself.
+  delegate_to: "{{ cloudfall_mariadb_peer.server | default(inventory_hostname) }}"
+  register: cloudfall_mariadb_peer_read
+  # A server that is down, or whose MariaDB is stopped, can't be reached.
+  failed_when: false
+  ignore_unreachable: true
+  changed_when: false
+  check_mode: false
+  when: cloudfall_mariadb_peer | length > 0
+
+- name: Read the other server's link to a primary
+  ansible.builtin.command:
+    argv:
+      - >-
+        {{ hostvars[cloudfall_mariadb_peer.server].cloudfall_mariadb_client
+           | default(cloudfall_mariadb_client) }}
+      - --vertical
+      - --execute
+      - SHOW SLAVE STATUS
+  # Evaluated before the condition: a server with no peer names itself.
+  delegate_to: "{{ cloudfall_mariadb_peer.server | default(inventory_hostname) }}"
+  register: cloudfall_mariadb_peer_link_read
+  failed_when: false
+  ignore_unreachable: true
+  changed_when: false
+  check_mode: false
+  when: cloudfall_mariadb_peer | length > 0
+
+- name: Keep the other server's replication state
+  ansible.builtin.set_fact:
+    cloudfall_mariadb_peer_reached: "{{ cloudfall_mariadb_peer_reachable }}"
+    cloudfall_mariadb_peer_state: >-
+      {{
+        dict(cloudfall_mariadb_replication_state_fields
+             | zip(cloudfall_mariadb_peer_read.stdout.split('|')))
+        if cloudfall_mariadb_peer_reachable else {}
+      }}
+    cloudfall_mariadb_peer_link: >-
+      {{
+        cloudfall_mariadb_peer_link_read.stdout | cloudfall_mariadb_vertical
+        if cloudfall_mariadb_peer_reachable
+        and cloudfall_mariadb_peer_link_read.rc | default(1) == 0
+        else {}
+      }}
+  vars:
+    cloudfall_mariadb_peer_reachable: >-
+      {{
+        cloudfall_mariadb_peer | length > 0
+        and cloudfall_mariadb_peer_read is not skipped
+        and not (cloudfall_mariadb_peer_read.unreachable | default(false))
+        and cloudfall_mariadb_peer_read.rc | default(1) == 0
+      }}
+
+# A promotion drops what the replica has not applied: from a read-only
+# source it first lets the replica reach the source's position. A wait,
+# no change.
+- name: Let this replica apply its read-only source's position
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --raw
+      - --skip-column-names
+      - --execute
+      - >-
+        SELECT CONCAT_WS('|', MASTER_GTID_WAIT('{{
+        cloudfall_mariadb_peer_state.binlogPos }}', {{
+        cloudfall_mariadb_promotion_wait_seconds }}), @@global.gtid_slave_pos)
+  register: cloudfall_mariadb_promotion_wait
+  changed_when: false
+  check_mode: false
+  when:
+    - cloudfall_mariadb_link | length > 0
+    - cloudfall_mariadb_declared_role != 'replica'
+    - cloudfall_mariadb_peer_reached
+    - cloudfall_mariadb_peer_state.readOnly == '1'
+
+- name: Keep the position this replica applied
+  ansible.builtin.set_fact:
+    cloudfall_mariadb_local: >-
+      {{
+        cloudfall_mariadb_local
+        | combine({'slavePos': cloudfall_mariadb_promotion_wait.stdout.split('|', 1)[1]
+                   | default('')})
+      }}
+  when: cloudfall_mariadb_promotion_wait is not skipped
+
+- name: Decide what replication does on this server
+  ansible.builtin.set_fact:
+    cloudfall_mariadb_plan: >-
+      {{
+        cloudfall_mariadb_local | cloudfall_mariadb_replication_plan(
+          service=cloudfall_mariadb_service.id,
+          declared=cloudfall_mariadb_declared_role,
+          link=cloudfall_mariadb_link,
+          links=cloudfall_mariadb_links,
+          peer=cloudfall_mariadb_peer,
+          other=cloudfall_mariadb_peer_state,
+          other_link=cloudfall_mariadb_peer_link)
+      }}
+
+- name: Report a replication refusal to the services converge
+  ansible.builtin.copy:
+    content: >-
+      {{ {'service': cloudfall_mariadb_service.id,
+          'server': cloudfall_server_id,
+          'outcome': 'refused'} | combine(cloudfall_mariadb_plan) | to_json }}
+    dest: >-
+      {{ cloudfall_mariadb_report_directory }}/{{ cloudfall_mariadb_service.id }}.json
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when:
+    - cloudfall_mariadb_plan.action == 'refuse'
+    - cloudfall_mariadb_report_directory | length > 0
+
+- name: Refuse a replication change that would lose or overwrite data
+  ansible.builtin.fail:
+    msg: "PRECONDITION {{ cloudfall_mariadb_plan.code }}: {{ cloudfall_mariadb_plan.message }}"
+  when: cloudfall_mariadb_plan.action == 'refuse'

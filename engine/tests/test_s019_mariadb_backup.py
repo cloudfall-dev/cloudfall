@@ -170,7 +170,13 @@ if sql is None:
         load(database, text)
         write()
     sys.exit(0)
-if "information_schema.SCHEMATA" in sql:
+if "information_schema.SCHEMATA" in sql and "SCHEMA_NAME NOT IN" in sql:
+    # A replica lists the databases it holds, but those the query excludes
+    excluded = re.findall(r"'([^']+)'", sql.split("NOT IN", 1)[1])
+    for name in sorted(databases):
+        if name not in excluded:
+            print(name)
+elif "information_schema.SCHEMATA" in sql:
     name = re.search(r"SCHEMA_NAME = '([^']+)'", sql)[1]
     if name in databases:
         print("comment:" + databases[name].get("comment", ""))
@@ -224,7 +230,9 @@ def _source() -> dict[str, Any]:
 EXPECTED_CRM = "Order Lines\t3\ncustomers\t5\nempty\t0\nodd`name\t1\n"
 
 
-def _render(template: str, directory: Path, *names: str) -> str:
+def _render(
+    template: str, directory: Path, *names: str, replica: bool = False
+) -> str:
     environment = Environment(
         loader=FileSystemLoader(ROLE / "templates"),
         undefined=StrictUndefined,
@@ -240,7 +248,18 @@ def _render(template: str, directory: Path, *names: str) -> str:
                 "databases": [
                     {"name": name, "application": name, "owner": name}
                     for name in names
-                ]
+                ],
+                **(
+                    {
+                        "replication": {
+                            "role": "replica",
+                            "serverId": 2,
+                            "primary": "mariadb-main",
+                        }
+                    }
+                    if replica
+                    else {}
+                ),
             },
             "backup": {
                 "directory": str(directory),
@@ -255,7 +274,9 @@ def _render(template: str, directory: Path, *names: str) -> str:
 class Host:
     """A backup directory, the stand-in server and the two rendered scripts."""
 
-    def __init__(self, tmp_path: Path, *names: str) -> None:
+    def __init__(
+        self, tmp_path: Path, *names: str, replica: bool = False
+    ) -> None:
         """Write the stand-ins and render the scripts for ``names``."""
         self.tmp_path = tmp_path
         self.backups = tmp_path / "backups"
@@ -278,10 +299,12 @@ class Host:
                 encoding="utf-8",
             )
             path.chmod(0o700)
-        names = names or ("crm",)
+        names = () if replica else (names or ("crm",))
         for template in ("backup.sh.j2", "restore-check.sh.j2"):
             script = tmp_path / template.removesuffix(".j2")
-            script.write_text(_render(template, self.backups, *names))
+            script.write_text(
+                _render(template, self.backups, *names, replica=replica)
+            )
 
     def run(self, script: str) -> subprocess.CompletedProcess[str]:
         """Run one rendered script with the stand-ins first on PATH."""
@@ -622,6 +645,55 @@ def test_s019_9_a_failed_backup_deletes_no_dump(tmp_path: Path) -> None:
     assert done.returncode != 0
     assert all(path.exists() for path in old)
     assert not [name for name in host.files() if name.endswith(".part")]
+
+
+# proves: S-019-8
+def test_s019_8_a_replica_backs_up_and_drills_every_database_it_holds(
+    tmp_path: Path,
+) -> None:
+    # A replica declares no databases: they arrive by replication (#423)
+    host = Host(tmp_path, replica=True)
+    # The drill's scratch database, left by a drill that runs now, is no
+    # database of the replica's
+    databases = host.state["databases"]
+    databases["cloudfall-restore-check"] = {
+        "tables": {},
+        "comment": "cloudfall restore drill",
+    }
+    host.update(databases=databases)
+
+    done = host.backup()
+
+    (billing,) = _dumps(host, "billing")
+    (crm,) = _dumps(host, "crm")
+    assert f"backed up billing: {billing} (1 tables, 2 rows)" in done.stdout
+    assert f"backed up crm: {crm} (4 tables, 9 rows)" in done.stdout
+    dumps = [call for call in host.calls() if call[0] == "mariadb-dump"]
+    assert [call[-1] for call in dumps] == ["billing", "crm"]
+    assert not _dumps(host, "cloudfall-restore-check")
+    databases = host.state["databases"]
+    del databases["cloudfall-restore-check"]
+    host.update(databases=databases)
+    drill = host.drill()
+    assert drill.returncode == 0, drill.stderr
+    assert "restore check passed for billing" in drill.stdout
+    assert "restore check passed for crm" in drill.stdout
+
+
+def test_a_replica_that_holds_no_database_fails_both_scripts(
+    tmp_path: Path,
+) -> None:
+    host = Host(tmp_path, replica=True)
+    host.update(databases={})
+
+    backup = host.run("backup.sh")
+    drill = host.drill()
+
+    assert backup.returncode != 0
+    assert "replica mariadb-main holds no database to back up" in backup.stderr
+    assert drill.returncode != 0
+    assert "replica mariadb-main holds no database to check" in drill.stderr
+    assert host.files() == []
 
 
 def test_a_service_without_databases_fails_both_scripts(tmp_path: Path) -> None:

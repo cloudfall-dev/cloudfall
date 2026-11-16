@@ -4,7 +4,7 @@
 # requirement mariadb, which replication uses too. The server made its key
 # and never let it leave; the services converge had the project CA sign the
 # certificate, and stages it with the CA only when it is missing or due. A
-# renewed certificate is loaded with FLUSH SSL, without a restart.
+# renewed certificate is loaded with FLUSH LOCAL SSL, without a restart.
 - name: Install the server certificate and the project CA
   ansible.builtin.copy:
     src: "{{ item.source }}"
