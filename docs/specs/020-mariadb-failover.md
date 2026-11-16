@@ -43,6 +43,7 @@ mariadb:
       listenAddress: 10.0.0.3
       controllerSources:
         - 10.0.0.1/32
+      fence: watchdog
       fenceSeconds: 15
 ```
 
@@ -50,7 +51,8 @@ mariadb:
 |---|---|---|
 | `listenAddress` | yes | The address of the replica's server that the controller and the primary's watchdog connect to; one address, never a wildcard. The replica listens on it as a primary listens on `replication.listenAddress` |
 | `controllerSources` | yes | The CIDRs the controller connects from: the management host. Both servers admit `bind.port` from them |
-| `fenceSeconds` | no | How long a primary keeps taking writes with no witness (below), 10 to 120, 15 when absent |
+| `fence` | no | `watchdog`, the default: each server turns its own writes off when it is cut off (below). `none`: no watchdog is installed, and a cut-off primary keeps taking writes (see Without the watchdog) |
+| `fenceSeconds` | no | With `fence: watchdog`, how long a primary keeps taking writes with no witness (below), 10 to 120, 15 when absent |
 
 The block is the consent: a pair without it is never promoted by anything but a declaration
 change (S-019), and removing the block and converging takes the pair back to that. The
@@ -95,6 +97,27 @@ After a promotion the new primary has no replica. The controller marks it the pa
 server, and a sole server keeps its writes on without a witness: nobody is left to be
 promoted beside it. The mark survives a restart and is cleared when a replica is attached
 again (S-019).
+
+### Without the watchdog
+
+The watchdog is what guarantees that two servers never take writes at once, and it has a
+price: an agent on each database host, and a healthy primary that stops taking writes when
+both the controller and the replica are gone. A pair may decline it with `fence: none`:
+
+- no watchdog unit is installed, and nothing on a server turns its writes off by itself
+- a server still starts read-only; the controller turns writes on for the server the record
+  names as primary, so a primary that restarts waits for the controller, and an old primary
+  that returns after a failover stays read-only
+- the controller promotes without the wait of step 3, since nothing would happen during it
+- what is given up: a primary that is alive but cut off from the controller keeps taking
+  writes from any client that still reaches it, first of all an application on its own
+  host that connects through the socket, while the replica is promoted. Those writes are on
+  no other server; when the old primary returns, the converge stops and reports the
+  divergence (S-019), and a person sorts them out
+
+`config validate` accepts it with the warning `MARIADB_FAILOVER_UNFENCED`, which says the
+last point. It suits data that can be rebuilt; it does not suit a database with an
+application on the same host.
 
 ### The controller
 
@@ -200,7 +223,8 @@ connections.
   (`service_mariadb_failover_placement`)
 - a `listenAddress` that is a wildcard or loopback, or `controllerSources` that is empty or
   holds `0.0.0.0/0` or `::/0` (`service_mariadb_failover_access`)
-- `fenceSeconds` outside 10 to 120 (`service_mariadb_failover_fence`)
+- `fenceSeconds` outside 10 to 120, or `fenceSeconds` next to `fence: none`
+  (`service_mariadb_failover_fence`)
 - a primary with two replicas that both declare `failover` (`service_mariadb_failover_ambiguous`)
 - a database or `owner` named `cloudfall_failover` or `cloudfall_watch`
   (`service_database_owner_reserved`)
@@ -286,6 +310,15 @@ the guide.
 - S-020-20: A proving run recorded in `docs/proving-runs/` on three hosts (the management
   host and a pair) shows S-020-5, S-020-7 and S-020-10 with their receipts and the measured
   times
+- S-020-21: With `fence: none`, `config validate` passes with the warning
+  `MARIADB_FAILOVER_UNFENCED`, no watchdog unit exists on either server after a converge, a
+  primary restarted with the controller running is writable again within ten seconds and
+  with the controller stopped stays read-only, and the powered-off primary of S-020-7 is
+  replaced without the wait of step 3
+- S-020-22: With `fence: none` and the primary cut off as in S-020-5, a client on its own
+  host keeps writing through the socket after the replica is promoted; when the cut ends,
+  the old primary is not attached and the converge reports the divergence, with no row
+  dropped on either server
 
 ## Out of scope
 
