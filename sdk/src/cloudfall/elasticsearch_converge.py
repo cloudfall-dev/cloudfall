@@ -10,7 +10,8 @@ certificate is missing or due, so a private key never leaves its host. The
 signed certificates and the CA are staged in a private temp dir, removed
 when the run ends, and the role copies them. A service that joins an
 ``existingCluster`` also stages that cluster's CA certificate, read from the
-project, for each of its nodes.
+project, for each of its nodes. A MariaDB server with ``remoteAccess`` gets
+its server certificate the same way (S-019).
 """
 
 from __future__ import annotations
@@ -41,6 +42,9 @@ from cloudfall.logging_deploy import (
 )
 from cloudfall.pki import PkiError, load_or_create_ca
 from cloudfall.requirements import (
+    MARIADB_CA_PATH,
+    MARIADB_CERTIFICATE_PATH,
+    CertificateRequirement,
     Requirement,
     ServerRequirements,
     VolumeRequirement,
@@ -75,6 +79,9 @@ PROVIDER_HOSTS_VARIABLE = "cloudfall_provider_hosts"
 """The hosts ``logging-volumes.yml`` and ``logging-requests.yml`` read: the nodes."""
 DELIVERED_VARIABLE = "cloudfall_services_delivered_files"
 """``services.yml``'s variable: server id, then the files the role copies."""
+MARIADB_DELIVERED_VARIABLE = "cloudfall_services_mariadb_delivered_files"
+"""The same for the MariaDB role: the server certificate and the project CA."""
+_MARIADB_PATHS = frozenset({MARIADB_CERTIFICATE_PATH.value, MARIADB_CA_PATH.value})
 ERROR_PROVIDER = "services_requirement_unmet"
 """A node requirement the controller could not meet; no host changed."""
 
@@ -106,15 +113,43 @@ def mariadb_volume_requirements(
 ) -> tuple[ServerRequirements, ...]:
     """Return the data volume each MariaDB service places on its server (S-019).
 
-    Only the volume: a MariaDB certificate, port and replication secret come
-    with ``remoteAccess`` and ``replication``, which this converge does not
-    meet yet.
+    Only the volume: the server certificate comes with
+    ``mariadb_certificate_requirements``, and a primary's port and replication
+    secret with ``replication``, which this converge does not meet yet.
     """
     services = {
         service.resource_id
         for service in inventory.services
         if service.mariadb is not None
     }
+    return _owned(inventory, services, VolumeRequirement)
+
+
+def mariadb_certificate_requirements(
+    inventory: PlatformInventory,
+) -> tuple[ServerRequirements, ...]:
+    """Return the server certificate of each MariaDB service with ``remoteAccess``.
+
+    A service that also declares ``replication`` is left out: the role refuses
+    replication before it changes anything (#423), so its server is not asked
+    to make a key either.
+    """
+    services = {
+        service.resource_id
+        for service in inventory.services
+        if service.mariadb is not None
+        and service.mariadb.remote_access is not None
+        and service.mariadb.replication is None
+    }
+    return _owned(inventory, services, CertificateRequirement)
+
+
+def _owned(
+    inventory: PlatformInventory,
+    services: set[ResourceId],
+    kind: type[VolumeRequirement | CertificateRequirement],
+) -> tuple[ServerRequirements, ...]:
+    """Return the requirements of ``kind`` that ``services`` place, by server."""
     found: list[ServerRequirements] = []
     for server in requirements_of(inventory):
         owned = tuple(
@@ -122,7 +157,7 @@ def mariadb_volume_requirements(
             for item in server.requirements
             if item.owner.kind is ResourceKind.SERVICE
             and item.owner.resource_id in services
-            and isinstance(item.spec, VolumeRequirement)
+            and isinstance(item.spec, kind)
         )
         if owned:
             found.append(ServerRequirements(server.server_id, owned))
@@ -255,9 +290,12 @@ def prepared_nodes(
     """Meet each node's volume and certificate; yield ``services.yml``'s extra vars.
 
     A MariaDB server's data volume is decided with the nodes' (S-019), in the
-    same read before any host changes. Nothing to meet yields no variable,
-    leaving the run as it was. ``server`` meets that one server's alone, for
-    a run limited to it.
+    same read before any host changes, and the server certificate of one
+    with ``remoteAccess`` is requested and signed with the nodes'; it is
+    handed to the MariaDB role apart from the nodes' files, so neither role
+    copies the other's. Nothing to meet yields no variable, leaving the run
+    as it was. ``server`` meets that one server's alone, for a run limited to
+    it.
     """
     servers = tuple(
         found
@@ -269,19 +307,28 @@ def prepared_nodes(
         for found in mariadb_volume_requirements(inventory)
         if server is None or found.server_id == server
     )
+    database_certificates = tuple(
+        found
+        for found in mariadb_certificate_requirements(inventory)
+        if server is None or found.server_id == server
+    )
     if not servers and not databases:
         yield {}
         return
     try:
         actions = _volume_actions(run, _merged(servers, databases))
+        signed = _certificates(
+            run, _merged(servers, database_certificates), inventory, store
+        )
         files = [
-            *_certificates(run, servers, inventory, store),
+            *(item for item in signed if item.path not in _MARIADB_PATHS),
             *(
                 staged
                 for staged in existing_cluster_ca_files(inventory, project_directory)
                 if server is None or staged.server == server
             ),
         ]
+        database_files = [item for item in signed if item.path in _MARIADB_PATHS]
     except VolumeRefusedError as error:
         raise LifecycleError(
             error.code,
@@ -290,8 +337,15 @@ def prepared_nodes(
         ) from error
     except (LoggingDeployError, PkiError, SecretsError) as error:
         raise LifecycleError(ERROR_PROVIDER, error.message) from error
-    with staged_files(files) as (staged, _):
+    with (
+        staged_files(files) as (staged, _),
+        staged_files(database_files) as (database_staged, _),
+    ):
         extra: dict[str, object] = {ACTIONS_VARIABLE: actions}
         if files:
             extra[DELIVERED_VARIABLE] = staged[DELIVERED_FILES_VARIABLE]
+        if database_files:
+            extra[MARIADB_DELIVERED_VARIABLE] = database_staged[
+                DELIVERED_FILES_VARIABLE
+            ]
         yield extra

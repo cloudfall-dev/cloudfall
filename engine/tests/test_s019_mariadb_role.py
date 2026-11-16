@@ -51,7 +51,8 @@ BILLING: dict[str, object] = {
 # task that changes the host
 REFUSALS = (
     "Validate MariaDB service target and declaration",
-    "Refuse remote access and replication, which this role does not converge yet",
+    "Refuse replication, which this role does not converge yet",
+    "Refuse remote access that is not narrowed to declared sources",
     "Refuse a buffer pool above three quarters of the server's memory",
     "Refuse a series MariaDB publishes no package of for this Debian release",
     "Require a staged hash for every owner",
@@ -320,17 +321,24 @@ def test_s019_3_the_data_directory_is_the_mounted_mariadb_volume() -> None:
     assert selected == [{"name": "mariadb", "path": "/var/lib/mysql"}]
 
 
-def test_remote_access_and_replication_are_refused_until_they_converge() -> None:
+def test_replication_is_refused_until_it_converges_and_remote_access_is_not() -> None:
     refuse = _task(
-        "Refuse remote access and replication, which this role does not converge yet",
+        "Refuse replication, which this role does not converge yet",
         _tasks("main.yml"),
     )
     replication = {"role": "primary", "serverId": 1, "listenAddress": "10.0.0.2"}
+    remote_access = {"listenAddress": "10.0.0.2", "allowedSources": ["10.0.0.0/24"]}
 
     assert _holds(refuse, _variables())
     assert not _holds(
         refuse,
         _variables(cloudfall_mariadb_service=_service(CRM, replication=replication)),
+    )
+    assert _holds(
+        refuse,
+        _variables(
+            cloudfall_mariadb_service=_service(CRM, remoteAccess=remote_access)
+        ),
     )
 
 

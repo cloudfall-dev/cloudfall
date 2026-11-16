@@ -1,0 +1,116 @@
+---
+# With remoteAccess, each owner with a password also has one account per
+# allowed source, at that source's host (10.0.0.0/255.255.255.0), from the
+# same controller-computed hash, requiring TLS: a plain connection from the
+# source is refused (S-019, Access). Each holds the marker role and every
+# privilege on the owner's databases, as the owner's localhost account does.
+# Application users stay socket-only and have no such account. An account
+# Cloudfall made for a source, or a remoteAccess, no longer declared is
+# locked, never dropped (S-019-7). Every statement runs only when what it
+# changes differs, so a second converge changes nothing.
+- name: Read the server's accounts at other hosts than localhost
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --raw
+      - --skip-column-names
+      - --execute
+      - "{{ item.value }}"
+  loop: "{{ cloudfall_mariadb_remote_state_queries | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: cloudfall_mariadb_remote_state_read
+  changed_when: false
+
+- name: Keep the accounts at other hosts the server holds
+  ansible.builtin.set_fact:
+    cloudfall_mariadb_remote_state: >-
+      {{
+        dict(
+          cloudfall_mariadb_remote_state_read.results | map(attribute='item.key')
+          | zip(cloudfall_mariadb_remote_state_read.results
+                | map(attribute='stdout_lines'))
+        )
+      }}
+
+- name: Set each owner's password from each allowed source, requiring TLS
+  ansible.builtin.include_tasks: owner_password.yml
+  vars:
+    cloudfall_mariadb_owner: "{{ cloudfall_mariadb_remote_account.0 }}"
+    cloudfall_mariadb_owner_host: "{{ cloudfall_mariadb_remote_account.1 }}"
+  loop: "{{ cloudfall_mariadb_owners | product(cloudfall_mariadb_remote_hosts) | list }}"
+  loop_control:
+    loop_var: cloudfall_mariadb_remote_account
+    label: >-
+      {{ cloudfall_mariadb_remote_account.0.owner }}@{{
+        cloudfall_mariadb_remote_account.1 }}
+
+- name: Mark each owner's account from an allowed source as Cloudfall's
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --execute
+      - >-
+        GRANT '{{ cloudfall_mariadb_managed_role }}' TO
+        '{{ item.split('@')[0] }}'@'{{ item.split('@')[1] }}'
+  loop: "{{ cloudfall_mariadb_remote_accounts }}"
+  changed_when: true
+  when: item not in cloudfall_mariadb_remote_state.managed_users
+
+# The escape of an underscore matches accounts.yml's grant at localhost.
+- name: Give each owner's account from an allowed source its databases
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --execute
+      - >-
+        GRANT ALL PRIVILEGES ON `{{ item.0.name | replace('_', '\_') }}`.*
+        TO '{{ item.0.owner }}'@'{{ item.1 }}'
+  loop: >-
+    {{
+      cloudfall_mariadb_service.mariadb.databases
+      | selectattr('passwordRef', 'defined')
+      | product(cloudfall_mariadb_remote_hosts) | list
+    }}
+  loop_control:
+    label: "{{ item.0.name }} to {{ item.0.owner }}@{{ item.1 }}"
+  changed_when: true
+  when: >-
+    item.0.owner ~ '@' ~ item.1 ~ '|' ~ (item.0.name | replace('_', '\_'))
+    not in cloudfall_mariadb_remote_state.grants
+
+- name: Unlock a declared account from an allowed source that was locked
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --execute
+      - >-
+        ALTER USER '{{ item.split('@')[0] }}'@'{{ item.split('@')[1] }}'
+        ACCOUNT UNLOCK
+  loop: "{{ cloudfall_mariadb_remote_accounts }}"
+  changed_when: true
+  when: item in cloudfall_mariadb_remote_state.locked_users
+
+# Dropping data is never a side effect of a converge (S-019-7).
+- name: Lock each account from a source that is no longer declared
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_mariadb_client }}"
+      - --batch
+      - --execute
+      - >-
+        ALTER USER '{{ item.split('@')[0] }}'@'{{ item.split('@')[1] }}'
+        ACCOUNT LOCK
+  loop: >-
+    {{
+      cloudfall_mariadb_remote_state.managed_users
+      | reject('in', cloudfall_mariadb_remote_accounts)
+      | reject('in', cloudfall_mariadb_remote_state.locked_users)
+      | list
+    }}
+  changed_when: true
+  when: item.split('@')[0] not in cloudfall_mariadb_system_users

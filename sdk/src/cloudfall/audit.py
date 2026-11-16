@@ -18,6 +18,7 @@ from cloudfall.dashboards import bundled_dashboards
 from cloudfall.domain import ResourceKind
 from cloudfall.elasticsearch import supported_line
 from cloudfall.inventory import (
+    MariadbOwnedDatabase,
     firewall_rules_for_server,
     logging_gateway_rules_for_server,
     remote_access_rules_for_server,
@@ -25,6 +26,7 @@ from cloudfall.inventory import (
 )
 from cloudfall.mariadb import RESERVED_USER_NAMES as RESERVED_MARIADB_USER_NAMES
 from cloudfall.mariadb import SYSTEM_DATABASES as MARIADB_SYSTEM_DATABASES
+from cloudfall.mariadb import account_host as mariadb_account_host
 from cloudfall.pki import RENEW_BEFORE, certificate_names
 from cloudfall.requirements import (
     ELASTICSEARCH_PACKAGE,
@@ -1386,8 +1388,25 @@ def _audit_mariadb_accounts(
             continue
         name = f"mariadb.accounts[{service.resource_id.value}]"
         declared_databases = sorted({item.name.value for item in mariadb.databases})
+        # With remoteAccess, each owner with a password also has one account
+        # per allowed source (S-019, Access).
+        remote_hosts = (
+            ()
+            if mariadb.remote_access is None
+            else tuple(
+                host
+                for source in mariadb.remote_access.allowed_sources
+                if (host := mariadb_account_host(source)) is not None
+            )
+        )
         declared_users = sorted(
             {f"{item.owner.value}@localhost" for item in mariadb.databases}
+            | {
+                f"{item.owner.value}@{host}"
+                for item in mariadb.databases
+                if isinstance(item, MariadbOwnedDatabase)
+                for host in remote_hosts
+            }
         )
         desired = {"databases": declared_databases, "users": declared_users}
         entry = evidence.get(service.resource_id.value)
