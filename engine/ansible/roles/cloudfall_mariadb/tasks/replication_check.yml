@@ -13,18 +13,19 @@
 #   it follows from its own position, with no new copy
 # - demote: a former primary declared the replica of a server that still
 #   follows it: it turns read-only now and attaches once that one is promoted
-# - promote: a replica declared primary or standalone whose source can't be
-#   reached, or is read-only and applied
+# - promote: a replica declared primary or standalone whose declared source
+#   can't be reached, or is read-only and applied, or whose undeclared
+#   source refuses the controller's connection
 # - wait-promotion: the same, while its source is writable but is declared
 #   this one's replica in the same change: nothing changes until it turns
 #   read-only
 #
 # Anything else is refused here, with nothing changed: a promotion over a
 # running, writable source (PRECONDITION naming both positions, S-019-14) or
-# over a source that is no declared service and still answers (#440), a
-# server that holds data and can't attach (S-019-13), and a former primary
-# whose GTIDs its new primary never saw (S-019-16). A server is never seeded
-# over data and never emptied.
+# over a source that is no declared service and still answers, or that
+# Cloudfall can't tell is stopped (#440, #446), a server that holds data and
+# can't attach (S-019-13), and a former primary whose GTIDs its new primary
+# never saw (S-019-16). A server is never seeded over data and never emptied.
 - name: Read this server's replication position and databases
   ansible.builtin.command:
     argv:
@@ -60,9 +61,9 @@
       {{ cloudfall_mariadb_link_read.stdout | cloudfall_mariadb_vertical }}
 
 # The server it follows now, found by the source's server_id among the
-# declared services, or, while the link has not connected and reports
-# server_id 0, by the host and port it names (#440); otherwise, for a
-# replica, the primary it declares.
+# declared services, or, when that server_id is none of theirs (0 while the
+# link has not connected), by the host and port it names (#440, #446);
+# otherwise, for a replica, the primary it declares.
 - name: Name the other server of the pair
   ansible.builtin.set_fact:
     cloudfall_mariadb_peer: >-
@@ -75,22 +76,24 @@
 
 # A server declared primary or standalone that follows no declared service
 # and whose link is not running: Cloudfall can't read that source, so it
-# promotes only when the controller can't reach its port either (#440).
+# promotes only when the controller's connection to its port is refused
+# (#440). The filter runs on the controller and names what it read: a
+# timeout, no route or a name it can't resolve is unknown, not stopped, and
+# refuses (#446); wait_for reports all of them as one timeout. Empty when
+# there is nothing to probe.
 - name: Try the port of a source that is no declared service
-  ansible.builtin.wait_for:
-    host: "{{ cloudfall_mariadb_link.Master_Host }}"
-    port: "{{ cloudfall_mariadb_link.Master_Port | int }}"
-    timeout: "{{ cloudfall_mariadb_source_probe_seconds }}"
-  delegate_to: localhost
-  become: false
-  register: cloudfall_mariadb_source_probe
-  ignore_errors: true
-  check_mode: false
-  when:
-    - cloudfall_mariadb_link | length > 0
-    - cloudfall_mariadb_declared_role != 'replica'
-    - cloudfall_mariadb_peer | length == 0
-    - cloudfall_mariadb_link.Slave_IO_Running | default('No') != 'Yes'
+  ansible.builtin.set_fact:
+    cloudfall_mariadb_source_probe: >-
+      {{
+        cloudfall_mariadb_link.Master_Host
+        | cloudfall_mariadb_source_probe(cloudfall_mariadb_link.Master_Port | int,
+                                         cloudfall_mariadb_source_probe_seconds | int)
+        if cloudfall_mariadb_link | length > 0
+        and cloudfall_mariadb_declared_role != 'replica'
+        and cloudfall_mariadb_peer | length == 0
+        and cloudfall_mariadb_link.Slave_IO_Running | default('No') != 'Yes'
+        else ''
+      }}
 
 - name: Read the other server's replication position and databases
   ansible.builtin.command:
@@ -202,8 +205,7 @@
           peer=cloudfall_mariadb_peer,
           other=cloudfall_mariadb_peer_state,
           other_link=cloudfall_mariadb_peer_link,
-          source_reached=(cloudfall_mariadb_source_probe is not skipped
-                          and cloudfall_mariadb_source_probe is succeeded))
+          source_probe=cloudfall_mariadb_source_probe)
       }}
 
 - name: Report a replication refusal to the services converge

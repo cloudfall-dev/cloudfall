@@ -172,7 +172,8 @@ cloudfall_mariadb_system_databases:
 cloudfall_mariadb_catch_up_seconds: 600
 cloudfall_mariadb_promotion_wait_seconds: 60
 # How long the controller tries the port of a source that is no declared
-# service before a promotion takes it as unreachable.
+# service; a probe that times out leaves the source unknown, and the
+# promotion refuses.
 cloudfall_mariadb_source_probe_seconds: 10
 # How often, 30 times, the role looks whether a new link's threads run.
 cloudfall_mariadb_link_poll_seconds: 2

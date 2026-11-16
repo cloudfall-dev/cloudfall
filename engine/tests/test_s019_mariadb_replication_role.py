@@ -15,11 +15,13 @@ unverified on two live hosts.
 
 from __future__ import annotations
 
+import errno
 import importlib.util
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -50,6 +52,7 @@ from mariadb_project import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from types import ModuleType
 
 ROOT = Path(__file__).parents[2]
@@ -379,6 +382,12 @@ class Pair:
             network[key] = str(self.hosts[host]["state"])
         else:
             network.pop(key)
+        self.network.write_text(json.dumps(network), encoding="utf-8")
+
+    def answer_at(self, host: str, address: str) -> None:
+        """Let other servers reach ``host`` at ``address`` (host:port) too."""
+        network = json.loads(self.network.read_text(encoding="utf-8"))
+        network[address] = str(self.hosts[host]["state"])
         self.network.write_text(json.dumps(network), encoding="utf-8")
 
     def write(self, host: str, user: str, table: str, rows: int) -> bool:
@@ -727,6 +736,111 @@ def test_s019_14_an_unconnected_link_is_not_promoted_over_a_writable_primary(
     assert pair.state("h2")["databases"]["billing"]["invoices"] == 9
 
 
+def _closed_port() -> int:
+    """Return a port of the loopback address nothing listens on."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return cast("int", probe.getsockname()[1])
+
+
+def _link_to(pair: Pair, host: str, port: int, **fields: object) -> None:
+    """Point h2's link at ``host:port``, as a link to an undeclared source."""
+    link = pair.state("h2")["link"]
+    pair.edit("h2", link={**link, "host": host, "port": port, **fields})
+
+
+def _refused_source(pair: Pair) -> None:
+    _link_to(pair, "127.0.0.1", _closed_port())
+
+
+def _silent_source(pair: Pair) -> None:
+    # h1 is stopped and the controller sends to a documentation address,
+    # which no network answers: the probe times out, or finds no route
+    pair.edit("h1", running=False)
+
+
+def _unresolvable_source(pair: Pair) -> None:
+    _link_to(pair, "mariadb-source.invalid", 3306)
+
+
+def _source_refusing_the_login(pair: Pair) -> None:
+    # The replica reaches h1 there, and h1 refuses its password; the
+    # controller is refused at that port (a firewall that admits the replica)
+    port = _closed_port()
+    pair.answer_at("h1", f"127.0.0.1:{port}")
+    _link_to(pair, "127.0.0.1", port, password="not-it")  # noqa: S106 - a wrong one.
+
+
+def _source_failing_tls(pair: Pair) -> None:
+    # The replica reaches h1 at a name its certificate does not hold
+    port = _closed_port()
+    pair.answer_at("h1", f"127.0.0.1:{port}")
+    _link_to(pair, "127.0.0.1", port)
+
+
+# proves: S-019-14
+@pytest.mark.parametrize(
+    ("setup", "io_errno", "says"),
+    [
+        pytest.param(_refused_source, "2003", "", id="refused: promoted"),
+        pytest.param(
+            _silent_source,
+            "2003",
+            r"probe of that port (timed out|found no route to it)",
+            id="timeout or no route",
+        ),
+        pytest.param(
+            _unresolvable_source,
+            "2003",
+            "could not resolve mariadb-source.invalid",
+            id="a name the controller can not resolve",
+        ),
+        pytest.param(
+            _source_refusing_the_login,
+            "1045",
+            "its last error came from that source",
+            id="the source refuses the login",
+        ),
+        pytest.param(
+            _source_failing_tls,
+            "2026",
+            "its last error came from that source",
+            id="a TLS error",
+        ),
+    ],
+)
+def test_s019_14_an_undeclared_source_is_promoted_over_only_when_it_refuses(
+    pair: Pair, setup: Callable[[Pair], None], io_errno: str, says: str
+) -> None:
+    _seeded(pair)
+    setup(pair)
+    replica = pair.state("h2")
+    assert replica["link"]["io"] == "Connecting"
+    assert str(replica["link"]["ioErrno"]) == io_errno
+    # h2 alone is declared, primary: its link's source is no declared service
+    pair.declare(_new_primary())
+
+    run = pair.converge(limit="h2", succeed=not says)
+
+    outcome = run.outcomes["mariadb-replica"]
+    state = pair.state("h2")
+    if not says:
+        assert outcome.outcome == "promote"
+        assert outcome.get("reason").startswith("its source refuses connections")
+        assert state["link"] is None
+        assert state["readOnly"] is False
+        return
+    assert outcome.outcome == "refused"
+    assert outcome.get("code") == "service_mariadb_promotion_unsafe"
+    assert "PRECONDITION service_mariadb_promotion_unsafe" in run.done.stdout
+    assert re.search(says, outcome.get("message")) is not None
+    assert replica["slavePos"] in outcome.get("message")
+    # Nothing changed: still a read-only replica of that source
+    assert state["readOnly"] is True
+    assert state["link"] is not None
+    assert state["link"]["host"] == replica["link"]["host"]
+
+
 # proves: S-019-15
 @pytest.mark.parametrize("order", ["inventory", "reverse_inventory"])
 def test_s019_15_a_role_swap_ends_within_two_converges_with_no_row_lost(
@@ -833,38 +947,82 @@ def _state(**fields: str) -> dict[str, str]:
     }
 
 
+def _down(errno_: str = "2003", **fields: str) -> dict[str, str]:
+    """Return an unconnected link to an undeclared source, its last IO error."""
+    return {
+        "Master_Server_Id": "0",
+        "Master_Host": "db.example.internal",
+        "Master_Port": "3306",
+        "Slave_IO_Running": "Connecting",
+        "Last_IO_Errno": errno_,
+        "Last_IO_Error": f"error {errno_}",
+        **fields,
+    }
+
+
 @pytest.mark.parametrize(
-    ("link", "peer", "other", "reached", "action"),
+    ("link", "peer", "other", "probe", "action"),
     [
         pytest.param(
             {"Master_Server_Id": "1", "Slave_IO_Running": "Connecting"},
             {"service": "mariadb-main", "server": "h1", "role": "primary"},
             {},
-            False,
+            "",
             "promote",
             id="source down",
         ),
         pytest.param(
-            {"Master_Server_Id": "9", "Slave_IO_Running": "No"},
+            _down(Master_Server_Id="9", Slave_IO_Running="No"),
             {},
             {},
-            False,
+            "refused",
             "promote",
-            id="undeclared source, link down, unreachable",
+            id="undeclared source, link down, refused",
         ),
         pytest.param(
-            {"Master_Server_Id": "0", "Slave_IO_Running": "Connecting"},
+            _down(), {}, {}, "open", "refuse", id="undeclared source, link down, open"
+        ),
+        pytest.param(
+            _down(), {}, {}, "timeout", "refuse", id="undeclared source, timeout"
+        ),
+        pytest.param(
+            _down(), {}, {}, "no-route", "refuse", id="undeclared source, no route"
+        ),
+        pytest.param(
+            _down(), {}, {}, "unresolved", "refuse", id="undeclared source, no DNS"
+        ),
+        pytest.param(
+            _down(), {}, {}, "failed", "refuse", id="undeclared source, other error"
+        ),
+        pytest.param(
+            _down("1045"),
             {},
             {},
-            True,
+            "refused",
             "refuse",
-            id="undeclared source, link down, reachable",
+            id="undeclared source refusing the login, controller refused",
+        ),
+        pytest.param(
+            _down("2026"),
+            {},
+            {},
+            "refused",
+            "refuse",
+            id="undeclared source failing TLS, controller refused",
+        ),
+        pytest.param(
+            _down("0"),
+            {},
+            {},
+            "refused",
+            "promote",
+            id="undeclared source, no IO error yet, refused",
         ),
         pytest.param(
             {"Master_Server_Id": "9", "Slave_IO_Running": "Yes"},
             {},
             {},
-            False,
+            "",
             "refuse",
             id="undeclared source, link running",
         ),
@@ -872,7 +1030,7 @@ def _state(**fields: str) -> dict[str, str]:
             {"Master_Server_Id": "1", "Slave_IO_Running": "Yes"},
             {"service": "mariadb-main", "server": "h1", "role": "primary"},
             _state(readOnly="1", serverId="1", binlogPos="0-1-12"),
-            False,
+            "",
             "refuse",
             id="read-only source not applied",
         ),
@@ -882,7 +1040,7 @@ def test_removing_replication_promotes_only_as_a_role_change_does(
     link: dict[str, str],
     peer: dict[str, str],
     other: dict[str, str],
-    reached: bool,  # noqa: FBT001 - a parameter of the table.
+    probe: str,
     action: str,
 ) -> None:
     plan = _plugin().replication_plan(
@@ -894,13 +1052,94 @@ def test_removing_replication_promotes_only_as_a_role_change_does(
         peer=peer,
         other=other,
         other_link={},
-        source_reached=reached,
+        source_probe=probe,
     )
 
     assert plan["action"] == action
     if action == "refuse":
         assert plan["code"] == "service_mariadb_promotion_unsafe"
         assert "0-1-10" in plan["message"]
+
+
+def test_an_undeclared_source_not_probed_is_an_error() -> None:
+    with pytest.raises(ValueError, match="no probe of its source"):
+        _plugin().replication_plan(
+            _state(),
+            service="mariadb-replica",
+            declared="primary",
+            link=_down(),
+            links={},
+            peer={},
+            other={},
+            other_link={},
+            source_probe="",
+        )
+    with pytest.raises(ValueError, match="unknown source probe outcome"):
+        _plugin().replication_plan(
+            _state(),
+            service="mariadb-replica",
+            declared="primary",
+            link=_down(),
+            links={},
+            peer={},
+            other={},
+            other_link={},
+            source_probe="reachable",
+        )
+
+
+# proves: S-019-14
+@pytest.mark.parametrize(
+    ("error", "outcome"),
+    [
+        pytest.param(None, "open", id="connected"),
+        pytest.param(
+            OSError(errno.ECONNREFUSED, "Connection refused"), "refused", id="refused"
+        ),
+        pytest.param(TimeoutError("timed out"), "timeout", id="timeout"),
+        pytest.param(
+            OSError(errno.ETIMEDOUT, "Operation timed out"),
+            "timeout",
+            id="the kernel's timeout",
+        ),
+        pytest.param(
+            OSError(errno.EHOSTUNREACH, "No route to host"), "no-route", id="no route"
+        ),
+        pytest.param(
+            OSError(errno.ENETUNREACH, "Network is unreachable"),
+            "no-route",
+            id="no network",
+        ),
+        pytest.param(
+            socket.gaierror(socket.EAI_NONAME, "Name or service not known"),
+            "unresolved",
+            id="an unknown name",
+        ),
+        pytest.param(
+            OSError(errno.ECONNRESET, "Connection reset by peer"),
+            "failed",
+            id="any other error",
+        ),
+    ],
+)
+def test_s019_14_the_source_probe_tells_a_refusal_from_what_it_can_not_read(
+    error: OSError | None, outcome: str
+) -> None:
+    assert _plugin().probe_outcome(error) == outcome
+
+
+# proves: S-019-14
+def test_s019_14_the_source_probe_connects_from_the_controller() -> None:
+    plugin = _plugin()
+    with socket.socket() as listening:
+        listening.bind(("127.0.0.1", 0))
+        listening.listen(1)
+        port = listening.getsockname()[1]
+        assert plugin.source_probe("127.0.0.1", port, 1) == "open"
+    assert plugin.source_probe("127.0.0.1", _closed_port(), 1) == "refused"
+    assert plugin.source_probe("mariadb-source.invalid", 3306, 1) == "unresolved"
+    with pytest.raises(ValueError, match="not a port"):
+        plugin.source_probe("127.0.0.1", 0, 1)
 
 
 _PEERS = [
@@ -937,6 +1176,11 @@ _PEERS = [
             {"Master_Server_Id": "0", "Master_Host": "203.0.113.11"},
             "mariadb-main",
             id="not connected: listen address and port",
+        ),
+        pytest.param(
+            {"Master_Server_Id": "9", "Master_Host": "203.0.113.11"},
+            "mariadb-main",
+            id="a server_id no peer has: host and port",
         ),
         pytest.param(
             {"Master_Server_Id": "0", "Master_Host": "2001:DB8:0::11"},
@@ -998,7 +1242,7 @@ def test_s019_14_a_link_reporting_server_id_0_is_not_promoted_over_its_source() 
         peer=peer,
         other=_state(readOnly="0", serverId="1", binlogPos="0-1-12"),
         other_link={},
-        source_reached=False,
+        source_probe="",
     )
 
     assert peer["service"] == "mariadb-main"
