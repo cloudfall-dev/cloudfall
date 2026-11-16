@@ -663,6 +663,22 @@ def test_s019_10_replica_of_a_newer_patch_validates(
     assert exit_code == 0, document
 
 
+@pytest.mark.parametrize("version", ["11.8", "10.6.1"])
+def test_s019_10_replica_read_first_refuses_its_primarys_version(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], version: str
+) -> None:
+    """A replica sorted before its primary names the primary's own refusal."""
+    project = write_project(
+        tmp_path / "project",
+        mariadb_service(version=version, replication=primary_replication()),
+        replica_service("a-replica"),
+        servers=PAIR,
+    )
+
+    context = _refused_with(project, capsys, "service_mariadb_version")
+    assert context["source"].endswith("mariadb-main.yaml#1")
+
+
 def test_s019_10_pair_without_a_firewall_is_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

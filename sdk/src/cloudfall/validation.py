@@ -2390,8 +2390,9 @@ def _validate_mariadb_replica(
         return
     primary = _replication_primary(document, replication, server, index)
     primary_spec = _required_mapping(primary.content, "spec", primary.source)
-    primary_version = MariadbVersion.from_boundary(
-        _required_mapping(primary_spec, "mariadb", primary.source).get("version")
+    # The primary may be read after its replica: refuse its own version first.
+    primary_version = _validate_mariadb_version(
+        primary, _required_mapping(primary_spec, "mariadb", primary.source)
     )
     if version.series != primary_version.series or version.is_older_than(
         primary_version
