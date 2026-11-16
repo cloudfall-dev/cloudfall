@@ -13,13 +13,18 @@ password is a ``no_log`` parameter and is in no result.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import re
 import socket
 import ssl
 import struct
+from typing import TYPE_CHECKING
 
 from ansible.module_utils.basic import AnsibleModule
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 DOCUMENTATION = r"""
 module: cloudfall_mariadb_source
@@ -126,6 +131,16 @@ class _Connection:
         self.sequence = (self.sequence + 1) % 256
 
 
+@contextlib.contextmanager
+def _parsing() -> Iterator[None]:
+    """Turn a packet too short or of an unknown form into a ``SourceError``."""
+    try:
+        yield
+    except (IndexError, KeyError, ValueError, struct.error) as error:
+        message = f"the source sent a malformed packet ({type(error).__name__})"
+        raise SourceError(message) from error
+
+
 def _error_text(payload: bytes) -> str:
     code = struct.unpack("<H", payload[1:3])[0]
     message = payload[3:]
@@ -193,6 +208,21 @@ def connect(  # noqa: PLR0913 - the login's parts, named.
     host: str, port: int, *, user: str, password: str, ca: str, timeout: int
 ) -> _Connection:
     """Open a logged-in session to the source."""
+    with _parsing():
+        return _connect(
+            host, port, user=user, password=password, ca=ca, timeout=timeout
+        )
+
+
+def query(connection: _Connection, statement: str) -> list[list[str | None]]:
+    """Run one read-only statement; return its rows."""
+    with _parsing():
+        return _query(connection, statement)
+
+
+def _connect(  # noqa: PLR0913 - the login's parts, named.
+    host: str, port: int, *, user: str, password: str, ca: str, timeout: int
+) -> _Connection:
     try:
         stream = socket.create_connection((host, port), timeout=timeout)
     except OSError as error:
@@ -253,8 +283,7 @@ def connect(  # noqa: PLR0913 - the login's parts, named.
     return connection
 
 
-def query(connection: _Connection, statement: str) -> list[list[str | None]]:
-    """Run one read-only statement; return its rows."""
+def _query(connection: _Connection, statement: str) -> list[list[str | None]]:
     if not _READ_ONLY.match(statement + " "):
         message = f"only SELECT and SHOW are sent to the source, not: {statement}"
         raise SourceError(message)

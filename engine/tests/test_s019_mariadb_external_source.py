@@ -12,9 +12,12 @@ are the model's; the pull request lists them as unverified.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
+import socket
 import subprocess
+import threading
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -402,6 +405,40 @@ def test_s019_18_every_task_that_sees_the_source_login_is_no_log() -> None:
         assert reading, name
         for task in reading:
             assert task.get("no_log") is True, task["name"]
+
+
+def test_a_malformed_answer_of_the_source_is_a_source_error() -> None:
+    spec = importlib.util.spec_from_file_location(
+        "cloudfall_mariadb_source", ROLE / "library" / "cloudfall_mariadb_source.py"
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    listener = socket.create_server(("127.0.0.1", 0))
+    port = int(listener.getsockname()[1])
+
+    def answer() -> None:
+        stream, _ = listener.accept()
+        with stream:
+            # A handshake of protocol 10 that ends after its first byte
+            stream.sendall(b"\x01\x00\x00\x00\x0a")
+
+    thread = threading.Thread(target=answer, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(module.SourceError, match="malformed"):
+            module.connect(
+                "127.0.0.1",
+                port,
+                user=SOURCE_USER,
+                password=SOURCE_PASSWORD,
+                ca="",
+                timeout=5,
+            )
+    finally:
+        thread.join(timeout=5)
+        listener.close()
 
 
 def test_the_source_check_reads_only() -> None:
