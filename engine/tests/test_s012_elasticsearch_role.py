@@ -661,8 +661,10 @@ def test_every_task_that_sees_a_password_or_its_hash_is_no_log() -> None:
         "Let replicas move again after the failed install",
         "Wait for the node to serve the cluster",
         "Reload the node's secure settings for its new S3 keys",
-        "Wait for the cluster to be green, or yellow on one node, without the "
-        "existing cluster",
+        (
+            "Wait for the cluster to be green, or yellow on one node, without the "
+            "existing cluster"
+        ),
         "Read whether the node locked its memory",
         "Set the elastic password from its hash",
     ]

@@ -217,13 +217,17 @@ def gate(risk: RiskLevel) -> tuple[Requirement, str]:
     if risk is RiskLevel.MUTATING:
         return (
             Requirement.CHECK_THEN_APPROVE,
-            "a mutating operation runs in check mode first and waits for an "
-            "approval of the recorded diff",
+            (
+                "a mutating operation runs in check mode first and waits for an "
+                "approval of the recorded diff"
+            ),
         )
     return (
         Requirement.HUMAN_REQUIRED,
-        "a destructive operation cannot be undone, so only a person may "
-        "let it through",
+        (
+            "a destructive operation cannot be undone, so only a person may "
+            "let it through"
+        ),
     )
 
 
@@ -1216,8 +1220,10 @@ def _outcome(
         changed = ", ".join(verification.changed)
         return (
             DecisionStatus.FAILED,
-            "the verify step changed "
-            f"{changed}, so the fleet was not in the state the run claimed",
+            (
+                "the verify step changed "
+                f"{changed}, so the fleet was not in the state the run claimed"
+            ),
         )
     unobserved = _unobserved(check, execution, verify_ran_on)
     return (

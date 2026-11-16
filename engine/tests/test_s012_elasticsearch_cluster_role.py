@@ -10,7 +10,7 @@ Ansible's inventory manager.
 from __future__ import annotations
 
 import dataclasses
-import datetime
+import datetime as dt
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -257,10 +257,14 @@ def test_s012_5_the_second_node_admits_9300_from_the_first_node_only(
         )
         lines = [line.strip() for line in rendered.splitlines() if "dport 9300" in line]
         assert lines == [
-            f'ip saddr 203.0.113.{other}/32 tcp dport 9300 accept comment '
-            '"search-main transport"',
-            f'ip6 saddr 2001:db8:{other}::/64 tcp dport 9300 accept comment '
-            '"search-main transport"',
+            (
+                f'ip saddr 203.0.113.{other}/32 tcp dport 9300 accept comment '
+                '"search-main transport"'
+            ),
+            (
+                f'ip6 saddr 2001:db8:{other}::/64 tcp dport 9300 accept comment '
+                '"search-main transport"'
+            ),
         ]
 
 
@@ -741,7 +745,7 @@ def test_s012_5_a_two_node_s3_project_validates_renders_and_passes_the_guards(
     store = SecretStore(
         project / "secrets", decrypt=_plaintext, encrypt=lambda _, value: value
     )
-    now = datetime.datetime.now(datetime.UTC)
+    now = dt.datetime.now(dt.UTC)
     load_or_create_ca(store, ResourceId("production"), now)
     services = _Services(rendered)
 

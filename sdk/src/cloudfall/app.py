@@ -2774,8 +2774,10 @@ class MarkDecisionInterruptedArgs(DecisionsArgs):
     examples=[
         (
             "Close a run that died midway",
-            "cloudfall decisions mark-interrupted restart-nginx-20260101 "
-            "--confirm-dead",
+            (
+                "cloudfall decisions mark-interrupted restart-nginx-20260101 "
+                "--confirm-dead"
+            ),
         ),
     ],
 )
@@ -3006,9 +3008,11 @@ class InvestigationEvent:
     examples=[
         (
             "Investigate a database alert with Nemotron on Nebius Token Factory",
-            "cloudfall agent investigate --alert 'postgresql-main down on hz1' "
-            "--base-url https://api.tokenfactory.nebius.com/v1/ "
-            "--model nvidia/nemotron-3-super-120b-a12b",
+            (
+                "cloudfall agent investigate --alert 'postgresql-main down on hz1' "
+                "--base-url https://api.tokenfactory.nebius.com/v1/ "
+                "--model nvidia/nemotron-3-super-120b-a12b"
+            ),
         ),
     ],
 )
@@ -3626,8 +3630,11 @@ class OperatorPassPayload(Payload):
     examples=[
         (
             "Watch every minute, checking drift every ten",
-            "cloudfall operator run --gateway-ca ca.pem --gateway-cert operator.pem "
-            "--gateway-key operator.key --interval 60 --drift-interval 600",
+            (
+                "cloudfall operator run --gateway-ca ca.pem "
+                "--gateway-cert operator.pem --gateway-key operator.key "
+                "--interval 60 --drift-interval 600"
+            ),
         ),
     ],
 )
@@ -4387,8 +4394,10 @@ class SecretsInputArgs(SecretsDirArgs):
     examples=[
         (
             "Type the SMTP password of a logging stack's alert receiver",
-            "cloudfall secrets input smtp-password-operations-email "
-            "--owner operations",
+            (
+                "cloudfall secrets input smtp-password-operations-email "
+                "--owner operations"
+            ),
         ),
     ],
 )
@@ -4645,8 +4654,10 @@ def _render_transport(ctx: Ctx) -> Callable[[str, str], object]:
     examples=[
         (
             "Import a workspace",
-            "cloudfall import render-api --api-key-file render.key "
-            "--application crm --server h1",
+            (
+                "cloudfall import render-api --api-key-file render.key "
+                "--application crm --server h1"
+            ),
         ),
     ],
 )
@@ -4860,9 +4871,9 @@ def _deploy_approval(
             fleet.inventory,
             args.component,
             args.release,
-            artifacts,
-            fleet.path(args.approvals),
-            args.schemas,
+            artifacts=artifacts,
+            approvals=fleet.path(args.approvals),
+            schemas=args.schemas,
         )
     except ReleaseApprovalError as error:
         if error.code == ERROR_APPROVAL_RECORD_INVALID:
@@ -5761,14 +5772,18 @@ data = app.group("data", description="Migrate data into declared services")
     examples=[
         (
             "Show the plan",
-            "cloudfall data copy postgresql-main --database crm "
-            "--source-url-file source.url",
+            (
+                "cloudfall data copy postgresql-main --database crm "
+                "--source-url-file source.url"
+            ),
         ),
         (
             "Copy only two schemas",
-            "cloudfall data copy postgresql-main --database crm "
-            "--source-url-file source.url --source-schema public "
-            "--source-schema app --yes",
+            (
+                "cloudfall data copy postgresql-main --database crm "
+                "--source-url-file source.url --source-schema public "
+                "--source-schema app --yes"
+            ),
         ),
     ],
 )
@@ -5794,7 +5809,7 @@ def data_copy(
             args.database,
             source,
             fleet.path(args.data_migrations),
-            schemas,
+            schemas=schemas,
         )
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error

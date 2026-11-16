@@ -158,8 +158,10 @@ def test_s006_8_remote_access_renders_listener_tls_hba_and_firewall(
     # postgresql-main's application database (crm) stays socket-only.
     assert hba == ["hostssl billing billing 10.0.0.0/24 scram-sha-256"]
     assert rules == [
-        'ip saddr 10.0.0.0/24 tcp dport 5432 accept comment '
-        '"postgresql-main remoteAccess"'
+        (
+            'ip saddr 10.0.0.0/24 tcp dport 5432 accept comment '
+            '"postgresql-main remoteAccess"'
+        )
     ]
     assert all(rule.startswith("ip saddr ") for rule in rules)
 

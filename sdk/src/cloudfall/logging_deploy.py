@@ -46,7 +46,7 @@ from cloudfall.secret_store import (
 )
 
 if TYPE_CHECKING:
-    import datetime
+    import datetime as dt
     from collections.abc import Iterator
 
     from cloudfall.domain import ResourceId
@@ -407,7 +407,7 @@ def certificate_files(
     servers: tuple[ServerRequirements, ...],
     held: dict[tuple[str, str], HeldCertificate],
     ca: ProjectCa,
-    now: datetime.datetime,
+    now: dt.datetime,
 ) -> tuple[list[StagedFile], list[CertificateOutcome]]:
     """Sign the missing and due certificates; stage each with the CA beside it.
 

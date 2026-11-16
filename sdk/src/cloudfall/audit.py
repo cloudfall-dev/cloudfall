@@ -206,25 +206,25 @@ def audit_inventory(
         _audit_server(
             server,
             inventory.baseline(server.baseline_id),
-            tuple(
+            services=tuple(
                 service
                 for service in inventory.services
                 if service.server_id == server.resource_id
             ),
-            _alert_rules_for_backend(server, stacks_by_backend, inventory),
-            tuple(
+            alert_rules=_alert_rules_for_backend(server, stacks_by_backend, inventory),
+            components=tuple(
                 component
                 for component in inventory.components
                 if server.resource_id in component.server_ids
             ),
-            receipts,
-            observations.for_server(server.resource_id),
-            _gateway_rules(server, inventory),
-            certificates.get(server.resource_id.value, ()),
-            volumes.get(server.resource_id.value, ()),
-            logging_packages.get(server.resource_id.value, ()),
-            dashboards if server.resource_id in stacks_by_backend else None,
-            tuple(
+            environment_receipts=receipts,
+            snapshot=observations.for_server(server.resource_id),
+            gateway_rules=_gateway_rules(server, inventory),
+            certificates=certificates.get(server.resource_id.value, ()),
+            volumes=volumes.get(server.resource_id.value, ()),
+            logging_packages=logging_packages.get(server.resource_id.value, ()),
+            dashboards=dashboards if server.resource_id in stacks_by_backend else None,
+            elasticsearch_nodes=tuple(
                 service
                 for service in inventory.services
                 if service.elasticsearch is not None
@@ -251,6 +251,7 @@ def audit_inventory(
 def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
     server: ServerInventory,
     baseline: BaselineInventory,
+    *,
     services: tuple[ServiceInventory, ...],
     alert_rules: tuple[AlertRuleInventory, ...],
     components: tuple[ComponentInventory, ...],

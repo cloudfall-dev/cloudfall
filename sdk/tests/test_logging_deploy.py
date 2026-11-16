@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import grp
 import json
 import os
@@ -547,7 +547,7 @@ def test_hosts_make_their_own_keys_and_hand_over_requests_only(
     )
     held_key.chmod(0o600)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "held")])
-    now = datetime.datetime.now(datetime.UTC)
+    now = dt.datetime.now(dt.UTC)
     held_certificate = (
         x509.CertificateBuilder()
         .subject_name(name)
@@ -555,7 +555,7 @@ def test_hosts_make_their_own_keys_and_hand_over_requests_only(
         .public_key(key.public_key())
         .serial_number(1)
         .not_valid_before(now)
-        .not_valid_after(now + datetime.timedelta(days=1))
+        .not_valid_after(now + dt.timedelta(days=1))
         .sign(key, hashes.SHA256())
     )
     (host / "held.crt").write_bytes(

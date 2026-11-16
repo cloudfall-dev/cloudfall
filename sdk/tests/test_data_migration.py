@@ -90,7 +90,7 @@ def test_s007_1_data_migration_plan_passes_the_named_schemas_sorted(
         "crm",
         _url_file(tmp_path),
         tmp_path / "receipts",
-        _schemas("public", "app"),
+        schemas=_schemas("public", "app"),
     )
 
     assert _extra_vars(plan)["cloudfall_data_schemas"] == ["app", "public"]
@@ -109,7 +109,7 @@ def test_s007_2_data_migration_plan_without_schemas_is_unchanged(
     )
 
     assert _extra_vars(plan_data_migration(*arguments)) == _extra_vars(
-        plan_data_migration(*arguments, DataCopySchemas())
+        plan_data_migration(*arguments, schemas=DataCopySchemas())
     )
     assert set(_extra_vars(plan_data_migration(*arguments))) == {
         "cloudfall_data_service_id",
@@ -244,7 +244,7 @@ def test_s007_13_migrate_copies_only_the_data_schema_as_data_copy_does(
         "crm",
         source,
         config.data_migrations_directory,
-        _schemas("public"),
+        schemas=_schemas("public"),
     )
     assert playbook.argv == copied.steps[-1].argv
     assert _extra_vars(copied)["cloudfall_data_schemas"] == ["public"]

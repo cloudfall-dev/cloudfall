@@ -877,7 +877,7 @@ def _validate_domain_routes(
                 _required_mapping(route, "static", document.source),
                 proxy_server_id,
                 index,
-                route_field,
+                route_field=route_field,
             )
 
 
@@ -916,6 +916,7 @@ def _validate_static_route(  # noqa: PLR0913
     static: Mapping[str, object],
     proxy_server_id: ResourceId,
     index: Mapping[ResourceKey, ResourceDocument],
+    *,
     route_field: tuple[str | int, ...],
 ) -> None:
     if not path.is_directory:
@@ -1201,7 +1202,7 @@ def _validate_service_remote_access(  # noqa: PLR0913
         )
         raise ConfigValidationError(issue)
     _validate_remote_access_rules(
-        document, spec, remote_access, server, index, field_path
+        document, spec, remote_access, server, index, field_path=field_path
     )
 
 
@@ -1211,6 +1212,7 @@ def _validate_remote_access_rules(  # noqa: PLR0913
     remote_access: Mapping[str, object],
     server: ResourceDocument,
     index: Mapping[ResourceKey, ResourceDocument],
+    *,
     field_path: tuple[str | int, ...],
 ) -> None:
     """Refuse a way in on ``server`` that its firewall cannot narrow (S-006)."""
@@ -1413,7 +1415,7 @@ def _validate_elasticsearch_service(
                 remote_access,
                 index[ResourceKey(kind=ResourceKind.SERVER, resource_id=node)],
                 index,
-                (*_ELASTICSEARCH_PATH, "remoteAccess"),
+                field_path=(*_ELASTICSEARCH_PATH, "remoteAccess"),
             )
 
 
@@ -2054,7 +2056,7 @@ def _validate_mariadb_service(
             _required_mapping(mariadb, "remoteAccess", document.source),
             server,
             index,
-            field_path,
+            field_path=field_path,
         )
 
 

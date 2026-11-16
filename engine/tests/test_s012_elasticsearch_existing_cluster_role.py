@@ -10,7 +10,7 @@ against fake nodes, as the S-012-5 and S-012-6 tests do.
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import json
 import stat
 from dataclasses import dataclass, field
@@ -86,7 +86,7 @@ def _old_ca() -> str:
     """Return the PEM of a CA that signed the existing nodes' certificates."""
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "search-old-ca")])
-    now = datetime.datetime.now(datetime.UTC)
+    now = dt.datetime.now(dt.UTC)
     certificate = (
         x509.CertificateBuilder()
         .subject_name(name)
@@ -94,7 +94,7 @@ def _old_ca() -> str:
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(now)
-        .not_valid_after(now + datetime.timedelta(days=30))
+        .not_valid_after(now + dt.timedelta(days=30))
         .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
         .sign(key, hashes.SHA256())
     )
@@ -617,7 +617,7 @@ def _converge(
     store = SecretStore(
         project / "secrets", decrypt=_plaintext, encrypt=lambda _, value: value
     )
-    now = datetime.datetime.now(datetime.UTC)
+    now = dt.datetime.now(dt.UTC)
     load_or_create_ca(store, ResourceId("production"), now)
     services = _Services(rendered)
 

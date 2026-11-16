@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import json
 import stat
 from pathlib import Path
@@ -78,7 +78,7 @@ def _certificate(*, ca: bool) -> tuple[bytes, bytes]:
     """Return a self-signed certificate and its key, both PEM."""
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "search-old-ca")])
-    now = datetime.datetime.now(datetime.UTC)
+    now = dt.datetime.now(dt.UTC)
     certificate = (
         x509.CertificateBuilder()
         .subject_name(name)
@@ -86,7 +86,7 @@ def _certificate(*, ca: bool) -> tuple[bytes, bytes]:
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(now)
-        .not_valid_after(now + datetime.timedelta(days=30))
+        .not_valid_after(now + dt.timedelta(days=30))
         .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
         .sign(key, hashes.SHA256())
     )
@@ -506,7 +506,7 @@ def test_s012_18_the_credentials_ref_login_is_staged_0600_and_removed(
     assert login.username == "team-monitor"
     assert login.password == MONITOR_PASSWORD
     assert MONITOR_PASSWORD not in repr(login)
-    with staged_password_files((), accounts, existing=(login,)) as extra:
+    with staged_password_files((), accounts=accounts, existing=(login,)) as extra:
         staged = cast("dict[str, dict[str, str]]", extra[ELASTICSEARCH_FILES_VARIABLE])
         files = staged["search-main"]
         paths = [Path(files["existingUsername"]), Path(files["existingPassword"])]
@@ -828,19 +828,19 @@ def test_s012_16_line_within_90_days_of_its_date_warns_naming_it(
     assert line is not None
     end = line.end_of_life
 
-    long_before = elasticsearch_versions_ending(state, end - datetime.timedelta(91))
-    window_opens = elasticsearch_versions_ending(state, end - datetime.timedelta(90))
-    after = elasticsearch_versions_ending(state, end + datetime.timedelta(1))
+    long_before = elasticsearch_versions_ending(state, end - dt.timedelta(91))
+    window_opens = elasticsearch_versions_ending(state, end - dt.timedelta(90))
+    after = elasticsearch_versions_ending(state, end + dt.timedelta(1))
 
     assert long_before == ()
     (ending,) = window_opens
     assert ending.service.value == "search-main"
     assert ending.line is line
-    message = ending.message(end - datetime.timedelta(90))
+    message = ending.message(end - dt.timedelta(90))
     assert end.isoformat() in message
     assert "ends on" in message
     (ended,) = after
-    assert "ended on" in ended.message(end + datetime.timedelta(1))
+    assert "ended on" in ended.message(end + dt.timedelta(1))
 
 
 def test_s012_16_config_validate_warns_for_8_19(
@@ -869,12 +869,12 @@ def test_s012_16_warning_reads_the_injected_table_not_the_clock(
     project = write_project(tmp_path / "project", elasticsearch_service())
     state = validate_config(project, SCHEMAS)
     lines = (
-        ElasticsearchLine(major=9, minor=None, end_of_life=datetime.date(2030, 3, 1)),
+        ElasticsearchLine(major=9, minor=None, end_of_life=dt.date(2030, 3, 1)),
     )
 
-    assert elasticsearch_versions_ending(state, datetime.date(2029, 1, 1), lines) == ()
-    (ending,) = elasticsearch_versions_ending(state, datetime.date(2030, 1, 1), lines)
-    assert "2030-03-01" in ending.message(datetime.date(2030, 1, 1))
+    assert elasticsearch_versions_ending(state, dt.date(2029, 1, 1), lines) == ()
+    (ending,) = elasticsearch_versions_ending(state, dt.date(2030, 1, 1), lines)
+    assert "2030-03-01" in ending.message(dt.date(2030, 1, 1))
 
 
 def test_supported_lines_are_8_19_and_9() -> None:

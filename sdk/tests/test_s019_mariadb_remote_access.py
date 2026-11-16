@@ -11,7 +11,7 @@ hosts and is left to a live proving run.
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import json
 import stat
 from dataclasses import dataclass, field
@@ -108,7 +108,7 @@ def _converge(project: Path, *, search: bool = False) -> tuple[Recorder, Project
         project / "secrets", decrypt=_plaintext, encrypt=lambda _, text: text
     )
     ca, created = load_or_create_ca(
-        store, ResourceId("production"), datetime.datetime.now(datetime.UTC)
+        store, ResourceId("production"), dt.datetime.now(dt.UTC)
     )
     assert created
     recorder = Recorder()
