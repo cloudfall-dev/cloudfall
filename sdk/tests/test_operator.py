@@ -497,7 +497,7 @@ def test_a_verifier_that_raises_settles_the_receipt_failed(tmp_path: Path) -> No
         _policied_inventory(),
         lambda _proposal: None,
         lambda _proposal: lambda _p: True,
-        _FAST_APPROVE,
+        options=_FAST_APPROVE,
         now=datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
     )
 
@@ -1173,7 +1173,7 @@ def _autonomous_pass_on_h1(
         inventory,
         lambda _proposal: None,
         lambda _proposal: lambda _p: True,
-        _FAST_APPROVE,
+        options=_FAST_APPROVE,
         now=datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
     )
 
@@ -1227,7 +1227,7 @@ def test_autonomy_withheld_without_verified_history(tmp_path: Path) -> None:
         _policied_inventory(),
         lambda _proposal: None,
         lambda _proposal: lambda _p: True,
-        _FAST_APPROVE,
+        options=_FAST_APPROVE,
         now=datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
     )
 
@@ -1255,7 +1255,7 @@ def test_autonomy_executes_once_history_is_earned(tmp_path: Path) -> None:
         _policied_inventory(),
         lambda proposal: executed.append(proposal.operation_kind.value),
         lambda _proposal: lambda _p: True,
-        _FAST_APPROVE,
+        options=_FAST_APPROVE,
         now=datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
     )
 
@@ -1292,7 +1292,7 @@ def test_autonomy_is_withheld_while_a_receipt_cannot_be_read(tmp_path: Path) -> 
         _policied_inventory(),
         lambda proposal: executed.append(proposal.operation_kind.value),
         lambda _proposal: lambda _p: True,
-        _FAST_APPROVE,
+        options=_FAST_APPROVE,
         now=datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
     )
 
@@ -1321,7 +1321,7 @@ def _autonomous_receipt(tmp_path: Path) -> tuple[ProposalStore, Path]:
         _policied_inventory(),
         lambda _proposal: None,
         lambda _proposal: lambda _p: True,
-        _FAST_APPROVE,
+        options=_FAST_APPROVE,
         now=datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
     )
     proposal_id, _status = report.executed[0]
@@ -1375,7 +1375,7 @@ def test_autonomy_respects_quiet_hours(tmp_path: Path) -> None:
         _policied_inventory(),
         lambda _proposal: None,
         lambda _proposal: lambda _p: True,
-        _FAST_APPROVE,
+        options=_FAST_APPROVE,
         now=datetime(2026, 9, 10, 2, 30, tzinfo=UTC),
     )
 
@@ -1420,7 +1420,7 @@ def test_autonomy_suspends_after_a_failed_receipt(tmp_path: Path) -> None:
         _policied_inventory(),
         lambda _proposal: None,
         lambda _proposal: lambda _p: True,
-        _FAST_APPROVE,
+        options=_FAST_APPROVE,
         now=datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
     )
 
@@ -1463,7 +1463,7 @@ def test_autonomy_enforces_the_rate_limit(tmp_path: Path) -> None:
         inventory,
         lambda _proposal: None,
         lambda _proposal: lambda _p: True,
-        _FAST_APPROVE,
+        options=_FAST_APPROVE,
         now=datetime.now(UTC),
     )
     drift_pass(
@@ -1475,7 +1475,7 @@ def test_autonomy_enforces_the_rate_limit(tmp_path: Path) -> None:
         inventory,
         lambda _proposal: None,
         lambda _proposal: lambda _p: True,
-        _FAST_APPROVE,
+        options=_FAST_APPROVE,
         now=datetime.now(UTC),
     )
 
@@ -1501,7 +1501,7 @@ def _kill_an_autonomous_run(
             inventory,
             _dies_midway,
             lambda _proposal: lambda _p: True,
-            _FAST_APPROVE,
+            options=_FAST_APPROVE,
             now=now,
         )
     (running,) = (
@@ -1546,7 +1546,7 @@ def test_autonomy_suspends_after_an_interrupted_autonomous_run(
         _policied_inventory(),
         lambda proposal: executed.append(proposal.resource_id.value),
         lambda _proposal: lambda _p: True,
-        _FAST_APPROVE,
+        options=_FAST_APPROVE,
         now=datetime(2026, 9, 10, 14, 0, tzinfo=UTC),
     )
 
@@ -1625,7 +1625,7 @@ def test_an_interrupted_autonomous_run_counts_toward_the_rate_limit(
         inventory,
         lambda _proposal: None,
         lambda _proposal: lambda _p: True,
-        _FAST_APPROVE,
+        options=_FAST_APPROVE,
         now=datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
     )
 

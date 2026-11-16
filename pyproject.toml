@@ -18,12 +18,12 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "ansible-core>=2.21,<2.22",
+    "ansible-core>=2.21,<2.23",
     "bcrypt>=5,<6",
-    "cryptography>=46,<50",
+    "cryptography>=46,<51",
     "jsonschema[format]>=4.23,<5",
     "pyyaml>=6,<7",
-    "treaty==1.0.0rc38",
+    "treaty==1.1.0",
 ]
 
 [project.urls]
@@ -98,6 +98,9 @@ ignore = [
     "COM812",
     "D203",
     "D213",
+    # The license is declared once, in LICENSE and [project] license, not
+    # repeated as a header in every file.
+    "CPY001",
 ]
 
 # treaty's Arg, Flag, and Out are dataclass field specifiers, like field().

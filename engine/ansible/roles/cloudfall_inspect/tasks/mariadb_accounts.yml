@@ -1,7 +1,8 @@
 ---
 # The databases and users of one MariaDB service (S-019), read as root through
-# the unix socket: their names, which hold Cloudfall's marker role, and which
-# are locked. No password or hash leaves the host.
+# the unix socket: their names, which hold Cloudfall's marker role, which are
+# locked, and each remote account's TLS requirement (ssl_type). No password or
+# hash leaves the host.
 - name: Read the databases and users of the MariaDB server
   ansible.builtin.command:
     argv:

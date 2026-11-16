@@ -288,6 +288,7 @@ def test_s019_7_inspect_hands_audit_the_names_never_a_hash() -> None:
         "users": ["root@localhost", "crm@localhost", "analyst@%"],
         "managedUsers": ["crm@localhost"],
         "lockedUsers": [],
+        "sslTypes": ["analyst@% NONE", "billing@10.0.0.0/255.255.255.0 ANY"],
         "databases": ["mysql", "crm"],
         "managedDatabases": ["crm"],
     }
@@ -311,3 +312,19 @@ def test_s019_7_inspect_hands_audit_the_names_never_a_hash() -> None:
     queries = " ".join(defaults["cloudfall_inspect_mariadb_queries"].values())
     assert "authentication_string" not in queries
     assert "password" not in queries.lower()
+
+
+# proves: S-019-11
+def test_s019_11_inspect_reads_each_remote_accounts_tls_requirement() -> None:
+    # REQUIRE SSL removed by hand must reach audit (#435): the read names each
+    # remote account with its ssl_type, an absent one being NONE
+    defaults = cast(
+        "dict[str, Any]",
+        DataLoader().load_from_file(str(INSPECT / "defaults" / "main.yml")),
+    )
+    query = " ".join(defaults["cloudfall_inspect_mariadb_queries"]["sslTypes"].split())
+
+    assert "JSON_VALUE(Priv, '$.ssl_type')" in query
+    assert "IFNULL(JSON_VALUE(Priv, '$.ssl_type'), '0') + 1" in query
+    assert "'NONE', 'ANY', 'X509', 'SPECIFIED'" in query
+    assert query.endswith("FROM mysql.global_priv WHERE Host NOT IN ('', 'localhost')")

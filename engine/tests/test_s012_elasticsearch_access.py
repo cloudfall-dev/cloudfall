@@ -11,7 +11,7 @@ are left for the proving run.
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import json
 import shutil
 import subprocess
@@ -652,7 +652,7 @@ def test_the_project_ca_signs_the_node_certificate_for_both_sides(
     tmp_path: Path,
 ) -> None:
     """Signed for server and client auth, it is ``met`` on the next converge."""
-    now = datetime.datetime(2026, 11, 14, 12, 0, tzinfo=datetime.UTC)
+    now = dt.datetime(2026, 11, 14, 12, 0, tzinfo=dt.UTC)
     inventory = _inventory(_project(tmp_path, remote_access=REMOTE_ACCESS))
     (requirement,) = [
         item.spec

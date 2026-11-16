@@ -490,9 +490,11 @@ def propose_for_alert(
     )
     evidence = (
         f"alert {alert.name} firing since {alert.active_at}",
-        f"labels: severity={alert.severity.value} "
-        f"environment={alert.environment.value} "
-        f"server={alert.server.value} service={alert.service.value}",
+        (
+            f"labels: severity={alert.severity.value} "
+            f"environment={alert.environment.value} "
+            f"server={alert.server.value} service={alert.service.value}"
+        ),
         f"fingerprint {alert.fingerprint}",
     )
     return OperatorProposal(
@@ -1059,7 +1061,7 @@ def approve(  # noqa: PLR0913 - the run's contract plus how the approval came.
         executor,
         verifier,
         ApprovalRecord(mode="human", policy=None, via=via),
-        options,
+        options=options,
     )
 
 
@@ -1126,6 +1128,7 @@ def _execute_and_verify(  # noqa: PLR0913 - internal execution contract.
     executor: Executor,
     verifier: Callable[[OperatorProposal], bool],
     approval: ApprovalRecord,
+    *,
     options: ApproveOptions | None = None,
 ) -> OperatorProposal:
     resolved_options = options if options is not None else ApproveOptions()
@@ -1387,6 +1390,7 @@ def autonomous_pass(  # noqa: PLR0913 - boundary mirrors approve().
     verifier_for: Callable[
         [OperatorProposal], Callable[[OperatorProposal], bool]
     ],
+    *,
     options: ApproveOptions | None = None,
     now: datetime | None = None,
 ) -> AutonomyReport:
@@ -1436,7 +1440,7 @@ def autonomous_pass(  # noqa: PLR0913 - boundary mirrors approve().
                 executor,
                 verifier_for(proposal),
                 ApprovalRecord(mode="autonomous", policy=policy.resource_id),
-                options,
+                options=options,
             )
         except OperatorError as error:
             # A person approved it since this pass listed the store.

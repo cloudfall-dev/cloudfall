@@ -197,7 +197,14 @@ def replication_plan(  # noqa: C901, PLR0911, PLR0913 - one decision table, read
         return found
 
     if link and declared != "replica":
-        return _promotion(mine, theirs, service, link, peer, positions)
+        return _promotion(
+            mine=mine,
+            theirs=theirs,
+            service=service,
+            link=link,
+            peer=peer,
+            positions=positions,
+        )
     if declared != "replica":
         return {"action": declared}
     primary = _mapping(links.get("primary", {}), "primary")
@@ -268,6 +275,7 @@ def replication_plan(  # noqa: C901, PLR0911, PLR0913 - one decision table, read
 
 
 def _promotion(  # noqa: PLR0913 - the promotion's inputs, named.
+    *,
     mine: dict[str, str],
     theirs: dict[str, str],
     service: str,

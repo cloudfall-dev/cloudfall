@@ -862,6 +862,7 @@ the password (S-019, D-9).
 @contextmanager
 def staged_password_files(  # noqa: PLR0913 - one staging dir for every kind.
     passwords: tuple[OwnedRolePassword, ...],
+    *,
     accounts: tuple[ElasticsearchAccountPassword, ...] = (),
     s3: tuple[ElasticsearchS3Credentials, ...] = (),
     users: tuple[ElasticsearchUserPassword, ...] = (),

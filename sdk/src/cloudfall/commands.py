@@ -262,10 +262,19 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "cloudfall",
         "config upgrade",
         CommandEffect.PROJECT,
-        "rewrite the project's deprecated names (`ServerType`, `server-types/`, "
-        "`serverType`) to the current ones and move receipts and proposals "
-        "from `tmp/` into `record/`",
-        output=(_shape("status", "project", "upgraded"),),
+        "bring the project to the current format: rewrite its deprecated names "
+        "(`ServerType`, `server-types/`, `serverType`) to the current ones, "
+        "move receipts and proposals from `tmp/` into `record/`, and write "
+        "`[tool.cloudfall] format` into its `pyproject.toml`",
+        output=(
+            _shape(
+                "status",
+                "project",
+                "upgraded",
+                "fromFormat:integer",
+                "format:integer",
+            ),
+        ),
     ),
     CommandContract(
         "cloudfall",

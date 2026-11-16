@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -99,7 +99,7 @@ def _without_databases(service: dict[str, object]) -> dict[str, object]:
 def _ca_certificate(*, ca: bool) -> bytes:
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "old-db-ca")])
-    now = datetime.datetime.now(datetime.UTC)
+    now = dt.datetime.now(dt.UTC)
     certificate = (
         x509.CertificateBuilder()
         .subject_name(name)
@@ -107,7 +107,7 @@ def _ca_certificate(*, ca: bool) -> bytes:
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(now)
-        .not_valid_after(now + datetime.timedelta(days=30))
+        .not_valid_after(now + dt.timedelta(days=30))
         .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
         .sign(key, hashes.SHA256())
     )
@@ -879,6 +879,38 @@ def test_s019_10_remote_access_from_every_address_is_refused(
     _refused_with(project, capsys, "service_remote_access_open")
 
 
+def test_s019_10_remote_access_from_an_ipv6_network_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    remote_access = {
+        "listenAddress": "10.0.0.2",
+        "allowedSources": ["10.0.0.0/24", "2001:db8::/64"],
+    }
+    project = write_project(
+        tmp_path / "project", mariadb_service(remoteAccess=remote_access)
+    )
+
+    context = _refused_with(project, capsys, "service_mariadb_remote_access_ipv6")
+
+    assert "2001:db8::/64" in context["message"]
+    assert "single IPv6 address" in context["message"]
+    assert context["field"] == "spec.mariadb.remoteAccess.allowedSources.1"
+
+
+@pytest.mark.parametrize("source", ["2001:db8::7/128", "10.0.0.0/24", "10.0.0.7/32"])
+def test_s019_10_remote_access_from_one_ipv6_address_or_ipv4_validates(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], source: str
+) -> None:
+    remote_access = {"listenAddress": "10.0.0.2", "allowedSources": [source]}
+    project = write_project(
+        tmp_path / "project", mariadb_service(remoteAccess=remote_access)
+    )
+
+    exit_code, document = _validate(project, capsys)
+
+    assert exit_code == 0, document
+
+
 def test_s019_10_remote_access_on_a_replica_needs_no_owner_of_its_own(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -927,19 +959,19 @@ def test_s019_10_series_within_90_days_of_its_date_warns_naming_it(
     assert series is not None
     end = series.end_of_life
 
-    long_before = mariadb_versions_ending(state, end - datetime.timedelta(91))
-    window_opens = mariadb_versions_ending(state, end - datetime.timedelta(90))
-    after = mariadb_versions_ending(state, end + datetime.timedelta(1))
+    long_before = mariadb_versions_ending(state, end - dt.timedelta(91))
+    window_opens = mariadb_versions_ending(state, end - dt.timedelta(90))
+    after = mariadb_versions_ending(state, end + dt.timedelta(1))
 
     assert long_before == ()
     (ending,) = window_opens
     assert ending.service.value == "mariadb-main"
     assert ending.series is series
-    message = ending.message(end - datetime.timedelta(90))
+    message = ending.message(end - dt.timedelta(90))
     assert "2028-02-16" in message
     assert "ends on" in message
     (ended,) = after
-    assert "ended on" in ended.message(end + datetime.timedelta(1))
+    assert "ended on" in ended.message(end + dt.timedelta(1))
 
 
 def test_s019_10_warning_reads_the_injected_table_not_the_clock(
@@ -947,11 +979,11 @@ def test_s019_10_warning_reads_the_injected_table_not_the_clock(
 ) -> None:
     project = write_project(tmp_path / "project", mariadb_service())
     state = validate_config(project, SCHEMAS)
-    table = (MariadbSeries(major=11, minor=8, end_of_life=datetime.date(2030, 3, 1)),)
+    table = (MariadbSeries(major=11, minor=8, end_of_life=dt.date(2030, 3, 1)),)
 
-    assert mariadb_versions_ending(state, datetime.date(2029, 1, 1), table) == ()
-    (ending,) = mariadb_versions_ending(state, datetime.date(2030, 1, 1), table)
-    assert "2030-03-01" in ending.message(datetime.date(2030, 1, 1))
+    assert mariadb_versions_ending(state, dt.date(2029, 1, 1), table) == ()
+    (ending,) = mariadb_versions_ending(state, dt.date(2030, 1, 1), table)
+    assert "2030-03-01" in ending.message(dt.date(2030, 1, 1))
 
 
 def test_supported_series_are_maintained_long_term_series() -> None:

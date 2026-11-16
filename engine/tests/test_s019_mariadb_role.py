@@ -548,10 +548,14 @@ def test_s019_6_the_statement_staged_for_billing_holds_its_hash_never_the_passwo
 
     (sourced,) = (text for text in server.statements() if " USING " in text)
     assert sourced.splitlines() == [
-        "CREATE USER IF NOT EXISTS 'billing'@'localhost' IDENTIFIED VIA "
-        f"mysql_native_password USING '{NATIVE}';",
-        "ALTER USER 'billing'@'localhost' IDENTIFIED VIA "
-        f"mysql_native_password USING '{NATIVE}';",
+        (
+            "CREATE USER IF NOT EXISTS 'billing'@'localhost' IDENTIFIED VIA "
+            f"mysql_native_password USING '{NATIVE}';"
+        ),
+        (
+            "ALTER USER 'billing'@'localhost' IDENTIFIED VIA "
+            f"mysql_native_password USING '{NATIVE}';"
+        ),
     ]
     assert PASSWORD not in sourced
     # Staged 0600 for the run, then removed

@@ -207,25 +207,25 @@ def audit_inventory(
         _audit_server(
             server,
             inventory.baseline(server.baseline_id),
-            tuple(
+            services=tuple(
                 service
                 for service in inventory.services
                 if service.server_id == server.resource_id
             ),
-            _alert_rules_for_backend(server, stacks_by_backend, inventory),
-            tuple(
+            alert_rules=_alert_rules_for_backend(server, stacks_by_backend, inventory),
+            components=tuple(
                 component
                 for component in inventory.components
                 if server.resource_id in component.server_ids
             ),
-            receipts,
-            observations.for_server(server.resource_id),
-            _gateway_rules(server, inventory),
-            certificates.get(server.resource_id.value, ()),
-            volumes.get(server.resource_id.value, ()),
-            logging_packages.get(server.resource_id.value, ()),
-            dashboards if server.resource_id in stacks_by_backend else None,
-            tuple(
+            environment_receipts=receipts,
+            snapshot=observations.for_server(server.resource_id),
+            gateway_rules=_gateway_rules(server, inventory),
+            certificates=certificates.get(server.resource_id.value, ()),
+            volumes=volumes.get(server.resource_id.value, ()),
+            logging_packages=logging_packages.get(server.resource_id.value, ()),
+            dashboards=dashboards if server.resource_id in stacks_by_backend else None,
+            elasticsearch_nodes=tuple(
                 service
                 for service in inventory.services
                 if service.elasticsearch is not None
@@ -252,6 +252,7 @@ def audit_inventory(
 def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
     server: ServerInventory,
     baseline: BaselineInventory,
+    *,
     services: tuple[ServiceInventory, ...],
     alert_rules: tuple[AlertRuleInventory, ...],
     components: tuple[ComponentInventory, ...],
@@ -1469,13 +1470,59 @@ def _mariadb_accounts_check(
             users - managed_users - declared_users - system_users
         ),
     }
+    # Each remote owner account requires TLS: converge sets REQUIRE SSL, which
+    # MariaDB keeps as ssl_type ANY, and nothing else (S-019-11, #435). A record
+    # an older inspect wrote holds no sslTypes, so the requirement is unread.
+    remote_users = sorted(
+        user
+        for user in users & declared_users
+        if user.rpartition("@")[2] != "localhost"
+    )
+    tls_unread = bool(remote_users) and "sslTypes" not in entry
+    if remote_users:
+        ssl_types = (
+            {}
+            if tls_unread
+            else {
+                user: kind
+                for user, _, kind in (
+                    item.rpartition(" ") for item in _strings(entry, "sslTypes")
+                )
+            }
+        )
+        observed["remoteUsersWithoutRequireSsl"] = (
+            None
+            if tls_unread
+            else [
+                f"{user} {ssl_types.get(user, 'unread')}"
+                for user in remote_users
+                if ssl_types.get(user) != "ANY"
+            ]
+        )
     matches = (
         observed["databases"] == desired["databases"]
         and observed["users"] == desired["users"]
         and not observed["lockedUsers"]
         and not observed["unlockedUndeclaredUsers"]
+        and not observed.get("remoteUsersWithoutRequireSsl")
+    )
+    status = (
+        AuditStatus.DRIFT
+        if not matches
+        else AuditStatus.UNKNOWN
+        if tls_unread
+        else AuditStatus.COMPLIANT
     )
     message = "desired state matches" if matches else "desired state does not match"
+    if observed.get("remoteUsersWithoutRequireSsl"):
+        message += "; remote users without REQUIRE SSL (ssl_type ANY): " + ", ".join(
+            cast("list[str]", observed["remoteUsersWithoutRequireSsl"])
+        )
+    if tls_unread:
+        message += (
+            "; whether the remote users require TLS was not read; inspect again "
+            "with this release"
+        )
     for label, key in (
         ("undeclared (made by Cloudfall, kept, user locked)", "undeclared"),
         ("unmanaged (not made by Cloudfall, left as they are)", "unmanaged"),
@@ -1489,7 +1536,7 @@ def _mariadb_accounts_check(
             message += f"; {label}: " + "; ".join(parts)
     return AuditCheck(
         check=name,
-        status=AuditStatus.COMPLIANT if matches else AuditStatus.DRIFT,
+        status=status,
         desired=desired,
         observed=observed,
         message=message,

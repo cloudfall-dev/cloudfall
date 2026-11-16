@@ -309,7 +309,7 @@ def _import_service(
             f"runtime {runtime!r} is not supported by the importer",
         )
         return
-    _import_component(raw_service, name, service_type, targets, groups, state)
+    _import_component(raw_service, name, service_type, targets, groups, state=state)
 
 
 def _import_component(  # noqa: PLR0913 - one boundary mapping, many inputs.
@@ -318,6 +318,7 @@ def _import_component(  # noqa: PLR0913 - one boundary mapping, many inputs.
     service_type: str,
     targets: ImportTargets,
     groups: Mapping[str, Sequence[Mapping[str, object]]],
+    *,
     state: _ImportState,
 ) -> None:
     repo = raw_service.get("repo")

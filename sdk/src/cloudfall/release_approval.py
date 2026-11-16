@@ -501,6 +501,7 @@ def deployment_approval(  # noqa: PLR0913 - one deploy's whole approval question
     inventory: PlatformInventory,
     component_id: ResourceId,
     release: ReleaseId,
+    *,
     artifacts: Path,
     approvals: Path,
     schemas: Path,

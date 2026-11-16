@@ -1,0 +1,21 @@
+{
+  "apiVersion": "cloudfall/v1",
+  "kind": "ReleaseApproval",
+  "metadata": {
+    "id": "approval-20261115t180500-8e7facfa24300c22"
+  },
+  "spec": {
+    "application": "crm",
+    "component": "crm-backend",
+    "release": "20261115T180212Z-4d20124",
+    "artifactSha256": "4c40ede91a214673c5e12bd374792dba25bbe555675b18a48000fc31469c87c5",
+    "gitCommit": "4d2012456661533ab6768bb0d11e620ecc57cf00",
+    "servers": [
+      "h2"
+    ],
+    "approver": "roman",
+    "approvedAt": "2026-11-15T18:05:00Z",
+    "expiresAt": "2026-11-16T18:05:00Z",
+    "via": "terminal"
+  }
+}

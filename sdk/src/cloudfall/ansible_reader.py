@@ -51,6 +51,9 @@ LEGACY_CATALOG_VARIABLE = "cloudfall_server_types"
 
 A baseline both variables hold must be defined the same way in each."""
 
+DEPRECATED_NAMES_REMOVED_IN: Mapping[str, str] = {LEGACY_CATALOG_VARIABLE: "0.9.0"}
+"""The release that stops reading each deprecated name above (S-017-13)."""
+
 _ADDRESS_VARIABLE = "ansible_host"
 _SSH_USER_VARIABLE = "ansible_user"
 _SSH_PORT_VARIABLE = "ansible_port"

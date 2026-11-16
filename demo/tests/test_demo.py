@@ -94,9 +94,9 @@ def test_each_turn_spends_the_daily_budget_as_it_comes() -> None:
 
 def _proposed(run: str, operation: str) -> str:
     """Copy one recorded decision of the operation into a run, as a proposal."""
-    recorded = sorted(
+    recorded = min(
         (server.INCIDENT / "recordings" / "disk-full").glob(f"{operation}-*.json")
-    )[0]
+    )
     decisions = server.INCIDENT / server.RUNS / run / "decisions"
     decisions.mkdir(parents=True, exist_ok=True)
     shutil.copy(recorded, decisions)

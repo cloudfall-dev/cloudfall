@@ -1,18 +1,27 @@
-"""Rewrite a project's deprecated names to the current ones.
+"""Bring a project to the current format (spec S-017).
 
-A ``Baseline`` was a ``ServerType`` before 0.8.0 (D-11): its files lived in
-``server-types/`` and a ``Server`` named it as ``spec.serverType``. Config
-validation still reads those names and warns about each file; this module
-is the one-step fix the warning names. It moves the files to
+A project's format says which rewrites it has had. The upgrade runs each
+step from the project's format to the current one, in order, from a
+registry keyed by the format a step starts from, then writes
+``format = <current>`` into the project's ``pyproject.toml``, keeping every
+other byte of it. It runs on a project below the oldest format a release
+reads, which every other command refuses, since it exists for that project;
+it refuses a project written by a newer Cloudfall, and a format it cannot
+read, before anything is changed. A project at the current format runs no
+step and is left as it is.
+
+The step from format 0 rewrites the deprecated names. A ``Baseline`` was a
+``ServerType`` before 0.8.0 (D-11): its files lived in ``server-types/``
+and a ``Server`` named it as ``spec.serverType``. Config validation still
+reads those names and warns about each file. The step moves the files to
 ``baselines/`` and rewrites only the scalars that carry an old name, found
 through the YAML parser's positions, so every other byte of a file,
-comments and formatting included, stays as it was. A second run finds
-nothing to change.
+comments and formatting included, stays as it was.
 
 Receipts and operator proposals lay under ``tmp/`` before 0.8.0, which git
 ignores, so the record did not survive losing the management host. They
-live in the committed ``record/`` now (D-16), and the upgrade moves each
-one there byte for byte. A file already in the record with the same bytes
+live in the committed ``record/`` now (D-16), and the step from format 0
+moves each one there byte for byte. A file already in the record with the same bytes
 is a copy, so the one under ``tmp/`` is dropped; a different file there is
 refused, since either could be the record to keep. The one change it makes
 to a record is to an old release receipt: its release command's output
@@ -22,9 +31,12 @@ receipt keeps that file's path and SHA-256.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
+import re
+import tomllib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
@@ -32,6 +44,13 @@ import yaml
 
 from cloudfall.domain import ResourceKind
 from cloudfall.project import RELEASE_OUTPUT_SUFFIX, RecordStore
+from cloudfall.project_format import (
+    PYPROJECT_FILE,
+    FormatRange,
+    ProjectFormat,
+    check_project_format,
+    read_project_format,
+)
 from cloudfall.validation import (
     BASELINE_FIELD,
     LEGACY_BASELINE_DIRECTORY,
@@ -40,12 +59,17 @@ from cloudfall.validation import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator, Mapping
     from pathlib import Path
 
 ERROR_UPGRADE_TARGET_EXISTS = "upgrade_target_exists"
 ERROR_UPGRADE_SYMLINK = "upgrade_symlink"
 ERROR_UPGRADE_RECORD_INVALID = "upgrade_record_invalid"
+ERROR_UPGRADE_FORMAT_UNWRITABLE = "upgrade_format_unwritable"
+
+_FORMAT_TABLE = "tool.cloudfall"
+_TABLE_HEADER = re.compile(r"[ \t]*\[(?P<name>[^\[\]]+)\][ \t]*(?:#.*)?")
+_FORMAT_KEY = re.compile(r"(?P<lead>[ \t]*format[ \t]*=[ \t]*)(?P<value>[^ \t#\r\n]+)")
 
 _YAML_SUFFIXES = frozenset({".yaml", ".yml"})
 _RECORD_PATTERN = "*.json"
@@ -93,6 +117,15 @@ class UpgradeResult:
 
     project: Path
     files: tuple[FileUpgrade, ...]
+    from_format: ProjectFormat
+    """The format the project was written in before the upgrade."""
+    format: ProjectFormat
+    """The format the project is written in now: the current one."""
+
+    @property
+    def changed(self) -> bool:
+        """Whether the upgrade changed any file, ``pyproject.toml`` included."""
+        return bool(self.files) or self.from_format != self.format
 
     def as_dict(self) -> dict[str, object]:
         """Serialize for system boundaries."""
@@ -100,6 +133,8 @@ class UpgradeResult:
             "status": "ok",
             "project": str(self.project),
             "upgraded": [upgraded.as_dict() for upgraded in self.files],
+            "fromFormat": self.from_format.value,
+            "format": self.format.value,
         }
 
 
@@ -128,57 +163,207 @@ class _Output:
     text: str
 
 
-def upgrade_project(project: Path) -> UpgradeResult:
-    """Rewrite every deprecated name, and move the record out of ``tmp/``.
+@dataclass(frozen=True, slots=True)
+class _Step:
+    """One rewrite from a format to the next one."""
 
-    The whole plan is made before the first write, so a move that would
-    overwrite an existing file, or a file or folder reached through a
-    symlink, fails with nothing changed.
+    plan: Callable[[Path], tuple[_Planned, ...]]
+    """The files the step moves or rewrites, planned before its first write."""
+    emptied: Callable[[Path], tuple[Path, ...]]
+    """Folders the step leaves behind, removed once they are empty."""
+
+
+def upgradable_format(project: Path, supported: FormatRange) -> ProjectFormat:
+    """Return the project's format when ``config upgrade`` may run on it.
+
+    It is every other command's check without the too-old refusal: a format
+    below ``supported.oldest`` is the project the upgrade exists for. A
+    format above ``supported.current`` still raises
+    ``project_format_too_new`` and one that cannot be read
+    ``project_format_invalid``.
     """
-    planned = (*_plan(project), *_record_moves(project))
-    for step in planned:
-        _refuse_symlink(project, step.source)
-        _refuse_symlink(project, step.target)
-        if step.target != step.source and _occupied(step):
-            message = (
-                f"cannot move {step.source.relative_to(project).as_posix()}: "
-                f"{step.target.relative_to(project).as_posix()} already exists"
-                + (" with different content" if step.record else "")
-            )
-            raise UpgradeError(ERROR_UPGRADE_TARGET_EXISTS, message)
-        if step.output is not None:
-            _refuse_symlink(project, step.output.path)
-            _refuse_other_output(project, step)
-    for step in planned:
-        if step.output is not None:
-            _keep_output(step.output)
-        if step.text is not None:
-            step.source.write_text(step.text, encoding="utf-8", newline="")
-        if step.target == step.source:
-            continue
-        if step.record and step.target.exists():
-            # A copy of the same bytes is already in the record.
-            step.source.unlink()
-            continue
-        step.target.parent.mkdir(parents=True, exist_ok=True)
-        step.source.rename(step.target)
-    _remove_empty(project / LEGACY_BASELINE_DIRECTORY)
-    for store in RecordStore:
-        _remove_empty(project / store.legacy_directory)
+    project_format = read_project_format(project, supported)
+    if project_format < supported.oldest:
+        return project_format
+    return check_project_format(project, supported)
+
+
+def upgrade_project(project: Path, supported: FormatRange) -> UpgradeResult:
+    """Run each step from the project's format to the current one.
+
+    Then write ``format = <current>`` into ``pyproject.toml``. The new
+    ``pyproject.toml`` is made, and each step's plan, before that step's
+    first write, so a move that would overwrite an existing file, a file or
+    folder reached through a symlink, or a ``pyproject.toml`` the format
+    cannot be written into without changing another line fails with nothing
+    changed. A project at the current format runs no step and changes
+    nothing.
+    """
+    start = upgradable_format(project, supported)
+    steps = _steps_between(start, supported.current)
+    pyproject = (
+        _pyproject_with_format(project, supported.current)
+        if start != supported.current
+        else None
+    )
+    files: list[FileUpgrade] = []
+    for step in steps:
+        files.extend(_run_step(project, step))
+    if pyproject is not None:
+        pyproject.path.write_text(pyproject.text, encoding="utf-8", newline="")
     return UpgradeResult(
         project=project,
-        files=tuple(
-            FileUpgrade(
-                path=step.target.relative_to(project).as_posix(),
-                moved_from=(
-                    step.source.relative_to(project).as_posix()
-                    if step.target != step.source
-                    else None
-                ),
-                renamed=step.renamed,
+        files=tuple(files),
+        from_format=start,
+        format=supported.current,
+    )
+
+
+def _steps_between(start: ProjectFormat, current: ProjectFormat) -> tuple[_Step, ...]:
+    """Return the steps from ``start`` to ``current``, in order."""
+    steps: list[_Step] = []
+    for value in range(start.value, current.value):
+        step = UPGRADE_STEPS.get(ProjectFormat(value))
+        if step is None:
+            message = (
+                f"no upgrade step from format {value}: a release that raises the "
+                "current format adds the step that leads to it"
             )
-            for step in planned
-        ),
+            raise LookupError(message)
+        steps.append(step)
+    return tuple(steps)
+
+
+def _run_step(project: Path, step: _Step) -> tuple[FileUpgrade, ...]:
+    """Check one step's whole plan, then carry it out."""
+    planned = step.plan(project)
+    for item in planned:
+        _refuse_symlink(project, item.source)
+        _refuse_symlink(project, item.target)
+        if item.target != item.source and _occupied(item):
+            message = (
+                f"cannot move {item.source.relative_to(project).as_posix()}: "
+                f"{item.target.relative_to(project).as_posix()} already exists"
+                + (" with different content" if item.record else "")
+            )
+            raise UpgradeError(ERROR_UPGRADE_TARGET_EXISTS, message)
+        if item.output is not None:
+            _refuse_symlink(project, item.output.path)
+            _refuse_other_output(project, item)
+    for item in planned:
+        if item.output is not None:
+            _keep_output(item.output)
+        if item.text is not None:
+            item.source.write_text(item.text, encoding="utf-8", newline="")
+        if item.target == item.source:
+            continue
+        if item.record and item.target.exists():
+            # A copy of the same bytes is already in the record.
+            item.source.unlink()
+            continue
+        item.target.parent.mkdir(parents=True, exist_ok=True)
+        item.source.rename(item.target)
+    for directory in step.emptied(project):
+        _remove_empty(directory)
+    return tuple(
+        FileUpgrade(
+            path=item.target.relative_to(project).as_posix(),
+            moved_from=(
+                item.source.relative_to(project).as_posix()
+                if item.target != item.source
+                else None
+            ),
+            renamed=item.renamed,
+        )
+        for item in planned
+    )
+
+
+def _pyproject_with_format(project: Path, current: ProjectFormat) -> _Output:
+    """Return ``pyproject.toml`` with ``format = <current>``, all else kept.
+
+    A missing file is created with the table alone, a file without the
+    table gets it appended, and a ``format`` under a ``[tool.cloudfall]``
+    header gets its value replaced. The result is parsed back and must equal
+    the old document with only the format changed; a file whose
+    ``tool.cloudfall`` is an inline table or dotted keys fails that, and is
+    refused for a person to edit.
+    """
+    path = project / PYPROJECT_FILE
+    _refuse_symlink(project, path)
+    if not path.exists():
+        return _Output(path=path, text=f"[{_FORMAT_TABLE}]\nformat = {current}\n")
+    # The format reader has already read it as UTF-8 TOML.
+    text = path.read_bytes().decode("utf-8")
+    document = tomllib.loads(text)
+    expected = copy.deepcopy(document)
+    expected.setdefault("tool", {}).setdefault("cloudfall", {})["format"] = (
+        current.value
+    )
+    tool = document.get("tool", {})
+    rewritten = (
+        _replace_format(text, current)
+        if "cloudfall" in tool
+        else _append_format(text, current)
+    )
+    try:
+        written = tomllib.loads(rewritten) if rewritten is not None else None
+    except tomllib.TOMLDecodeError:
+        written = None
+    if rewritten is None or written != expected:
+        message = (
+            f"cannot write `format = {current}` into {PYPROJECT_FILE} without "
+            f"changing its other lines; write `{_FORMAT_TABLE}` as a "
+            f"`[{_FORMAT_TABLE}]` table with its `format` on a line of its own, "
+            "then run the upgrade again"
+        )
+        raise UpgradeError(ERROR_UPGRADE_FORMAT_UNWRITABLE, message)
+    return _Output(path=path, text=rewritten)
+
+
+def _append_format(text: str, current: ProjectFormat) -> str:
+    """Return ``text`` with a ``[tool.cloudfall]`` table appended."""
+    newline = "\r\n" if "\r\n" in text else "\n"
+    table = f"[{_FORMAT_TABLE}]{newline}format = {current}{newline}"
+    if not text:
+        return table
+    ending = "" if text.endswith("\n") else newline
+    return f"{text}{ending}{newline}{table}"
+
+
+def _replace_format(text: str, current: ProjectFormat) -> str | None:
+    """Return ``text`` with the value of its ``[tool.cloudfall]`` format replaced.
+
+    None when no ``format`` line follows a ``[tool.cloudfall]`` header.
+    """
+    lines = text.splitlines(keepends=True)
+    in_table = False
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith("["):
+            header = _TABLE_HEADER.fullmatch(line.rstrip("\r\n"))
+            name = "" if header is None else header["name"]
+            in_table = re.sub(r"[\s\"']", "", name) == _FORMAT_TABLE
+            continue
+        if not in_table:
+            continue
+        key = _FORMAT_KEY.match(line)
+        if key is None:
+            continue
+        start, end = key.span("value")
+        lines[index] = f"{line[:start]}{current}{line[end:]}"
+        return "".join(lines)
+    return None
+
+
+def _plan_from_format_0(project: Path) -> tuple[_Planned, ...]:
+    """D-11's names to the current ones, and D-16's record out of ``tmp/``."""
+    return (*_plan(project), *_record_moves(project))
+
+
+def _emptied_from_format_0(project: Path) -> tuple[Path, ...]:
+    return (
+        project / LEGACY_BASELINE_DIRECTORY,
+        *(project / store.legacy_directory for store in RecordStore),
     )
 
 
@@ -417,3 +602,14 @@ def _remove_empty(directory: Path) -> None:
             child.rmdir()
     if not any(directory.iterdir()):
         directory.rmdir()
+
+
+UPGRADE_STEPS: Mapping[ProjectFormat, _Step] = {
+    ProjectFormat(0): _Step(plan=_plan_from_format_0, emptied=_emptied_from_format_0),
+}
+"""Each rewrite, keyed by the format it starts from; it leads to the next one.
+
+A release that raises the current format adds the step that leads to it, and
+keeps every step back to format 0, so a project left alone for several
+releases upgrades in one run.
+"""

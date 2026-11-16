@@ -8,11 +8,11 @@ import json
 import subprocess
 import sys
 import tarfile
-import textwrap
 from pathlib import Path
 from typing import Any
 
 import pytest
+from ansible_repository import MARKER, PURGE, ansible_repository
 from examples_project import copy_examples
 from mcp import ClientSession, StdioServerParameters, stdio_client
 from mcp.types import TextContent
@@ -20,120 +20,6 @@ from mcp.types import TextContent
 ROOT = Path(__file__).parents[2]
 EXAMPLES = ROOT / "config" / "examples"
 SERVE = ("-c", "from cloudfall.cli import run; run()", "mcp", "serve")
-
-HOSTS = """\
----
-all:
-  children:
-    app_servers:
-      hosts:
-        web-1:
-          ansible_host: 127.0.0.1
-"""
-
-GROUP_VARS = """\
----
-ansible_user: ansible
-cloudfall_baselines:
-  web:
-    os:
-      distribution: Debian
-      versions:
-        - '13'
-      service_manager: systemd
-    storage:
-      mounts:
-        - path: /
-          filesystem: ext4
-          minimum_bytes: 20000000000
-    packages:
-      required:
-        - name: curl
-      forbidden:
-        - telnetd
-    services:
-      required:
-        - name: ssh.service
-          state: running
-          status: enabled
-    configuration:
-      files:
-        - path: /etc/ssh/sshd_config
-          capture: hash
-"""
-
-WEB_1 = """\
----
-cloudfall:
-  environment: production
-  baseline: web
-  lifecycle: active
-"""
-
-MARKER = """\
-id: write-marker
-description: Write the release marker
-playbook: playbooks/marker.yml
-risk: mutating
-targets: host
-inputs:
-  version: string
-verify:
-  playbook: playbooks/marker.yml
-"""
-
-PURGE = """\
-id: purge
-description: Remove what nothing points at
-playbook: playbooks/marker.yml
-risk: destructive
-targets: fleet
-verify:
-  playbook: playbooks/marker.yml
-"""
-
-PLAYBOOK = """\
----
-- name: Write the marker
-  hosts: all
-  connection: local
-  gather_facts: false
-  tasks:
-    - name: Place the marker
-      ansible.builtin.copy:
-        content: "release {{ version | default('none') }}\\n"
-        dest: "{{ playbook_dir }}/../marker.txt"
-        mode: "0600"
-"""
-
-
-def _repository(tmp_path: Path, **operations: str) -> Path:
-    repository = tmp_path / "fleet-ansible"
-    inventory = repository / "inventories" / "production"
-    (inventory / "group_vars" / "all").mkdir(parents=True)
-    (inventory / "host_vars").mkdir(parents=True)
-    (inventory / "hosts.yml").write_text(HOSTS, encoding="utf-8")
-    (inventory / "group_vars" / "all" / "main.yml").write_text(
-        GROUP_VARS, encoding="utf-8"
-    )
-    (inventory / "host_vars" / "web-1.yml").write_text(WEB_1, encoding="utf-8")
-    (repository / "ansible.cfg").write_text(
-        textwrap.dedent("""\
-            [defaults]
-            inventory = inventories/production
-            retry_files_enabled = False
-            interpreter_python = auto_silent
-            """),
-        encoding="utf-8",
-    )
-    (repository / "playbooks").mkdir()
-    (repository / "playbooks" / "marker.yml").write_text(PLAYBOOK, encoding="utf-8")
-    declared = operations or {"write-marker": MARKER}
-    (repository / "operations").mkdir()
-    for name, body in declared.items():
-        (repository / "operations" / f"{name}.yml").write_text(body, encoding="utf-8")
-    return repository
-
 
 def _serve(*flags: str, cwd: Path) -> StdioServerParameters:
     return StdioServerParameters(
@@ -167,7 +53,9 @@ def _talk(
 
 
 def test_a_repository_serves_its_catalog_and_no_approval(tmp_path: Path) -> None:
-    repository = _repository(tmp_path, **{"write-marker": MARKER, "purge": PURGE})
+    repository = ansible_repository(
+        tmp_path, **{"write-marker": MARKER, "purge": PURGE}
+    )
 
     tools, _ = _talk(_serve("--repository", str(repository), cwd=tmp_path))
 
@@ -193,7 +81,7 @@ def test_a_repository_serves_its_catalog_and_no_approval(tmp_path: Path) -> None
 def test_an_operation_tool_records_a_proposal_and_changes_nothing(
     tmp_path: Path,
 ) -> None:
-    repository = _repository(tmp_path)
+    repository = ansible_repository(tmp_path)
 
     _, (proposed, decisions, why) = _talk(
         _serve(cwd=repository),
@@ -210,8 +98,10 @@ def test_an_operation_tool_records_a_proposal_and_changes_nothing(
     assert decision["spec"]["status"] == "proposed"
     assert decision["spec"]["inputs"] == {"version": "2.0.0"}
     assert proposed["data"]["next"] == [
-        "a person approves it at a terminal, typing the decision id: "
-        f"cloudfall decisions approve {decision['metadata']['id']}"
+        (
+            "a person approves it at a terminal, typing the decision id: "
+            f"cloudfall decisions approve {decision['metadata']['id']}"
+        )
     ]
     assert not (repository / "marker.txt").exists()
     recorded = decisions["data"]["decisions"]
@@ -220,8 +110,8 @@ def test_an_operation_tool_records_a_proposal_and_changes_nothing(
 
 
 def test_a_call_cannot_reach_another_fleet_or_approve(tmp_path: Path) -> None:
-    repository = _repository(tmp_path)
-    other = _repository(tmp_path / "other")
+    repository = ansible_repository(tmp_path)
+    other = ansible_repository(tmp_path / "other")
 
     _, (redirected, approved) = _talk(
         _serve("--repository", str(repository), cwd=tmp_path),
@@ -557,7 +447,7 @@ def test_a_server_serves_one_fleet(flags: tuple[str, ...], tmp_path: Path) -> No
 
 
 def test_a_repository_without_an_inventory_says_so(tmp_path: Path) -> None:
-    repository = _repository(tmp_path)
+    repository = ansible_repository(tmp_path)
     (repository / "ansible.cfg").write_text("[defaults]\n", encoding="utf-8")
 
     done = subprocess.run(  # noqa: S603 - fixed interpreter and arguments.

@@ -231,7 +231,14 @@ class Pair:
             extra = run_directory / "extra.json"
             extra.write_text(json.dumps(staged), encoding="utf-8")
             self.staged = staged
-            done = self._play(run_directory, inventory, extra, reports, limit, order)
+            done = self._play(
+                run_directory,
+                inventory=inventory,
+                extra=extra,
+                reports=reports,
+                limit=limit,
+                order=order,
+            )
         changed = sum(int(match[2]) for match in RECAP.finditer(done.stdout))
         assert RECAP.search(done.stdout) is not None, done.stdout + done.stderr
         assert (done.returncode == 0) is succeed, done.stdout + done.stderr
@@ -240,6 +247,7 @@ class Pair:
     def _play(  # noqa: PLR0913 - one replay's files and options.
         self,
         directory: Path,
+        *,
         inventory: Path,
         extra: Path,
         reports: Path,
@@ -520,8 +528,10 @@ def test_s019_12_the_primary_admits_3306_from_the_replica_only(pair: Pair) -> No
     rules = _port_rules(pair.rendered_host("h1"), 3306)
 
     assert rules == [
-        'ip saddr 203.0.113.12/32 tcp dport 3306 accept comment "mariadb-main '
-        'replication"'
+        (
+            'ip saddr 203.0.113.12/32 tcp dport 3306 accept comment "mariadb-main '
+            'replication"'
+        )
     ]
     # The replica opens nothing for it
     assert _port_rules(pair.rendered_host("h2"), 3306) == []

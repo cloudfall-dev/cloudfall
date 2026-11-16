@@ -57,6 +57,7 @@ from cloudfall.mariadb import (
     MariadbSeries,
     MariadbVersion,
 )
+from cloudfall.mariadb import account_host as mariadb_account_host
 from cloudfall.mariadb import supported_series as mariadb_series
 from cloudfall.mariadb import supported_series_text as mariadb_series_text
 
@@ -84,6 +85,12 @@ LEGACY_BASELINE_DIRECTORY = "server-types"
 """Deprecated folder of ``Baseline`` resources."""
 LEGACY_BASELINE_FIELD = "serverType"
 """Deprecated name of ``Server.spec.baseline``."""
+DEPRECATED_NAMES_REMOVED_IN: Mapping[str, str] = {
+    LEGACY_BASELINE_KIND: "0.9.0",
+    LEGACY_BASELINE_DIRECTORY: "0.9.0",
+    LEGACY_BASELINE_FIELD: "0.9.0",
+}
+"""The release that stops reading each deprecated name above (S-017-13)."""
 BASELINE_FIELD = "baseline"
 """The ``Server`` spec field naming the server's ``Baseline``."""
 UPGRADE_COMMAND = "cloudfall config upgrade"
@@ -877,7 +884,7 @@ def _validate_domain_routes(
                 _required_mapping(route, "static", document.source),
                 proxy_server_id,
                 index,
-                route_field,
+                route_field=route_field,
             )
 
 
@@ -916,6 +923,7 @@ def _validate_static_route(  # noqa: PLR0913
     static: Mapping[str, object],
     proxy_server_id: ResourceId,
     index: Mapping[ResourceKey, ResourceDocument],
+    *,
     route_field: tuple[str | int, ...],
 ) -> None:
     if not path.is_directory:
@@ -1201,7 +1209,7 @@ def _validate_service_remote_access(  # noqa: PLR0913
         )
         raise ConfigValidationError(issue)
     _validate_remote_access_rules(
-        document, spec, remote_access, server, index, field_path
+        document, spec, remote_access, server, index, field_path=field_path
     )
 
 
@@ -1211,6 +1219,7 @@ def _validate_remote_access_rules(  # noqa: PLR0913
     remote_access: Mapping[str, object],
     server: ResourceDocument,
     index: Mapping[ResourceKey, ResourceDocument],
+    *,
     field_path: tuple[str | int, ...],
 ) -> None:
     """Refuse a way in on ``server`` that its firewall cannot narrow (S-006)."""
@@ -1413,7 +1422,7 @@ def _validate_elasticsearch_service(
                 remote_access,
                 index[ResourceKey(kind=ResourceKind.SERVER, resource_id=node)],
                 index,
-                (*_ELASTICSEARCH_PATH, "remoteAccess"),
+                field_path=(*_ELASTICSEARCH_PATH, "remoteAccess"),
             )
 
 
@@ -1959,6 +1968,7 @@ ERROR_MARIADB_REPLICA_VERSION = "service_mariadb_replica_version"
 ERROR_MARIADB_REPLICATION_UNFIREWALLED = "service_mariadb_replication_unfirewalled"
 ERROR_MARIADB_REPLICA_UNADDRESSED = "service_mariadb_replica_unaddressed"
 ERROR_MARIADB_REPLICATION_SOURCE = "service_mariadb_replication_source"
+ERROR_MARIADB_REMOTE_ACCESS_IPV6 = "service_mariadb_remote_access_ipv6"
 ERROR_DATABASE_OWNER_RESERVED = "service_database_owner_reserved"
 _MARIADB_PATH = ("spec", "mariadb")
 _REPLICATION_PATH = ("replication",)
@@ -2048,14 +2058,37 @@ def _validate_mariadb_service(
                 field_path=field_path,
             )
             raise ConfigValidationError(issue)
+        remote_access = _required_mapping(mariadb, "remoteAccess", document.source)
         _validate_remote_access_rules(
-            document,
-            spec,
-            _required_mapping(mariadb, "remoteAccess", document.source),
-            server,
-            index,
-            field_path,
+            document, spec, remote_access, server, index, field_path=field_path
         )
+        _validate_mariadb_remote_sources(document, remote_access)
+
+
+def _validate_mariadb_remote_sources(
+    document: ResourceDocument, remote_access: Mapping[str, object]
+) -> None:
+    """Refuse a source that is no MariaDB account host: an IPv6 network.
+
+    Runs after the S-006 rules, so each source is already a canonical network.
+    One IPv6 address (``/128``) and every IPv4 network stay accepted (D-26);
+    the role refuses the same sources at converge, as a second line.
+    """
+    raw_sources = remote_access.get("allowedSources")
+    sources = raw_sources if isinstance(raw_sources, list) else []
+    for position, raw_source in enumerate(sources):
+        source = IpNetworkCidr.from_boundary(raw_source)
+        if mariadb_account_host(source) is None:
+            raise _mariadb_refusal(
+                document,
+                ERROR_MARIADB_REMOTE_ACCESS_IPV6,
+                f"allowed source {source.value} is an IPv6 network, which MariaDB "
+                "cannot match as an account host; a single IPv6 address "
+                "(/128) or an IPv4 network is accepted",
+                "remoteAccess",
+                "allowedSources",
+                position,
+            )
 
 
 def _validate_mariadb_version(

@@ -10,7 +10,7 @@ the provider playbooks as fresh nodes would (``elasticsearch_hosts``).
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import json
 import stat
 from dataclasses import dataclass, field
@@ -323,7 +323,7 @@ def _converge(
     accounts.parent.mkdir(parents=True)
     accounts.write_text(secrets, encoding="utf-8")
     ca, created = load_or_create_ca(
-        _store(project), ResourceId("production"), datetime.datetime.now(datetime.UTC)
+        _store(project), ResourceId("production"), dt.datetime.now(dt.UTC)
     )
     assert created
     recorder = Recorder()

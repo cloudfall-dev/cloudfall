@@ -254,6 +254,10 @@
         "baseline": {
           "$ref": "common.schema.json#/$defs/resourceId"
         },
+        "serverType": {
+          "description": "The baseline, as snapshots written before 0.8.0 name it; a record keeps the field it was written with",
+          "$ref": "common.schema.json#/$defs/resourceId"
+        },
         "observedAt": {
           "type": "string",
           "format": "date-time"
@@ -867,6 +871,17 @@
               },
               "managedDatabases": {
                 "$ref": "#/$defs/mariadbNameList"
+              },
+              "sslTypes": {
+                "description": "Each remote account's TLS requirement as user@host and its ssl_type, as 'billing@10.0.0.0/255.255.255.0 ANY'; absent from a record an older inspect wrote",
+                "type": "array",
+                "maxItems": 4096,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512,
+                  "pattern": "^.*@.+ (NONE|ANY|X509|SPECIFIED)$"
+                }
               }
             },
             "required": [
@@ -947,9 +962,20 @@
           }
         }
       },
+      "oneOf": [
+        {
+          "required": [
+            "baseline"
+          ]
+        },
+        {
+          "required": [
+            "serverType"
+          ]
+        }
+      ],
       "required": [
         "server",
-        "baseline",
         "observedAt",
         "collectorVersion",
         "os",

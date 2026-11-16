@@ -8,7 +8,7 @@ converge handed it. Each output is grepped for the password.
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import json
 import os
 import stat
@@ -129,7 +129,7 @@ def _project(tmp_path: Path, secrets: str) -> Path:
         encrypt=lambda _, text: text,
     )
     load_or_create_ca(
-        store, ResourceId("production"), datetime.datetime.now(datetime.UTC)
+        store, ResourceId("production"), dt.datetime.now(dt.UTC)
     )
     return project
 
