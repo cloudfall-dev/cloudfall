@@ -34,6 +34,31 @@
       loop_control:
         loop_var: cloudfall_service_item
         label: "{{ cloudfall_service_item.id }}"
+
+    # The MariaDB role refuses such a buffer pool as well; checked here, before
+    # any service role, the server is left unchanged (S-019-4).
+    - name: Refuse a MariaDB buffer pool above three quarters of the server's memory
+      ansible.builtin.assert:
+        that:
+          - >-
+            (cloudfall_service_item.mariadb.innodbBufferPoolMb | int) * 4
+            <= (ansible_facts['memtotal_mb'] | int) * 3
+        fail_msg: >-
+          innodbBufferPoolMb {{ cloudfall_service_item.mariadb.innodbBufferPoolMb }}
+          of service {{ cloudfall_service_item.id }} is above three quarters of
+          the {{ ansible_facts['memtotal_mb'] }} MB of {{ cloudfall_server_id }}:
+          lower innodbBufferPoolMb, or move the service to a server with more
+          memory
+      loop: >-
+        {{
+          cloudfall_services | default([])
+          | selectattr('serviceKind', 'equalto', 'mariadb')
+          | selectattr('server', 'equalto', cloudfall_server_id)
+          | list
+        }}
+      loop_control:
+        loop_var: cloudfall_service_item
+        label: "{{ cloudfall_service_item.id }}"
   tasks:
     - name: Deploy declared PostgreSQL services
       ansible.builtin.include_role:
@@ -66,6 +91,28 @@
         {{
           cloudfall_services | default([])
           | selectattr('serviceKind', 'equalto', 'redis')
+          | list
+        }}
+      loop_control:
+        loop_var: cloudfall_service_item
+        label: "{{ cloudfall_service_item.id }}"
+
+    - name: Deploy declared MariaDB services
+      ansible.builtin.include_role:
+        name: cloudfall_mariadb
+      vars:
+        cloudfall_mariadb_service: "{{ cloudfall_service_item }}"
+        # Controller paths of the owners' staged hashes cloudfall passes as
+        # cloudfall_services_mariadb_files; never a password.
+        cloudfall_mariadb_hash_files: >-
+          {{
+            (cloudfall_services_mariadb_files | default({}))
+            [cloudfall_service_item.id] | default({})
+          }}
+      loop: >-
+        {{
+          cloudfall_services | default([])
+          | selectattr('serviceKind', 'equalto', 'mariadb')
           | list
         }}
       loop_control:

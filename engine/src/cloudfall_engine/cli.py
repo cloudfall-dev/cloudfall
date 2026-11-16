@@ -35,9 +35,15 @@ from cloudfall.elasticsearch import (
 from cloudfall.format_check import check_format, declare_format_exit
 from cloudfall.inventory import (
     ElasticsearchUser,
+    MariadbOwnedDatabase,
     OwnedPostgresDatabase,
     PlatformInventory,
     SecretValueReference,
+)
+from cloudfall.mariadb import (
+    MariadbAuthentication,
+    MariadbDatabaseName,
+    MariadbUserName,
 )
 from cloudfall.project import (
     PROJECT_DIRECTORY_VARIABLE,
@@ -54,6 +60,7 @@ from cloudfall.secrets import (
     elasticsearch_existing_cluster_logins,
     elasticsearch_s3_credentials,
     elasticsearch_user_passwords,
+    mariadb_owner_passwords,
     owned_role_passwords,
     staged_password_files,
 )
@@ -101,6 +108,7 @@ if TYPE_CHECKING:
         ElasticsearchExistingClusterLogin,
         ElasticsearchS3Credentials,
         ElasticsearchUserPassword,
+        MariadbOwnerPassword,
         OwnedRolePassword,
     )
     from treaty import Completed
@@ -635,6 +643,40 @@ def _rendered_owned_databases(
     return tuple(owned)
 
 
+def _rendered_mariadb_owned_databases(
+    inventory_file: Path,
+) -> tuple[tuple[ResourceId, MariadbOwnedDatabase], ...]:
+    """Read every MariaDB database owned by a user with a password (S-019).
+
+    Only an entry that names a ``passwordRef`` must be well formed; one
+    without ``authentication`` is ``mysql_native_password``, as rendered.
+    """
+    owned: list[tuple[ResourceId, MariadbOwnedDatabase]] = []
+    for service in _rendered_services(inventory_file, "mariadb"):
+        databases = _nested(service, "mariadb").get("databases")
+        owned.extend(
+            (
+                ResourceId.from_boundary(service.get("id")),
+                MariadbOwnedDatabase(
+                    name=MariadbDatabaseName.from_boundary(database.get("name")),
+                    owner=MariadbUserName.from_boundary(database.get("owner")),
+                    password_ref=_secret_reference(
+                        database["passwordRef"], "owned database's passwordRef"
+                    ),
+                    authentication=MariadbAuthentication.from_boundary(
+                        database.get(
+                            "authentication",
+                            MariadbAuthentication.MYSQL_NATIVE_PASSWORD.value,
+                        )
+                    ),
+                ),
+            )
+            for database in _mappings(databases)
+            if "passwordRef" in database
+        )
+    return tuple(owned)
+
+
 def _rendered_elasticsearch_services(
     inventory_file: Path,
 ) -> tuple[tuple[ResourceId, ResourceId], ...]:
@@ -795,6 +837,7 @@ class _ServicesSecrets:
     s3: tuple[ElasticsearchS3Credentials, ...] = ()
     users: tuple[ElasticsearchUserPassword, ...] = ()
     existing: tuple[ElasticsearchExistingClusterLogin, ...] = ()
+    mariadb: tuple[MariadbOwnerPassword, ...] = ()
 
 
 def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesSecrets:
@@ -802,8 +845,9 @@ def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesS
 
     Those are each owner role's password, the ``cloudfall`` and ``elastic``
     passwords of each Elasticsearch service and each of its declared users',
-    the S3 keys of each S3 snapshot repository, and the login of each
-    ``existingCluster`` that names a ``credentialsRef``.
+    the S3 keys of each S3 snapshot repository, the login of each
+    ``existingCluster`` that names a ``credentialsRef``, and each MariaDB
+    owner's.
     """
     # An engine without services.yml still runs its other playbooks (#296).
     services = playbook_directory(args.engine) / SERVICES_PLAYBOOK
@@ -815,10 +859,11 @@ def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesS
         repositories = _rendered_snapshot_credentials(args.inventory)
         users = _rendered_elasticsearch_users(args.inventory)
         logins = _rendered_existing_cluster_credentials(args.inventory)
+        mariadb = _rendered_mariadb_owned_databases(args.inventory)
     except (TypeError, ValueError) as error:
         message = f"the inventory declares a malformed service: {error}"
         raise ParseError(message, context={"flag": "inventory"}) from error
-    if not databases and not clusters:
+    if not databases and not clusters and not mariadb:
         return _ServicesSecrets()
     provider = SopsSecretProvider(
         secrets_directory=args.secrets_dir, decrypt=_sops_decrypt(ctx)
@@ -830,6 +875,7 @@ def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesS
             elasticsearch_s3_credentials(repositories, provider),
             elasticsearch_user_passwords(users, provider),
             elasticsearch_existing_cluster_logins(logins, provider),
+            mariadb_owner_passwords(mariadb, provider),
         )
     except SecretsError as error:
         raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
@@ -871,7 +917,12 @@ def run_playbook(args: RunArgs, ctx: Ctx) -> Played:
     secrets = _services_passwords(args, _playbook_run(args), ctx)
     passwords = secrets.owned_roles
     with staged_password_files(
-        passwords, secrets.accounts, secrets.s3, secrets.users, secrets.existing
+        passwords,
+        secrets.accounts,
+        secrets.s3,
+        secrets.users,
+        secrets.existing,
+        secrets.mariadb,
     ) as staged:
         played = _run_ansible(
             args, ctx, _playbook_run(args, (json.dumps(staged),) if staged else ())

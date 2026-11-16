@@ -10,6 +10,8 @@ release of Cloudfall.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -131,6 +133,12 @@ class MariadbAuthentication(StrEnum):
     MYSQL_NATIVE_PASSWORD = "mysql_native_password"  # noqa: S105 - a plugin name
     ED25519 = "ed25519"
 
+    def password_hash(self, password: str) -> str:
+        """Return the hash this plugin stores for ``password``; never the password."""
+        if self is MariadbAuthentication.ED25519:
+            return ed25519_password_hash(password)
+        return mysql_native_password_hash(password)
+
     @classmethod
     def from_boundary(cls, value: object) -> MariadbAuthentication:
         """Coerce a boundary value into an authentication plugin."""
@@ -204,6 +212,98 @@ class MariadbServerId:
             message = f"server id must be an integer, got {type(value).__name__}"
             raise TypeError(message)
         return cls(value)
+
+
+MANAGED_ROLE = "cloudfall-managed"
+"""The role Cloudfall grants each user it creates or adopts, as its marker.
+
+It holds no privilege. A role travels with the server's grants, so a replica
+promoted later still tells Cloudfall's users from those made by hand, and its
+hyphen keeps it out of the names a declaration can use.
+"""
+
+
+def mysql_native_password_hash(password: str) -> str:
+    """Return the ``mysql_native_password`` hash MariaDB stores for ``password``.
+
+    ``*`` and the uppercase hex of SHA1(SHA1(password)), as ``PASSWORD()``
+    computes it. It has no salt, so the same password gives the same hash and
+    the role compares it with the stored one (D-9, D-25).
+    """
+    _require_password(password)
+    inner = hashlib.sha1(password.encode("utf-8")).digest()  # noqa: S324 - MariaDB's format
+    return "*" + hashlib.sha1(inner).hexdigest().upper()  # noqa: S324 - MariaDB's format
+
+
+def ed25519_password_hash(password: str) -> str:
+    """Return the ``ed25519`` hash MariaDB stores for ``password``.
+
+    MariaDB's ``auth_ed25519`` keeps the Ed25519 public key whose secret
+    scalar is the clamped first half of SHA-512(password), in base64 without
+    padding, as ``ed25519_password()`` computes it. It has no salt either, so
+    the role compares it with the stored one (D-9, D-25).
+    """
+    _require_password(password)
+    digest = bytearray(hashlib.sha512(password.encode("utf-8")).digest()[:32])
+    digest[0] &= 248
+    digest[31] &= 63
+    digest[31] |= 64
+    point = _scalar_multiply(int.from_bytes(digest, "little"), _BASE_POINT)
+    return base64.b64encode(_encode_point(point)).decode("ascii").rstrip("=")
+
+
+def _require_password(password: str) -> None:
+    if not password:
+        message = "a MariaDB owner password must not be empty"
+        raise ValueError(message)
+
+
+# Ed25519 over edwards25519 in extended coordinates (RFC 8032, section 5.1).
+_FIELD = 2**255 - 19
+_CURVE_D = -121665 * pow(121666, _FIELD - 2, _FIELD) % _FIELD
+type _Point = tuple[int, int, int, int]
+
+
+def _recover_x(y: int) -> int:
+    """Return the even x of the curve point with ``y`` (RFC 8032, 5.1.3)."""
+    square = (y * y - 1) * pow(_CURVE_D * y * y + 1, _FIELD - 2, _FIELD) % _FIELD
+    x = pow(square, (_FIELD + 3) // 8, _FIELD)
+    if (x * x - square) % _FIELD:
+        x = x * pow(2, (_FIELD - 1) // 4, _FIELD) % _FIELD
+    return _FIELD - x if x % 2 else x
+
+
+_BASE_Y = 4 * pow(5, _FIELD - 2, _FIELD) % _FIELD
+_BASE_X = _recover_x(_BASE_Y)
+_BASE_POINT: _Point = (_BASE_X, _BASE_Y, 1, _BASE_X * _BASE_Y % _FIELD)
+
+
+def _add(first: _Point, second: _Point) -> _Point:
+    x1, y1, z1, t1 = first
+    x2, y2, z2, t2 = second
+    a = (y1 - x1) * (y2 - x2) % _FIELD
+    b = (y1 + x1) * (y2 + x2) % _FIELD
+    c = t1 * 2 * _CURVE_D * t2 % _FIELD
+    d = z1 * 2 * z2 % _FIELD
+    e, f, g, h = b - a, d - c, d + c, b + a
+    return e * f % _FIELD, g * h % _FIELD, f * g % _FIELD, e * h % _FIELD
+
+
+def _scalar_multiply(scalar: int, point: _Point) -> _Point:
+    result: _Point = (0, 1, 1, 0)
+    while scalar:
+        if scalar & 1:
+            result = _add(result, point)
+        point = _add(point, point)
+        scalar >>= 1
+    return result
+
+
+def _encode_point(point: _Point) -> bytes:
+    x, y, z, _ = point
+    inverse = pow(z, _FIELD - 2, _FIELD)
+    x, y = x * inverse % _FIELD, y * inverse % _FIELD
+    return (y | ((x & 1) << 255)).to_bytes(32, "little")
 
 
 def _string(value: object, description: str) -> str:

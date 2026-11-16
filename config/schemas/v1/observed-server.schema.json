@@ -60,6 +60,16 @@
         "maxLength": 1024
       }
     },
+    "mariadbNameList": {
+      "description": "Names of MariaDB databases, or users as user@host",
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
+    },
     "blockDevice": {
       "type": "object",
       "properties": {
@@ -826,6 +836,42 @@
               "available",
               "users",
               "roles"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "mariadbAccounts": {
+          "description": "The databases and users of each MariaDB service of the server (S-019); the lists are absent when the server could not be read",
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "properties": {
+              "service": {
+                "$ref": "common.schema.json#/$defs/resourceId"
+              },
+              "available": {
+                "type": "boolean"
+              },
+              "users": {
+                "$ref": "#/$defs/mariadbNameList"
+              },
+              "managedUsers": {
+                "$ref": "#/$defs/mariadbNameList"
+              },
+              "lockedUsers": {
+                "$ref": "#/$defs/mariadbNameList"
+              },
+              "databases": {
+                "$ref": "#/$defs/mariadbNameList"
+              },
+              "managedDatabases": {
+                "$ref": "#/$defs/mariadbNameList"
+              }
+            },
+            "required": [
+              "service",
+              "available"
             ],
             "additionalProperties": false
           }

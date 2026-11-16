@@ -37,3 +37,10 @@
           | selectattr('server', 'equalto', cloudfall_server_id)
           | list
         }}
+      cloudfall_inspect_mariadb_services: >-
+        {{
+          cloudfall_services | default([])
+          | selectattr('serviceKind', 'equalto', 'mariadb')
+          | selectattr('server', 'equalto', cloudfall_server_id)
+          | list
+        }}
