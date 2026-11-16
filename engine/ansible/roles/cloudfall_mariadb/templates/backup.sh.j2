@@ -31,7 +31,10 @@ trap remove_parts EXIT
 # One "table<TAB>rows" line per base table of a gzip dump, sorted. Every
 # table has a CREATE TABLE line, empty or not (a view's stand-in is written
 # inside a /*!50001 comment and is not one); each INSERT line holds one or
-# more rows. Escapes and quoted strings are removed first, so only the
+# more rows, after the column list a table with an invisible column is
+# dumped with. Trigger and routine bodies, between DELIMITER ;; and
+# DELIMITER ;, are stored by a load, never run, so their statements count
+# for nothing. Escapes and quoted strings are removed first, so only the
 # separators between rows are left to count.
 dump_counts() {
   gzip -dc -- "$1" | awk '
@@ -40,6 +43,9 @@ dump_counts() {
       gsub(/``/, "`", name)
       return name
     }
+    /^DELIMITER ;;$/ { body = 1; next }
+    /^DELIMITER ;$/ { body = 0; next }
+    body { next }
     /^CREATE TABLE `/ {
       name = $0
       sub(/^CREATE TABLE /, "", name)
@@ -49,9 +55,14 @@ dump_counts() {
       next
     }
     /^INSERT INTO `/ {
-      at = index($0, "` VALUES (")
-      name = unquote(substr($0, 13, at - 12))
-      values = substr($0, at + 9)
+      rest = substr($0, 13)
+      match(rest, /^`([^`]|``)*`/)
+      name = unquote(substr(rest, 1, RLENGTH))
+      rest = substr(rest, RLENGTH + 1)
+      if (match(rest, /^ \(`([^`]|``)*`(,`([^`]|``)*`)*\)/)) {
+        rest = substr(rest, RLENGTH + 1)
+      }
+      values = substr(rest, 9)
       gsub(/\\./, "", values)
       gsub(/\047[^\047]*\047/, "", values)
       rows[name] += gsub(/\),\(/, "", values) + 1

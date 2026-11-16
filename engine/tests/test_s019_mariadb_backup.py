@@ -69,8 +69,26 @@ def dump(name):
             chunk = rows[start:start + 2]
             tuples = ",".join("(" + ",".join(map(literal, row)) + ")"
                               for row in chunk)
-            out.append("INSERT INTO " + quote_name(table) + " VALUES " + tuples + ";")
+            # A table with an invisible column is dumped with its column list
+            columns = " (`id`,`value`)" if table in database.get("listed", []) else ""
+            out.append("INSERT INTO " + quote_name(table) + columns + " VALUES "
+                       + tuples + ";")
         out.append("UNLOCK TABLES;")
+    if database.get("routines"):
+        # Trigger and routine bodies are written as their author wrote them
+        out += ["DELIMITER ;;",
+                "/*!50003 CREATE*/ /*!50017 DEFINER=`root`@`localhost`*/"
+                " /*!50003 TRIGGER `copy` AFTER INSERT ON `customers` FOR EACH ROW",
+                "INSERT INTO `empty` VALUES (NEW.id),(NEW.id + 1) */;;",
+                "DELIMITER ;",
+                "DELIMITER ;;",
+                "CREATE DEFINER=`root`@`localhost` PROCEDURE `archive`()",
+                "BEGIN",
+                "CREATE TABLE `archive_tmp` (",
+                "  `id` int",
+                ");",
+                "END ;;",
+                "DELIMITER ;"]
     out += ["", "/*!50001 CREATE VIEW `recent` AS SELECT", " 1 AS `id` */;",
             "", "-- Dump completed"]
     sys.stdout.write("\\n".join(out) + "\\n")
@@ -100,12 +118,21 @@ def load(name, text):
     if state.get("load_fails"):
         sys.exit("ERROR 1064 (42000) at line 12: You have an error in your SQL syntax")
     tables = databases[name]["tables"]
+    body = False
     for line in text.splitlines():
+        # A trigger or routine body is stored, not run, by the load
+        if line in ("DELIMITER ;;", "DELIMITER ;"):
+            body = line == "DELIMITER ;;"
+            continue
+        if body:
+            continue
         match = re.match(r"CREATE TABLE `((?:[^`]|``)+)` \\($", line)
         if match:
             tables[match[1].replace("``", "`")] = 0
             continue
-        match = re.match(r"INSERT INTO `((?:[^`]|``)+)` VALUES (.*);$", line)
+        match = re.match(
+            r"INSERT INTO `((?:[^`]|``)+)`(?: \\((?:`(?:[^`]|``)*`,?)+\\))?"
+            r" VALUES (.*);$", line)
         if match:
             tables[match[1].replace("``", "`")] += tuples(match[2])
     if state.get("lose_row"):
@@ -352,6 +379,25 @@ def test_a_table_outside_the_snapshot_is_named(tmp_path: Path) -> None:
 
     assert "crm: not in one snapshot, as they are not InnoDB:" in done.stdout
     assert "empty (Aria)" in done.stdout
+
+
+# proves: S-019-8
+def test_s019_8_trigger_bodies_routines_and_column_lists_count_as_the_load_does(
+    tmp_path: Path,
+) -> None:
+    host = Host(tmp_path)
+    state = host.state
+    state["databases"]["crm"]["listed"] = ["Order Lines"]
+    state["databases"]["crm"]["routines"] = True
+    host.update(databases=state["databases"])
+    host.backup()
+    (counts,) = host.backups.glob("crm-*.counts")
+
+    done = host.drill()
+
+    # A statement in a trigger or a procedure is no table and no row of the dump
+    assert counts.read_text() == EXPECTED_CRM
+    assert done.returncode == 0, done.stderr
 
 
 # proves: S-019-8
