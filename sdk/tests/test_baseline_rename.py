@@ -393,9 +393,13 @@ def test_s017_14_add_server_type_writes_what_baseline_writes_and_names_0_9_0(
         written[flag] = (project / "servers" / "h2.yaml").read_text(encoding="utf-8")
 
     assert written["--type"] == written["--baseline"]
-    assert answers["--baseline"]["warnings"] == []
-    warnings = answers["--type"]["warnings"]
-    assert isinstance(warnings, list)
+    # The project is format 0, so both runs carry PROJECT_FORMAT_OLD (S-017).
+    shared = answers["--baseline"]["warnings"]
+    assert isinstance(shared, list)
+    assert [warning["code"] for warning in shared] == ["PROJECT_FORMAT_OLD"]
+    every_warning = answers["--type"]["warnings"]
+    assert isinstance(every_warning, list)
+    warnings = [warning for warning in every_warning if warning not in shared]
     assert [warning["code"] for warning in warnings] == ["DEPRECATED_FLAG"]
     assert warnings[0]["context"]["replacement"] == "--baseline"
     assert warnings[0]["context"]["removed_in"] == "0.9.0"
