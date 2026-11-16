@@ -1192,11 +1192,11 @@ def run_services_playbook(
         nodes as provided,
         staged_password_files(
             secrets.owned_roles,
-            secrets.elasticsearch,
-            secrets.elasticsearch_s3,
-            secrets.elasticsearch_users,
-            secrets.elasticsearch_existing,
-            secrets.mariadb_owners,
+            accounts=secrets.elasticsearch,
+            s3=secrets.elasticsearch_s3,
+            users=secrets.elasticsearch_users,
+            existing=secrets.elasticsearch_existing,
+            mariadb=secrets.mariadb_owners,
         ) as extra,
     ):
         run_engine_playbook(context, "services.yml", {**extra, **provided}, limit)
@@ -1524,6 +1524,7 @@ def plan_data_migration(  # noqa: PLR0913 - the copy's inputs plus its schemas.
     database: str,
     source_url_file: Path,
     receipt_directory: Path | None,
+    *,
     schemas: DataCopySchemas | None = None,
 ) -> ExecutionPlan:
     """Compose the subprocess steps for one guided data migration.
@@ -1561,6 +1562,7 @@ def migrate_data(  # noqa: PLR0913 - as plan_data_migration.
     database: str,
     source_url_file: Path,
     receipt_directory: Path | None = None,
+    *,
     schemas: DataCopySchemas | None = None,
 ) -> dict[str, object]:
     """Dump one external database and restore it into a declared service.
@@ -1571,7 +1573,12 @@ def migrate_data(  # noqa: PLR0913 - as plan_data_migration.
     """
     service = _checked_data_migration(context, service_id, database, source_url_file)
     plan = plan_data_migration(
-        context, service_id, database, source_url_file, receipt_directory, schemas
+        context,
+        service_id,
+        database,
+        source_url_file,
+        receipt_directory,
+        schemas=schemas,
     )
     findings = (
         receipt_directory / f"{service_id.value}-{database}.preflight.json"

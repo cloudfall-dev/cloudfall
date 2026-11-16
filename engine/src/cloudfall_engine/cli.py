@@ -898,8 +898,10 @@ def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesS
     examples=[
         (
             "Collect read-only server snapshots",
-            "cloudfall-engine playbook run inspect "
-            "--inventory tmp/ansible-inventory.json",
+            (
+                "cloudfall-engine playbook run inspect "
+                "--inventory tmp/ansible-inventory.json"
+            ),
         ),
         (
             "Preview a converge without changing hosts",
@@ -918,11 +920,11 @@ def run_playbook(args: RunArgs, ctx: Ctx) -> Played:
     passwords = secrets.owned_roles
     with staged_password_files(
         passwords,
-        secrets.accounts,
-        secrets.s3,
-        secrets.users,
-        secrets.existing,
-        secrets.mariadb,
+        accounts=secrets.accounts,
+        s3=secrets.s3,
+        users=secrets.users,
+        existing=secrets.existing,
+        mariadb=secrets.mariadb,
     ) as staged:
         played = _run_ansible(
             args, ctx, _playbook_run(args, (json.dumps(staged),) if staged else ())

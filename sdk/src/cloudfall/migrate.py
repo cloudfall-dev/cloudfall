@@ -186,7 +186,7 @@ def execute_migration(
         runners
         if runners is not None
         else _build_runners(
-            config, options, inventory, releases, steps, passwords
+            config, options, inventory, releases, steps=steps, passwords=passwords
         )
     )
     for step in steps:
@@ -466,6 +466,7 @@ def _build_runners(  # noqa: PLR0913 - the run's whole contract.
     options: MigrateOptions,
     inventory: PlatformInventory,
     releases: dict[str, str],
+    *,
     steps: list[PlanStep],
     passwords: ServicesSecrets,
 ) -> dict[str, Runner]:
@@ -603,10 +604,10 @@ def _deploy_approval(
             inventory,
             component_id,
             release,
-            config.artifacts_directory,
+            artifacts=config.artifacts_directory,
             # The default is relative: it is the project's folder.
-            config.project_directory / config.approvals_directory,
-            config.schema_directory,
+            approvals=config.project_directory / config.approvals_directory,
+            schemas=config.schema_directory,
         )
     except ReleaseApprovalError as error:
         raise LifecycleError(error.code, error.detail) from error
@@ -635,7 +636,7 @@ def _data_runner(
             database,
             source_url_file,
             config.data_migrations_directory,
-            schemas,
+            schemas=schemas,
         )
 
     return _run

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -99,7 +99,7 @@ def _without_databases(service: dict[str, object]) -> dict[str, object]:
 def _ca_certificate(*, ca: bool) -> bytes:
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "old-db-ca")])
-    now = datetime.datetime.now(datetime.UTC)
+    now = dt.datetime.now(dt.UTC)
     certificate = (
         x509.CertificateBuilder()
         .subject_name(name)
@@ -107,7 +107,7 @@ def _ca_certificate(*, ca: bool) -> bytes:
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(now)
-        .not_valid_after(now + datetime.timedelta(days=30))
+        .not_valid_after(now + dt.timedelta(days=30))
         .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
         .sign(key, hashes.SHA256())
     )
@@ -932,19 +932,19 @@ def test_s019_10_series_within_90_days_of_its_date_warns_naming_it(
     assert series is not None
     end = series.end_of_life
 
-    long_before = mariadb_versions_ending(state, end - datetime.timedelta(91))
-    window_opens = mariadb_versions_ending(state, end - datetime.timedelta(90))
-    after = mariadb_versions_ending(state, end + datetime.timedelta(1))
+    long_before = mariadb_versions_ending(state, end - dt.timedelta(91))
+    window_opens = mariadb_versions_ending(state, end - dt.timedelta(90))
+    after = mariadb_versions_ending(state, end + dt.timedelta(1))
 
     assert long_before == ()
     (ending,) = window_opens
     assert ending.service.value == "mariadb-main"
     assert ending.series is series
-    message = ending.message(end - datetime.timedelta(90))
+    message = ending.message(end - dt.timedelta(90))
     assert "2028-02-16" in message
     assert "ends on" in message
     (ended,) = after
-    assert "ended on" in ended.message(end + datetime.timedelta(1))
+    assert "ended on" in ended.message(end + dt.timedelta(1))
 
 
 def test_s019_10_warning_reads_the_injected_table_not_the_clock(
@@ -952,11 +952,11 @@ def test_s019_10_warning_reads_the_injected_table_not_the_clock(
 ) -> None:
     project = write_project(tmp_path / "project", mariadb_service())
     state = validate_config(project, SCHEMAS)
-    table = (MariadbSeries(major=11, minor=8, end_of_life=datetime.date(2030, 3, 1)),)
+    table = (MariadbSeries(major=11, minor=8, end_of_life=dt.date(2030, 3, 1)),)
 
-    assert mariadb_versions_ending(state, datetime.date(2029, 1, 1), table) == ()
-    (ending,) = mariadb_versions_ending(state, datetime.date(2030, 1, 1), table)
-    assert "2030-03-01" in ending.message(datetime.date(2030, 1, 1))
+    assert mariadb_versions_ending(state, dt.date(2029, 1, 1), table) == ()
+    (ending,) = mariadb_versions_ending(state, dt.date(2030, 1, 1), table)
+    assert "2030-03-01" in ending.message(dt.date(2030, 1, 1))
 
 
 def test_supported_series_are_maintained_long_term_series() -> None:

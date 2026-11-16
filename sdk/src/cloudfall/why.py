@@ -256,8 +256,10 @@ class Proposer:
         if self.turn is None:
             return (
                 asked,
-                "That investigation predates recording which turn made each "
-                "call, so its reasoning is in its trace but not tied to this one.",
+                (
+                    "That investigation predates recording which turn made each "
+                    "call, so its reasoning is in its trace but not tied to this one."
+                ),
             )
         if self.reasoning is None:
             return (asked, "The endpoint returned no reasoning for that turn.")

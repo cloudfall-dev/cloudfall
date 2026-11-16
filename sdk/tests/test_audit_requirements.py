@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import json
 import shutil
 import subprocess
@@ -22,7 +22,7 @@ ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
 EXAMPLES = ROOT / "config" / "examples"
 COMPLIANT = ROOT / "config" / "tests" / "observed" / "compliant"
-OBSERVED_AT = datetime.datetime(2026, 7, 15, 10, 0, tzinfo=datetime.UTC)
+OBSERVED_AT = dt.datetime(2026, 7, 15, 10, 0, tzinfo=dt.UTC)
 
 
 def _observations(tmp_path: Path) -> Path:
@@ -43,7 +43,7 @@ def _check(observations: Path, host: str, name: str) -> AuditCheck:
     return next(check for check in server.checks if check.check == name)
 
 
-def _certificate(name: str, not_after: datetime.datetime) -> str:
+def _certificate(name: str, not_after: dt.datetime) -> str:
     key = ec.generate_private_key(ec.SECP256R1())
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
     return (
@@ -52,7 +52,7 @@ def _certificate(name: str, not_after: datetime.datetime) -> str:
         .issuer_name(subject)
         .public_key(key.public_key())
         .serial_number(1)
-        .not_valid_before(OBSERVED_AT - datetime.timedelta(days=60))
+        .not_valid_before(OBSERVED_AT - dt.timedelta(days=60))
         .not_valid_after(not_after)
         .add_extension(
             x509.SubjectAlternativeName([x509.DNSName(name)]), critical=False
@@ -113,7 +113,7 @@ def test_a_certificate_within_30_days_of_expiry_is_drift(tmp_path: Path) -> None
         "h1",
         "logging-gateway",
         _certificate(
-            "logs.example.internal", OBSERVED_AT + datetime.timedelta(days=29)
+            "logs.example.internal", OBSERVED_AT + dt.timedelta(days=29)
         ),
     )
 
@@ -129,7 +129,7 @@ def test_a_certificate_for_other_names_is_drift(tmp_path: Path) -> None:
         observations,
         "h2",
         "logging-collector",
-        _certificate("old.example.internal", OBSERVED_AT + datetime.timedelta(days=80)),
+        _certificate("old.example.internal", OBSERVED_AT + dt.timedelta(days=80)),
     )
 
     check = _check(observations, "h2", "certificate.logging-collector")

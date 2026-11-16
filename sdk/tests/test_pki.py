@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 from typing import TYPE_CHECKING
 
 import pytest
@@ -30,7 +30,7 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 if TYPE_CHECKING:
     from pathlib import Path
 
-NOW = datetime.datetime(2026, 11, 13, 12, 0, tzinfo=datetime.UTC)
+NOW = dt.datetime(2026, 11, 13, 12, 0, tzinfo=dt.UTC)
 PRODUCTION = ResourceId("production")
 
 
@@ -158,7 +158,7 @@ def test_the_state_of_a_held_certificate(tmp_path: Path) -> None:
     other_ca, _ = load_or_create_ca(_store(tmp_path / "other"), PRODUCTION, NOW)
     requirement = _requirement()
     fresh = ca.sign(_csr(), requirement, NOW)
-    expiring = ca.sign(_csr(), requirement, NOW - datetime.timedelta(days=70))
+    expiring = ca.sign(_csr(), requirement, NOW - dt.timedelta(days=70))
     renamed = ca.sign(_csr(), _requirement(names=("old.example.internal",)), NOW)
     client = ca.sign(_csr(), _requirement(CertificateUsage.CLIENT), NOW)
     foreign = other_ca.sign(_csr(), requirement, NOW)

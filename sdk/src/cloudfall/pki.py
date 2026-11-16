@@ -12,7 +12,7 @@ leaves it, and a request cannot widen what its certificate is good for.
 from __future__ import annotations
 
 import base64
-import datetime
+import datetime as dt
 import ipaddress
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -35,14 +35,14 @@ if TYPE_CHECKING:
 
 ERROR_CSR_INVALID = "pki_csr_invalid"
 ERROR_CA_INVALID = "pki_ca_invalid"
-CA_LIFETIME = datetime.timedelta(days=3650)
-CERTIFICATE_LIFETIME = datetime.timedelta(days=90)
-RENEW_BEFORE = datetime.timedelta(days=30)
+CA_LIFETIME = dt.timedelta(days=3650)
+CERTIFICATE_LIFETIME = dt.timedelta(days=90)
+RENEW_BEFORE = dt.timedelta(days=30)
 """A certificate this close to its expiry is renewed on the next deploy."""
 _CA_PATH = AbsolutePath("/pki/ca")
 _CA_KEY = SecretKeyName("CA_KEY")
 _CA_CERTIFICATE = SecretKeyName("CA_CERTIFICATE")
-_CLOCK_SKEW = datetime.timedelta(minutes=5)
+_CLOCK_SKEW = dt.timedelta(minutes=5)
 _EXTENDED_USAGES: dict[CertificateUsage, tuple[x509.ObjectIdentifier, ...]] = {
     CertificateUsage.SERVER: (ExtendedKeyUsageOID.SERVER_AUTH,),
     CertificateUsage.CLIENT: (ExtendedKeyUsageOID.CLIENT_AUTH,),
@@ -92,7 +92,7 @@ class ProjectCa:
         self,
         csr_pem: str,
         requirement: CertificateRequirement,
-        now: datetime.datetime,
+        now: dt.datetime,
     ) -> str:
         """Sign the public key of ``csr_pem`` for exactly what ``requirement`` says."""
         try:
@@ -158,7 +158,7 @@ class ProjectCa:
         self,
         certificate_pem: str | None,
         requirement: CertificateRequirement,
-        now: datetime.datetime,
+        now: dt.datetime,
     ) -> CertificateState:
         """Return what the certificate a host holds at the requirement's path needs."""
         if certificate_pem is None:
@@ -195,7 +195,7 @@ def ca_reference(environment: ResourceId) -> SecretValueReference:
 
 
 def load_or_create_ca(
-    store: SecretStore, environment: ResourceId, now: datetime.datetime
+    store: SecretStore, environment: ResourceId, now: dt.datetime
 ) -> tuple[ProjectCa, bool]:
     """Return the environment's CA, creating and storing it on first use.
 

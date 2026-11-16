@@ -151,10 +151,14 @@ def test_s015_3_without_a_token_the_role_stops(tmp_path: Path) -> None:
     ("scan", "expected"),
     [
         (
-            "DEVICESCAN -a -s (S/../.././02|L/../../6/03) -W 4,45,55 -m root "
-            "-M exec /usr/share/smartmontools/smartd-runner",
-            "DEVICESCAN -a -s (S/../.././02|L/../../6/03) -W 4,45,55 -m root "
-            "-M exec {sender}",
+            (
+                "DEVICESCAN -a -s (S/../.././02|L/../../6/03) -W 4,45,55 -m root "
+                "-M exec /usr/share/smartmontools/smartd-runner"
+            ),
+            (
+                "DEVICESCAN -a -s (S/../.././02|L/../../6/03) -W 4,45,55 -m root "
+                "-M exec {sender}"
+            ),
         ),
         (
             "DEVICESCAN -a -M exec /opt/elsewhere/notify -M daily -m ops@example.com",

@@ -98,6 +98,9 @@ ignore = [
     "COM812",
     "D203",
     "D213",
+    # The license is declared once, in LICENSE and [project] license, not
+    # repeated as a header in every file.
+    "CPY001",
 ]
 
 # treaty's Arg, Flag, and Out are dataclass field specifiers, like field().
