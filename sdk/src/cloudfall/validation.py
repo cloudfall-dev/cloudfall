@@ -21,6 +21,7 @@ from jsonschema.exceptions import SchemaError, ValidationError
 from referencing import Registry, Resource
 
 from cloudfall.domain import (
+    ConnectionAddress,
     DomainRoutePath,
     IpAddress,
     IpNetworkCidr,
@@ -32,6 +33,7 @@ from cloudfall.domain import (
     ResourceKind,
     RuntimePackageManager,
     RuntimeType,
+    ServiceKind,
     SourceLocation,
     SshPublicKeyLifecycle,
     TelegramChatId,
@@ -47,6 +49,16 @@ from cloudfall.elasticsearch import (
     supported_line,
     supported_lines_text,
 )
+from cloudfall.mariadb import RESERVED_USER_NAMES as RESERVED_MARIADB_USERS
+from cloudfall.mariadb import SUPPORTED_SERIES as MARIADB_SUPPORTED_SERIES
+from cloudfall.mariadb import SYSTEM_DATABASES as MARIADB_SYSTEM_DATABASES
+from cloudfall.mariadb import (
+    MariadbReplicationRole,
+    MariadbSeries,
+    MariadbVersion,
+)
+from cloudfall.mariadb import supported_series as mariadb_series
+from cloudfall.mariadb import supported_series_text as mariadb_series_text
 
 _SCHEMA_FILES: Mapping[ResourceKind, str] = {
     ResourceKind.SERVER: "server.schema.json",
@@ -578,6 +590,7 @@ class StateValidator:
         _validate_logging_uniqueness(documents)
         _validate_service_uniqueness(documents)
         _validate_elasticsearch_files(documents, project_directory)
+        _validate_mariadb_project(documents, project_directory)
 
 
 def _validate_server_references(
@@ -976,6 +989,8 @@ def _validate_service_references(
         _validate_postgresql_service(document, spec, server, index)
     elif spec.get("serviceKind") == "elasticsearch":
         _validate_elasticsearch_service(document, spec, index)
+    elif spec.get("serviceKind") == ServiceKind.MARIADB.value:
+        _validate_mariadb_service(document, spec, server, index)
 
 
 def _validate_postgresql_service(
@@ -1736,6 +1751,18 @@ def _validate_service_uniqueness(documents: Sequence[ResourceDocument]) -> None:
             _claim_elasticsearch_nodes(document, spec, raw_port, nodes_taken, ports)
             continue
         placement = (server_id, raw_kind)
+        if placement in placements and raw_kind == ServiceKind.MARIADB.value:
+            issue = ValidationIssue(
+                code=ERROR_MARIADB_SERVER_SHARED,
+                message=(
+                    f"Server/{server_id} already runs the MariaDB service "
+                    f"declared at {placements[placement].source.display()}; the "
+                    "Debian package runs one instance per host"
+                ),
+                source=document.source,
+                field_path=("spec", "server"),
+            )
+            raise ConfigValidationError(issue)
         if placement in placements:
             issue = ValidationIssue(
                 code="service_placement_conflict",
@@ -1920,6 +1947,637 @@ def elasticsearch_versions_ending(
                 ElasticsearchVersionEnding(document.key.resource_id, version, line)
             )
     return tuple(endings)
+
+
+ERROR_MARIADB_VERSION = "service_mariadb_version"
+ERROR_MARIADB_SERVER_SHARED = "service_mariadb_server_shared"
+ERROR_MARIADB_SERVER_ID_DUPLICATE = "service_mariadb_server_id_duplicate"
+ERROR_MARIADB_REPLICATION_LISTEN = "service_mariadb_replication_listen"
+ERROR_MARIADB_REPLICATION_PRIMARY = "service_mariadb_replication_primary"
+ERROR_MARIADB_REPLICA_DATABASES = "service_mariadb_replica_databases"
+ERROR_MARIADB_REPLICA_VERSION = "service_mariadb_replica_version"
+ERROR_MARIADB_REPLICATION_UNFIREWALLED = "service_mariadb_replication_unfirewalled"
+ERROR_MARIADB_REPLICA_UNADDRESSED = "service_mariadb_replica_unaddressed"
+ERROR_MARIADB_REPLICATION_SOURCE = "service_mariadb_replication_source"
+ERROR_DATABASE_OWNER_RESERVED = "service_database_owner_reserved"
+_MARIADB_PATH = ("spec", "mariadb")
+_REPLICATION_PATH = ("replication",)
+
+
+def _mariadb_refusal(
+    document: ResourceDocument,
+    code: str,
+    message: str,
+    *field: str | int,
+) -> ConfigValidationError:
+    return ConfigValidationError(
+        ValidationIssue(
+            code=code,
+            message=message,
+            source=document.source,
+            field_path=(*_MARIADB_PATH, *field),
+        )
+    )
+
+
+def _mariadb_replication(
+    document: ResourceDocument,
+) -> Mapping[str, object] | None:
+    """Return a MariaDB service's ``replication`` block, or ``None`` when standalone."""
+    spec = _required_mapping(document.content, "spec", document.source)
+    mariadb = _required_mapping(spec, "mariadb", document.source)
+    if "replication" not in mariadb:
+        return None
+    return _required_mapping(mariadb, "replication", document.source)
+
+
+def _mariadb_role(document: ResourceDocument) -> MariadbReplicationRole | None:
+    replication = _mariadb_replication(document)
+    if replication is None:
+        return None
+    return MariadbReplicationRole.from_boundary(replication.get("role"))
+
+
+def _is_mariadb_service(document: ResourceDocument) -> bool:
+    if document.key.kind is not ResourceKind.SERVICE:
+        return False
+    spec = _required_mapping(document.content, "spec", document.source)
+    return spec.get("serviceKind") == ServiceKind.MARIADB.value
+
+
+def _baseline_of(
+    server: ResourceDocument, index: Mapping[ResourceKey, ResourceDocument]
+) -> tuple[ResourceId, Mapping[str, object]]:
+    server_spec = _required_mapping(server.content, "spec", server.source)
+    baseline_id = _resource_id_value(server_spec, "baseline", server.source)
+    baseline = _require_resource(
+        index, ResourceKind.BASELINE, baseline_id, server.source, ("spec", "baseline")
+    )
+    return baseline_id, _required_mapping(baseline.content, "spec", baseline.source)
+
+
+def _validate_mariadb_service(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    server: ResourceDocument,
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> None:
+    """Apply the S-019 refusals that read one service and what it names."""
+    mariadb = _required_mapping(spec, "mariadb", document.source)
+    version = _validate_mariadb_version(document, mariadb)
+    _validate_mariadb_volume_pool(document, server, index)
+    role = _mariadb_role(document)
+    databases = _mariadb_databases(document, mariadb)
+    owners = _validate_mariadb_database_names(document, databases, index)
+    if role is MariadbReplicationRole.PRIMARY:
+        _validate_mariadb_primary(document, server, index)
+    elif role is MariadbReplicationRole.REPLICA:
+        _validate_mariadb_replica(
+            document, version, server, index, has_databases=bool(databases)
+        )
+    if "remoteAccess" in mariadb:
+        field_path = (*_MARIADB_PATH, "remoteAccess")
+        if role is not MariadbReplicationRole.REPLICA and not owners:
+            issue = ValidationIssue(
+                code="service_remote_access_unused",
+                message=(
+                    "remoteAccess needs a database with an owner: databases named "
+                    "by an application stay socket-only"
+                ),
+                source=document.source,
+                field_path=field_path,
+            )
+            raise ConfigValidationError(issue)
+        _validate_remote_access_rules(
+            document,
+            spec,
+            _required_mapping(mariadb, "remoteAccess", document.source),
+            server,
+            index,
+            field_path,
+        )
+
+
+def _validate_mariadb_version(
+    document: ResourceDocument, mariadb: Mapping[str, object]
+) -> MariadbVersion:
+    try:
+        version = MariadbVersion.from_boundary(mariadb.get("version"))
+    except (TypeError, ValueError) as error:
+        raise _mariadb_refusal(
+            document,
+            ERROR_MARIADB_VERSION,
+            f"{error}; Cloudfall installs an exact release of a supported "
+            f"long-term series: {mariadb_series_text()}",
+            "version",
+        ) from error
+    if mariadb_series(version) is None:
+        raise _mariadb_refusal(
+            document,
+            ERROR_MARIADB_VERSION,
+            f"MariaDB {version.value} is not of a long-term series MariaDB still "
+            f"maintains; the supported series are {mariadb_series_text()}",
+            "version",
+        )
+    return version
+
+
+def _validate_mariadb_volume_pool(
+    document: ResourceDocument,
+    server: ResourceDocument,
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> None:
+    """Refuse a server with nowhere to keep the mirrored ``mariadb`` volume (S-014)."""
+    baseline_id, baseline_spec = _baseline_of(server, index)
+    storage = _required_mapping(baseline_spec, "storage", server.source)
+    raw_pools = storage.get("pools")
+    pools = [
+        pool
+        for pool in (raw_pools if isinstance(raw_pools, list) else [])
+        if isinstance(pool, dict)
+    ]
+    server_id = server.key.resource_id
+    if len(pools) != 1:
+        code = (
+            "volume_requirement_pool_missing"
+            if not pools
+            else "volume_requirement_pool_ambiguous"
+        )
+        reason = (
+            f"Baseline/{baseline_id} declares no storage pool"
+            if not pools
+            else f"Baseline/{baseline_id} declares {len(pools)} pools, and the "
+            "volume goes into the only one"
+        )
+        issue = ValidationIssue(
+            code=code,
+            message=f"the mariadb volume of Server/{server_id} has nowhere to "
+            f"live: {reason}",
+            source=document.source,
+            field_path=("spec", "server"),
+        )
+        raise ConfigValidationError(issue)
+    if "secondary" not in pools[0]:
+        issue = ValidationIssue(
+            code="volume_requirement_pool_unmirrored",
+            message=(
+                f"the mariadb volume of Server/{server_id} is mirrored, but pool "
+                f"{pools[0].get('id')} of Baseline/{baseline_id} has no secondary "
+                "physical volume; add one"
+            ),
+            source=document.source,
+            field_path=("spec", "server"),
+        )
+        raise ConfigValidationError(issue)
+
+
+def _mariadb_databases(
+    document: ResourceDocument, mariadb: Mapping[str, object]
+) -> tuple[tuple[int, Mapping[str, object]], ...]:
+    raw_databases = mariadb.get("databases", [])
+    if not isinstance(raw_databases, list):
+        raise _mariadb_refusal(
+            document,
+            "internal_state_shape_invalid",
+            "validated service databases are not a list",
+            "databases",
+        )
+    return tuple(
+        (position, cast("Mapping[str, object]", database))
+        for position, database in enumerate(raw_databases)
+        if isinstance(database, dict)
+    )
+
+
+def _validate_mariadb_database_names(
+    document: ResourceDocument,
+    databases: Sequence[tuple[int, Mapping[str, object]]],
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> tuple[str, ...]:
+    """Refuse a repeated database, or a name MariaDB, Cloudfall or an app holds.
+
+    Return the declared owners.
+    """
+    application_users = _validate_mariadb_database_entries(document, databases, index)
+    owners: list[str] = []
+    for position, database in databases:
+        owner = database.get("owner")
+        if not isinstance(owner, str):
+            continue
+        reserved = owner in RESERVED_MARIADB_USERS or owner in MARIADB_SYSTEM_DATABASES
+        if reserved or owner in application_users:
+            holder = (
+                "an account MariaDB or Cloudfall holds, or a system database"
+                if reserved
+                else "the Linux user of an Application with a database on "
+                "this service"
+            )
+            raise _mariadb_refusal(
+                document,
+                ERROR_DATABASE_OWNER_RESERVED,
+                f"database owner {owner!r} is {holder}",
+                "databases",
+                position,
+                "owner",
+            )
+        owners.append(owner)
+    return tuple(owners)
+
+
+def _validate_mariadb_database_entries(
+    document: ResourceDocument,
+    databases: Sequence[tuple[int, Mapping[str, object]]],
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> frozenset[str]:
+    """Refuse a repeated or reserved database name, or a reserved app user.
+
+    Return the Linux users of the applications with a database here.
+    """
+    names: set[object] = set()
+    application_users: dict[str, int] = {}
+    for position, database in databases:
+        name = database.get("name")
+        if name in names:
+            raise _mariadb_refusal(
+                document,
+                "service_database_duplicate",
+                f"duplicate service database name: {name}",
+                "databases",
+                position,
+                "name",
+            )
+        names.add(name)
+        if name in RESERVED_MARIADB_USERS or name in MARIADB_SYSTEM_DATABASES:
+            raise _mariadb_refusal(
+                document,
+                ERROR_DATABASE_OWNER_RESERVED,
+                f"database name {name!r} is a system database or an account "
+                "MariaDB or Cloudfall holds",
+                "databases",
+                position,
+                "name",
+            )
+        if "application" in database:
+            application_id = _resource_id_value(
+                database, "application", document.source
+            )
+            application = _require_resource(
+                index,
+                ResourceKind.APPLICATION,
+                application_id,
+                document.source,
+                (*_MARIADB_PATH, "databases", position, "application"),
+            )
+            application_spec = _required_mapping(
+                application.content, "spec", application.source
+            )
+            linux_user = application_spec.get("linuxUser")
+            if isinstance(linux_user, str):
+                application_users.setdefault(linux_user, position)
+    for linux_user, position in application_users.items():
+        if linux_user in RESERVED_MARIADB_USERS:
+            raise _mariadb_refusal(
+                document,
+                ERROR_DATABASE_OWNER_RESERVED,
+                f"the application's Linux user {linux_user!r} would be its "
+                "database user, and that name is an account MariaDB or "
+                "Cloudfall holds",
+                "databases",
+                position,
+                "application",
+            )
+    return frozenset(application_users)
+
+
+def _replication_listen_address(
+    document: ResourceDocument, replication: Mapping[str, object]
+) -> None:
+    field = (*_REPLICATION_PATH, "listenAddress")
+    try:
+        address = IpAddress.from_boundary(replication.get("listenAddress"))
+    except (TypeError, ValueError) as error:
+        raise _mariadb_refusal(
+            document,
+            ERROR_MARIADB_REPLICATION_LISTEN,
+            f"a primary's listenAddress is one canonical IP address of its "
+            f"server: {error}",
+            *field,
+        ) from error
+    if address.is_unspecified:
+        raise _mariadb_refusal(
+            document,
+            ERROR_MARIADB_REPLICATION_LISTEN,
+            f"listenAddress {address.value} is a wildcard; name the one address "
+            "of the server its replicas connect to",
+            *field,
+        )
+
+
+def _replicas_of(
+    document: ResourceDocument, index: Mapping[ResourceKey, ResourceDocument]
+) -> tuple[ResourceDocument, ...]:
+    """Return the MariaDB services whose ``replication.primary`` names ``document``."""
+    replicas: list[ResourceDocument] = []
+    for other in index.values():
+        if other is document or not _is_mariadb_service(other):
+            continue
+        replication = _mariadb_replication(other)
+        if (
+            replication is not None
+            and replication.get("role") == MariadbReplicationRole.REPLICA.value
+            and replication.get("primary") == document.key.resource_id.value
+        ):
+            replicas.append(other)
+    return tuple(replicas)
+
+
+def _validate_mariadb_primary(
+    document: ResourceDocument,
+    server: ResourceDocument,
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> None:
+    replication = _mariadb_replication(document)
+    if replication is None:
+        return
+    for field in ("primary", "source"):
+        if field in replication:
+            raise _mariadb_refusal(
+                document,
+                ERROR_MARIADB_REPLICATION_PRIMARY,
+                f"a primary declares no {field}: only a replica follows one",
+                *_REPLICATION_PATH,
+                field,
+            )
+    if "listenAddress" not in replication:
+        raise _mariadb_refusal(
+            document,
+            ERROR_MARIADB_REPLICATION_LISTEN,
+            "a primary needs listenAddress, the address of its server its "
+            "replicas connect to",
+            *_REPLICATION_PATH,
+        )
+    _replication_listen_address(document, replication)
+    baseline_id, baseline_spec = _baseline_of(server, index)
+    if _replicas_of(document, index) and "firewall" not in baseline_spec:
+        raise _mariadb_refusal(
+            document,
+            ERROR_MARIADB_REPLICATION_UNFIREWALLED,
+            f"this primary admits its replicas on its port only, but "
+            f"Baseline/{baseline_id} of Server/{server.key.resource_id} declares "
+            "no firewall to keep every other address out",
+            *_REPLICATION_PATH,
+        )
+
+
+def _validate_mariadb_replica(
+    document: ResourceDocument,
+    version: MariadbVersion,
+    server: ResourceDocument,
+    index: Mapping[ResourceKey, ResourceDocument],
+    *,
+    has_databases: bool,
+) -> None:
+    replication = _mariadb_replication(document)
+    if replication is None:
+        return
+    if "listenAddress" in replication:
+        raise _mariadb_refusal(
+            document,
+            ERROR_MARIADB_REPLICATION_LISTEN,
+            "a replica declares no listenAddress: it connects to its primary",
+            *_REPLICATION_PATH,
+            "listenAddress",
+        )
+    if ("primary" in replication) == ("source" in replication):
+        raise _mariadb_refusal(
+            document,
+            ERROR_MARIADB_REPLICATION_PRIMARY,
+            "a replica follows exactly one of primary, a MariaDB service of the "
+            "project, or source, a server Cloudfall does not manage",
+            *_REPLICATION_PATH,
+        )
+    if has_databases:
+        raise _mariadb_refusal(
+            document,
+            ERROR_MARIADB_REPLICA_DATABASES,
+            "a replica declares no databases: its databases and users are its "
+            "primary's and arrive by replication",
+            "databases",
+        )
+    baseline_id, baseline_spec = _baseline_of(server, index)
+    if "firewall" not in baseline_spec:
+        raise _mariadb_refusal(
+            document,
+            ERROR_MARIADB_REPLICATION_UNFIREWALLED,
+            f"Baseline/{baseline_id} of Server/{server.key.resource_id} declares "
+            "no firewall, and a replica's server must keep every address but "
+            "the declared ones out",
+            *_REPLICATION_PATH,
+        )
+    if "source" in replication:
+        source = _required_mapping(replication, "source", document.source)
+        try:
+            ConnectionAddress.from_boundary(source.get("host"))
+        except (TypeError, ValueError) as error:
+            raise _mariadb_refusal(
+                document,
+                ERROR_MARIADB_REPLICATION_SOURCE,
+                f"source host is not a hostname or an IP address: {error}",
+                *_REPLICATION_PATH,
+                "source",
+                "host",
+            ) from error
+        return
+    primary = _replication_primary(document, replication, server, index)
+    primary_spec = _required_mapping(primary.content, "spec", primary.source)
+    # The primary may be read after its replica: refuse its own version first.
+    primary_version = _validate_mariadb_version(
+        primary, _required_mapping(primary_spec, "mariadb", primary.source)
+    )
+    if version.series != primary_version.series or version.is_older_than(
+        primary_version
+    ):
+        raise _mariadb_refusal(
+            document,
+            ERROR_MARIADB_REPLICA_VERSION,
+            f"MariaDB {version.value} is not of the series of its primary "
+            f"Service/{primary.key.resource_id} ({primary_version.value}) or is "
+            "older; a replica runs the primary's series, at its version or "
+            "newer, so a patch reaches the replica first",
+            "version",
+        )
+    server_spec = _required_mapping(server.content, "spec", server.source)
+    if not ("network" in server_spec or _is_ipv4(server_spec.get("address"))):
+        raise _mariadb_refusal(
+            document,
+            ERROR_MARIADB_REPLICA_UNADDRESSED,
+            f"Server/{server.key.resource_id} has a name for its address and "
+            "declares no network, so the primary's firewall has no address to "
+            "admit it from; give it an IPv4 address or a network block",
+            *_REPLICATION_PATH,
+        )
+
+
+def _replication_primary(
+    document: ResourceDocument,
+    replication: Mapping[str, object],
+    server: ResourceDocument,
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> ResourceDocument:
+    """Return the primary a replica names, refusing one it can't follow."""
+    primary_id = _resource_id_value(replication, "primary", document.source)
+
+    def refuse(reason: str) -> ConfigValidationError:
+        return _mariadb_refusal(
+            document,
+            ERROR_MARIADB_REPLICATION_PRIMARY,
+            f"primary Service/{primary_id} {reason}",
+            *_REPLICATION_PATH,
+            "primary",
+        )
+
+    if primary_id == document.key.resource_id:
+        message = "is this service itself"
+        raise refuse(message)
+    primary = index.get(ResourceKey(kind=ResourceKind.SERVICE, resource_id=primary_id))
+    if primary is None or not _is_mariadb_service(primary):
+        message = "is not a declared MariaDB service"
+        raise refuse(message)
+    spec = _required_mapping(document.content, "spec", document.source)
+    primary_spec = _required_mapping(primary.content, "spec", primary.source)
+    if primary_spec.get("environment") != spec.get("environment"):
+        message = f"belongs to {primary_spec.get('environment')}, not this environment"
+        raise refuse(message)
+    if _mariadb_role(primary) is not MariadbReplicationRole.PRIMARY:
+        message = "does not declare replication role: primary"
+        raise refuse(message)
+    if primary_spec.get("server") == server.key.resource_id.value:
+        message = (
+            f"runs on Server/{server.key.resource_id} too; a server holds one "
+            "MariaDB server, so a replica lives on another"
+        )
+        raise refuse(message)
+    return primary
+
+
+def _validate_mariadb_project(
+    documents: Sequence[ResourceDocument], project_directory: Path | None
+) -> None:
+    """Refuse a ``serverId`` used twice, and an outside source's CA file (S-019)."""
+    server_ids: dict[object, ResourceDocument] = {}
+    for document in documents:
+        if not _is_mariadb_service(document):
+            continue
+        replication = _mariadb_replication(document)
+        if replication is None:
+            continue
+        server_id = replication.get("serverId")
+        if server_id in server_ids:
+            raise _mariadb_refusal(
+                document,
+                ERROR_MARIADB_SERVER_ID_DUPLICATE,
+                f"serverId {server_id} is already the one of the MariaDB service "
+                f"declared at {server_ids[server_id].source.display()}; each "
+                "server of the project's MariaDB services has its own",
+                *_REPLICATION_PATH,
+                "serverId",
+            )
+        server_ids[server_id] = document
+        source = replication.get("source")
+        if isinstance(source, dict) and "caCertificateFile" in source:
+            _validate_mariadb_source_ca(
+                document, source.get("caCertificateFile"), project_directory
+            )
+
+
+def _validate_mariadb_source_ca(
+    document: ResourceDocument, raw_path: object, project_directory: Path | None
+) -> None:
+    field = (*_REPLICATION_PATH, "source", "caCertificateFile")
+
+    def refuse(message: str) -> ConfigValidationError:
+        return _mariadb_refusal(
+            document, ERROR_MARIADB_REPLICATION_SOURCE, message, *field
+        )
+
+    if project_directory is None:
+        message = (
+            "caCertificateFile is a path inside the project, and these "
+            "resources were not read from a project directory"
+        )
+        raise refuse(message)
+    try:
+        relative = ProjectFilePath.from_boundary(raw_path)
+    except (TypeError, ValueError) as error:
+        raise refuse(str(error)) from error
+    root = project_directory.resolve()
+    path = (root / relative.value).resolve()
+    if not path.is_relative_to(root):
+        message = f"caCertificateFile {relative.value} resolves outside the project"
+        raise refuse(message)
+    if not path.is_file():
+        message = f"caCertificateFile {relative.value} does not exist"
+        raise refuse(message)
+    problem = _ca_certificate_problem(path.read_bytes())
+    if problem is not None:
+        message = f"caCertificateFile {relative.value} {problem}"
+        raise refuse(message)
+
+
+@dataclass(frozen=True, slots=True)
+class MariadbVersionEnding:
+    """A service whose MariaDB series ends within the window, or has ended."""
+
+    service: ResourceId
+    version: MariadbVersion
+    series: MariadbSeries
+
+    def message(self, today: date) -> str:
+        """Say when the series ends, or that it has ended."""
+        tense = "ended" if today > self.series.end_of_life else "ends"
+        return (
+            f"Service/{self.service} runs MariaDB {self.version.value}, whose "
+            f"series {self.series.label} {tense} on "
+            f"{self.series.end_of_life.isoformat()}; move it to a later "
+            "supported series"
+        )
+
+
+def mariadb_versions_ending(
+    config: ValidatedConfig,
+    today: date,
+    table: tuple[MariadbSeries, ...] = MARIADB_SUPPORTED_SERIES,
+) -> tuple[MariadbVersionEnding, ...]:
+    """Return each MariaDB service whose series is within its window on ``today``.
+
+    ``today`` is passed in, so the answer depends on the caller's clock only.
+    """
+    endings: list[MariadbVersionEnding] = []
+    for document in config.resources(ResourceKind.SERVICE):
+        if not _is_mariadb_service(document):
+            continue
+        spec = _required_mapping(document.content, "spec", document.source)
+        mariadb = _required_mapping(spec, "mariadb", document.source)
+        version = MariadbVersion.from_boundary(mariadb.get("version"))
+        series = mariadb_series(version, table)
+        if series is not None and series.is_ending(today):
+            endings.append(
+                MariadbVersionEnding(document.key.resource_id, version, series)
+            )
+    return tuple(endings)
+
+
+def mariadb_unencrypted_sources(config: ValidatedConfig) -> tuple[ResourceId, ...]:
+    """Return each replica of an outside source declared without a CA file."""
+    found: list[ResourceId] = []
+    for document in config.resources(ResourceKind.SERVICE):
+        if not _is_mariadb_service(document):
+            continue
+        replication = _mariadb_replication(document)
+        source = None if replication is None else replication.get("source")
+        if isinstance(source, dict) and "caCertificateFile" not in source:
+            found.append(document.key.resource_id)
+    return tuple(found)
 
 
 def _validate_logging_references(

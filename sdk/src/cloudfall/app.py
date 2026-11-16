@@ -247,6 +247,10 @@ from cloudfall.logging_open import (
     require_free_port,
     start_forward,
 )
+from cloudfall.mariadb import (
+    WARNING_REPLICATION_UNENCRYPTED as MARIADB_WARNING_REPLICATION_UNENCRYPTED,
+)
+from cloudfall.mariadb import WARNING_VERSION_ENDING as MARIADB_WARNING_VERSION_ENDING
 from cloudfall.migrate import MigrateError, MigrateOptions, execute_migration
 from cloudfall.observation import load_observations
 from cloudfall.observe import (
@@ -377,6 +381,8 @@ from cloudfall.validation import (
     SchemaCatalog,
     ValidatedConfig,
     elasticsearch_versions_ending,
+    mariadb_unencrypted_sources,
+    mariadb_versions_ending,
     validate_config,
 )
 from cloudfall.volumes import ACTIONS_VARIABLE as VOLUME_ACTIONS_VARIABLE
@@ -824,11 +830,36 @@ def config_validate(
     ``DEPRECATED_NAME`` warning naming its old names and the
     command that rewrites them. An Elasticsearch service whose line ends
     within 90 days, or has ended, gets one ``ELASTICSEARCH_VERSION_ENDING``
-    warning naming the date.
+    warning naming the date; a MariaDB service the same, as
+    ``MARIADB_VERSION_ENDING``. A MariaDB replica of an outside source
+    declared without a CA file gets ``MARIADB_REPLICATION_UNENCRYPTED``.
     """
+    today = datetime.now(UTC).date()
     _warn_deprecated_names(ctx, fleet)
-    _warn_elasticsearch_versions_ending(ctx, fleet.state, datetime.now(UTC).date())
+    _warn_elasticsearch_versions_ending(ctx, fleet.state, today)
+    _warn_mariadb(ctx, fleet.state, today)
     return ValidatedPayload(fleet.state.as_dict())
+
+
+def _warn_mariadb(ctx: Ctx, state: ValidatedConfig, today: date) -> None:
+    """Warn per MariaDB service whose series is ending, or whose link is plain."""
+    for ending in mariadb_versions_ending(state, today):
+        ctx.warn(
+            MARIADB_WARNING_VERSION_ENDING,
+            ending.message(today),
+            service=ending.service.value,
+            version=ending.version.value,
+            series=ending.series.label,
+            endOfLife=ending.series.end_of_life.isoformat(),
+        )
+    for service in mariadb_unencrypted_sources(state):
+        ctx.warn(
+            MARIADB_WARNING_REPLICATION_UNENCRYPTED,
+            f"Service/{service} replicates from a source declared without "
+            "caCertificateFile, so the link is not encrypted; add the "
+            "certificate of the CA that signed the source's certificate",
+            service=service.value,
+        )
 
 
 def _warn_elasticsearch_versions_ending(
