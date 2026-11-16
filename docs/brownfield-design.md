@@ -266,6 +266,16 @@ agent saw, what it proposed, who let it, and what verify reported. By 2027
 this entry is the product; the gate around it is a formality the client
 mostly supplies.
 
+The check-mode diff and the run logs are the team's raw Ansible output,
+run with `--diff`, so a task that templates a password prints it. They are
+written under the project's ignored `tmp/output/decisions/`, readable by
+their owner only, and the committed record keeps each file's path, sha256
+and size, never its text. `decisions approve` recomputes the diff's sha256
+and refuses when the file is missing, so a proposal is approved on the
+machine that holds its diff. Still, give every task that renders a secret
+`no_log: true` or `diff: false`: the file under `tmp/` is plain text, and
+anyone who reads it reads the secret.
+
 The gate lives in Cloudfall, not in the agent's prompt. An agent can be
 talked out of a rule in its instructions. It cannot be talked out of a
 process that refuses to run a `destructive` operation without a human.

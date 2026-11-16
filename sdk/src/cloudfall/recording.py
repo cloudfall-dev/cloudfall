@@ -2,7 +2,9 @@
 
 A recording is a decisions directory from a real run: each decision record
 names the playbook, the target pattern and the inputs it ran with, and its
-``.diff`` holds what the hosts printed. Played back, a check-mode run
+``.diff`` holds what the hosts printed: beside the record in a recording
+kept apart, or where the record cites it in the project's ignored ``tmp/``
+for a decisions directory the project wrote itself (D-24). Played back, a check-mode run
 writes that output and those per-host results instead of touching a host,
 so everything around it (validation, the decision record, the gate) works
 exactly as it does live. An agent can then be tried on a real incident
@@ -61,9 +63,11 @@ class Recording:
     runs: Mapping[str, RecordedRun]
 
     @classmethod
-    def load(cls, directory: Path) -> Recording:
+    def load(cls, directory: Path, repository: Path | None = None) -> Recording:
         """Read every decision record in the directory; the first of a call wins.
 
+        Each record's output is the ``.diff`` beside it or, failing that, the
+        file the record cites in ``repository``, where the project keeps it.
         A path that is not a directory, or a directory holding no decision
         record, is refused: played back, it would fail every call.
         """
@@ -80,7 +84,7 @@ class Recording:
             spec = cast("Mapping[str, Mapping[str, object]]", document["spec"])
             check = spec["check"]
             diff = cast("Mapping[str, object]", check["diff"])
-            output = directory / f"{path.stem}.diff"
+            output = _output(directory / f"{path.stem}.diff", diff, repository)
             key = _key(
                 str(spec["operation"]["playbook"]),
                 cast("str | None", spec["targets"].get("pattern")),
@@ -123,6 +127,16 @@ class Recording:
             return recorded.exit_code
 
         return run
+
+
+def _output(
+    beside: Path, diff: Mapping[str, object], repository: Path | None
+) -> Path:
+    """Return the recorded output: beside the record, else where the record cites it."""
+    if beside.is_file() or repository is None:
+        return beside
+    cited = Path(str(diff["path"]))
+    return cited if cited.is_absolute() else repository / cited
 
 
 def _key(playbook: str, pattern: str | None, inputs: Mapping[str, object]) -> str:

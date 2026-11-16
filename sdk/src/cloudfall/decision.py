@@ -37,6 +37,7 @@ from cloudfall.ansible_api import callback_plugin_path
 from cloudfall.ansible_data import as_ansible_data
 from cloudfall.catalog import RiskLevel, TargetScope
 from cloudfall.domain import ResourceId
+from cloudfall.project import OUTPUT_DIRECTORY, RUNTIME_DIRECTORY
 from cloudfall.proposal_binding import (
     Binding,
     BindingError,
@@ -61,14 +62,23 @@ DECISION_SCHEMA = "operation-decision.schema.json"
 DECISION_SCHEMAS: Mapping[str, str] = MappingProxyType({API_VERSION: DECISION_SCHEMA})
 """The schema a record is read with, by its ``apiVersion``: a v2 sits beside v1."""
 DECISION_DIRECTORY = "decisions"
-"""Where decision records and their artifacts land inside the repository.
+"""Where decision records land inside the repository.
 
 Beside the operations rather than under ``tmp/``: the record is what the
 team keeps, and the runtime directory is what they throw away. Commit the
-records; the diffs and logs beside them are raw Ansible output, so they
-belong in git only in a repository whose tasks set ``no_log`` where it
-matters.
+records. The check diff and the run logs are raw Ansible output, which may
+print a secret a task renders without ``no_log``, so they are kept under
+``DECISION_OUTPUT_DIRECTORY`` instead and the record names each file with
+its sha256 and size (D-24).
 """
+
+DECISION_OUTPUT_DIRECTORY = (
+    f"{RUNTIME_DIRECTORY}/{OUTPUT_DIRECTORY}/{DECISION_DIRECTORY}"
+)
+"""Where the default store's raw diffs and run logs are kept, uncommitted."""
+
+_RAW_FILE_MODE = 0o600
+"""Raw output may hold a secret, so only its owner reads it."""
 
 _HOST_STATS_DIRECTORY = "host-stats"
 HOST_STATS_CALLBACK = "cloudfall_host_stats"
@@ -107,6 +117,8 @@ ERROR_DECISION_REPLAYED = "decision_replayed"
 ERROR_DECISION_INTERRUPTED = "decision_run_interrupted"
 ERROR_BINDING_CHANGED = "decision_binding_changed"
 """What a proposal was checked against changed, or its record binds nothing."""
+ERROR_DIFF_MISSING = "decision_diff_missing"
+"""The raw diff a record cites is not on this machine, so nobody could read it."""
 ERROR_NOT_RUNNING = "decision_not_running"
 ERROR_CONFIRMER_INVALID = "record_confirmer_invalid"
 _CONFIRMER_MAX_LENGTH = 128
@@ -818,7 +830,10 @@ def propose(
     # proposals in one second never share a diff (#356).
     decision_id = store.reserve(operation.operation_id, moment)
     try:
-        diff_path = store.directory / f"{decision_id.value}{_DIFF_SUFFIX}"
+        diff_path = _raw_file(
+            raw_output_directory(request.repository, store.directory)
+            / f"{decision_id.value}{_DIFF_SUFFIX}"
+        )
         host_stats = store.directory / _HOST_STATS_DIRECTORY / decision_id.value
         argv, environment = run_command(
             PlaybookInvocation(
@@ -1060,8 +1075,9 @@ def refuse_changed(decision: Decision, repository: Path, decisions: Path) -> Non
     The playbooks, the diff file and, in git, the commit and the uncommitted
     changes are compared with what the record bound. A record with no
     binding was proposed before Cloudfall bound proposals, so nothing says
-    what it was checked against: it is refused too. Callers that ask a
-    person for the decision id check this first.
+    what it was checked against: it is refused too, and so is one whose raw
+    diff is not on this machine (D-24). Callers that ask a person for the
+    decision id check this first.
     """
     binding = decision.binding
     if binding is None:
@@ -1071,6 +1087,19 @@ def refuse_changed(decision: Decision, repository: Path, decisions: Path) -> Non
             "cannot be bound to it; propose it again"
         )
         raise DecisionError(ERROR_BINDING_CHANGED, message)
+    diff = decision.check.diff.path
+    diff_path = diff if diff.is_absolute() else repository / diff
+    if not diff_path.is_file():
+        # The record is committed and the raw diff is not (D-24): another
+        # clone has the hash, never the text anyone approves against.
+        message = (
+            f"decision {decision.decision_id}'s check diff {diff} is not on "
+            "this machine: the record keeps only its sha256 "
+            f"{decision.check.diff.sha256} and size, because raw Ansible "
+            "output may hold a secret. Approve it where it was proposed, or "
+            "propose it again here"
+        )
+        raise DecisionError(ERROR_DIFF_MISSING, message)
     found = list(
         _bound(
             lambda: changes(
@@ -1081,8 +1110,6 @@ def refuse_changed(decision: Decision, repository: Path, decisions: Path) -> Non
             )
         )
     )
-    diff = decision.check.diff.path
-    diff_path = diff if diff.is_absolute() else repository / diff
     current = file_sha256(diff_path)
     if current is None or current.value != decision.check.diff.sha256:
         found.append(f"the diff file {diff}")
@@ -1242,7 +1269,10 @@ def _run_stage(
     """Run one stage of an approved decision and record what it did."""
     decision = stage.request.decision
     identifier = decision.decision_id.value
-    log_path = stage.store.directory / f"{identifier}-{name}.log"
+    log_path = _raw_file(
+        raw_output_directory(stage.request.repository, stage.store.directory)
+        / f"{identifier}-{name}.log"
+    )
     invocation = PlaybookInvocation(
         playbook=playbook,
         repository=stage.request.repository,
@@ -1251,7 +1281,6 @@ def _run_stage(
         inputs=decision.inputs,
     )
     argv, environment = run_command(invocation)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
     timed_out_after: int | None = None
     try:
         exit_code = stage.runner(argv, environment, log_path)
@@ -1324,6 +1353,38 @@ def repository_relative(path: Path, repository: Path) -> Path:
         return path.resolve().relative_to(repository.resolve())
     except ValueError:
         return path
+
+
+def raw_output_directory(repository: Path, decisions: Path) -> Path:
+    """Return where a decision store's raw diffs and run logs are kept (D-24).
+
+    Raw Ansible output may print a secret a team's task renders without
+    ``no_log``, so it never lands in a directory the project commits. The
+    default store's output goes to ``DECISION_OUTPUT_DIRECTORY``; a store
+    elsewhere in the project gets the same path under ``tmp/output/``, so
+    two stores never share a file; a store already under ``tmp/`` keeps its
+    output beside its records, where git does not see it either; a store
+    outside the project uses the default.
+    """
+    root = repository.resolve()
+    store = decisions.resolve()
+    if store.is_relative_to(root / RUNTIME_DIRECTORY):
+        return decisions
+    output = repository / RUNTIME_DIRECTORY / OUTPUT_DIRECTORY
+    if store.is_relative_to(root) and store != root:
+        return output / store.relative_to(root)
+    return repository / DECISION_OUTPUT_DIRECTORY
+
+
+def _raw_file(path: Path) -> Path:
+    """Create one raw output file, empty and readable by its owner only.
+
+    A runner opening it for writing keeps the mode, whichever runner it is.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(mode=_RAW_FILE_MODE)
+    path.chmod(_RAW_FILE_MODE)
+    return path
 
 
 def read_basis(observations: Path, repository: Path | None = None) -> Basis:
