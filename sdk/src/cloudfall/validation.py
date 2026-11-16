@@ -57,6 +57,7 @@ from cloudfall.mariadb import (
     MariadbSeries,
     MariadbVersion,
 )
+from cloudfall.mariadb import account_host as mariadb_account_host
 from cloudfall.mariadb import supported_series as mariadb_series
 from cloudfall.mariadb import supported_series_text as mariadb_series_text
 
@@ -1967,6 +1968,7 @@ ERROR_MARIADB_REPLICA_VERSION = "service_mariadb_replica_version"
 ERROR_MARIADB_REPLICATION_UNFIREWALLED = "service_mariadb_replication_unfirewalled"
 ERROR_MARIADB_REPLICA_UNADDRESSED = "service_mariadb_replica_unaddressed"
 ERROR_MARIADB_REPLICATION_SOURCE = "service_mariadb_replication_source"
+ERROR_MARIADB_REMOTE_ACCESS_IPV6 = "service_mariadb_remote_access_ipv6"
 ERROR_DATABASE_OWNER_RESERVED = "service_database_owner_reserved"
 _MARIADB_PATH = ("spec", "mariadb")
 _REPLICATION_PATH = ("replication",)
@@ -2056,14 +2058,37 @@ def _validate_mariadb_service(
                 field_path=field_path,
             )
             raise ConfigValidationError(issue)
+        remote_access = _required_mapping(mariadb, "remoteAccess", document.source)
         _validate_remote_access_rules(
-            document,
-            spec,
-            _required_mapping(mariadb, "remoteAccess", document.source),
-            server,
-            index,
-            field_path=field_path,
+            document, spec, remote_access, server, index, field_path=field_path
         )
+        _validate_mariadb_remote_sources(document, remote_access)
+
+
+def _validate_mariadb_remote_sources(
+    document: ResourceDocument, remote_access: Mapping[str, object]
+) -> None:
+    """Refuse a source that is no MariaDB account host: an IPv6 network.
+
+    Runs after the S-006 rules, so each source is already a canonical network.
+    One IPv6 address (``/128``) and every IPv4 network stay accepted (D-26);
+    the role refuses the same sources at converge, as a second line.
+    """
+    raw_sources = remote_access.get("allowedSources")
+    sources = raw_sources if isinstance(raw_sources, list) else []
+    for position, raw_source in enumerate(sources):
+        source = IpNetworkCidr.from_boundary(raw_source)
+        if mariadb_account_host(source) is None:
+            raise _mariadb_refusal(
+                document,
+                ERROR_MARIADB_REMOTE_ACCESS_IPV6,
+                f"allowed source {source.value} is an IPv6 network, which MariaDB "
+                "cannot match as an account host; a single IPv6 address "
+                "(/128) or an IPv4 network is accepted",
+                "remoteAccess",
+                "allowedSources",
+                position,
+            )
 
 
 def _validate_mariadb_version(

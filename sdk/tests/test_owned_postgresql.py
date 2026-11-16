@@ -237,6 +237,18 @@ def test_remote_access_with_an_owner_validates_and_renders(tmp_path: Path) -> No
     assert postgresql["remoteAccess"] == REMOTE_ACCESS
 
 
+def test_remote_access_from_an_ipv6_network_validates(tmp_path: Path) -> None:
+    """S-006 keeps IPv6 networks; only MariaDB refuses them (#434)."""
+    remote_access = {"listenAddress": "10.0.0.2", "allowedSources": ["2001:db8::/64"]}
+    project = _standalone_project(
+        tmp_path, _owned_service([_billing()], remote_access=remote_access)
+    )
+
+    config = validate_config(project, SCHEMAS)
+
+    assert config.resource_count > 0
+
+
 def test_s006_11_remote_access_needs_an_owner_database(tmp_path: Path) -> None:
     project = tmp_path / "project"
     copy_examples(project)

@@ -884,6 +884,38 @@ def test_s019_10_remote_access_from_every_address_is_refused(
     _refused_with(project, capsys, "service_remote_access_open")
 
 
+def test_s019_10_remote_access_from_an_ipv6_network_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    remote_access = {
+        "listenAddress": "10.0.0.2",
+        "allowedSources": ["10.0.0.0/24", "2001:db8::/64"],
+    }
+    project = write_project(
+        tmp_path / "project", mariadb_service(remoteAccess=remote_access)
+    )
+
+    context = _refused_with(project, capsys, "service_mariadb_remote_access_ipv6")
+
+    assert "2001:db8::/64" in context["message"]
+    assert "single IPv6 address" in context["message"]
+    assert context["field"] == "spec.mariadb.remoteAccess.allowedSources.1"
+
+
+@pytest.mark.parametrize("source", ["2001:db8::7/128", "10.0.0.0/24", "10.0.0.7/32"])
+def test_s019_10_remote_access_from_one_ipv6_address_or_ipv4_validates(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], source: str
+) -> None:
+    remote_access = {"listenAddress": "10.0.0.2", "allowedSources": [source]}
+    project = write_project(
+        tmp_path / "project", mariadb_service(remoteAccess=remote_access)
+    )
+
+    exit_code, document = _validate(project, capsys)
+
+    assert exit_code == 0, document
+
+
 def test_s019_10_remote_access_on_a_replica_needs_no_owner_of_its_own(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

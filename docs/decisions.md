@@ -210,3 +210,11 @@ Status on 2026-11-15: partly built. component.service.j2 sets only User, Group, 
 - Why: a fresh random salt on every run made every converge of an owner with a passwordRef report a change, so the second converge could never change nothing (D-17); salts aren't secret, and this needs no new secret and no weaker hash
 - Applies to: engine/ansible/roles/cloudfall_postgresql/*, sdk/src/cloudfall/secrets.py, PostgreSQL passwords
 - Enforced by: review
+
+## D-26: A MariaDB service refuses an IPv6 network in remoteAccess at validation
+
+- Decided: 2026-11-16, in cloudfall-dev/cloudfall#434
+- Rule: config validate refuses an IPv6 network in a MariaDB service's remoteAccess.allowedSources (service_mariadb_remote_access_ipv6), naming the source and saying a single IPv6 address is accepted; a single IPv6 address, written /128, and IPv4 networks stay accepted; PostgreSQL and other kinds keep S-006's source rules; the cloudfall_mariadb role's refusal stays as a second line of defence
+- Why: MariaDB's account host has no netmask form for IPv6, so such a source validated, got a firewall rule, and failed only at converge after the host made its certificate key; Q-1 and Q-2 want that config to fail validation; no config that converges today stops validating; decided by `@romamo` on #434 (option 1)
+- Applies to: sdk/src/cloudfall/validation.py, docs/specs/019-mariadb-service.md (Validation), MariaDB remoteAccess
+- Enforced by: sdk/tests/test_s019_mariadb.py
