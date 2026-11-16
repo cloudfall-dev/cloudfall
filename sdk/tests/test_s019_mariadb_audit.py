@@ -398,6 +398,92 @@ def test_the_role_is_unknown_when_the_server_was_not_read(tmp_path: Path) -> Non
     )
 
 
+def _bind(
+    tmp_path: Path, inventory: PlatformInventory, server: str, *listeners: str
+) -> AuditCheck:
+    """Audit ``server`` listening on ``listeners`` and return its MariaDB bind."""
+    document = json.loads((COMPLIANT / f"{server}.json").read_text(encoding="utf-8"))
+    sockets = "".join(
+        f"\ntcp   LISTEN 0 80     {listener}  0.0.0.0:*" for listener in listeners
+    )
+    document["spec"]["network"]["listeningSockets"] += sockets
+    observations = tmp_path / "observed"
+    observations.mkdir(parents=True)
+    (observations / f"{server}.json").write_text(json.dumps(document), encoding="utf-8")
+    report = audit_inventory(inventory, load_observations(observations, SCHEMAS))
+    (audit,) = (item for item in report.servers if item.server_id == server)
+    (bind,) = (
+        check for check in audit.checks if check.check.startswith("services.bind[maria")
+    )
+    return bind
+
+
+# proves: S-019-12
+def test_s019_12_a_pair_listening_on_its_replication_address_is_compliant(
+    tmp_path: Path,
+) -> None:
+    inventory = _pair(tmp_path)
+
+    primary = _bind(
+        tmp_path / "h1", inventory, "h1", "127.0.0.1:3306", "203.0.113.11:3306"
+    )
+    replica = _bind(tmp_path / "h2", inventory, "h2", "127.0.0.1:3306")
+
+    assert primary.check == "services.bind[mariadb-main]"
+    assert primary.status is AuditStatus.COMPLIANT
+    assert primary.desired == {
+        "protocol": "tcp",
+        "address": "127.0.0.1",
+        "port": 3306,
+        "loopbackOnly": False,
+        "replication": {"listenAddress": "203.0.113.11"},
+    }
+    assert replica.check == "services.bind[mariadb-replica]"
+    assert replica.status is AuditStatus.COMPLIANT
+
+
+# proves: S-019-3
+@pytest.mark.parametrize(
+    "stray",
+    [
+        pytest.param("0.0.0.0:3306", id="IPv4 wildcard"),
+        pytest.param("[::]:3306", id="IPv6 wildcard"),
+        pytest.param("[2001:db8::11]:3306", id="an IPv6 address"),
+        pytest.param("10.0.0.5:3306", id="another IPv4 address"),
+    ],
+)
+def test_s019_3_a_primary_listening_beyond_its_declared_addresses_is_drift(
+    tmp_path: Path, stray: str
+) -> None:
+    inventory = _pair(tmp_path)
+
+    bind = _bind(
+        tmp_path, inventory, "h1", "127.0.0.1:3306", "203.0.113.11:3306", stray
+    )
+
+    assert bind.status is AuditStatus.DRIFT
+
+
+def test_a_primary_not_listening_on_its_replication_address_is_drift(
+    tmp_path: Path,
+) -> None:
+    inventory = _pair(tmp_path)
+
+    bind = _bind(tmp_path, inventory, "h1", "127.0.0.1:3306")
+
+    assert bind.status is AuditStatus.DRIFT
+
+
+def test_a_standalone_server_listening_on_a_public_address_is_drift(
+    tmp_path: Path,
+) -> None:
+    inventory = _standalone(tmp_path)
+
+    bind = _bind(tmp_path, inventory, "h1", "127.0.0.1:3306", "203.0.113.11:3306")
+
+    assert bind.status is AuditStatus.DRIFT
+
+
 def test_an_observation_without_server_evidence_is_unknown(tmp_path: Path) -> None:
     inventory = _standalone(tmp_path)
 

@@ -8,7 +8,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from ipaddress import ip_network
+from ipaddress import IPv4Address, IPv6Address, ip_address, ip_network
 from typing import TYPE_CHECKING, cast
 
 import yaml
@@ -1104,16 +1104,25 @@ def _audit_service_binds(
             listener.address == address for listener in on_port
         )
         remote_access = service_remote_access(service, service.server_id)
-        # The remoteAccess listener is narrowed to its declared sources by the
-        # firewall, which firewall.allowedInbound verifies; any other
-        # non-loopback listener is exposed.
-        accepted = (
-            _LOOPBACK_ADDRESSES
-            if remote_access is None
-            else _LOOPBACK_ADDRESSES | {remote_access.listen_address.value}
+        replication = (
+            None if service.mariadb is None else service.mariadb.replication
         )
+        replication_address = (
+            None if replication is None else replication.listen_address
+        )
+        # The remoteAccess listener, and a MariaDB primary's replication
+        # listener, are narrowed to their declared sources by the firewall,
+        # which firewall.allowedInbound verifies; any other non-loopback
+        # listener is exposed.
+        accepted = {ip_address(loopback) for loopback in _LOOPBACK_ADDRESSES}
+        if remote_access is not None:
+            accepted.add(ip_address(remote_access.listen_address.value))
+        if replication_address is not None:
+            accepted.add(ip_address(replication_address.value))
         exposed = tuple(
-            listener for listener in on_port if listener.address not in accepted
+            listener
+            for listener in on_port
+            if _listener_ip(listener.address) not in accepted
         )
         # A remoteAccess service must also listen on its listenAddress: one
         # that failed to bind it has remote access down while it is declared.
@@ -1122,16 +1131,26 @@ def _audit_service_binds(
                 listener.address == remote_access.listen_address.value
                 for listener in on_port
             )
+        # Likewise a primary must listen on its replication listenAddress: its
+        # replicas cannot connect to one that failed to bind it.
+        if replication_address is not None:
+            replication_ip = ip_address(replication_address.value)
+            declared_present = declared_present and any(
+                _listener_ip(listener.address) == replication_ip
+                for listener in on_port
+            )
         desired: dict[str, object] = {
             "protocol": "tcp",
             "address": address,
             "port": port,
-            "loopbackOnly": remote_access is None,
+            "loopbackOnly": remote_access is None and replication_address is None,
         }
         if remote_access is not None:
             desired["remoteAccess"] = {
                 "listenAddress": remote_access.listen_address.value
             }
+        if replication_address is not None:
+            desired["replication"] = {"listenAddress": replication_address.value}
         observed = (
             {
                 "listeners": [
@@ -1151,6 +1170,18 @@ def _audit_service_binds(
             )
         )
     return tuple(checks)
+
+
+def _listener_ip(address: str) -> IPv4Address | IPv6Address | None:
+    """Return a listener's address as an IP, or ``None`` when it is none.
+
+    ``ss`` prints ``*`` for a socket bound to every address; an address that
+    does not parse can never match a declared one, so it shows up as drift.
+    """
+    try:
+        return ip_address(address)
+    except ValueError:
+        return None
 
 
 def elasticsearch_managed_settings(service: ServiceInventory) -> dict[str, object]:

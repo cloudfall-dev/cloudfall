@@ -1,0 +1,3 @@
+### Fixed
+
+- `cloudfall audit` no longer reports `services.bind` drift on a compliant MariaDB primary that listens on its `replication.listenAddress` as well as loopback: a MariaDB listener on the service's declared `replication.listenAddress` or `remoteAccess.listenAddress` at its port is accepted, compared as a parsed IP, and the check's desired state names the replication address. A primary not listening on its replication address is drift, as a remoteAccess service not listening on its listenAddress already was. Any other non-loopback listener, a wildcard (`0.0.0.0`, `::`) or an undeclared IPv6 address included, is still drift, and the check is unchanged for other service kinds (#445)
