@@ -256,6 +256,7 @@ per-table row counts and writes a receipt. See the
 | [CI deploy](docs/ci-deploy-guide.md) | Deploying from GitHub Actions with per-environment keys and required reviewers |
 | [Logging](docs/logging-service-guide.md) | Loki, Grafana and Alloy behind an mTLS gateway |
 | [Storage](docs/new-server-storage-guide.md) | Destructive, new-server-only RAID provisioning ([design](docs/hybrid-storage-design.md)) |
+| [Compatibility](docs/compatibility.md) | What stays stable across releases, deprecations, the project format and `cloudfall config upgrade` |
 | [Architecture](ARCHITECTURE.md) | Module boundaries and the long-term fleet vision |
 
 ## Architecture

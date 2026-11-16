@@ -1,6 +1,6 @@
 # S-017: Compatibility policy
 
-status: approved
+status: built
 serves: G-4
 
 ## Problem
@@ -297,4 +297,50 @@ Each needs the maintainer; the recommendation is what the text above assumes.
 
 ## Verification
 
-No criterion is verified yet.
+Checked on main at a49a1bf plus cloudfall-dev/cloudfall#381's pull request; every test named
+here passed (`uv run pytest` over the `s017` tests, 77 passed, and
+`sdk/tests/test_s017_compatibility_doc.py`, 26 passed).
+
+- S-017-1: read `docs/compatibility.md` against this spec and the code (`project_format.py`,
+  `upgrade.py`, `sdk/tests/surface/`, `config/tests/records/kinds/`); it names the five stable
+  surfaces, the additive and breaking lists, the release table, the deprecation window, format
+  1 and `cloudfall config upgrade`, and `README.md` and `CONTRIBUTING.md` link it;
+  `test_s017_1_*` in `sdk/tests/test_s017_compatibility_doc.py`, which also resolves its
+  relative links, holds
+- S-017-2: `test_s017_2_init_writes_the_current_format_and_validate_warns_nothing_of_it`
+  (`sdk/tests/test_s017_project_format.py`) runs `cloudfall init` and `config validate`;
+  `SUPPORTED_FORMATS.current` is 1 in `sdk/src/cloudfall/project_format.py`, holds
+- S-017-3: `test_s017_3_a_format_0_project_validates_with_one_old_format_warning`, for a
+  `pyproject.toml` without the table and for none, one `PROJECT_FORMAT_OLD`, holds
+- S-017-4: `test_s017_4_a_too_new_project_stops_each_command_before_tmp_or_ansible`
+  (`sdk/tests/test_s017_format_every_command.py`) runs the four commands, exit 95 and the
+  context keys, no `tmp/` file and no `ansible-playbook`, holds
+- S-017-5: `test_s017_5_mcp_serve_refuses_a_too_new_project_before_a_client`, holds
+- S-017-6: `test_s017_6_a_project_below_oldest_is_refused_as_too_old`, `error.context.fix`
+  `cloudfall config upgrade`, holds
+- S-017-7: `test_s017_7_a_malformed_format_stops_validate_as_invalid` with the three inputs,
+  and `test_s017_7_a_pyproject_that_is_not_utf8_stops_validate_as_invalid`, holds
+- S-017-8: `test_s017_8_upgrade_rewrites_the_old_names_and_writes_the_current_format` and
+  `test_s017_8_the_format_is_written_keeping_every_other_byte`
+  (`sdk/tests/test_s017_upgrade.py`), second run `effect: noop`, holds
+- S-017-9: `test_s017_9_upgrade_runs_on_a_project_below_oldest` and
+  `test_s017_9_upgrade_refuses_a_too_new_project_changing_no_file`, holds
+- S-017-10: `test_s017_10_commands_that_read_no_project_run_in_a_too_new_project` and
+  `test_s017_10_init_runs_in_a_too_new_project`, each exit 0, holds
+- S-017-11: `config/tests/records/kinds/` holds one record of each of the eleven kinds;
+  `test_s017_11_*` in `sdk/tests/test_s017_record_kinds.py` validates each against today's
+  schema and reads them through `decisions show`, `operator show` and `why`, holds
+- S-017-12: `sdk/tests/surface/exit-codes.json` and `mcp-tools.json` are the committed lists;
+  `test_s017_12_*` in `sdk/tests/test_compatibility_surface.py` compares both CLIs and both
+  tool sets and proves the missing, renumbered, removed-in and added cases, holds
+- S-017-13: `test_s017_13_no_deprecation_outlives_its_removed_in`,
+  `test_s017_13_the_d11_names_fail_once_0_9_0_is_reached` and
+  `test_s017_13_a_mark_without_removed_in_fails`; every mark in `app.py` and name in
+  `validation.py` and `ansible_reader.py` declares `removed_in` 0.9.0, holds
+- S-017-14: `test_s017_14_add_server_type_writes_what_baseline_writes_and_names_0_9_0`
+  (`sdk/tests/test_baseline_rename.py`), holds
+- S-017-15: the release commits of v0.8.0rc48, the first release after
+  cloudfall-dev/cloudfall#384 (v0.8.0rc47's has none), and of v0.8.0rc58 add `sdk/src/cloudfall/schema-changelog.json`;
+  `uvx --from cloudfall==0.8.0rc58 cloudfall changelog` from the published wheel lists an
+  entry for `0.8.0-rc.58`; the Releases section of `CONTRIBUTING.md` names no manual step;
+  `test_s017_15_*` in `sdk/tests/test_interface_changelog.py`, holds
