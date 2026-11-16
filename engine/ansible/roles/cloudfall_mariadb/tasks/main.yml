@@ -125,6 +125,22 @@
       Cloudfall never installs over it: seed a new server as a replica of this
       one, then promote it
 
+- name: Validate the declared backup and restore-drill calendar expressions
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemd-analyze
+      - calendar
+      - "{{ item }}"
+  loop: >-
+    {{
+      [cloudfall_mariadb_service.backup.onCalendar]
+      + ([cloudfall_mariadb_service.backup.restoreCheckOnCalendar]
+         if cloudfall_mariadb_service.backup.restoreCheckOnCalendar is defined
+         else [])
+    }}
+  changed_when: false
+  check_mode: false
+
 - name: Create, grow and mount the data volume
   ansible.builtin.include_tasks: storage.yml
 
@@ -191,3 +207,6 @@
 - name: Converge each owner's accounts from the allowed sources
   ansible.builtin.include_tasks: remote_accounts.yml
   when: not ansible_check_mode
+
+- name: Install the dumps and the restore drill
+  ansible.builtin.include_tasks: backup.yml

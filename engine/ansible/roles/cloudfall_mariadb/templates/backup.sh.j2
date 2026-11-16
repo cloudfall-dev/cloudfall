@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# Managed by Cloudfall. Local changes will be overwritten.
+# Writes one gzip dump of every declared database of service
+# {{ cloudfall_mariadb_service.id }}, each from one consistent snapshot taken
+# without locking the tables (--single-transaction), and beside it a count
+# file: every base table of the dump and its rows, counted from the stored
+# dump itself, so the restore drill compares a restore with the snapshot the
+# dump holds and never with the live source. Users and grants are not dumped:
+# converge recreates the declared ones. Then deletes each database's dumps
+# older than retentionDays, never its newest, and only files of the names
+# this script writes.
+set -euo pipefail
+umask 077
+shopt -s nullglob
+export LC_ALL=C
+
+backup_directory="{{ cloudfall_mariadb_service.backup.directory }}"
+retention_days="{{ cloudfall_mariadb_service.backup.retentionDays }}"
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+summary=""
+
+# A dump or count file still being written is removed when the run fails.
+part_dump=""
+part_counts=""
+remove_parts() {
+  if [ -n "${part_dump}" ]; then rm -f -- "${part_dump}"; fi
+  if [ -n "${part_counts}" ]; then rm -f -- "${part_counts}"; fi
+}
+trap remove_parts EXIT
+
+# One "table<TAB>rows" line per base table of a gzip dump, sorted. Every
+# table has a CREATE TABLE line, empty or not (a view's stand-in is written
+# inside a /*!50001 comment and is not one); each INSERT line holds one or
+# more rows, after the column list a table with an invisible column is
+# dumped with. Trigger and routine bodies, between DELIMITER ;; and
+# DELIMITER ;, are stored by a load, never run, so their statements count
+# for nothing. Escapes and quoted strings are removed first, so only the
+# separators between rows are left to count.
+dump_counts() {
+  gzip -dc -- "$1" | awk '
+    function unquote(name) {
+      name = substr(name, 2, length(name) - 2)
+      gsub(/``/, "`", name)
+      return name
+    }
+    /^DELIMITER ;;$/ { body = 1; next }
+    /^DELIMITER ;$/ { body = 0; next }
+    body { next }
+    /^CREATE TABLE `/ {
+      name = $0
+      sub(/^CREATE TABLE /, "", name)
+      sub(/ \($/, "", name)
+      name = unquote(name)
+      if (!(name in rows)) { rows[name] = 0; order[++tables] = name }
+      next
+    }
+    /^INSERT INTO `/ {
+      rest = substr($0, 13)
+      match(rest, /^`([^`]|``)*`/)
+      name = unquote(substr(rest, 1, RLENGTH))
+      rest = substr(rest, RLENGTH + 1)
+      if (match(rest, /^ \(`([^`]|``)*`(,`([^`]|``)*`)*\)/)) {
+        rest = substr(rest, RLENGTH + 1)
+      }
+      values = substr(rest, 9)
+      gsub(/\\./, "", values)
+      gsub(/\047[^\047]*\047/, "", values)
+      rows[name] += gsub(/\),\(/, "", values) + 1
+      next
+    }
+    END {
+      for (i = 1; i <= tables; i++) printf "%s\t%d\n", order[i], rows[order[i]]
+    }' | sort
+}
+
+# "<tables> tables, <rows> rows" of a count file.
+totals() {
+  awk -F '\t' '{ rows += $2 }
+    END { printf "%d tables, %.0f rows\n", NR, rows }' "$1"
+}
+
+dump_database() {
+  local database="$1" dump counts other
+  dump="${backup_directory}/${database}-${timestamp}.sql.gz"
+  counts="${backup_directory}/${database}-${timestamp}.counts"
+  part_dump="${dump}.part"
+  part_counts="${counts}.part"
+  # Without --databases the dump holds no CREATE DATABASE or USE, so the
+  # drill loads it into its scratch database and nowhere else.
+  mariadb-dump --single-transaction --quick --hex-blob --routines --triggers \
+    --default-character-set=utf8mb4 "${database}" | gzip > "${part_dump}"
+  dump_counts "${part_dump}" > "${part_counts}"
+  # The count file is in place before its dump, so a dump never lacks one.
+  mv -- "${part_counts}" "${counts}"
+  part_counts=""
+  mv -- "${part_dump}" "${dump}"
+  part_dump=""
+  # A table of another engine than InnoDB is outside the snapshot.
+  other="$(mariadb --batch --raw --skip-column-names --execute "
+    SELECT CONCAT(TABLE_NAME, ' (', IFNULL(ENGINE, 'no engine'), ')')
+    FROM information_schema.TABLES
+    WHERE TABLE_SCHEMA = '${database}'
+      AND TABLE_TYPE IN ('BASE TABLE', 'SYSTEM VERSIONED')
+      AND IFNULL(ENGINE, '') <> 'InnoDB'
+    ORDER BY TABLE_NAME")"
+  if [ -n "${other}" ]; then
+    printf '%s\n' "${database}: not in one snapshot, as they are not InnoDB:" \
+      "${other}"
+  fi
+  summary="${summary}backed up ${database}: ${dump} ($(totals "${counts}"))
+"
+}
+
+# Deletes the dumps of a database older than retentionDays with their count
+# files, except the newest, whatever its age.
+prune_database() {
+  local database="$1" pattern newest="" file
+  pattern="^${database}-[0-9]{8}T[0-9]{6}Z\\.sql\\.gz$"
+  for file in "${backup_directory}/${database}-"*.sql.gz; do
+    if [[ "${file##*/}" =~ ${pattern} ]]; then newest="${file}"; fi
+  done
+  for file in "${backup_directory}/${database}-"*.sql.gz; do
+    if [[ ! "${file##*/}" =~ ${pattern} ]] || [ "${file}" = "${newest}" ]; then
+      continue
+    fi
+    if [ -n "$(find "${file}" -prune -mtime "+${retention_days}")" ]; then
+      rm -f -- "${file}" "${file%.sql.gz}.counts"
+      echo "removed ${file##*/}, older than ${retention_days} days"
+    fi
+  done
+}
+
+{% if cloudfall_mariadb_service.mariadb.databases | length == 0 %}
+echo "service {{ cloudfall_mariadb_service.id }} declares no database to back up" >&2
+exit 1
+{% else %}
+{% for database in cloudfall_mariadb_service.mariadb.databases %}
+dump_database "{{ database.name }}"
+{% endfor %}
+{% for database in cloudfall_mariadb_service.mariadb.databases %}
+prune_database "{{ database.name }}"
+{% endfor %}
+printf '%s' "${summary}"
+{% endif %}

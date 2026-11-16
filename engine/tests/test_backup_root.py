@@ -25,6 +25,7 @@ ROLE_TASKS = {
     "postgresql": ("main.yml", "Create the backup directory"),
     "redis": ("main.yml", "Create the backup directory"),
     "elasticsearch": ("snapshots.yml", "Create the snapshot repository directory"),
+    "mariadb": ("backup.yml", "Create the backup directory"),
 }
 # Each service's own directory keeps its owner and mode.
 SERVICE_OWNERS = {
@@ -123,6 +124,18 @@ def test_the_snapshot_repository_gets_a_root_owned_root_first() -> None:
     assert created == [
         (BACKUP_ROOT, "root", "root", "0755"),
         (directory, "elasticsearch", "elasticsearch", "0750"),
+    ]
+
+
+def test_the_mariadb_dumps_get_a_root_owned_root_first() -> None:
+    """The MariaDB scripts run as root, so its directory is root's alone."""
+    directory = f"{BACKUP_ROOT}/mariadb-main"
+
+    created = _created("mariadb", directory)
+
+    assert created == [
+        (BACKUP_ROOT, "root", "root", "0755"),
+        (directory, "root", "root", "0700"),
     ]
 
 

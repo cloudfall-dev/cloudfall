@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# Managed by Cloudfall. Local changes will be overwritten.
+# Loads the newest dump of every declared database of service
+# {{ cloudfall_mariadb_service.id }} into a scratch database, compares its
+# tables and the rows of each with the count file written beside the dump,
+# and drops the scratch database again, also when the drill fails. The count
+# file was counted from the dump, so writes to the source since then cannot
+# make them disagree. The drill writes nothing to the binary log and runs as
+# root through the socket, never as an application's user.
+set -euo pipefail
+shopt -s nullglob
+export LC_ALL=C
+
+backup_directory="{{ cloudfall_mariadb_service.backup.directory }}"
+# A declared database name has no "-" (service.schema.json), so the scratch
+# database is never one of them; the comment marks it as the drill's own.
+scratch="cloudfall-restore-check"
+marker="cloudfall restore drill"
+made_scratch=0
+
+client() {
+  mariadb --batch --raw --skip-column-names \
+    --init-command="SET SESSION sql_log_bin = 0" "$@"
+}
+
+drop_scratch() {
+  client --execute "DROP DATABASE \`${scratch}\`"
+  made_scratch=0
+}
+
+cleanup() {
+  local status=$?
+  if [ "${made_scratch}" = 1 ] && ! drop_scratch; then
+    echo "could not drop the scratch database ${scratch}" >&2
+    status=1
+  fi
+  exit "${status}"
+}
+trap cleanup EXIT
+
+# Makes the scratch database. One the drill left behind (the host stopped
+# mid-drill) is dropped first; a database of that name the drill did not
+# make is left as it is, and the drill stops.
+create_scratch() {
+  local found
+  found="$(client --execute "
+    SELECT CONCAT('comment:', IFNULL(SCHEMA_COMMENT, ''))
+    FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '${scratch}'")"
+  if [ -n "${found}" ] && [ "${found}" != "comment:${marker}" ]; then
+    echo "restore check stopped: a database named ${scratch} exists that" \
+      "the restore drill did not make; it is left as it is" >&2
+    exit 1
+  fi
+  if [ -n "${found}" ]; then
+    drop_scratch
+  fi
+  client --execute "CREATE DATABASE \`${scratch}\` COMMENT '${marker}'"
+  made_scratch=1
+}
+
+# One "table<TAB>rows" line per base table of the scratch database, sorted:
+# the first client writes one counting statement per table, the second runs
+# them.
+restored_counts() {
+  client "${scratch}" <<'SQL' | client "${scratch}" | sort
+SELECT CONCAT('SELECT ', QUOTE(TABLE_NAME), ', COUNT(*) FROM `',
+              REPLACE(TABLE_NAME, '`', '``'), '`;')
+FROM information_schema.TABLES
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_TYPE IN ('BASE TABLE', 'SYSTEM VERSIONED');
+SQL
+}
+
+# "<tables> tables, <rows> rows" of count lines.
+totals() {
+  awk -F '\t' '{ rows += $2 }
+    END { printf "%d tables, %.0f rows\n", NR, rows }' <<<"$1"
+}
+
+drill() {
+  local database="$1" pattern latest="" file counts expected restored
+  local missing unexpected
+  pattern="^${database}-[0-9]{8}T[0-9]{6}Z\\.sql\\.gz$"
+  for file in "${backup_directory}/${database}-"*.sql.gz; do
+    if [[ "${file##*/}" =~ ${pattern} ]]; then latest="${file}"; fi
+  done
+  if [ -z "${latest}" ]; then
+    echo "no backup found for ${database} in ${backup_directory}" >&2
+    exit 1
+  fi
+  counts="${latest%.sql.gz}.counts"
+  if [ ! -f "${counts}" ]; then
+    echo "restore check failed for ${database}: ${latest} has no count" \
+      "file ${counts}" >&2
+    exit 1
+  fi
+  expected="$(sort "${counts}")"
+  if [ -z "${expected}" ]; then
+    echo "restore check failed for ${database}: ${latest} holds no table" >&2
+    exit 1
+  fi
+  create_scratch
+  # --one-database skips any statement for another database than the scratch.
+  gzip -dc -- "${latest}" | client --one-database "${scratch}"
+  restored="$(restored_counts)"
+  drop_scratch
+  missing="$(comm -23 <(printf '%s\n' "${expected}") <(printf '%s\n' "${restored}"))"
+  unexpected="$(comm -13 <(printf '%s\n' "${expected}") <(printf '%s\n' "${restored}"))"
+  if [ -n "${missing}" ] || [ -n "${unexpected}" ]; then
+    {
+      echo "restore check failed for ${database}: ${latest}"
+      if [ -n "${missing}" ]; then
+        printf '%s\n' "in the count file, not restored as such:" "${missing}"
+      fi
+      if [ -n "${unexpected}" ]; then
+        printf '%s\n' "restored, not in the count file as such:" "${unexpected}"
+      fi
+    } >&2
+    exit 1
+  fi
+  echo "restore check passed for ${database}: ${latest}" \
+    "($(totals "${expected}"), as in the count file)"
+}
+
+{% if cloudfall_mariadb_service.mariadb.databases | length == 0 %}
+echo "service {{ cloudfall_mariadb_service.id }} declares no database to check" >&2
+exit 1
+{% else %}
+{% for database in cloudfall_mariadb_service.mariadb.databases %}
+drill "{{ database.name }}"
+{% endfor %}
+{% endif %}
