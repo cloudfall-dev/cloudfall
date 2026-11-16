@@ -14,6 +14,7 @@ stand-in's log.
 from __future__ import annotations
 
 import datetime as dt
+import errno
 import hashlib
 import ipaddress
 import json
@@ -25,6 +26,7 @@ import subprocess
 import threading
 from typing import TYPE_CHECKING, Any
 
+import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -146,9 +148,27 @@ class SourceServer:
         self.thread.start()
 
     def stop(self) -> None:
-        """Close the port: the source is stopped, or out of reach."""
+        """Close the port: the source is stopped, or out of reach.
+
+        On Linux a listening socket closed while a thread waits in accept()
+        keeps listening until that call returns; shutting it down first
+        wakes the thread and stops the listening. macOS answers ENOTCONN to
+        that shutdown, and its close() alone stops it.
+        """
+        if self.listener.fileno() == -1:
+            return  # stopped already
+        try:
+            self.listener.shutdown(socket.SHUT_RDWR)
+        except OSError as error:
+            if error.errno != errno.ENOTCONN:
+                raise
         self.listener.close()
         self.thread.join(timeout=10)
+        if self.thread.is_alive():
+            message = "the source server still accepts connections"
+            raise RuntimeError(message)
+        with pytest.raises(ConnectionRefusedError):
+            socket.create_connection(("127.0.0.1", self.port), timeout=5).close()
 
     def _serve(self) -> None:
         while True:
