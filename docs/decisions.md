@@ -74,7 +74,7 @@ entry that supersedes it, never by editing an old one.
 - Rule: Cloudfall sets a PostgreSQL role's password only with a SCRAM-SHA-256 verifier computed on the controller; the plaintext password is never staged on the host and never sent to the server, so it can't reach the PostgreSQL log or pg_stat_activity
 - Why: psql substitutes a variable into the statement text, so ALTER ROLE ... PASSWORD with the plaintext puts the password in the server's log under log_statement ddl or all, or on a failing statement; PostgreSQL stores a pre-hashed verifier as it is
 - Applies to: engine/ansible/roles/cloudfall_postgresql/tasks/owner_password.yml, sdk/src/cloudfall/secrets.py, engine/src/cloudfall_engine/cli.py
-- Enforced by: a regression test that the staged file holds a verifier and never the password
+- Enforced by: a regression test that the file staged on the host holds a verifier and never the password (since D-25 the controller's own 0600 file holds the password, which never leaves the controller)
 
 ## D-10: Components are isolated by the systemd sandbox, and separate servers are recommended, not required
 
