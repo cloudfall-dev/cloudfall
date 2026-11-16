@@ -63,9 +63,8 @@ The release also records its interface changes, which `cloudfall changelog`
 serves: after stamping the version, its `after_stamp` step runs
 `treaty changelog-add cloudfall.app:app`, which diffs the manifest against the
 snapshot beside `sdk/src/cloudfall/schema-changelog.json` and adds an entry for
-the version. Both files go into the release commit and the wheel. A release
-whose interface did not change adds no entry, and a failed run stops the
-release.
+the version. Both files go into the release commit and the wheel, and a failed
+run stops the release.
 
 ## Licensing of contributions
 

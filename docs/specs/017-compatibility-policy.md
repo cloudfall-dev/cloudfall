@@ -42,9 +42,14 @@ change in any release.
 | MCP tool names | The names `cloudfall mcp serve` lists: one per served command, its path joined with `_` (`config_validate`, `domains_apply`, `import_render-api`; the sets are `PROJECT_COMMANDS` and `FLEET_COMMANDS` in `sdk/src/cloudfall/agent_server.py`), the provided tools `build_artifact`, `converge_baseline`, `converge_services`, `converge_domains`, and `operation_<id>` for each declared operation (`operation_tool_name`); each tool's input schema follows its command's flags |
 
 Records are evidence, so they get a stronger rule than names: a record any release wrote is
-read by every later release with the same `apiVersion`. A record is never rewritten, by
-`config upgrade` or anything else, and its fields are never deprecated within `cloudfall/v1`;
-a reader keeps understanding a field older releases wrote. `cloudfall why` answers from old
+read by every later release with the same `apiVersion`. Its fields are never deprecated
+within `cloudfall/v1`, and a reader keeps understanding a field older releases wrote. No
+command changes a record's evidence. `cloudfall config upgrade` touches records in two ways
+only: moving a project from format 0, it moves receipts and operator proposals from `tmp/`
+into the committed `record/` directory byte for byte (D-16), and it takes the raw release
+output out of a release receipt written before 0.8.0, putting the text in a file under
+`tmp/output/releases/` readable by its owner only and keeping that file's path and SHA-256 in
+the receipt. `cloudfall why` answers from old
 records as it does from new ones (G-2).
 
 The policy is written for people in `docs/compatibility.md`, linked from `README.md` and
@@ -62,7 +67,7 @@ condition that had one, a key removed from `data`.
 | Release | Before 1.0 (`0.N.Z`) | From 1.0 (`X.Y.Z`) |
 |---|---|---|
 | Patch | Fixes only: behaviour moves to what the docs and schemas already say. No additive change to a stable surface, no new deprecation. A config that validated still validates, except for a security fix listed under `Security` in `CHANGELOG.md` | The same |
-| Minor | Additive changes; deprecations; removal of a name deprecated in an earlier minor; a format version step (below). A breaking change without a deprecation path only when no rewrite can exist, listed under `Changed` or `Removed` with what a project must do | Additive changes and deprecations only |
+| Minor | Additive changes; deprecations; removal of a name deprecated in an earlier minor; a format version step (below). A breaking change without a deprecation path only when no rewrite can exist, listed under `Breaking` in `CHANGELOG.md` with the step a project takes before upgrading (D-14) | Additive changes and deprecations only |
 | Major | (none before 1.0) | Removal of deprecated names; a breaking change |
 
 One existing rule fits this table and stays: a third-party version that has passed its end of

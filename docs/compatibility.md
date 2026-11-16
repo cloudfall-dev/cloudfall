@@ -59,7 +59,7 @@ Anything else is **breaking**:
 | Release | Before 1.0 (`0.N.Z`) | From 1.0 (`X.Y.Z`) |
 |---|---|---|
 | Patch | Fixes only: behaviour moves to what the docs and schemas already say. No additive change to a stable surface, no new deprecation. A config that validated still validates, except for a security fix listed under `Security` in `CHANGELOG.md` | The same |
-| Minor | Additive changes; deprecations; removal of a name deprecated in an earlier minor; a format version step (below). A breaking change without a deprecation path only when no rewrite can exist, listed in `CHANGELOG.md` with what a project must do | Additive changes and deprecations only |
+| Minor | Additive changes; deprecations; removal of a name deprecated in an earlier minor; a format version step (below). A breaking change without a deprecation path only when no rewrite can exist, listed under `Breaking` in `CHANGELOG.md` with the step a project takes before upgrading (D-14) | Additive changes and deprecations only |
 | Major | None before 1.0 | Removal of deprecated names; a breaking change |
 
 One more removal fits the minor row: a third-party version past its end of life leaves the
