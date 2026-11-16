@@ -186,3 +186,27 @@ Status on 2026-11-15: partly built. component.service.j2 sets only User, Group, 
 - Applies to: engine/ansible/roles/cloudfall_access/*, SshPublicKey lifecycle
 - Enforced by: review
 - Zone: interpretation (notify, veto until 2026-11-16T16:10:00Z)
+
+## D-23: Releases wait for converge
+
+- Decided: 2026-11-16, in cloudfall-dev/cloudfall#361
+- Rule: release.yml and publish.yml run or require converge.yml on the same commit, and no release candidate or release is cut or published unless that converge run passed
+- Why: converge is the only check that runs the roles on a real Debian; a candidate cut from a commit whose converge failed ships broken roles, and the extra ~10 minutes per release is accepted
+- Applies to: .github/workflows/release.yml, .github/workflows/publish.yml, .github/workflows/converge.yml
+- Enforced by: review
+
+## D-24: Raw diffs and run logs of declared operations stay out of git
+
+- Decided: 2026-11-16, in cloudfall-dev/cloudfall#357
+- Rule: A declared operation's raw diff, execution log and verification log are written under the project's ignored tmp/ directory, and the committed decision record keeps only each file's sha256 and size; approve refuses when the raw diff is missing or its sha256 differs (D-20)
+- Why: a team playbook can print a secret Cloudfall doesn't know about (no no_log, diff: true), so only keeping its output out of the commit guarantees no record holds a secret value; the cost is that another clone sees hashes, not the diff text, and can't approve without the raw diff
+- Applies to: sdk/src/cloudfall/decision.py, decisions/, decision records
+- Enforced by: review
+
+## D-25: A PostgreSQL owner password converges by reusing the stored salt
+
+- Decided: 2026-11-16, in cloudfall-dev/cloudfall#398
+- Rule: To set a PostgreSQL role's password, the play reads the role's stored SCRAM-SHA-256 salt and iteration count from the host, the controller computes the verifier with them, and the ALTER ROLE runs and reports a change only when that verifier differs from the stored one; when the role has no SCRAM verifier a fresh salt is used; the plaintext stays on the controller as D-9 requires
+- Why: a fresh random salt on every run made every converge of an owner with a passwordRef report a change, so the second converge could never change nothing (D-17); salts aren't secret, and this needs no new secret and no weaker hash
+- Applies to: engine/ansible/roles/cloudfall_postgresql/*, sdk/src/cloudfall/secrets.py, PostgreSQL passwords
+- Enforced by: review
