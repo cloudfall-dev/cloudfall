@@ -1,6 +1,6 @@
 # S-020: Automatic failover for a MariaDB pair
 
-status: approved
+status: draft
 serves: G-2, G-3
 
 ## Problem
@@ -10,17 +10,20 @@ changes the declaration and converges. When the primary's host dies at night, th
 down until someone does that, and every application still points at the dead host
 (cloudfall-dev/cloudfall#416).
 
-Three things are missing:
+Two things are missing:
 
 - nothing watches the pair and decides that the primary is gone
 - nothing stops a primary that is alive but cut off from taking writes while its replica is
   promoted, so two servers can end up with different data
-- an application has no way to find the new primary: the address sits in its environment,
-  written by hand
 
-A proxy on every application host would answer the third, and is the usual answer. It also
-takes away the fastest way in: an application on the primary's own host connects through the
-unix socket today. This spec keeps that path and puts the fallback in the application.
+How an application finds the new primary is S-021: no proxy is in the path, and the
+application asks the servers. That is why the second point falls to the server itself: with
+no proxy to cut clients off, an application on the cut-off primary's own host keeps writing
+through the socket.
+
+Whether the deciding part is Cloudfall's own controller, as written below, or an existing
+manager such as replication-manager with the watchdog beside it, is open until a proving run
+of that manager on a pair without a proxy. The spec stays a draft until then.
 
 ## Behaviour
 
@@ -61,7 +64,6 @@ starts one.
 |---|---|---|
 | The controller | The management host, `cloudfall failover run` | Watches every pair of the project that declares `failover`, and is the only thing that promotes |
 | The watchdog | Each server of such a pair, a systemd unit the role installs | Turns the server's writes on and off by what it can see; never promotes |
-| The application's fallback | The application | Finds the writable server again after a switch |
 
 With `failover` declared, converge also creates two accounts on the primary, which reach the
 replica by replication: `cloudfall_failover` for the controller (it may read status, switch
@@ -170,41 +172,11 @@ Each promotion, finished or called off, is one `FailoverReceipt` in `record/fail
 
 ### What the application does
 
-No proxy is in the path, so the application carries the rule. Its environment holds the
-fixed list of both servers of the pair, and for a server on its own host the socket path.
-The contract, stated in the guide:
-
-1. Connect to the server last known to be writable, through the socket when it is local,
-   with a connect timeout and a read timeout set: without them a dead host hangs a request
-   for minutes
-2. Ask every new connection, and every connection taken from a pool, whether its server is
-   read-only, before the first statement. This is how an application that only reads, or
-   one whose connection lives for one request, learns of a switch
-3. On a connection error, a timeout, a read-only answer to rule 2, or a statement refused
-   because the server is read-only, ask each server of the list whether it is read-only,
-   take the one that is not, reconnect and run the transaction again
-4. When no server is writable, fail the request and try again on the next one: a failover
-   is over within a minute
-5. When two servers say they are writable, write to neither and fail the request
-6. Never write to a server that says it is read-only, and never cache the choice longer than
-   the connection lives
-
-The servers do their half: a server that is demoted, by a converge (S-019) or by its
-watchdog, closes its client connections, so the next statement on an open connection fails
-and rule 3 runs, a read included.
-
-A long-running process may also ask both servers every few seconds in the background and
-so learn of a switch before any statement fails. The Python wrapper offers it as an option
-that is off by default; a process that lives for one request has no use for it.
-
-An application that fails over uses an `owner` with a password (S-019): the passwordless
-socket form works on the database's own host only. It still connects through the socket
-there, with the password.
-
-`examples/failover-clients/` holds a reference wrapper for Python and one for PHP: one file
-each, with no dependency beyond the application's own driver, that implement the six
-rules around a connection factory. They are examples to copy, tested in CI against a pair
-the test starts.
+Nothing in this spec: S-021 holds the application's contract and its wrappers. It reads only
+what the servers say about themselves, so it follows a promotion by the controller as it
+follows a change of declaration. This spec owes it one thing, kept by the watchdog and by
+the promotion sequence: a server that stops being the primary closes its client
+connections.
 
 ### What is not a trigger
 
@@ -238,15 +210,15 @@ the test starts.
 ROADMAP.md M14 plans the same for PostgreSQL. The controller's loop, the lease and the fence
 rule, the decision table, the promotion sequence with its wait, the receipt and the refusal
 of a stale declaration are written against an interface a kind implements: ping, renew,
-stop following, promote, mark sole. Only that implementation, the accounts, the watchdog's
-statements and the application contract are MariaDB's.
+stop following, promote, mark sole. Only that implementation, the accounts and the
+watchdog's statements are MariaDB's.
 
 ### Documentation
 
 `docs/mariadb-failover-guide.md` covers declaring failover on a pair, running the controller
-under systemd, reading `failover status` and a receipt, what to do after a failover, the
-application contract with the two wrappers, and the limits: asynchronous replication loses
-the primary's last transactions, and the receipt says which.
+under systemd, reading `failover status` and a receipt, what to do after a failover, and
+the limits: asynchronous replication loses the primary's last transactions, and the receipt
+says which.
 
 Touches `config/schemas/v1/service.schema.json`, a new
 `config/schemas/v1/failover-receipt.schema.json`, `sdk/src/cloudfall/domain.py`,
@@ -255,7 +227,7 @@ Touches `config/schemas/v1/service.schema.json`, a new
 `sdk/src/cloudfall/audit.py`, `sdk/src/cloudfall/why.py`, `sdk/src/cloudfall/app.py`, a new
 `sdk/src/cloudfall/failover.py`, `engine/src/cloudfall_engine/ansible_inventory.py`,
 `engine/ansible/roles/cloudfall_mariadb`, `engine/ansible/playbooks/services.yml`,
-`examples/failover-clients/`, `docs/operator-guide.md`, ARCHITECTURE.md, ROADMAP.md, and
+`docs/operator-guide.md`, ARCHITECTURE.md, ROADMAP.md, and
 the guide.
 
 ## Acceptance criteria
@@ -306,32 +278,14 @@ the guide.
   old primary as the replica with no seed, and the next failover promotes it
 - S-020-17: `cloudfall why` for the receipt of S-020-7 names the witnesses, the times and
   the GTIDs, reading nothing but the record
-- S-020-18: The Python and the PHP wrapper, each run against the pair through S-020-7 while
-  writing one row a second, lose no row they were told was committed, report an error for
-  the rows in flight at the switch, and write to the new primary within five seconds of its
-  promotion with no restart of the client
-- S-020-19: The wrappers connect through the unix socket to a writable server on their own
-  host and over TCP with TLS to one elsewhere, and never send a write to a server that
-  reports read-only
-- S-020-20: A primary that answers pings while its commits have stopped and writes wait is
+- S-020-18: A primary that answers pings while its commits have stopped and writes wait is
   shown in `failover status` and reported by `audit`, and is not promoted over
-- S-020-21: Removing the `failover` block and converging removes the watchdog unit and both
+- S-020-19: Removing the `failover` block and converging removes the watchdog unit and both
   accounts' firewall rules, leaves the primary writable across a restart, and the controller
   no longer watches the pair
-- S-020-22: A proving run recorded in `docs/proving-runs/` on three hosts (the management
+- S-020-20: A proving run recorded in `docs/proving-runs/` on three hosts (the management
   host and a pair) shows S-020-5, S-020-7 and S-020-10 with their receipts and the measured
   times
-- S-020-23: A wrapper whose server is powered off mid-request reports an error within its
-  read timeout, not later, and a wrapper started with no timeout set refuses to connect
-- S-020-24: After a planned switch by declaration (S-019) with no write in flight, a client
-  that only reads gets an error on its next statement on the old connection and reads from
-  the new primary on the one after; a client that opens a connection per request reads from
-  the new primary on its first request after the switch
-- S-020-25: With both servers made writable by hand, a wrapper writes to neither and fails
-  the request
-- S-020-26: With background checking switched on, the Python wrapper moves to the new
-  primary within its interval with no failed statement in between when no request was in
-  flight; with it off, no connection or thread exists beyond the application's own
 
 ## Out of scope
 
@@ -349,7 +303,7 @@ the guide.
 - A controller on more than one host, and a failover of the controller
 - PostgreSQL: ROADMAP.md M14, on the kind-neutral parts named above
 - Rendering the list of servers into a component's environment: cloudfall-dev/cloudfall#216
-- Published client packages; the wrappers are examples in the repository
+- The application's contract and wrappers: S-021
 
 ## Decisions relied on
 
