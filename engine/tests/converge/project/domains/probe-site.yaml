@@ -1,0 +1,37 @@
+---
+# The converge job places a self-signed certificate for this name where
+# certbot would, then renders the TLS virtual host with domains apply; the
+# name resolves only inside the container, through its /etc/hosts
+apiVersion: cloudfall/v1
+kind: Domain
+metadata:
+  id: probe-site
+  description: Nginx route to the probe over HTTPS with a self-signed certificate
+spec:
+  primaryName: probe.converge.test
+  aliases: []
+  proxy:
+    server: converge
+    configurationPath: /etc/nginx/sites-available/probe.converge.test.conf
+    service: nginx.service
+    upstream:
+      address: 127.0.0.1
+      port: 8100
+  origin:
+    server: converge
+    configurationPath: /etc/nginx/sites-available/probe.converge.test.conf
+    service: nginx.service
+    scheme: http
+    port: 8100
+    serverName: probe.converge.test
+  edge:
+    provider: cloudflare
+    mode: dns-only
+  tls:
+    mode: required
+  healthCheck:
+    scheme: https
+    path: /health
+    expectedStatuses:
+      - 200
+    timeoutSeconds: 5

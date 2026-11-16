@@ -27,8 +27,17 @@ jobs:
     permissions:
       contents: read
 
+  # The roles converged on a real Debian, on the tagged commit: nothing is
+  # published unless this passed (D-23)
+  converge:
+    uses: ./.github/workflows/converge.yml
+    with:
+      ref: refs/tags/${{ inputs.tag }}
+    permissions:
+      contents: read
+
   build:
-    needs: ci
+    needs: [ci, converge]
     runs-on: ubuntu-latest
     permissions:
       contents: read

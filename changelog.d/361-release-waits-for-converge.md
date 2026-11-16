@@ -1,0 +1,3 @@
+### Changed
+
+- A release candidate or release is cut and published only from a commit whose converge run passed: `release.yml` and `publish.yml` now run the converge job (the roles on a real Debian 13 with systemd) on the commit they release, beside CI, and land or publish nothing unless both passed (D-23). The converge job also restarts the component with `cloudfall restart`, asserting a new process of the same release that passes its health check, and applies an nginx Domain with a self-signed certificate through `cloudfall domains apply`, asserting HTTPS serves the probe with that certificate and HTTP redirects to it (#361)
