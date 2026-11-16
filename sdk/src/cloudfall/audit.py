@@ -23,6 +23,8 @@ from cloudfall.inventory import (
     remote_access_rules_for_server,
     service_remote_access,
 )
+from cloudfall.mariadb import RESERVED_USER_NAMES as RESERVED_MARIADB_USER_NAMES
+from cloudfall.mariadb import SYSTEM_DATABASES as MARIADB_SYSTEM_DATABASES
 from cloudfall.pki import RENEW_BEFORE, certificate_names
 from cloudfall.requirements import (
     ELASTICSEARCH_PACKAGE,
@@ -308,6 +310,7 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
     for service in elasticsearch_nodes:
         checks.extend(_audit_elasticsearch_node(service, snapshot))
     checks.extend(_audit_elasticsearch_users(services, snapshot))
+    checks.extend(_audit_mariadb_accounts(services, snapshot))
     checks.extend(_audit_alert_rules(alert_rules, snapshot))
     checks.extend(
         _audit_component_environment(
@@ -1356,6 +1359,114 @@ def _audit_elasticsearch_users(
             )
         )
     return tuple(checks)
+
+
+def _audit_mariadb_accounts(
+    services: tuple[ServiceInventory, ...],
+    snapshot: ObservedServerSnapshot,
+) -> tuple[AuditCheck, ...]:
+    """Compare each MariaDB service's databases and users with the declared ones.
+
+    A user holding Cloudfall's marker role was made or adopted by it, and a
+    database such a user has privileges on is Cloudfall's. One of them no
+    longer declared is listed as undeclared: the converge locked the user and
+    left both in place, which is the declared outcome, not drift, as long as
+    the user is locked (S-019-7). A user or database without the marker is
+    listed as unmanaged and left alone. A declared database or user that is
+    missing, or locked, is drift.
+    """
+    evidence = {
+        _string(entry, "service"): entry
+        for entry in _mapping_sequence(snapshot.spec, "mariadbAccounts")
+    }
+    checks: list[AuditCheck] = []
+    for service in services:
+        mariadb = service.mariadb
+        if mariadb is None:
+            continue
+        name = f"mariadb.accounts[{service.resource_id.value}]"
+        declared_databases = sorted({item.name.value for item in mariadb.databases})
+        declared_users = sorted(
+            {f"{item.owner.value}@localhost" for item in mariadb.databases}
+        )
+        desired = {"databases": declared_databases, "users": declared_users}
+        entry = evidence.get(service.resource_id.value)
+        if entry is None or entry.get("available") is not True:
+            checks.append(
+                AuditCheck(
+                    check=name,
+                    status=AuditStatus.UNKNOWN,
+                    desired=desired,
+                    observed=None,
+                    message=(
+                        "the server's databases and users were not read; inspect "
+                        "again once MariaDB answers root through its socket"
+                    ),
+                )
+            )
+            continue
+        checks.append(_mariadb_accounts_check(name, desired, entry))
+    return tuple(checks)
+
+
+def _mariadb_accounts_check(
+    name: str, desired: dict[str, list[str]], entry: Mapping[str, object]
+) -> AuditCheck:
+    users = set(_strings(entry, "users"))
+    managed_users = set(_strings(entry, "managedUsers"))
+    locked = set(_strings(entry, "lockedUsers"))
+    databases = set(_strings(entry, "databases"))
+    managed_databases = set(_strings(entry, "managedDatabases"))
+    declared_users = set(desired["users"])
+    declared_databases = set(desired["databases"])
+    system_users = {
+        user
+        for user in users
+        if user.rpartition("@")[0] in RESERVED_MARIADB_USER_NAMES
+    }
+    undeclared_users = sorted(managed_users - declared_users - system_users)
+    observed: dict[str, object] = {
+        "databases": sorted(databases & declared_databases),
+        "users": sorted(users & declared_users),
+        "lockedUsers": sorted(locked & declared_users),
+        "undeclaredDatabases": sorted(managed_databases - declared_databases),
+        "undeclaredUsers": undeclared_users,
+        "unlockedUndeclaredUsers": sorted(set(undeclared_users) - locked),
+        "unmanagedDatabases": sorted(
+            databases
+            - managed_databases
+            - declared_databases
+            - MARIADB_SYSTEM_DATABASES
+        ),
+        "unmanagedUsers": sorted(
+            users - managed_users - declared_users - system_users
+        ),
+    }
+    matches = (
+        observed["databases"] == desired["databases"]
+        and observed["users"] == desired["users"]
+        and not observed["lockedUsers"]
+        and not observed["unlockedUndeclaredUsers"]
+    )
+    message = "desired state matches" if matches else "desired state does not match"
+    for label, key in (
+        ("undeclared (made by Cloudfall, kept, user locked)", "undeclared"),
+        ("unmanaged (not made by Cloudfall, left as they are)", "unmanaged"),
+    ):
+        parts = [
+            f"{kind} {', '.join(cast('list[str]', observed[f'{key}{title}']))}"
+            for kind, title in (("databases", "Databases"), ("users", "Users"))
+            if observed[f"{key}{title}"]
+        ]
+        if parts:
+            message += f"; {label}: " + "; ".join(parts)
+    return AuditCheck(
+        check=name,
+        status=AuditStatus.COMPLIANT if matches else AuditStatus.DRIFT,
+        desired=desired,
+        observed=observed,
+        message=message,
+    )
 
 
 def _strings(content: Mapping[str, object], key: str) -> tuple[str, ...]:

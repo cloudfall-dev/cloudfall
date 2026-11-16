@@ -1,0 +1,126 @@
+---
+argument_specs:
+  main:
+    short_description: Converge one declared standalone MariaDB service
+    options:
+      cloudfall_mariadb_service:
+        type: dict
+        required: true
+        options:
+          id:
+            type: str
+            required: true
+          serviceKind:
+            type: str
+            choices:
+              - mariadb
+            required: true
+          environment:
+            type: str
+            required: true
+          server:
+            type: str
+            required: true
+          bind:
+            type: dict
+            required: true
+            options:
+              address:
+                type: str
+                choices:
+                  - 127.0.0.1
+                required: true
+              port:
+                type: int
+                required: true
+          mariadb:
+            type: dict
+            required: true
+            options:
+              version:
+                type: str
+                required: true
+              innodbBufferPoolMb:
+                type: int
+                required: true
+              databases:
+                type: list
+                elements: dict
+                required: true
+                options:
+                  name:
+                    type: str
+                    required: true
+                  application:
+                    type: str
+                  owner:
+                    type: str
+                    required: true
+                  passwordRef:
+                    type: dict
+                    options:
+                      environment:
+                        type: str
+                        required: true
+                      path:
+                        type: str
+                        required: true
+                      key:
+                        type: str
+                        required: true
+                  authentication:
+                    type: str
+                    choices:
+                      - mysql_native_password
+                      - ed25519
+              remoteAccess:
+                type: dict
+              replication:
+                type: dict
+          backup:
+            type: dict
+            required: true
+          metrics:
+            type: dict
+      cloudfall_mariadb_hash_files:
+        type: dict
+        default: {}
+        description: >-
+          Controller path of each owner's staged hash file, by owner; never
+          the password
+      cloudfall_mariadb_data_path:
+        type: path
+        default: /var/lib/mysql
+      cloudfall_mariadb_settings_path:
+        type: path
+        default: /etc/mysql/mariadb.conf.d/90-cloudfall.cnf
+        description: The managed settings file, sorting after the operator's own
+      cloudfall_mariadb_client:
+        type: path
+        default: /usr/bin/mariadb
+      cloudfall_mariadb_admin:
+        type: path
+        default: /usr/bin/mariadb-admin
+      cloudfall_mariadb_state_directory:
+        type: path
+        default: /var/lib/cloudfall/mariadb
+        description: Host directory an owner's statement is staged in, 0700
+      cloudfall_mariadb_repository_key_url:
+        type: str
+        default: https://mariadb.org/mariadb_release_signing_key.pgp
+      cloudfall_mariadb_repository_key_path:
+        type: path
+        default: /etc/apt/keyrings/mariadb-keyring.pgp
+      cloudfall_mariadb_repository_url:
+        type: str
+        default: https://archive.mariadb.org
+      cloudfall_mariadb_debian_series:
+        type: dict
+        description: The series MariaDB publishes packages for, by Debian major release
+      cloudfall_mariadb_managed_role:
+        type: str
+        default: cloudfall-managed
+      cloudfall_mariadb_system_users:
+        type: list
+        elements: str
+        description: Accounts never locked or adopted, the package's and Cloudfall's own

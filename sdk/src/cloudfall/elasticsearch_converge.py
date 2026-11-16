@@ -40,7 +40,12 @@ from cloudfall.logging_deploy import (
     REQUESTS_VARIABLE as CERTIFICATE_REQUESTS_VARIABLE,
 )
 from cloudfall.pki import PkiError, load_or_create_ca
-from cloudfall.requirements import ServerRequirements, requirements_of
+from cloudfall.requirements import (
+    Requirement,
+    ServerRequirements,
+    VolumeRequirement,
+    requirements_of,
+)
 from cloudfall.secrets import SecretsError
 from cloudfall.volumes import (
     ACTIONS_VARIABLE,
@@ -94,6 +99,48 @@ def elasticsearch_requirements(
         if owned:
             found.append(ServerRequirements(server.server_id, owned))
     return tuple(found)
+
+
+def mariadb_volume_requirements(
+    inventory: PlatformInventory,
+) -> tuple[ServerRequirements, ...]:
+    """Return the data volume each MariaDB service places on its server (S-019).
+
+    Only the volume: a MariaDB certificate, port and replication secret come
+    with ``remoteAccess`` and ``replication``, which this converge does not
+    meet yet.
+    """
+    services = {
+        service.resource_id
+        for service in inventory.services
+        if service.mariadb is not None
+    }
+    found: list[ServerRequirements] = []
+    for server in requirements_of(inventory):
+        owned = tuple(
+            item
+            for item in server.requirements
+            if item.owner.kind is ResourceKind.SERVICE
+            and item.owner.resource_id in services
+            and isinstance(item.spec, VolumeRequirement)
+        )
+        if owned:
+            found.append(ServerRequirements(server.server_id, owned))
+    return tuple(found)
+
+
+def _merged(
+    *groups: tuple[ServerRequirements, ...],
+) -> tuple[ServerRequirements, ...]:
+    """Join the requirements of each server across groups, in server order."""
+    by_server: dict[ResourceId, list[Requirement]] = {}
+    for group in groups:
+        for server in group:
+            by_server.setdefault(server.server_id, []).extend(server.requirements)
+    return tuple(
+        ServerRequirements(server_id, tuple(requirements))
+        for server_id, requirements in by_server.items()
+    )
 
 
 def _hosts(servers: tuple[ServerRequirements, ...]) -> str:
@@ -207,19 +254,26 @@ def prepared_nodes(
 ) -> Iterator[dict[str, object]]:
     """Meet each node's volume and certificate; yield ``services.yml``'s extra vars.
 
-    Nothing to meet yields no variable, leaving the run as it was. ``server``
-    meets that one node's alone, for a run limited to it.
+    A MariaDB server's data volume is decided with the nodes' (S-019), in the
+    same read before any host changes. Nothing to meet yields no variable,
+    leaving the run as it was. ``server`` meets that one server's alone, for
+    a run limited to it.
     """
     servers = tuple(
         found
         for found in elasticsearch_requirements(inventory)
         if server is None or found.server_id == server
     )
-    if not servers:
+    databases = tuple(
+        found
+        for found in mariadb_volume_requirements(inventory)
+        if server is None or found.server_id == server
+    )
+    if not servers and not databases:
         yield {}
         return
     try:
-        actions = _volume_actions(run, servers)
+        actions = _volume_actions(run, _merged(servers, databases))
         files = [
             *_certificates(run, servers, inventory, store),
             *(

@@ -40,3 +40,8 @@ argument_specs:
         type: list
         elements: dict
         default: []
+      cloudfall_inspect_mariadb_services:
+        type: list
+        elements: dict
+        default: []
+        description: The MariaDB services of this server, whose accounts are read

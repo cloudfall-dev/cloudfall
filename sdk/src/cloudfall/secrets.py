@@ -38,6 +38,7 @@ from cloudfall.domain import (
 from cloudfall.elasticsearch import ElasticsearchAccount, ElasticsearchUserName
 from cloudfall.inventory import (
     ElasticsearchUser,
+    MariadbOwnedDatabase,
     OwnedPostgresDatabase,
     PlatformInventory,
     SecretValueReference,
@@ -50,6 +51,7 @@ if TYPE_CHECKING:
 
     from cloudfall.inventory import ComponentInventory, SecretReference
     from cloudfall.lifecycle import EngineContext
+    from cloudfall.mariadb import MariadbAuthentication, MariadbUserName
 
 ERROR_SOPS_MISSING = "secrets_sops_missing"
 ERROR_KEY_MISSING = "secrets_key_missing"
@@ -273,6 +275,83 @@ def owned_role_passwords(
             owner=database.owner,
             reference=database.password_ref,
             value=provider.fetch_value(database.password_ref),
+        )
+    return tuple(passwords.values())
+
+
+@dataclass(frozen=True, slots=True)
+class MariadbOwnerPassword:
+    """The decrypted password of one MariaDB owner user, held only in memory.
+
+    What leaves it is the hash its ``authentication`` plugin stores (S-019,
+    D-9): the controller stages that hash, and the password reaches no host.
+    """
+
+    service: ResourceId
+    owner: MariadbUserName
+    authentication: MariadbAuthentication
+    reference: SecretValueReference
+    value: str = field(repr=False)
+
+    @property
+    def password_hash(self) -> str:
+        """Return the hash the server stores; the only form the host receives."""
+        return self.authentication.password_hash(self.value)
+
+
+def mariadb_owned_databases(
+    inventory: PlatformInventory,
+) -> tuple[tuple[ResourceId, MariadbOwnedDatabase], ...]:
+    """Return every MariaDB database whose owner has a password, with its service."""
+    return tuple(
+        (service.resource_id, database)
+        for service in inventory.services
+        if service.mariadb is not None
+        for database in service.mariadb.databases
+        if isinstance(database, MariadbOwnedDatabase)
+    )
+
+
+def mariadb_owner_passwords(
+    databases: Iterable[tuple[ResourceId, MariadbOwnedDatabase]],
+    provider: SopsSecretProvider,
+) -> tuple[MariadbOwnerPassword, ...]:
+    """Decrypt the password of every MariaDB owner, once per service and user.
+
+    One user named by two databases of a service must name one reference and
+    one ``authentication``. A missing file or key fails naming the file, the
+    key and the owner, never a value, before any playbook runs.
+    """
+    passwords: dict[tuple[ResourceId, MariadbUserName], MariadbOwnerPassword] = {}
+    for service_id, database in databases:
+        slot = (service_id, database.owner)
+        known = passwords.get(slot)
+        if known is not None:
+            if (
+                known.reference != database.password_ref
+                or known.authentication is not database.authentication
+            ):
+                message = (
+                    f"user {database.owner.value} of MariaDB service "
+                    f"{service_id.value} names two passwordRefs or two "
+                    "authentications; every database it owns must name the same"
+                )
+                raise SecretsError(_ERROR_OWNER_CONFLICT, message)
+            continue
+        try:
+            value = provider.fetch_value(database.password_ref)
+        except SecretsError as error:
+            message = (
+                f"{error.message}; it is the passwordRef of user "
+                f"{database.owner.value} of MariaDB service {service_id.value}"
+            )
+            raise SecretsError(error.code, message) from error
+        passwords[slot] = MariadbOwnerPassword(
+            service=service_id,
+            owner=database.owner,
+            authentication=database.authentication,
+            reference=database.password_ref,
+            value=value,
         )
     return tuple(passwords.values())
 
@@ -674,15 +753,22 @@ client keys every node puts in its keystore), with an ``existingCluster``
 the join check uses, read on the controller only), and, when it declares
 users, ``users``: each user's name to its bcrypt hash file.
 """
+MARIADB_FILES_VARIABLE = "cloudfall_services_mariadb_files"
+"""The ``services.yml`` variable mapping a MariaDB service, then owner, to a hash file.
+
+Each file holds the hash the owner's ``authentication`` plugin stores, never
+the password (S-019, D-9).
+"""
 
 
 @contextmanager
-def staged_password_files(
+def staged_password_files(  # noqa: PLR0913 - one staging dir for every kind.
     passwords: tuple[OwnedRolePassword, ...],
     accounts: tuple[ElasticsearchAccountPassword, ...] = (),
     s3: tuple[ElasticsearchS3Credentials, ...] = (),
     users: tuple[ElasticsearchUserPassword, ...] = (),
     existing: tuple[ElasticsearchExistingClusterLogin, ...] = (),
+    mariadb: tuple[MariadbOwnerPassword, ...] = (),
 ) -> Iterator[dict[str, object]]:
     """Write each password's server form to a 0600 file, then remove it.
 
@@ -694,12 +780,13 @@ def staged_password_files(
     a 0600 file on each node; an S3 snapshot repository's two files hold the
     client keys the keystore of each node takes; an existing cluster's login
     is two files the join check reads on the controller, never copied to a
-    node; a declared user's file holds its bcrypt hash alone. Yields the
-    extra vars ``services.yml`` reads: the controller paths only, so neither
-    crosses a command line, the inventory, or the project. Nothing to stage
-    yields no variable, leaving the run as it was.
+    node; a declared user's file holds its bcrypt hash alone; a MariaDB
+    owner's file holds the hash its plugin stores, never the password. Yields
+    the extra vars ``services.yml`` reads: the controller paths only, so
+    neither crosses a command line, the inventory, or the project. Nothing to
+    stage yields no variable, leaving the run as it was.
     """
-    if not passwords and not accounts and not s3 and not users and not existing:
+    if not any((passwords, accounts, s3, users, existing, mariadb)):
         yield {}
         return
     with tempfile.TemporaryDirectory(prefix="cloudfall-passwords-") as directory:
@@ -725,7 +812,23 @@ def staged_password_files(
                 "their service's accounts"
             )
             raise ValueError(message)
+        if mariadb:
+            extra_vars[MARIADB_FILES_VARIABLE] = _stage_mariadb(
+                root / "mariadb", mariadb
+            )
         yield extra_vars
+
+
+def _stage_mariadb(
+    root: Path, owners: tuple[MariadbOwnerPassword, ...]
+) -> dict[str, dict[str, str]]:
+    root.mkdir(mode=0o700)
+    staged: dict[str, dict[str, str]] = {}
+    for owner in owners:
+        path = root / f"{owner.service.value}-{owner.owner.value}.hash"
+        _write_private(path, owner.password_hash)
+        staged.setdefault(owner.service.value, {})[owner.owner.value] = str(path)
+    return staged
 
 
 def _stage_accounts(

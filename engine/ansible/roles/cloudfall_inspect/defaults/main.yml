@@ -25,5 +25,23 @@ cloudfall_inspect_elasticsearch_password_path: /etc/elasticsearch/cloudfall-pass
 # The project CA a node with remoteAccess serves HTTPS under
 # (elasticsearch_cluster.TRANSPORT_CA_PATH)
 cloudfall_inspect_elasticsearch_ca_path: /etc/elasticsearch/certs/ca.crt
+# The MariaDB services of this server (S-019): their databases and users are
+# read as root through the socket, never a password or hash
+cloudfall_inspect_mariadb_services: []
+cloudfall_inspect_mariadb_client: /usr/bin/mariadb
+cloudfall_inspect_mariadb_queries:
+  users: >-
+    SELECT CONCAT(User, '@', Host) FROM mysql.global_priv WHERE Host <> ''
+  managedUsers: >-
+    SELECT CONCAT(User, '@', Host) FROM mysql.roles_mapping
+    WHERE Role = 'cloudfall-managed' AND Admin_option = 'N'
+  lockedUsers: >-
+    SELECT CONCAT(User, '@', Host) FROM mysql.global_priv
+    WHERE JSON_VALUE(Priv, '$.account_locked') = 'true'
+  databases: SELECT SCHEMA_NAME FROM information_schema.SCHEMATA
+  managedDatabases: >-
+    SELECT DISTINCT REPLACE(d.Db, '\\_', '_') FROM mysql.db d
+    JOIN mysql.roles_mapping m ON m.User = d.User AND m.Host = d.Host
+    WHERE m.Role = 'cloudfall-managed' AND m.Admin_option = 'N'
 # The bundled Grafana dashboards on a logging backend (S-016); the backend role writes here
 cloudfall_inspect_grafana_dashboards: /etc/grafana/dashboards/cloudfall
