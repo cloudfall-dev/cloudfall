@@ -38,6 +38,13 @@ cloudfall_inspect_mariadb_queries:
   lockedUsers: >-
     SELECT CONCAT(User, '@', Host) FROM mysql.global_priv
     WHERE JSON_VALUE(Priv, '$.account_locked') = 'true'
+  # Each remote account's TLS requirement as "user@host TYPE": an absent
+  # ssl_type is 0 (NONE); REQUIRE SSL, which converge sets, is 1 (ANY)
+  sslTypes: >-
+    SELECT CONCAT(User, '@', Host, ' ',
+    ELT(IFNULL(JSON_VALUE(Priv, '$.ssl_type'), '0') + 1,
+    'NONE', 'ANY', 'X509', 'SPECIFIED'))
+    FROM mysql.global_priv WHERE Host NOT IN ('', 'localhost')
   databases: SELECT SCHEMA_NAME FROM information_schema.SCHEMATA
   managedDatabases: >-
     SELECT DISTINCT REPLACE(d.Db, '\\_', '_') FROM mysql.db d

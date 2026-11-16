@@ -244,27 +244,35 @@ def test_s019_11_each_allowed_source_is_an_account_host_mariadb_matches(
     assert account_host(IpNetworkCidr(source)) == host
 
 
+TLS_ACCOUNT = "billing@10.0.0.0/255.255.255.0"
+_READ_BY_AN_OLDER_INSPECT = None
+
+
 def _audit(
-    tmp_path: Path, users: list[str], managed: list[str]
+    tmp_path: Path,
+    users: list[str],
+    managed: list[str],
+    ssl_types: tuple[str, ...] | None = (f"{TLS_ACCOUNT} ANY",),
 ) -> dict[str, AuditCheck]:
     project = write_project(
         tmp_path / "project", mariadb_service(remoteAccess=REMOTE_ACCESS)
     )
     inventory = PlatformInventory.from_state(validate_config(project, SCHEMAS))
     observations = tmp_path / "observed"
-    observations.mkdir()
+    observations.mkdir(parents=True)
     document = json.loads((COMPLIANT / "h1.json").read_text(encoding="utf-8"))
-    document["spec"]["mariadbAccounts"] = [
-        {
-            "service": "mariadb-main",
-            "available": True,
-            "users": ["root@localhost", *users],
-            "managedUsers": managed,
-            "lockedUsers": [],
-            "databases": ["mysql", "crm", "billing"],
-            "managedDatabases": ["crm", "billing"],
-        }
-    ]
+    entry: dict[str, object] = {
+        "service": "mariadb-main",
+        "available": True,
+        "users": ["root@localhost", *users],
+        "managedUsers": managed,
+        "lockedUsers": [],
+        "databases": ["mysql", "crm", "billing"],
+        "managedDatabases": ["crm", "billing"],
+    }
+    if ssl_types is not None:
+        entry["sslTypes"] = list(ssl_types)
+    document["spec"]["mariadbAccounts"] = [entry]
     (observations / "h1.json").write_text(json.dumps(document), encoding="utf-8")
     report = audit_inventory(inventory, load_observations(observations, SCHEMAS))
     (server,) = (item for item in report.servers if item.server_id == "h1")
@@ -294,4 +302,57 @@ def test_a_missing_tls_account_is_drift(tmp_path: Path) -> None:
 
     checks = _audit(tmp_path, accounts, accounts)
 
+    assert checks["mariadb.accounts[mariadb-main]"].status is AuditStatus.DRIFT
+
+
+# proves: S-019-11
+@pytest.mark.parametrize("ssl_type", ["NONE", "X509", "SPECIFIED"])
+def test_s019_11_a_remote_owner_account_without_require_ssl_is_drift(
+    tmp_path: Path, ssl_type: str
+) -> None:
+    # ALTER USER 'billing'@'10.0.0.0/255.255.255.0' REQUIRE NONE by hand (#435);
+    # converge sets REQUIRE SSL (ANY) and nothing else
+    accounts = ["crm@localhost", "billing@localhost", TLS_ACCOUNT]
+
+    checks = _audit(tmp_path, accounts, accounts, (f"{TLS_ACCOUNT} {ssl_type}",))
+
+    check = checks["mariadb.accounts[mariadb-main]"]
+    assert check.status is AuditStatus.DRIFT
+    observed = cast("dict[str, object]", check.observed)
+    assert observed["remoteUsersWithoutRequireSsl"] == [f"{TLS_ACCOUNT} {ssl_type}"]
+    assert f"{TLS_ACCOUNT} {ssl_type}" in check.message
+
+
+def test_a_remote_owner_account_inspect_saw_no_ssl_type_for_is_drift(
+    tmp_path: Path,
+) -> None:
+    accounts = ["crm@localhost", "billing@localhost", TLS_ACCOUNT]
+
+    checks = _audit(tmp_path, accounts, accounts, ())
+
+    check = checks["mariadb.accounts[mariadb-main]"]
+    assert check.status is AuditStatus.DRIFT
+    observed = cast("dict[str, object]", check.observed)
+    assert observed["remoteUsersWithoutRequireSsl"] == [f"{TLS_ACCOUNT} unread"]
+
+
+def test_a_record_without_ssl_types_leaves_the_tls_requirement_unknown(
+    tmp_path: Path,
+) -> None:
+    accounts = ["crm@localhost", "billing@localhost", TLS_ACCOUNT]
+
+    checks = _audit(tmp_path, accounts, accounts, _READ_BY_AN_OLDER_INSPECT)
+
+    check = checks["mariadb.accounts[mariadb-main]"]
+    assert check.status is AuditStatus.UNKNOWN
+    observed = cast("dict[str, object]", check.observed)
+    assert observed["remoteUsersWithoutRequireSsl"] is None
+    assert "inspect again" in check.message
+    # A missing account is still drift, whatever the record lacks
+    checks = _audit(
+        tmp_path / "missing",
+        ["crm@localhost", "billing@localhost"],
+        ["crm@localhost", "billing@localhost"],
+        _READ_BY_AN_OLDER_INSPECT,
+    )
     assert checks["mariadb.accounts[mariadb-main]"].status is AuditStatus.DRIFT
