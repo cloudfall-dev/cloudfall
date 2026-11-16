@@ -166,8 +166,28 @@ def probe_outcome(error: OSError | None) -> str:
     return "failed"
 
 
+def probe_outcomes(outcomes: list[str]) -> str:
+    """Name what the probes of each address of one name read, together.
+
+    One address that answers is ``open``; the name is ``refused`` only when
+    every address refused; otherwise the first address that could not tell
+    names it, so a refusal at one address never hides what another can't
+    read (#446).
+    """
+    if not outcomes:
+        message = "a probe read no address"
+        raise ValueError(message)
+    if "open" in outcomes:
+        return "open"
+    return next((each for each in outcomes if each != "refused"), "refused")
+
+
 def source_probe(host: str, port: int, timeout: int) -> str:
-    """Try to connect to ``host:port`` from the controller; name what it read."""
+    """Try to connect to ``host:port`` from the controller; name what it read.
+
+    Each address the name resolves to is tried, as ``create_connection``
+    raises only the last address's error.
+    """
     if not isinstance(host, str) or not host:
         message = f"a probe's host must be a non-empty string, got {host!r}"
         raise ValueError(message)
@@ -180,11 +200,20 @@ def source_probe(host: str, port: int, timeout: int) -> str:
         message = f"a probe's timeout must be positive, got {timeout!r}"
         raise ValueError(message)
     try:
-        connection = socket.create_connection((host, number), timeout=seconds)
-    except OSError as error:
+        addresses = socket.getaddrinfo(host, number, 0, socket.SOCK_STREAM)
+    except socket.gaierror as error:
         return probe_outcome(error)
-    connection.close()
-    return probe_outcome(None)
+    outcomes = []
+    for family, kind, protocol, _, address in addresses:
+        with socket.socket(family, kind, protocol) as connection:
+            connection.settimeout(seconds)
+            try:
+                connection.connect(address)
+            except OSError as error:
+                outcomes.append(probe_outcome(error))
+            else:
+                return probe_outcome(None)
+    return probe_outcomes(outcomes)
 
 
 def _state(value: object, name: str, *, required: bool) -> dict[str, str]:

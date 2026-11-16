@@ -1129,6 +1129,26 @@ def test_s019_14_the_source_probe_tells_a_refusal_from_what_it_can_not_read(
 
 
 # proves: S-019-14
+@pytest.mark.parametrize(
+    ("outcomes", "outcome"),
+    [
+        pytest.param(["refused"], "refused", id="one address refused"),
+        pytest.param(["refused", "refused"], "refused", id="every address refused"),
+        pytest.param(["refused", "open"], "open", id="one address open"),
+        # A name with an IPv4 address the controller times out on (a firewall
+        # that drops) and an IPv6 one nothing listens on (bind 0.0.0.0):
+        # create_connection raises only the last error, a refusal
+        pytest.param(["timeout", "refused"], "timeout", id="timeout, then refused"),
+        pytest.param(["refused", "no-route"], "no-route", id="refused, then no route"),
+    ],
+)
+def test_s019_14_a_name_refuses_only_when_each_of_its_addresses_does(
+    outcomes: list[str], outcome: str
+) -> None:
+    assert _plugin().probe_outcomes(outcomes) == outcome
+
+
+# proves: S-019-14
 def test_s019_14_the_source_probe_connects_from_the_controller() -> None:
     plugin = _plugin()
     with socket.socket() as listening:
