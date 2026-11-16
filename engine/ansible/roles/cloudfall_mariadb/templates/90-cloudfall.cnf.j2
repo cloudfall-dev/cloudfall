@@ -48,4 +48,10 @@ relay_log = mariadb-relay-bin
 # replication.
 read_only = ON
 {% endif %}
+{% if cloudfall_mariadb_service.mariadb.replication.source is defined %}
+# A source Cloudfall does not manage: its users are not this server's, so
+# what changes the mysql schema there, a user created or granted among it,
+# is not applied here.
+replicate_wild_ignore_table = mysql.%
+{% endif %}
 {% endif %}

@@ -1,0 +1,75 @@
+---
+# A replica of a server Cloudfall does not manage (S-019): before anything is
+# installed, it logs in to its source with the login credentialsRef names,
+# over TLS verified against caCertificateFile when declared, and reads its
+# release, its binary log, its server_id and the rights of the account. It
+# only reads: the module sends SELECT and SHOW alone, so nothing on the
+# source is changed. The login is a no_log parameter, never in a command
+# line, a file on this server, or Ansible's output.
+- name: Require the staged login of the source
+  ansible.builtin.assert:
+    that:
+      - cloudfall_mariadb_replication_files.sourceUser is defined
+      - cloudfall_mariadb_replication_files.sourcePassword is defined
+      - >-
+        cloudfall_mariadb_replication_files.sourceCa is defined
+        or not cloudfall_mariadb_source.tls
+    fail_msg: >-
+      Replica {{ cloudfall_mariadb_service.id }} has no staged login of its
+      source{{ ' or CA' if cloudfall_mariadb_source.tls else '' }}; run
+      services.yml through cloudfall (converge_services or operator approve),
+      which reads source.credentialsRef from --secrets-dir and
+      source.caCertificateFile from the project
+
+- name: Read the source's release, binary log and rights
+  cloudfall_mariadb_source:
+    host: "{{ cloudfall_mariadb_source.host }}"
+    port: "{{ cloudfall_mariadb_source.port | int }}"
+    user: "{{ lookup('ansible.builtin.file', cloudfall_mariadb_replication_files.sourceUser) }}"
+    password: "{{ lookup('ansible.builtin.file', cloudfall_mariadb_replication_files.sourcePassword) }}"
+    ca: >-
+      {{
+        lookup('ansible.builtin.file', cloudfall_mariadb_replication_files.sourceCa)
+        if cloudfall_mariadb_source.tls else ''
+      }}
+    queries: "{{ cloudfall_mariadb_source_queries }}"
+  register: cloudfall_mariadb_source_read
+  # The result's message is the module's own, which never holds the password.
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Keep why the source can not be followed
+  ansible.builtin.set_fact:
+    cloudfall_mariadb_source_problems: >-
+      {{
+        [cloudfall_mariadb_source_read.msg | default('the source could not be read')]
+        if cloudfall_mariadb_source_read.rows is not defined
+        else cloudfall_mariadb_source_read.rows
+        | cloudfall_mariadb_source_problems(
+            version=cloudfall_mariadb_service.mariadb.version,
+            server_id=cloudfall_mariadb_service.mariadb.replication.serverId,
+            privileges=cloudfall_mariadb_replication_privileges)
+      }}
+
+- name: Report a source the replica can not follow to the services converge
+  ansible.builtin.copy:
+    content: >-
+      {{ {'service': cloudfall_mariadb_service.id,
+          'server': cloudfall_server_id,
+          'outcome': 'refused',
+          'code': 'service_mariadb_source_unfit',
+          'message': cloudfall_mariadb_source_message} | to_json }}
+    dest: >-
+      {{ cloudfall_mariadb_report_directory }}/{{ cloudfall_mariadb_service.id }}.json
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when:
+    - cloudfall_mariadb_source_problems | length > 0
+    - cloudfall_mariadb_report_directory | length > 0
+
+- name: Refuse a source the replica can not follow
+  ansible.builtin.fail:
+    msg: "PRECONDITION service_mariadb_source_unfit: {{ cloudfall_mariadb_source_message }}"
+  when: cloudfall_mariadb_source_problems | length > 0

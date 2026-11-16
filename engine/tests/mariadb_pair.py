@@ -24,8 +24,12 @@ are about:
 - a link starts after the replica's GTID position in the primary's binary
   log; a position the log does not hold stops it with error 1236, and in
   strict mode a GTID not above the replica's own stops its SQL thread
-- the dump stand-in logs in the same way and writes the primary's databases
-  and users at its binary log position, as ``--gtid --master-data=2`` does
+- the dump stand-in logs in the same way and writes the primary's databases,
+  and with ``--system=users`` its users, at its binary log position, as
+  ``--gtid --master-data=2`` does
+- a replica whose settings hold ``replicate_wild_ignore_table = mysql.%``
+  neither applies nor logs an account change of its source; its GTID still
+  counts as applied
 - the probe stand-in reads a source's port from the replica's own server, as
   the role's probe script does there (#455): a host and port the stand-in
   network routes to a server reads ``open`` while it runs and ``refused``
@@ -220,11 +224,16 @@ def pump(state):
                                  "would create an out-of-order sequence number"
                                  % event["gtid"])
             return
-        apply_event(state, event)
+        # replicate_wild_ignore_table = mysql.%: an account change is not
+        # applied nor logged, and its GTID still counts as applied
+        filtered = event["kind"] == "user" and state.get("ignoreMysql")
+        if not filtered:
+            apply_event(state, event)
         slave = {{g[0]: g for g in parse(state["slavePos"])}}
         slave[gtid[0]] = gtid
         state["slavePos"] = text([slave[key] for key in sorted(slave)])
-        log_event(state, event, gtid)
+        if not filtered:
+            log_event(state, event, gtid)
     link["ioPos"] = text(binlog_pos(primary))
     link["sql"] = "Yes"
 
@@ -364,6 +373,7 @@ def apply(statement):
         state["serverId"] = int(lines.get("server_id", 1))
         state["logBin"] = "log_bin" in lines
         state["readOnly"] = lines.get("read_only") == "ON"
+        state["ignoreMysql"] = lines.get("replicate_wild_ignore_table") == "mysql.%"
         if state.get("link") and state["link"]["started"]:
             pump(state)
         return
@@ -392,6 +402,15 @@ def read_only(sql):
 
 
 def answer(sql):
+    if sql == ("SELECT VERSION(), @@global.log_bin, @@global.binlog_format, "
+               "@@global.server_id"):
+        return ["\t".join([state["version"], "1" if state["logBin"] else "0",
+                           state["binlogFormat"], str(state["serverId"])])]
+    match = re.fullmatch(r"SHOW GRANTS FOR '([^']+)'@'([^']+)'", sql)
+    if match:
+        user = state["users"][match[1] + "@" + match[2]]
+        rights = ", ".join(user["privileges"]) or "USAGE"
+        return ["GRANT %s ON *.* TO `%s`@`%s`" % (rights, match[1], match[2])]
     if "@@global.gtid_binlog_state" in sql:
         databases = [name for name in state["databases"] if listed(name, sql)]
         return ["|".join([
@@ -513,7 +532,7 @@ extra = next(item for item in argv if item.startswith("--defaults-extra-file="))
 for line in pathlib.Path(extra.split("=", 1)[1]).read_text().splitlines():
     key, _, value = line.partition("=")
     options[key.strip()] = value.strip()
-for flag in ("--single-transaction", "--gtid", "--master-data=2", "--system=users"):
+for flag in ("--single-transaction", "--gtid", "--master-data=2"):
     if flag not in argv:
         sys.exit("the stand-in dump expects " + flag)
 path, primary = resolve(options["host"], options["port"])
@@ -530,10 +549,12 @@ for privilege in ("SELECT", "RELOAD", "BINLOG MONITOR", "SHOW VIEW", "TRIGGER",
     if privilege not in account["privileges"]:
         sys.exit("mariadb-dump: Got error: 1227: Access denied; you need " + privilege)
 names = argv[argv.index("--databases") + 1:] if "--databases" in argv else []
+# --system=users writes the source's accounts too; without it, none
 seed = {{
     "databases": {{name: primary["databases"][name] for name in names}},
     "users": {{key: value for key, value in primary["users"].items()
-              if not key.startswith(("root@", "mysql@", "mariadb.sys@"))}},
+              if not key.startswith(("root@", "mysql@", "mariadb.sys@"))}}
+             if "--system=users" in argv else {{}},
 }}
 sys.stdout.write(
     "-- MariaDB dump stand-in\n"
@@ -567,6 +588,8 @@ def server_state(  # noqa: PLR0913 - one server's settings, each named.
     running: bool = True,
     locked_flag: str = "true",
     read_only_enum: bool = False,
+    version: str = "11.8.9-MariaDB-log",
+    ca: str = CA,
 ) -> dict[str, object]:
     """Return a freshly installed server: no database, no history, no link.
 
@@ -579,10 +602,12 @@ def server_state(  # noqa: PLR0913 - one server's settings, each named.
     return {
         "lockedFlag": locked_flag,
         "running": running,
+        "version": version,
+        "binlogFormat": "ROW",
         "serverId": server_id,
         "address": address,
         "certificateNames": names,
-        "ca": CA,
+        "ca": ca,
         "logBin": log_bin,
         "readOnly": False,
         "readOnlyEnum": read_only_enum,

@@ -36,6 +36,7 @@ from cloudfall.mariadb_replication import ReplicationOutcome, read_outcomes, ref
 from cloudfall.secrets import (
     MARIADB_REPLICATION_FILES_VARIABLE,
     MariadbReplicationPassword,
+    MariadbSourceLogin,
     mariadb_replication_pairs,
     staged_password_files,
 )
@@ -70,6 +71,7 @@ PER_HOST = (
     "cloudfall_mariadb_ca_path",
     "cloudfall_mariadb_source_probe_script",
     "cloudfall_mariadb_source_probe_python",
+    "cloudfall_mariadb_source_ca_path",
 )
 RECAP = re.compile(r"^(h1|h2)\s*:\s*ok=\d+\s+changed=(\d+)\s", re.MULTILINE)
 
@@ -194,15 +196,24 @@ class Pair:
             (self.tasks / path.name).write_text(yaml.safe_dump(tasks), "utf-8")
         self.declarations = 0
         self.inventory: PlatformInventory | None = None
+        self.sources: tuple[MariadbSourceLogin, ...] = ()
 
-    def declare(self, *services: dict[str, object]) -> None:
-        """Write and validate a project of h1 and h2 holding ``services``."""
+    def declare(
+        self, *services: dict[str, object], files: dict[str, str] | None = None
+    ) -> None:
+        """Write and validate a project of h1 and h2 holding ``services``.
+
+        ``files`` are written into the project too, by relative path.
+        """
         self.declarations += 1
         project = write_project(
             self.tmp_path / f"project-{self.declarations}",
             *services,
             servers=("h1", "h2"),
         )
+        for relative, content in (files or {}).items():
+            (project / relative).parent.mkdir(parents=True, exist_ok=True)
+            (project / relative).write_text(content, encoding="utf-8")
         self.inventory = PlatformInventory.from_state(validate_config(project, SCHEMAS))
 
     def rendered_host(self, host: str) -> dict[str, Any]:
@@ -235,6 +246,9 @@ class Pair:
                 # stand-in of that server, with the controller's Python
                 cloudfall_mariadb_source_probe_script=str(self.hosts[host]["probe"]),
                 cloudfall_mariadb_source_probe_python=sys.executable,
+                cloudfall_mariadb_source_ca_path=str(
+                    self.hosts[host]["directory"] / "source-ca.crt"
+                ),
             )
         run_directory = self.tmp_path / f"run-{len(list(self.tmp_path.glob('run-*')))}"
         reports = run_directory / "reports"
@@ -253,7 +267,9 @@ class Pair:
             )
             for pair in mariadb_replication_pairs(self.inventory)
         )
-        with staged_password_files((), replication=passwords) as staged:
+        with staged_password_files(
+            (), replication=passwords, sources=self.sources
+        ) as staged:
             extra = run_directory / "extra.json"
             extra.write_text(json.dumps(staged), encoding="utf-8")
             self.staged = staged
@@ -308,6 +324,13 @@ class Pair:
                 },
                 "tasks": [
                     {
+                        "name": "Check the source of an outside replica",
+                        "ansible.builtin.include_tasks": str(
+                            self.tasks / "source_check.yml"
+                        ),
+                        "when": "cloudfall_mariadb_source | length > 0",
+                    },
+                    {
                         "name": "Decide what replication does on this server",
                         "ansible.builtin.include_tasks": str(
                             self.tasks / "replication_check.yml"
@@ -361,6 +384,7 @@ class Pair:
         environment = {
             **os.environ,
             "ANSIBLE_FILTER_PLUGINS": str(ROLE / "filter_plugins"),
+            "ANSIBLE_LIBRARY": str(ROLE / "library"),
             "ANSIBLE_HOST_KEY_CHECKING": "False",
         }
         return subprocess.run(  # noqa: S603 - fixed binary and arguments.
