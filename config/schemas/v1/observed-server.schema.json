@@ -867,6 +867,17 @@
               },
               "managedDatabases": {
                 "$ref": "#/$defs/mariadbNameList"
+              },
+              "sslTypes": {
+                "description": "Each remote account's TLS requirement as user@host and its ssl_type, as 'billing@10.0.0.0/255.255.255.0 ANY'; absent from a record an older inspect wrote",
+                "type": "array",
+                "maxItems": 4096,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512,
+                  "pattern": "^.*@.+ (NONE|ANY|X509|SPECIFIED)$"
+                }
               }
             },
             "required": [
