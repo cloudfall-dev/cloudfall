@@ -255,7 +255,7 @@ def _primary(primary_id: ResourceId, declared: list[_Declared]) -> dict[str, obj
 REPORT_DIRECTORY_VARIABLE = "cloudfall_services_mariadb_report_directory"
 """The ``services.yml`` variable naming where the role reports each outcome."""
 _OUTCOMES = frozenset(
-    {"refused", "seed", "attach", "demote", "promote", "wait-promotion"}
+    {"refused", "seed", "attach", "demote", "promote", "wait-promotion", "wait-primary"}
 )
 _REPORT_FIELDS = frozenset(
     {

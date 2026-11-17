@@ -1136,6 +1136,139 @@ def test_s019_15_the_services_converge_opens_the_new_primary_to_its_replica(
     assert applies(**unfirewalled) is False
 
 
+# proves: S-019-15
+@pytest.mark.parametrize("order", ["inventory", "reverse_inventory"])
+def test_s019_15_a_swap_ends_when_the_new_primarys_link_has_not_connected(
+    pair: Pair, order: str
+) -> None:
+    _seeded(pair)
+    assert pair.write("h1", "billing", "invoices", 4)
+    rows = pair.state("h1")["databases"]
+    assert pair.state("h2")["databases"] == rows
+    pair.declare(
+        _replica_of("mariadb-replica", "mariadb-main", "h1", 1), _new_primary()
+    )
+    # h2's link to h1 has not connected (a restart, a network blip): it
+    # names h1's host and port, and reports Master_Server_Id 0 (#451)
+    pair.route("h1", reachable=False)
+    link = pair.state("h2")["link"]
+    assert (link["io"], link["masterServerId"]) == ("Connecting", 0)
+
+    first = pair.converge(order=order)
+    pair.route("h1", reachable=True)
+    second = pair.converge(order=order)
+
+    # h1 turned read-only as h2's replica-to-be in the first converge, rather
+    # than refuse because h2 still replicates from it
+    assert first.outcomes["mariadb-main"].outcome == "demote"
+    assert "mariadb-replica still follows mariadb-main" in first.outcomes[
+        "mariadb-main"
+    ].get("reason")
+    outcomes = {
+        service: outcome.outcome
+        for run in (first, second)
+        for service, outcome in run.outcomes.items()
+    }
+    assert outcomes["mariadb-replica"] == "promote"
+    assert outcomes["mariadb-main"] == "attach"
+    _assert_follows(pair, "h1", "h2")
+    new_primary = pair.state("h2")
+    assert new_primary["link"] is None
+    assert new_primary["readOnly"] is False
+    assert new_primary["databases"] == rows
+    assert pair.state("h1")["databases"] == rows
+    assert pair.dumps("h1") == 0
+    assert pair.dumps("h2") == 1
+    assert pair.write("h2", "billing", "lines", 3)
+    assert pair.state("h1")["databases"]["billing"]["lines"] == 10
+
+
+def _former_primary_declared_replica(pair: Pair) -> dict[str, Any]:
+    """Promote h2 over a stopped h1, then declare h1 h2's replica; h1 runs again."""
+    _seeded(pair)
+    assert pair.write("h1", "billing", "invoices", 4)
+    pair.state("h2")
+    pair.edit("h1", running=False)
+    _promote_replica(pair)
+    pair.converge(limit="h2")
+    assert pair.write("h2", "billing", "invoices", 1)
+    pair.edit("h1", running=True)
+    pair.declare(
+        _replica_of("mariadb-replica", "mariadb-main", "h1", 1), _new_primary()
+    )
+    return cast("dict[str, Any]", pair.state("h2")["databases"])
+
+
+# proves: S-019-15
+@pytest.mark.parametrize("order", ["inventory", "reverse_inventory"])
+def test_s019_15_a_former_primary_converged_before_its_primary_waits_for_it(
+    pair: Pair, order: str
+) -> None:
+    rows = _former_primary_declared_replica(pair)
+    # The new primary holds no replication account for h1 yet
+    assert "cloudfall_repl@203.0.113.11" not in pair.state("h2")["users"]
+
+    first = pair.converge(order=order)
+    second = pair.converge(order=order)
+
+    waited = first.outcomes["mariadb-main"]
+    if order == "reverse_inventory":
+        # h1 ran first: its primary's converge creates the account later in
+        # the same run, so h1 waits for it rather than fail (#451)
+        assert waited.outcome == "wait-primary"
+        assert "mariadb-replica on h2" in waited.get("reason")
+        assert "converge again" in waited.get("reason")
+        assert second.outcomes["mariadb-main"].outcome == "attach"
+    else:
+        assert waited.outcome == "attach"
+    _assert_follows(pair, "h1", "h2")
+    # No seed, no row lost: h1 attached by GTID and caught up
+    assert pair.dumps("h1") == 0
+    assert pair.state("h1")["databases"] == rows
+    assert pair.state("h1")["readOnly"] is True
+    assert pair.write("h2", "billing", "lines", 3)
+    assert pair.state("h1")["databases"]["billing"]["lines"] == 10
+    third = pair.converge(order=order)
+    assert third.changed == 0, third.output
+
+
+# proves: S-019-15
+def test_s019_15_a_replica_its_primary_does_not_admit_still_fails(
+    pair: Pair,
+) -> None:
+    _former_primary_declared_replica(pair)
+    # h1 connects from an address its primary never admits
+    pair.edit("h1", address="198.51.100.7")
+
+    first = pair.converge(order="reverse_inventory")
+    second = pair.converge(order="reverse_inventory", succeed=False)
+
+    assert first.outcomes["mariadb-main"].outcome == "wait-primary"
+    # The primary created the account its declaration admits; the replica's
+    # login is still refused, so the converge stops and names it
+    assert "cloudfall_repl@203.0.113.11" in pair.state("h2")["users"]
+    assert "mariadb-main" not in second.outcomes
+    assert "Host '198.51.100.7' is not allowed to connect" in second.output
+    assert pair.state("h1")["link"] is None
+    assert pair.dumps("h1") == 0
+
+
+# proves: S-019-15
+def test_s019_15_a_replica_does_not_wait_for_a_primary_left_out_of_the_run(
+    pair: Pair,
+) -> None:
+    _former_primary_declared_replica(pair)
+
+    # h2 is not in this run, so no converge in it creates h1's account: a
+    # wait would repeat with every such run, so the login's refusal stops it
+    run = pair.converge(limit="h1", succeed=False)
+
+    assert "mariadb-main" not in run.outcomes
+    assert "Host '203.0.113.11' is not allowed to connect" in run.output
+    assert pair.state("h1")["link"] is None
+    assert pair.dumps("h1") == 0
+
+
 # proves: S-019-16
 def test_s019_16_a_former_primary_that_diverged_is_not_attached_nor_emptied(
     pair: Pair,
@@ -1406,6 +1539,7 @@ def test_removing_replication_promotes_only_as_a_role_change_does(
         peer=peer,
         other=other,
         other_link={},
+        other_source={},
         source_probe=probe,
     )
 
@@ -1426,6 +1560,7 @@ def test_an_undeclared_source_not_probed_is_an_error() -> None:
             peer={},
             other={},
             other_link={},
+            other_source={},
             source_probe="",
         )
     with pytest.raises(ValueError, match="unknown source probe outcome"):
@@ -1438,6 +1573,7 @@ def test_an_undeclared_source_not_probed_is_an_error() -> None:
             peer={},
             other={},
             other_link={},
+            other_source={},
             source_probe="reachable",
         )
 
@@ -1630,6 +1766,7 @@ def test_s019_14_a_link_reporting_server_id_0_is_not_promoted_over_its_source() 
         peer=peer,
         other=_state(readOnly="0", serverId="1", binlogPos="0-1-12"),
         other_link={},
+        other_source={},
         source_probe="",
     )
 
@@ -1638,6 +1775,107 @@ def test_s019_14_a_link_reporting_server_id_0_is_not_promoted_over_its_source() 
     assert plan["code"] == "service_mariadb_promotion_unsafe"
     assert "running and writable" in plan["message"]
     assert (plan["sourcePosition"], plan["replicaPosition"]) == ("0-1-12", "0-1-10")
+
+
+_NEW_PRIMARY = {
+    "service": "mariadb-replica",
+    "server": "h2",
+    "serverId": 2,
+    "host": "203.0.113.12",
+    "port": 3306,
+}
+
+
+# proves: S-019-15
+@pytest.mark.parametrize(
+    ("other_link", "other_source", "action"),
+    [
+        pytest.param(
+            {"Master_Server_Id": "1", "Master_Host": "203.0.113.11"},
+            {"service": "mariadb-main"},
+            "demote",
+            id="by its server_id",
+        ),
+        pytest.param(
+            {"Master_Server_Id": "0", "Master_Host": "203.0.113.11"},
+            {"service": "mariadb-main"},
+            "demote",
+            id="not connected: by this server's host and port",
+        ),
+        pytest.param(
+            {"Master_Server_Id": "0", "Master_Host": "198.51.100.9"},
+            {},
+            "refuse",
+            id="a source that is not this server",
+        ),
+    ],
+)
+def test_s019_15_a_replica_its_primary_still_follows_turns_read_only_and_waits(
+    other_link: dict[str, str], other_source: dict[str, str], action: str
+) -> None:
+    plan = _plugin().replication_plan(
+        _state(readOnly="0", serverId="1"),
+        service="mariadb-main",
+        declared="replica",
+        link={},
+        links={"primary": _NEW_PRIMARY},
+        peer=_NEW_PRIMARY,
+        other=_state(serverId="2"),
+        other_link={"Master_Port": "3306", **other_link},
+        other_source=other_source,
+        source_probe="",
+    )
+
+    assert plan["action"] == action
+    if action == "refuse":
+        assert plan["code"] == "service_mariadb_replica_unattachable"
+        assert "is itself a replica of 198.51.100.9" in plan["message"]
+    else:
+        assert "mariadb-replica still follows mariadb-main" in plan["reason"]
+
+
+# proves: S-019-15
+@pytest.mark.parametrize(
+    ("action", "accounts", "admitted", "converged", "waits"),
+    [
+        pytest.param("attach", [], ["203.0.113.11"], False, True, id="attach waits"),
+        pytest.param("seed", ["203.0.113.12"], ["203.0.113.11"], False, True,
+                     id="seed waits"),
+        pytest.param("attach", ["203.0.113.11"], ["203.0.113.11"], False, False,
+                     id="the account is there"),
+        pytest.param("attach", [], ["203.0.113.11"], True, False,
+                     id="the primary already converged"),
+        pytest.param("attach", [], [], False, False,
+                     id="the primary does not admit this replica"),
+        pytest.param("follow", [], ["203.0.113.11"], False, False,
+                     id="a running link"),
+    ],
+)
+def test_s019_15_a_replica_waits_only_for_a_primary_that_creates_its_account(
+    action: str,
+    accounts: list[str],
+    admitted: list[str],
+    converged: bool,  # noqa: FBT001 - a table column.
+    waits: bool,  # noqa: FBT001 - a table column.
+) -> None:
+    plan = {"action": action, "sourcePosition": "0-2-5", "replicaPosition": ""}
+
+    found = _plugin().account_wait(
+        plan,
+        service="mariadb-main",
+        primary=_NEW_PRIMARY,
+        account_hosts=accounts,
+        admitted=admitted,
+        converged=converged,
+    )
+
+    if not waits:
+        assert found == plan
+        return
+    assert found["action"] == "wait-primary"
+    assert found["sourcePosition"] == "0-2-5"
+    assert "mariadb-replica on h2" in found["reason"]
+    assert "at 203.0.113.11" in found["reason"]
 
 
 def test_the_rendered_pair_names_the_primary_and_its_replicas(pair: Pair) -> None:

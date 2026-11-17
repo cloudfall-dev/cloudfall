@@ -12,7 +12,13 @@
 # - attach: a replica that holds data whose GTIDs its primary saw all of;
 #   it follows from its own position, with no new copy
 # - demote: a former primary declared the replica of a server that still
-#   follows it: it turns read-only now and attaches once that one is promoted
+#   follows it (by its server_id, or by its host and port while that link
+#   has not connected): it turns read-only now and attaches once that one is
+#   promoted (#451)
+# - wait-primary: a seed or an attach whose primary holds no replication
+#   account for it yet and has not converged in this run: it turns
+#   read-only and attaches in the next converge, once the primary's has
+#   created the account (#451)
 # - promote: a replica declared primary or standalone whose declared source
 #   can't be reached, or is read-only and applied, or whose undeclared
 #   source refuses a connection from this server (#455)
@@ -171,6 +177,24 @@
         and cloudfall_mariadb_peer_read.rc | default(1) == 0
       }}
 
+# The declared service the primary of a replica follows, by the server_id
+# its link reports or, while that link has not connected (0, as after a
+# restart), by the host and port it names, among the services the primary's
+# own pair names: this one, when the primary still follows it (#451).
+- name: Name the server a replica's primary still follows
+  ansible.builtin.set_fact:
+    cloudfall_mariadb_peer_source: >-
+      {{
+        cloudfall_mariadb_peer_link
+        | cloudfall_mariadb_link_peer(
+            ((hostvars[cloudfall_mariadb_peer.server].cloudfall_mariadb_replication
+              | default({})).get(cloudfall_mariadb_peer.service, {})).peers
+            | default([]))
+        if cloudfall_mariadb_declared_role == 'replica'
+        and cloudfall_mariadb_peer_link | length > 0
+        else {}
+      }}
+
 # A promotion drops what the replica has not applied: from a read-only
 # source it first lets the replica reach the source's position. A wait,
 # no change.
@@ -217,8 +241,62 @@
           peer=cloudfall_mariadb_peer,
           other=cloudfall_mariadb_peer_state,
           other_link=cloudfall_mariadb_peer_link,
+          other_source=cloudfall_mariadb_peer_source,
           source_probe=cloudfall_mariadb_source_probe)
       }}
+
+# A replica's login is refused while its primary holds no account for it
+# (MariaDB's error 1130); a primary creates its replicas' accounts in its
+# own converge. Read on the primary, as root through its socket.
+- name: Read the replication account's hosts on this replica's primary
+  ansible.builtin.command:
+    argv:
+      - >-
+        {{ hostvars[cloudfall_mariadb_links.primary.server].cloudfall_mariadb_client
+           | default(cloudfall_mariadb_client) }}
+      - --batch
+      - --raw
+      - --skip-column-names
+      - --execute
+      - >-
+        SELECT Host FROM mysql.global_priv
+        WHERE User = '{{ cloudfall_mariadb_replication_user }}'
+  # Evaluated before the condition: a server that is no replica names itself.
+  delegate_to: >-
+    {{ (cloudfall_mariadb_links.primary | default({})).server | default(inventory_hostname) }}
+  register: cloudfall_mariadb_primary_accounts
+  changed_when: false
+  check_mode: false
+  when:
+    - cloudfall_mariadb_declared_role == 'replica'
+    - cloudfall_mariadb_plan.action in ['seed', 'attach']
+
+# The primary's server runs later in this run: it waits for that converge
+# rather than be refused its login. Once the primary has converged, when it
+# is not in this run (a --limit leaves it out, so no converge in the run
+# creates the account), or when its declaration does not admit this
+# replica, the link is tried as before and a refusal stops the converge
+# (#451).
+- name: Wait for a primary that creates this replica's account later in the run
+  ansible.builtin.set_fact:
+    cloudfall_mariadb_plan: >-
+      {{
+        cloudfall_mariadb_plan | cloudfall_mariadb_account_wait(
+          service=cloudfall_mariadb_service.id,
+          primary=cloudfall_mariadb_links.primary,
+          account_hosts=cloudfall_mariadb_primary_accounts.stdout_lines,
+          admitted=(
+            ((hostvars[cloudfall_mariadb_links.primary.server].cloudfall_mariadb_replication
+              | default({})).get(cloudfall_mariadb_links.primary.service, {})).replicas
+            | default([])
+            | selectattr('service', 'equalto', cloudfall_mariadb_service.id)
+            | map(attribute='hosts') | flatten | list),
+          converged=(
+            cloudfall_mariadb_links.primary.server not in ansible_play_hosts_all
+            or hostvars[cloudfall_mariadb_links.primary.server].cloudfall_mariadb_plan
+               is defined))
+      }}
+  when: cloudfall_mariadb_primary_accounts is not skipped
 
 - name: Report a replication refusal to the services converge
   ansible.builtin.copy:

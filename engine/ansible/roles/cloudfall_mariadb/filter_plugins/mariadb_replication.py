@@ -24,6 +24,9 @@ grow along one history.
   replicates from, by the ``server_id`` it reports, else, whatever
   ``server_id`` it reports, by the host and port it names; ``{}`` when it is
   none of them (#440, #446)
+- ``cloudfall_mariadb_account_wait(plan, ...)``: a seed or an attach whose
+  primary holds no replication account for it yet, and converges later in
+  the run, as a wait (#451)
 
 No filter reads the network: what a source's port answers is read on the
 replica's own server, by ``files/mariadb_source_probe.py`` (#455), and
@@ -234,6 +237,7 @@ def replication_plan(  # noqa: C901, PLR0911, PLR0912, PLR0913 - one decision ta
     peer: dict[str, object],
     other: dict[str, object],
     other_link: dict[str, object],
+    other_source: dict[str, object],
     source_probe: str,
 ) -> dict[str, str]:
     """Decide what replication does on a server; see replication_check.yml.
@@ -241,9 +245,11 @@ def replication_plan(  # noqa: C901, PLR0911, PLR0912, PLR0913 - one decision ta
     ``local`` and ``other`` are this server's and the other server's state
     (``other`` empty when it can't be reached), ``link`` and ``other_link``
     their ``SHOW SLAVE STATUS`` rows, ``peer`` the declared service the other
-    server holds, ``links`` the pair as rendered for this service, and
-    ``source_probe`` what this server read at the port of a source that is no
-    declared service (``""`` when it did not try).
+    server holds, ``other_source`` the declared service ``other_link``
+    replicates from as :func:`link_peer` finds it (``{}`` when none),
+    ``links`` the pair as rendered for this service, and ``source_probe``
+    what this server read at the port of a source that is no declared
+    service (``""`` when it did not try).
     """
     if declared not in _DECLARED_ROLES:
         message = f"unknown declared replication role: {declared!r}"
@@ -258,6 +264,7 @@ def replication_plan(  # noqa: C901, PLR0911, PLR0912, PLR0913 - one decision ta
         key: str(value) for key, value in _mapping(other_link, "other link").items()
     }
     peer = _mapping(peer, "peer")
+    other_source = _mapping(other_source, "other source")
     links = _mapping(links, "links")
     reached = bool(theirs)
     holds = int(mine["databases"]) > 0
@@ -322,11 +329,18 @@ def replication_plan(  # noqa: C901, PLR0911, PLR0912, PLR0913 - one decision ta
             f"{primary['server']} {why}; converge the primary first. Nothing changed",
         )
     if other_link:
-        if int(other_link.get("Master_Server_Id", "0")) == int(mine["serverId"]):
+        # It follows this server when it reports this server's server_id, or,
+        # while its link has not connected (Master_Server_Id 0, as after a
+        # restart), when it names this server's host and port (#451).
+        if (
+            int(other_link.get("Master_Server_Id", "0") or "0") == int(mine["serverId"])
+            or other_source.get("service") == service
+        ):
             return act(
                 "demote",
                 f"{primary['service']} still follows {service}; {service} turns "
-                f"read-only now and attaches once {primary['service']} is promoted",
+                f"read-only now and attaches once {primary['service']} is promoted; "
+                "converge again once it is",
             )
         return refuse(
             _UNATTACHABLE,
@@ -359,6 +373,55 @@ def replication_plan(  # noqa: C901, PLR0911, PLR0912, PLR0913 - one decision ta
             "replicaPosition": mine["binlogState"],
         }
     return act("attach")
+
+
+def account_wait(  # noqa: PLR0913 - the wait's inputs, named.
+    plan: dict[str, str],
+    *,
+    service: str,
+    primary: dict[str, object],
+    account_hosts: list[object],
+    admitted: list[object],
+    converged: bool,
+) -> dict[str, str]:
+    """Turn a seed or an attach whose primary has no account for it yet into a wait.
+
+    ``account_hosts`` are the hosts of ``cloudfall_repl`` on the primary now,
+    ``admitted`` the hosts the primary's own declaration gives this replica,
+    which its converge creates the account at, and ``converged`` whether no
+    converge of the primary's server is left in this run (it already ran, or
+    a ``--limit`` leaves it out). A replica that sorts
+    before its primary in a run (a former primary declared the replica of
+    the server promoted over it) would be refused its login; it waits for
+    the primary's converge instead, which creates the account, and attaches
+    in the next one (#451). Every other plan is returned as it is: a primary
+    that already converged, or whose declaration does not admit this
+    replica, still refuses the login, and the link reports it.
+    """
+    plan = {key: str(value) for key, value in _mapping(plan, "plan").items()}
+    primary = _mapping(primary, "primary")
+    if not isinstance(account_hosts, list) or not isinstance(admitted, list):
+        message = "account hosts and admitted hosts must be lists"
+        raise TypeError(message)
+    if not isinstance(converged, bool):
+        message = f"converged must be a boolean, got {type(converged).__name__}"
+        raise TypeError(message)
+    held = {str(host) for host in account_hosts}
+    missing = [str(host) for host in admitted if str(host) not in held]
+    if plan.get("action") not in {"seed", "attach"} or not admitted or not missing:
+        return plan
+    if converged:
+        return plan
+    return {
+        **plan,
+        "action": "wait-primary",
+        "reason": (
+            f"its primary {primary['service']} on {primary['server']} holds no "
+            f"replication account for it at {', '.join(missing)} yet; the converge "
+            f"of {primary['server']} creates it, and {service} attaches when you "
+            "converge again"
+        ),
+    }
 
 
 def link_host(value: object) -> str:
@@ -460,7 +523,7 @@ def _promotion(  # noqa: PLR0913 - the promotion's inputs, named.
             "action": "wait-promotion",
             "reason": (
                 f"{source} is still writable; it turns read-only as the replica "
-                f"of {service} when its server converges"
+                f"of {service} when its server converges; converge again once it has"
             ),
             **positions,
         }
@@ -578,4 +641,5 @@ class FilterModule:
             "cloudfall_mariadb_replication_state": replication_state,
             "cloudfall_mariadb_link_peer": link_peer,
             "cloudfall_mariadb_replication_plan": replication_plan,
+            "cloudfall_mariadb_account_wait": account_wait,
         }
