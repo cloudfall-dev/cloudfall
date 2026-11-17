@@ -53,6 +53,12 @@ from test_decision import _Terminal
 from test_deploy_approval import _write_artifact
 from test_s018_agent_gate import _agent_record
 from test_s018_granted_run import _committed, _engine, _git, _staging_project
+from test_s018_ungranted_call import (
+    _command,
+    _marker_engine,
+    _unpoliced_project,
+    server_free_migration,
+)
 from treaty import CliExit
 
 if TYPE_CHECKING:
@@ -219,6 +225,31 @@ def test_s018_11_a_mistyped_id_runs_nothing(tmp_path: Path) -> None:
     assert payload["ok"] is False
     assert _record(project, proposal).status is ProposalStatus.PROPOSED
     assert not _receipt(project).exists()
+
+
+def test_s018_11_a_person_approves_a_migrate_that_changes_no_declared_server(
+    tmp_path: Path,
+) -> None:
+    # No grant can ever cover it, so a person's approval is its only way to run.
+    project = _unpoliced_project(tmp_path / "project")
+    server_free_migration(project, frozenset({"rollback-window"}))
+    engine = _marker_engine(tmp_path / "engine", tmp_path / "playbook-started")
+    _, refused = _command(project, engine, "migrate", "--build", "crm-backend=main")
+    proposal = refused["error"]["context"]["proposal"]
+
+    exit_code, payload = _approve(project, engine, proposal)
+
+    record = _record(project, proposal)
+    assert exit_code == 0, payload
+    assert record.status is ProposalStatus.VERIFIED, record.outcome
+    assert record.operation_servers == ()
+    assert record.approval is not None
+    assert record.approval.mode is ApprovalMode.HUMAN
+    assert record.approval.via is ApprovalChannel.TERMINAL
+    plan = json.loads(
+        (project / "tmp" / "migrate" / "plan.json").read_text(encoding="utf-8")
+    )
+    assert {step["status"] for step in plan["steps"]} == {"completed"}
 
 
 def _requests() -> list[tuple[str, EngineArgs]]:
