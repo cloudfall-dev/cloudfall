@@ -1,6 +1,6 @@
 # S-019: MariaDB service
 
-status: approved
+status: built
 serves: G-1, G-3
 
 ## Problem
@@ -463,7 +463,119 @@ ROADMAP.md, ARCHITECTURE.md, and the guide.
 
 ## Verification
 
-No criterion is verified yet.
+Checked on main at 4995a32. Most criteria about a live server are proven by replaying the
+role's tasks in `ansible-playbook` against stand-in `mariadb` and `mariadb-dump` clients
+(`engine/tests/mariadb_server.py`, `engine/tests/mariadb_pair.py`), not on a live host. A
+proving run on two Hetzner hosts with MariaDB 11.8.9 (2026-11-16,
+`docs/proving-runs/2026-11-16-hetzner-mariadb-pair.md`) covered S-019-12 to S-019-16 on real
+servers; S-019-12, S-019-13 and S-019-15 failed there, and their fixes (#449 to #453) are proven
+on the stand-ins only. Per criterion:
+
+- S-019-1: `test_s019_1_declaration_validates` runs `cloudfall config validate` on the
+  declaration (exit 0, no `MARIADB_` warning), and
+  `test_s019_1_render_carries_the_service_with_its_databases_and_no_password` runs
+  `cloudfall-engine inventory render`: the service carries both databases and their
+  `passwordRef`, and the password in the project's secrets is in no part of the output. Holds
+- S-019-2: `test_s019_2_examples_without_mariadb_render_byte_identical` renders
+  `config/examples` and compares it with the golden inventory byte for byte; `cloudfall config
+  validate --project config/examples` exits 0. Holds
+- S-019-3: checked on rendered tasks and templates only, not on a live host: the package task
+  installs `mariadb-server=1:11.8.9+maria~deb13` from the archive of that release and holds it,
+  the managed file sets `bind-address = 127.0.0.1`, the declared buffer pool and no binary log,
+  and the volume is mounted before the package (`test_s019_3_*`). `SELECT VERSION()`, the live
+  listener and `innodb_buffer_pool_size` were not read on a fresh Debian 13 host; the 2026-11-16
+  proving run installed 11.8.9 through this role on two Debian 13.6 hosts
+- S-019-4: replayed on the stand-in: a second run of the account, password and metrics tasks
+  gives `changed=0` (`test_s019_4_a_second_converge_changes_nothing`,
+  `test_s019_4_the_metrics_account_is_made_once_and_a_second_converge_changes_nothing`), and the
+  buffer-pool refusal and every other refusal come before any task that changes the host
+  (`test_s019_4_*`). A whole `services.yml` run with no restart was not checked on a live host
+- S-019-5: replayed on the stand-in, not on a live host: `crm` is a `unix_socket` user with no
+  hash, `billing` holds its `mysql_native_password` hash, and each has `ALL` on its own database
+  only (`test_s019_5_a_fresh_server_gets_the_socket_user_the_owner_and_their_grants`). The logins
+  and refusals themselves were not tried against a live server
+- S-019-6: `test_s019_6_a_missing_password_file_stops_before_ansible_starts` and
+  `..._key_...` stop with `PRECONDITION` before any play; the staged statement holds the hash and
+  never the password, every task that sees it is `no_log`, and neither the password nor the hash
+  is in the output or a client argument (`test_s019_6_*`); `cloudfall_repl`'s password is in no
+  output, argument or staged file left behind
+  (`test_s019_12_the_primary_holds_the_replication_account_as_a_hash_only`). Holds on the
+  stand-in
+- S-019-7: replayed on the stand-in: removing `billing` sends only `ACCOUNT LOCK`, keeps the
+  database, its grant and a hand-made user, and sends no `DROP`
+  (`test_s019_7_a_removed_database_keeps_its_rows_and_its_user_is_locked`); `audit` lists the
+  removed database and user as undeclared and the hand-made user as unmanaged on an observation
+  fixture (`test_s019_7_audit_lists_the_removed_database_and_a_hand_made_user`). Not on a live
+  host
+- S-019-8: the rendered backup and drill scripts run against stand-in clients: one dump and one
+  count file per database, the drill loads into a scratch database it drops on every path, a
+  missing dump fails and says so, and a row written after the dump does not fail it
+  (`test_s019_8_*`); `backup.yml` runs both scripts as root. The `BackupReceipt` path of
+  `cloudfall backup run|verify` is the existing generic one, not run end to end for MariaDB, and
+  `mariadb-dump` 11.8's output format was not checked on a live server
+- S-019-9: the rendered backup script deletes dumps older than `retentionDays`, keeps the newest
+  even when older, and deletes nothing when the backup fails (`test_s019_9_*`). Holds
+- S-019-10: every refusal under Validation runs `cloudfall config validate` and asserts exit 80,
+  `CONFIG_INVALID` and its code, the IPv6 network rule included; a series within 90 days of its
+  date warns `MARIADB_VERSION_ENDING` naming the date, read from an injected table
+  (`test_s019_10_*`). Holds
+- S-019-11: the rendered ruleset holds `ip saddr 10.0.0.0/24 tcp dport 3306 accept` and no
+  unrestricted 3306 rule, the managed file listens on loopback and `listenAddress` with the TLS
+  files, the certificate is signed by the project CA for `listenAddress`, and each owner gets a
+  `REQUIRE SSL` account per allowed source, replayed twice with `changed=0` on the stand-in
+  (`test_s019_11_*`). A TLS login from an allowed address and a refused plain login were not
+  tried on a live host
+- S-019-12: replayed on a stand-in pair
+  (`test_s019_12_an_empty_replica_is_seeded_and_follows_by_gtid_read_only` and the other
+  `test_s019_12_*`): the seed copies every database and row, both threads run by GTID over TLS
+  verified against the project CA, `read_only` is on, a later row arrives, a write as `billing` is
+  refused, and the primary admits 3306 from the replica's `/32` only. Held live on 2026-11-16 once
+  `lost+found` was removed by hand; the fix for that (#449,
+  `test_s019_12_a_replica_showing_lost_found_of_its_volume_is_seeded`) is proven on the stand-in
+  only
+- S-019-13: replayed on a stand-in pair with `read_only` in both forms the series report: a
+  second converge gives `changed=0` and no second dump, and a replica holding a database of its
+  own stops with `service_mariadb_replica_unattachable` and nothing dropped (`test_s019_13_*`).
+  Live on 2026-11-16 there was no second seed but a second converge reported `changed`; the
+  fixes (#450, #452) are proven on the stand-in only
+- S-019-14: held live on 2026-11-16, both halves; replayed on a stand-in pair by
+  `test_s019_14_with_the_primary_stopped_the_replica_is_promoted` (writable, no link, the last
+  GTID applied in the answer) and `test_s019_14_with_the_primary_running_and_writable_the_promotion_stops`
+  (`PRECONDITION`, both positions named, the replica still replicates)
+- S-019-15: replayed on a stand-in pair in both host orders
+  (`test_s019_15_a_role_swap_ends_within_two_converges_with_no_row_lost`): roles swapped within
+  two converges, no row lost, no seed, a third converge with `changed=0`; the services converge
+  applies the declared firewall first (`test_s019_15_the_services_converge_opens_the_new_primary_to_its_replica`).
+  It failed live on 2026-11-16; the fixes (#450, #451, #453) are proven on the stand-in only
+- S-019-16: held live on 2026-11-16; replayed on a stand-in pair by
+  `test_s019_16_a_former_primary_that_diverged_is_not_attached_nor_emptied`
+  (`service_mariadb_replica_diverged` naming the unseen GTID, no link, every row kept)
+- S-019-17: replayed against a stand-in source of series 10.11 behind a protocol server with TLS
+  (`engine/tests/mariadb_source.py`), not on a live source: seeded with every database and none
+  of the source's users, follows by GTID read-only, a user created on the source later does not
+  arrive, the promoted replica takes writes (`test_s019_17_*` in
+  `test_s019_mariadb_external_source.py`), and a declared `owner` database is adopted with its
+  rows and the declared hash
+  (`test_s019_17_a_promoted_replicas_database_is_adopted_with_its_owner`)
+- S-019-18: replayed against the same stand-in source: refused before any client of the
+  replica's server runs for no binary log, a `STATEMENT` log, a newer release, a MySQL server, the
+  same `server_id` and a missing `RELOAD` right; the source's state is unchanged and it was sent
+  `SELECT` and `SHOW` only; the password is in no output, argument, rendered inventory or answer
+  (`test_s019_18_*`). Not on a live source
+- S-019-19: `audit` over observation fixtures reports drift for another installed version, a
+  stopped or disabled unit, the managed file changed by hand, a writable replica and stopped
+  replication (`test_s019_19_*`); inspect's parse of `SHOW SLAVE STATUS` runs through Ansible's
+  templating. Not against a live inspect
+- S-019-20: the rendered collector configuration holds one `prometheus.exporter.mysql` labelled
+  `service = "mariadb-main"` with metrics and none without, and the services dashboard has a
+  replication lag panel (`test_s019_20_*`). A live scrape was not checked
+- S-019-21: replayed on the stand-in, not on a live host: an `ed25519` owner gets a user of that
+  plugin holding the ed25519 hash, the plugin is installed, and a second run gives `changed=0`
+  (`test_s019_21_an_ed25519_owner_gets_a_user_of_that_plugin`); the controller's hash matches
+  MariaDB's published `ed25519_password` value (`test_s019_21_*` in
+  `test_s019_mariadb_converge.py`). A live client login with the password was not tried
+
+Still open before the stable release:
 
 - S-019-17, S-019-18: the in-house client that reads a source before anything is installed
   (`cloudfall_mariadb_source`) is proven against a stand-in only; it needs a live proving run
