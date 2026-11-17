@@ -478,10 +478,19 @@ in the one project this server was started for. Read-only tools validate
 the project and derive evidence; domains_observe reads one Domain on its
 proxy server and changes nothing. deploy, rollback, restart, migrate,
 data_copy and domains_apply change servers: called without yes they only
-return the plan; review it, then call again with yes: true. The converge_*
-tools converge every declared server and are destructive: they run only with
-confirm_destructive: true. Every change writes receipts; nothing reports
-success it cannot prove.
+return the plan, whose approval.selfConfirm (the result's
+approval.self_confirm) says in advance whether a confirmed call would run.
+The converge_* tools converge every declared server and are destructive:
+they ask for confirm_destructive: true.
+A confirmed call (yes: true, or confirm_destructive: true) runs only when an
+OperatorPolicy grant covers it in every environment it touches; then its
+record names you as the approver. Otherwise nothing runs: the call answers
+PRECONDITION with error.context.code operator_approval_required and a
+proposal id, and a person approves it at a terminal with
+`cloudfall operator approve <id>`; the same call made again returns the
+same proposal until a grant covers it. Say why in each confirmed call's
+reason. Every change writes receipts; nothing
+reports success it cannot prove.
 
 add_ssh-key, add_baseline and add_server declare the fleet: they write
 schema-validated resource files into the project, never onto a server, and

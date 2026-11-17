@@ -296,6 +296,8 @@ def test_s008_5_the_deploy_tool_refuses_an_unapproved_manual_release(
     )
     assert not (project / "tmp" / "ansible-inventory.json").exists()
     assert not (project / "record" / "releases").exists()
+    # Refused before the grant check: no agent proposal either (S-018-15).
+    assert not (project / "record" / "operator").exists()
 
 
 def test_s008_5_the_project_instructions_name_release_approve(

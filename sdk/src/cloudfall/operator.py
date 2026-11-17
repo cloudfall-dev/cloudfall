@@ -422,13 +422,15 @@ class OperatorProposal:
             )
             raise ValueError(message)
         agent = self.trigger_kind is TriggerKind.AGENT
-        names_servers = bool(self.operation_servers) and bool(
+        # A run that changes no declared server names none and no
+        # environment; one that names servers names their environments.
+        servers_match = bool(self.operation_servers) is bool(
             self.operation_environments
         )
-        if agent and (not names_servers or self.binding is None):
+        if agent and (not servers_match or self.binding is None):
             message = (
-                "an agent proposal names the servers it changes, their "
-                f"environments and its binding: {self.resource_id.value}"
+                "an agent proposal names the servers it changes with their "
+                f"environments, and its binding: {self.resource_id.value}"
             )
             raise ValueError(message)
         if not agent and self.operation_server is None:
@@ -466,9 +468,9 @@ class OperatorProposal:
         operation: dict[str, object] = {"kind": self.operation_kind.value}
         if self.operation_server is not None:
             operation["server"] = self.operation_server.value
-        if self.operation_servers:
+        if self.operation_servers or self.trigger_kind is TriggerKind.AGENT:
             operation["servers"] = [server.value for server in self.operation_servers]
-        if self.operation_environments:
+        if self.operation_environments or self.trigger_kind is TriggerKind.AGENT:
             operation["environments"] = [
                 environment.value for environment in self.operation_environments
             ]
@@ -741,6 +743,31 @@ class ProposalStore:
                 message = f"proposal already exists: {path}"
                 raise OperatorError(_ERROR_PROPOSAL_EXISTS, message) from error
         return path
+
+    def open_or_save(self, proposal: OperatorProposal) -> tuple[OperatorProposal, Path]:
+        """Return the open agent proposal of the same call, or save this one.
+
+        Under the store's lock, a ``proposed`` agent record with the same
+        fingerprint (tool, arguments, servers) and the same binding is the
+        proposal of this call, and nothing is written; otherwise ``proposal``
+        is saved. A record the store cannot read matches nothing.
+        """
+        with record_files.locked(self.directory):
+            for existing in self.list().records:
+                if (
+                    existing.trigger_kind is TriggerKind.AGENT
+                    and existing.status is ProposalStatus.PROPOSED
+                    and existing.fingerprint == proposal.fingerprint
+                    and existing.binding == proposal.binding
+                ):
+                    return existing, self._path(existing.resource_id)
+            path = self._path(proposal.resource_id)
+            try:
+                record_files.create(path, self._content(proposal))
+            except FileExistsError as error:
+                message = f"proposal already exists: {path}"
+                raise OperatorError(_ERROR_PROPOSAL_EXISTS, message) from error
+        return proposal, path
 
     def update(self, proposal: OperatorProposal) -> Path:
         """Persist a state change of an existing proposal."""

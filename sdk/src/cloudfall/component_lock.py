@@ -194,6 +194,17 @@ def find_lock(project_directory: Path, component: ResourceId) -> HeldLock | None
     return HeldLock(holder=holder, path=path, age_seconds=max(0, age))
 
 
+def refuse_held(project_directory: Path, component: ResourceId) -> None:
+    """Refuse as a run would when another run holds the component's lock.
+
+    Takes no lock: a call that only proposes a run checks it as the run
+    would, and changes nothing.
+    """
+    held = find_lock(project_directory, component)
+    if held is not None:
+        raise _locked(held)
+
+
 @contextmanager
 def component_lock(
     project_directory: Path, component: ResourceId, action: str

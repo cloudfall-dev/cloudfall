@@ -231,21 +231,19 @@
               "$ref": "common.schema.json#/$defs/resourceId"
             },
             "servers": {
-              "description": "Every server the run changes; required for an agent proposal.",
+              "description": "Every server the run changes; required for an agent proposal, empty for a run that changes no declared server (only a person approves it).",
               "type": "array",
               "items": {
                 "$ref": "common.schema.json#/$defs/resourceId"
               },
-              "minItems": 1,
               "uniqueItems": true
             },
             "environments": {
-              "description": "The environments of those servers; required for an agent proposal.",
+              "description": "The environments of those servers; required for an agent proposal, empty when it names no server.",
               "type": "array",
               "items": {
                 "$ref": "common.schema.json#/$defs/resourceId"
               },
-              "minItems": 1,
               "uniqueItems": true
             },
             "service": {
