@@ -22,6 +22,11 @@ are about:
   strict mode a GTID not above the replica's own stops its SQL thread
 - the dump stand-in logs in the same way and writes the primary's databases
   and users at its binary log position, as ``--gtid --master-data=2`` does
+- the probe stand-in reads a source's port from the replica's own server, as
+  the role's probe script does there (#455): a host and port the stand-in
+  network routes to a server reads ``open`` while it runs and ``refused``
+  once it is stopped; any other is tried for real by the role's own script,
+  so a refusal, a timeout and a name that can't be resolved are its own
 
 What the model can't stand in for, a live server's own behaviour, is listed
 in the pull request as unverified.
@@ -521,6 +526,20 @@ sys.stdout.write(
 """
 
 
+_PROBE = r"""
+import runpy
+
+argv = sys.argv[1:]
+with LOG.open("a") as handle:
+    handle.write(json.dumps(["probe"] + argv) + "\n")
+path, source = resolve(argv[0], argv[1])
+if path is None:
+    runpy.run_path({script!r}, run_name="__main__")
+else:
+    sys.stdout.write(("open" if source is not None else "refused") + "\n")
+"""
+
+
 def server_state(  # noqa: PLR0913 - one server's settings, each named.
     *,
     address: str,
@@ -558,9 +577,13 @@ def server_state(  # noqa: PLR0913 - one server's settings, each named.
 
 
 def write_server(
-    directory: Path, state: dict[str, object], network: Path
-) -> tuple[Path, Path, Path, Path]:
-    """Write one server's stand-ins; return its client, dump, state and log."""
+    directory: Path, state: dict[str, object], network: Path, probe_script: Path
+) -> tuple[Path, Path, Path, Path, Path]:
+    """Write one server's stand-ins; return its client, dump, probe, state and log.
+
+    ``probe_script`` is the role's own probe, which the probe stand-in runs
+    for a host and port the stand-in network does not route.
+    """
     directory.mkdir(parents=True, exist_ok=True)
     state_path = directory / "server.json"
     state_path.write_text(json.dumps(state), encoding="utf-8")
@@ -574,4 +597,9 @@ def write_server(
     dump = directory / "mariadb-dump"
     dump.write_text(common + _DUMP.format(), encoding="utf-8")
     dump.chmod(0o700)
-    return client, dump, state_path, log
+    probe = directory / "probe"
+    probe.write_text(
+        common + _PROBE.format(script=str(probe_script)), encoding="utf-8"
+    )
+    probe.chmod(0o700)
+    return client, dump, probe, state_path, log

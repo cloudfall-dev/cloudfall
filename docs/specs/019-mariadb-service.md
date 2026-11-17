@@ -208,6 +208,14 @@ promotion drops whatever the replica had not yet applied, the role first reads t
 - otherwise the converge stops with `PRECONDITION` and names both positions, and nothing
   changes
 
+"Can't be reached" is read from the replica's side. A source that is a declared service is
+read on its own server; one that is not is tried from the replica's server, which the source
+admitted while the replica followed it, and counts as stopped only when that connection is
+refused and the replica's last error is not one only a running source sends. A refusal the
+controller reads proves nothing, since a firewall that rejects everyone but the replica
+answers the same; a timeout, no route or a name the replica can't resolve leaves the source
+unknown, and the converge stops with `PRECONDITION`.
+
 So a planned switch is: stop the writers and make the old primary read-only (for a Cloudfall
 primary, by declaring it the replica of the new one in the same change), then converge.
 ARCHITECTURE.md already says an operator initiates every promotion; this is the form it

@@ -15,7 +15,7 @@
 #   follows it: it turns read-only now and attaches once that one is promoted
 # - promote: a replica declared primary or standalone whose declared source
 #   can't be reached, or is read-only and applied, or whose undeclared
-#   source refuses the controller's connection
+#   source refuses a connection from this server (#455)
 # - wait-promotion: the same, while its source is writable but is declared
 #   this one's replica in the same change: nothing changes until it turns
 #   read-only
@@ -76,22 +76,38 @@
 
 # A server declared primary or standalone that follows no declared service
 # and whose link is not running: Cloudfall can't read that source, so it
-# promotes only when the controller's connection to its port is refused
-# (#440). The filter runs on the controller and names what it read: a
-# timeout, no route or a name it can't resolve is unknown, not stopped, and
-# refuses (#446); wait_for reports all of them as one timeout. Empty when
-# there is nothing to probe.
-- name: Try the port of a source that is no declared service
+# promotes only when a connection to its port is refused (#440). The
+# connection is tried from this server, which the source admitted while it
+# replicated from it, not from the controller, which a firewall that
+# REJECTs everyone but the replica would refuse too (#455). The script names
+# what it read: a timeout, no route or a name it can't resolve is unknown,
+# not stopped, and refuses (#446); wait_for reports all of them as one
+# timeout. The plan reads the link's last IO error first: one only a
+# running source sends refuses whatever the probe read.
+- name: Try the port of a source that is no declared service, from this server
+  ansible.builtin.script:
+    cmd: >-
+      {{ cloudfall_mariadb_source_probe_script | quote }}
+      {{ cloudfall_mariadb_link.Master_Host | quote }}
+      {{ cloudfall_mariadb_link.Master_Port | int }}
+      {{ cloudfall_mariadb_source_probe_seconds | int }}
+    executable: "{{ cloudfall_mariadb_source_probe_python }}"
+  register: cloudfall_mariadb_source_probe_read
+  changed_when: false
+  check_mode: false
+  when:
+    - cloudfall_mariadb_link | length > 0
+    - cloudfall_mariadb_declared_role != 'replica'
+    - cloudfall_mariadb_peer | length == 0
+    - cloudfall_mariadb_link.Slave_IO_Running | default('No') != 'Yes'
+
+# Empty when there was nothing to probe.
+- name: Keep what the probe of the source's port read
   ansible.builtin.set_fact:
     cloudfall_mariadb_source_probe: >-
       {{
-        cloudfall_mariadb_link.Master_Host
-        | cloudfall_mariadb_source_probe(cloudfall_mariadb_link.Master_Port | int,
-                                         cloudfall_mariadb_source_probe_seconds | int)
-        if cloudfall_mariadb_link | length > 0
-        and cloudfall_mariadb_declared_role != 'replica'
-        and cloudfall_mariadb_peer | length == 0
-        and cloudfall_mariadb_link.Slave_IO_Running | default('No') != 'Yes'
+        cloudfall_mariadb_source_probe_read.stdout | trim
+        if cloudfall_mariadb_source_probe_read is not skipped
         else ''
       }}
 

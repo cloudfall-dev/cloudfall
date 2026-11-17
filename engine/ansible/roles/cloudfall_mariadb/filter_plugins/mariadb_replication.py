@@ -21,12 +21,10 @@ grow along one history.
   replicates from, by the ``server_id`` it reports, else, whatever
   ``server_id`` it reports, by the host and port it names; ``{}`` when it is
   none of them (#440, #446)
-- ``cloudfall_mariadb_source_probe(host, port, timeout)``: what the
-  controller reads trying to connect to a port: ``open``, ``refused``,
-  ``timeout``, ``no-route``, ``unresolved`` or ``failed``. Only ``refused``
-  says that nothing listens there; the others can't tell a stopped source
-  from one the controller can't see (#446). The one filter that reads the
-  network, as filters run on the controller
+
+No filter reads the network: what a source's port answers is read on the
+replica's own server, by ``files/mariadb_source_probe.py`` (#455), and
+handed to ``cloudfall_mariadb_replication_plan``.
 
 Ansible loads this file itself, into ``ansible-playbook``; it imports nothing
 from the SDK, so it works whichever interpreter runs it.
@@ -34,9 +32,7 @@ from the SDK, so it works whichever interpreter runs it.
 
 from __future__ import annotations
 
-import errno
 import re
-import socket
 from ipaddress import ip_address
 from typing import TYPE_CHECKING
 
@@ -134,86 +130,21 @@ _STATE_FIELDS = (
 _UNSAFE = "service_mariadb_promotion_unsafe"
 _UNATTACHABLE = "service_mariadb_replica_unattachable"
 _DIVERGED = "service_mariadb_replica_diverged"
-# What the controller's probe of a source's port read, as a refusal names
-# it; ``open`` and ``refused`` are what it can tell, the others are unknown.
+# What the probe of a source's port from the replica's server read, as a
+# refusal names it; ``open`` and ``refused`` are what it can tell, the
+# others are unknown. files/mariadb_source_probe.py prints one of them.
 _PROBE_SAYS = {
     "timeout": "timed out",
     "no-route": "found no route to it",
     "failed": "failed with an error other than a refused connection",
 }
 _PROBE_OUTCOMES = frozenset({"open", "refused", "unresolved", *_PROBE_SAYS})
-_NO_ROUTE = frozenset({errno.EHOSTUNREACH, errno.ENETUNREACH})
 # A replica's last IO error that only a running source sends back: its login
 # refused (access denied, host blocked or not allowed, an authentication
 # method it can't use), a TLS handshake that failed, or the source's own
 # error reading its binary log. Can't connect (2003) and unknown host (2005)
 # are not among them: those say nothing answered.
 _SOURCE_ANSWERED = frozenset({1045, 1129, 1130, 1236, 1251, 2026})
-
-
-def probe_outcome(error: OSError | None) -> str:
-    """Name what a connection attempt that raised ``error`` (None: none) read."""
-    if error is None:
-        return "open"
-    if isinstance(error, socket.gaierror):
-        return "unresolved"
-    if isinstance(error, ConnectionRefusedError):
-        return "refused"
-    if isinstance(error, TimeoutError):
-        return "timeout"
-    if error.errno in _NO_ROUTE:
-        return "no-route"
-    return "failed"
-
-
-def probe_outcomes(outcomes: list[str]) -> str:
-    """Name what the probes of each address of one name read, together.
-
-    One address that answers is ``open``; the name is ``refused`` only when
-    every address refused; otherwise the first address that could not tell
-    names it, so a refusal at one address never hides what another can't
-    read (#446).
-    """
-    if not outcomes:
-        message = "a probe read no address"
-        raise ValueError(message)
-    if "open" in outcomes:
-        return "open"
-    return next((each for each in outcomes if each != "refused"), "refused")
-
-
-def source_probe(host: str, port: int, timeout: int) -> str:
-    """Try to connect to ``host:port`` from the controller; name what it read.
-
-    Each address the name resolves to is tried, as ``create_connection``
-    raises only the last address's error.
-    """
-    if not isinstance(host, str) or not host:
-        message = f"a probe's host must be a non-empty string, got {host!r}"
-        raise ValueError(message)
-    number = int(port)
-    if not 0 < number < 65536:  # noqa: PLR2004 - the port range.
-        message = f"not a port: {port!r}"
-        raise ValueError(message)
-    seconds = int(timeout)
-    if seconds <= 0:
-        message = f"a probe's timeout must be positive, got {timeout!r}"
-        raise ValueError(message)
-    try:
-        addresses = socket.getaddrinfo(host, number, 0, socket.SOCK_STREAM)
-    except socket.gaierror as error:
-        return probe_outcome(error)
-    outcomes = []
-    for family, kind, protocol, _, address in addresses:
-        with socket.socket(family, kind, protocol) as connection:
-            connection.settimeout(seconds)
-            try:
-                connection.connect(address)
-            except OSError as error:
-                outcomes.append(probe_outcome(error))
-            else:
-                return probe_outcome(None)
-    return probe_outcomes(outcomes)
 
 
 def _state(value: object, name: str, *, required: bool) -> dict[str, str]:
@@ -255,8 +186,8 @@ def replication_plan(  # noqa: C901, PLR0911, PLR0912, PLR0913 - one decision ta
     (``other`` empty when it can't be reached), ``link`` and ``other_link``
     their ``SHOW SLAVE STATUS`` rows, ``peer`` the declared service the other
     server holds, ``links`` the pair as rendered for this service, and
-    ``source_probe`` what the controller read at the port of a source that is
-    no declared service (``""`` when it did not try).
+    ``source_probe`` what this server read at the port of a source that is no
+    declared service (``""`` when it did not try).
     """
     if declared not in _DECLARED_ROLES:
         message = f"unknown declared replication role: {declared!r}"
@@ -509,10 +440,13 @@ def _undeclared_promotion(
     """Decide a promotion over a source that is no declared service (#440, #446).
 
     Cloudfall can't read that source, so it promotes only on evidence that it
-    is stopped: the controller's connection to its port refused, while the
-    replica's link did not hear from it last. A running link, a last IO error
+    is stopped: a connection to its port from this replica's own server
+    refused, while the replica's link did not hear from it last. The source
+    admitted this server while it replicated from it, so a refusal from
+    there means nothing listens; one the controller read could be a firewall
+    that rejects only the controller (#455). A running link, a last IO error
     only a running source sends, a port that answers, and a probe that can't
-    tell (a timeout, no route, a name the controller can't resolve) refuse.
+    tell (a timeout, no route, a name the server can't resolve) refuse.
     """
     applied = mine["slavePos"] or "(none)"
     host, port = link.get("Master_Host", ""), link.get("Master_Port", "")
@@ -548,25 +482,30 @@ def _undeclared_promotion(
         raise ValueError(message)
     if source_probe == "open":
         return refuse(
-            "its link is not connected, but the controller reaches that port, so "
-            "Cloudfall can not tell that the source is stopped or read-only",
+            "its link is not connected, but this replica's server reaches that "
+            "port, so Cloudfall can not tell that the source is stopped or "
+            "read-only",
             "Stop it",
         )
     if source_probe != "refused":
         read = (
-            f"the controller could not resolve {host}"
+            f"this replica's server could not resolve {host}"
             if source_probe == "unresolved"
-            else f"the controller's probe of that port {_PROBE_SAYS[source_probe]}"
+            else "the probe of that port from this replica's server "
+            f"{_PROBE_SAYS[source_probe]}"
         )
         return refuse(
             f"its link is not connected and {read}, so Cloudfall can not tell "
             "that the source is stopped",
-            f"Let the controller reach {host}:{port}, or, once the source is "
-            "stopped, remove this replica's link to it (RESET SLAVE ALL)",
+            f"Let this replica's server reach {host}:{port}, or, once the source "
+            "is stopped, remove this replica's link to it (RESET SLAVE ALL)",
         )
     return {
         "action": "promote",
-        "reason": f"its source refuses connections on {host}:{port}",
+        "reason": (
+            f"its source refuses connections on {host}:{port} from this replica's "
+            "server"
+        ),
         **positions,
     }
 
@@ -581,6 +520,5 @@ class FilterModule:
             "cloudfall_mariadb_gtid_applied": gtid_applied,
             "cloudfall_mariadb_vertical": vertical,
             "cloudfall_mariadb_link_peer": link_peer,
-            "cloudfall_mariadb_source_probe": source_probe,
             "cloudfall_mariadb_replication_plan": replication_plan,
         }

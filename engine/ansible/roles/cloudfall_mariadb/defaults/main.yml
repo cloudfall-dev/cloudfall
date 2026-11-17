@@ -176,10 +176,14 @@ cloudfall_mariadb_system_databases:
 # and before a promotion from a read-only source.
 cloudfall_mariadb_catch_up_seconds: 600
 cloudfall_mariadb_promotion_wait_seconds: 60
-# How long the controller tries the port of a source that is no declared
-# service; a probe that times out leaves the source unknown, and the
-# promotion refuses.
+# How long the replica's server tries the port of a source that is no
+# declared service; a probe that times out leaves the source unknown, and
+# the promotion refuses.
 cloudfall_mariadb_source_probe_seconds: 10
+# The probe that tries it, run on the replica's server with its Python (the
+# one Ansible itself needs there), not on the controller (#455).
+cloudfall_mariadb_source_probe_script: "{{ role_path }}/files/mariadb_source_probe.py"
+cloudfall_mariadb_source_probe_python: /usr/bin/python3
 # How often, 30 times, the role looks whether a new link's threads run.
 cloudfall_mariadb_link_poll_seconds: 2
 # A directory in the data directory that is no database, such as a data

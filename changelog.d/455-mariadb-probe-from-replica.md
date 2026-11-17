@@ -1,0 +1,3 @@
+### Fixed
+
+- A MariaDB replica declared `primary` whose link's source is no declared service is no longer promoted over a running source that only rejects the controller: the probe of the source's port now runs on the replica's own server (a small Python script of the role, `files/mariadb_source_probe.py`), which the source admitted while it replicated from it, instead of on the controller, where a firewall that REJECTs everyone but the replica gave the same refused connection. The replica's `Last_IO_Errno` is still read first; a timeout, no route or a name the replica's server can't resolve still leaves the source unknown and refuses with `PRECONDITION`. Spec 019's Promotion section now says "can't be reached" is read from the replica's side (#455)

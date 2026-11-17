@@ -58,6 +58,7 @@ if TYPE_CHECKING:
 ROOT = Path(__file__).parents[2]
 ROLES = ROOT / "engine" / "ansible" / "roles"
 ROLE = ROLES / "cloudfall_mariadb"
+PROBE = ROLE / "files" / "mariadb_source_probe.py"
 FIREWALL = ROLES / "cloudfall_firewall"
 SERVICES = ROOT / "engine" / "ansible" / "playbooks" / "services.yml"
 REPLICATION_PASSWORD = "synthetic-replication-password-0123456789"  # noqa: S105
@@ -67,6 +68,8 @@ PER_HOST = (
     "cloudfall_mariadb_dump_client",
     "cloudfall_mariadb_state_directory",
     "cloudfall_mariadb_ca_path",
+    "cloudfall_mariadb_source_probe_script",
+    "cloudfall_mariadb_source_probe_python",
 )
 RECAP = re.compile(r"^(h1|h2)\s*:\s*ok=\d+\s+changed=(\d+)\s", re.MULTILINE)
 
@@ -153,7 +156,7 @@ class Pair:
         self.hosts: dict[str, dict[str, Path]] = {}
         network: dict[str, str] = {}
         for host, address in ADDRESSES.items():
-            client, dump, state, log = write_server(
+            client, dump, probe, state, log = write_server(
                 tmp_path / host,
                 server_state(
                     address=address,
@@ -161,12 +164,14 @@ class Pair:
                     locked_flag=locked_flag,
                 ),
                 self.network,
+                PROBE,
             )
             state_directory = tmp_path / host / "state"
             state_directory.mkdir(mode=0o700)
             self.hosts[host] = {
                 "client": client,
                 "dump": dump,
+                "probe": probe,
                 "state": state,
                 "log": log,
                 "directory": state_directory,
@@ -218,6 +223,10 @@ class Pair:
                 cloudfall_mariadb_dump_client=str(self.hosts[host]["dump"]),
                 cloudfall_mariadb_state_directory=str(self.hosts[host]["directory"]),
                 cloudfall_mariadb_ca_path=str(self.ca),
+                # The probe runs on the replica's server: there, the probe
+                # stand-in of that server, with the controller's Python
+                cloudfall_mariadb_source_probe_script=str(self.hosts[host]["probe"]),
+                cloudfall_mariadb_source_probe_python=sys.executable,
             )
         run_directory = self.tmp_path / f"run-{len(list(self.tmp_path.glob('run-*')))}"
         reports = run_directory / "reports"
@@ -847,9 +856,10 @@ def _refused_source(pair: Pair) -> None:
 
 
 def _silent_source(pair: Pair) -> None:
-    # h1 is stopped and the controller sends to a documentation address,
+    # h1's server is down and the replica sends to a documentation address,
     # which no network answers: the probe times out, or finds no route
     pair.edit("h1", running=False)
+    pair.route("h1", reachable=False)
 
 
 def _unresolvable_source(pair: Pair) -> None:
@@ -879,14 +889,15 @@ def _source_failing_tls(pair: Pair) -> None:
         pytest.param(
             _silent_source,
             "2003",
-            r"probe of that port (timed out|found no route to it)",
+            r"probe of that port from this replica's server "
+            r"(timed out|found no route to it)",
             id="timeout or no route",
         ),
         pytest.param(
             _unresolvable_source,
             "2003",
             "could not resolve mariadb-source.invalid",
-            id="a name the controller can not resolve",
+            id="a name the replica's server can not resolve",
         ),
         pytest.param(
             _source_refusing_the_login,
@@ -932,6 +943,68 @@ def test_s019_14_an_undeclared_source_is_promoted_over_only_when_it_refuses(
     assert state["readOnly"] is True
     assert state["link"] is not None
     assert state["link"]["host"] == replica["link"]["host"]
+
+
+def _probe_script() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("mariadb_source_probe", PROBE)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# proves: S-019-14
+@pytest.mark.parametrize("running", [True, False], ids=["running", "stopped"])
+def test_s019_14_an_undeclared_source_is_probed_from_the_replicas_server(
+    pair: Pair, *, running: bool
+) -> None:
+    _seeded(pair)
+    # h1 answers the replica at a port that refuses the controller, as behind
+    # a firewall that REJECTs everyone but its replica; the link last could
+    # not connect (2003), which proves nothing about the source (#455)
+    port = _closed_port()
+    pair.answer_at("h1", f"127.0.0.1:{port}")
+    _link_to(
+        pair,
+        "127.0.0.1",
+        port,
+        started=False,
+        io="No",
+        ioErrno=2003,
+        ioError="Can't connect to server on '127.0.0.1'",
+        masterServerId=0,
+    )
+    pair.edit("h1", running=running)
+    assert _probe_script().source_probe("127.0.0.1", port, 1) == "refused"
+    replica = pair.state("h2")
+    pair.declare(_new_primary())
+
+    run = pair.converge(limit="h2", succeed=not running)
+
+    outcome = run.outcomes["mariadb-replica"]
+    state = pair.state("h2")
+    # The probe ran on h2, the replica's server, never on the controller
+    assert f'["probe", "127.0.0.1", "{port}", "1"]' in pair.arguments("h2")
+    if not running:
+        # Refused from the replica's own server: nothing listens there
+        assert outcome.outcome == "promote"
+        assert outcome.get("reason") == (
+            f"its source refuses connections on 127.0.0.1:{port} from this "
+            "replica's server"
+        )
+        assert state["link"] is None
+        assert state["readOnly"] is False
+        return
+    # The replica's server reaches the source: no promotion, two writers never
+    assert outcome.outcome == "refused"
+    assert outcome.get("code") == "service_mariadb_promotion_unsafe"
+    assert "this replica's server reaches that port" in outcome.get("message")
+    assert replica["slavePos"] in outcome.get("message")
+    assert state["readOnly"] is True
+    assert state["link"] is not None
+    assert pair.write("h1", "billing", "invoices", 1)
+    assert not pair.write("h2", "billing", "invoices", 1)
 
 
 # proves: S-019-15
@@ -1141,7 +1214,7 @@ def _down(errno_: str = "2003", **fields: str) -> dict[str, str]:
             {},
             "refused",
             "refuse",
-            id="undeclared source refusing the login, controller refused",
+            id="undeclared source refusing the login, probe refused",
         ),
         pytest.param(
             _down("2026"),
@@ -1149,7 +1222,7 @@ def _down(errno_: str = "2003", **fields: str) -> dict[str, str]:
             {},
             "refused",
             "refuse",
-            id="undeclared source failing TLS, controller refused",
+            id="undeclared source failing TLS, probe refused",
         ),
         pytest.param(
             _down("0"),
@@ -1266,7 +1339,7 @@ def test_an_undeclared_source_not_probed_is_an_error() -> None:
 def test_s019_14_the_source_probe_tells_a_refusal_from_what_it_can_not_read(
     error: OSError | None, outcome: str
 ) -> None:
-    assert _plugin().probe_outcome(error) == outcome
+    assert _probe_script().probe_outcome(error) == outcome
 
 
 # proves: S-019-14
@@ -1276,7 +1349,7 @@ def test_s019_14_the_source_probe_tells_a_refusal_from_what_it_can_not_read(
         pytest.param(["refused"], "refused", id="one address refused"),
         pytest.param(["refused", "refused"], "refused", id="every address refused"),
         pytest.param(["refused", "open"], "open", id="one address open"),
-        # A name with an IPv4 address the controller times out on (a firewall
+        # A name with an IPv4 address the replica times out on (a firewall
         # that drops) and an IPv6 one nothing listens on (bind 0.0.0.0):
         # create_connection raises only the last error, a refusal
         pytest.param(["timeout", "refused"], "timeout", id="timeout, then refused"),
@@ -1286,12 +1359,26 @@ def test_s019_14_the_source_probe_tells_a_refusal_from_what_it_can_not_read(
 def test_s019_14_a_name_refuses_only_when_each_of_its_addresses_does(
     outcomes: list[str], outcome: str
 ) -> None:
-    assert _plugin().probe_outcomes(outcomes) == outcome
+    assert _probe_script().probe_outcomes(outcomes) == outcome
 
 
 # proves: S-019-14
-def test_s019_14_the_source_probe_connects_from_the_controller() -> None:
-    plugin = _plugin()
+def test_s019_14_the_source_probe_script_connects_from_where_it_runs(
+    tmp_path: Path,
+) -> None:
+    plugin = _probe_script()
+    # No filter of the controller reads the network any more (#455)
+    assert "cloudfall_mariadb_source_probe" not in _plugin().FilterModule().filters()
+    port = _closed_port()
+    done = subprocess.run(  # noqa: S603 - the role's own script.
+        [sys.executable, "-I", str(PROBE), "127.0.0.1", str(port), "1"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=tmp_path,
+    )
+    assert done.stdout == "refused\n"
     with socket.socket() as listening:
         listening.bind(("127.0.0.1", 0))
         listening.listen(1)
