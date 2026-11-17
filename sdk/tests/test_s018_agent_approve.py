@@ -439,7 +439,8 @@ class _StartFails(ProposalStore):
     """A store whose folder cannot take the approved run's start."""
 
     def start(self, running: OperatorProposal) -> Path:
-        raise OSError(errno.EIO, "Input/output error")
+        message = f"cannot start {running.resource_id.value}"
+        raise OSError(errno.EIO, message)
 
 
 def _approved_run(

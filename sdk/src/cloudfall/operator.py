@@ -767,7 +767,7 @@ class ProposalStore:
                 record_files.create(path, self._content(proposal))
             except FileExistsError as error:
                 message = f"proposal already exists: {path}"
-                raise OperatorError(_ERROR_PROPOSAL_EXISTS, message) from error
+                raise OperatorError(ERROR_PROPOSAL_EXISTS, message) from error
         return proposal, path
 
     def update(self, proposal: OperatorProposal) -> Path:
