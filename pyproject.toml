@@ -5,7 +5,7 @@ description = "The operator's record for self-hosted servers run by an AI agent:
 readme = "README.md"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
-requires-python = ">=3.14"
+requires-python = ">=3.14,<3.15"
 keywords = ["ai-agents", "ansible", "mcp", "self-hosted", "devops", "sre", "debian", "hetzner", "audit-log", "paas-alternative"]
 classifiers = [
     "Development Status :: 4 - Beta",
