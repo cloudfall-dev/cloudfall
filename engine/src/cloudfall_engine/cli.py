@@ -70,6 +70,7 @@ from cloudfall.secrets import (
     elasticsearch_user_passwords,
     mariadb_owner_passwords,
     mariadb_replication_passwords,
+    mariadb_source_logins,
     owned_role_passwords,
     staged_password_files,
 )
@@ -119,6 +120,7 @@ if TYPE_CHECKING:
         ElasticsearchUserPassword,
         MariadbOwnerPassword,
         MariadbReplicationPassword,
+        MariadbSourceLogin,
         OwnedRolePassword,
     )
     from treaty import Completed
@@ -741,6 +743,24 @@ def _rendered_mariadb_replication_pairs(
     return tuple(pairs.values())
 
 
+def _rendered_mariadb_source_credentials(
+    inventory_file: Path,
+) -> tuple[tuple[ResourceId, SecretValueReference], ...]:
+    """Read the ``source.credentialsRef`` of each replica of an outside source.
+
+    The inventory carries no project, so a source's ``caCertificateFile`` is
+    not staged here; the role stops on a declared one it was not handed.
+    """
+    return tuple(
+        (
+            ResourceId.from_boundary(service.get("id")),
+            _secret_reference(source.get("credentialsRef"), "credentialsRef"),
+        )
+        for service in _rendered_services(inventory_file, "mariadb")
+        if (source := _nested(service, "mariadb", "replication", "source"))
+    )
+
+
 def _rendered_elasticsearch_services(
     inventory_file: Path,
 ) -> tuple[tuple[ResourceId, ResourceId], ...]:
@@ -903,6 +923,7 @@ class _ServicesSecrets:
     existing: tuple[ElasticsearchExistingClusterLogin, ...] = ()
     mariadb: tuple[MariadbOwnerPassword, ...] = ()
     replication: tuple[MariadbReplicationPassword, ...] = ()
+    sources: tuple[MariadbSourceLogin, ...] = ()
 
 
 def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesSecrets:
@@ -912,7 +933,8 @@ def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesS
     passwords of each Elasticsearch service and each of its declared users',
     the S3 keys of each S3 snapshot repository, the login of each
     ``existingCluster`` that names a ``credentialsRef``, each MariaDB
-    owner's, and each MariaDB primary's replication password.
+    owner's, each MariaDB primary's replication password, and the login of
+    each MariaDB replica's outside source.
     """
     # An engine without services.yml still runs its other playbooks (#296).
     services = playbook_directory(args.engine) / SERVICES_PLAYBOOK
@@ -926,10 +948,11 @@ def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesS
         logins = _rendered_existing_cluster_credentials(args.inventory)
         mariadb = _rendered_mariadb_owned_databases(args.inventory)
         pairs = _rendered_mariadb_replication_pairs(args.inventory)
+        sources = _rendered_mariadb_source_credentials(args.inventory)
     except (TypeError, ValueError) as error:
         message = f"the inventory declares a malformed service: {error}"
         raise ParseError(message, context={"flag": "inventory"}) from error
-    if not databases and not clusters and not mariadb and not pairs:
+    if not databases and not clusters and not mariadb and not pairs and not sources:
         return _ServicesSecrets()
     provider = SopsSecretProvider(
         secrets_directory=args.secrets_dir, decrypt=_sops_decrypt(ctx)
@@ -943,6 +966,7 @@ def _services_passwords(args: RunArgs, run: PlaybookRun, ctx: Ctx) -> _ServicesS
             elasticsearch_existing_cluster_logins(logins, provider),
             mariadb_owner_passwords(mariadb, provider),
             mariadb_replication_passwords(pairs, provider),
+            mariadb_source_logins(sources, provider),
         )
     except SecretsError as error:
         raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
@@ -995,6 +1019,7 @@ def run_playbook(args: RunArgs, ctx: Ctx) -> Played:
             existing=secrets.existing,
             mariadb=secrets.mariadb,
             replication=secrets.replication,
+            sources=secrets.sources,
         ) as staged,
         tempfile.TemporaryDirectory(prefix="cloudfall-replication-") as reports,
     ):

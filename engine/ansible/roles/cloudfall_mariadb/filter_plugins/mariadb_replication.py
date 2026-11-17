@@ -27,10 +27,14 @@ grow along one history.
 - ``cloudfall_mariadb_account_wait(plan, ...)``: a seed or an attach whose
   primary holds no replication account for it yet, and converges later in
   the run, as a wait (#451)
+- ``cloudfall_mariadb_source_problems(rows, ...)``: why a replica can not
+  follow a source Cloudfall does not manage, from what the preflight read
+  there; ``[]`` when it can (S-019-18)
 
 No filter reads the network: what a source's port answers is read on the
 replica's own server, by ``files/mariadb_source_probe.py`` (#455), and
-handed to ``cloudfall_mariadb_replication_plan``.
+handed to ``cloudfall_mariadb_replication_plan``; what an outside source
+holds is read by the ``cloudfall_mariadb_source`` module.
 
 Ansible loads this file itself, into ``ansible-playbook``; it imports nothing
 from the SDK, so it works whichever interpreter runs it.
@@ -301,21 +305,27 @@ def replication_plan(  # noqa: C901, PLR0911, PLR0912, PLR0913 - one decision ta
         )
     if declared != "replica":
         return {"action": declared}
-    primary = _mapping(links.get("primary", {}), "primary")
+    primary = _mapping(links.get("primary") or links.get("source") or {}, "primary")
     if not primary:
-        message = f"replica {service} has no rendered primary"
+        message = f"replica {service} has no rendered primary or source"
         raise ValueError(message)
+    # A source Cloudfall does not manage is named by where it is (S-019).
+    named = (
+        f"primary {primary['service']}"
+        if "service" in primary
+        else f"source {primary['host']}:{primary['port']}"
+    )
     if link:
-        if link.get("Master_Host") == primary["host"] and int(
-            link.get("Master_Port", "0")
-        ) == int(str(primary["port"])):
+        if link_host(link.get("Master_Host", "")) == link_host(
+            str(primary["host"])
+        ) and int(link.get("Master_Port", "0")) == int(str(primary["port"])):
             return act("follow")
         return refuse(
             _UNATTACHABLE,
             f"service {service} replicates from {link.get('Master_Host')}:"
-            f"{link.get('Master_Port')}, not from its declared primary "
-            f"{primary['service']} at {primary['host']}:{primary['port']}; "
-            "Cloudfall does not move a replica to another source. Nothing changed",
+            f"{link.get('Master_Port')}, not from its declared {named} at "
+            f"{primary['host']}:{primary['port']}; Cloudfall does not move a "
+            "replica to another source. Nothing changed",
         )
     if not reached:
         why = (
@@ -323,10 +333,16 @@ def replication_plan(  # noqa: C901, PLR0911, PLR0912, PLR0913 - one decision ta
             if holds
             else "to be seeded from it"
         )
+        where = f" on {primary['server']}" if "server" in primary else ""
+        first = (
+            "converge the primary first"
+            if "service" in primary
+            else "make it reachable from this server"
+        )
         return refuse(
             _UNATTACHABLE,
-            f"service {service} can not reach its primary {primary['service']} on "
-            f"{primary['server']} {why}; converge the primary first. Nothing changed",
+            f"service {service} can not reach its {named}{where} {why}; {first}. "
+            "Nothing changed",
         )
     if other_link:
         # It follows this server when it reports this server's server_id, or,
@@ -354,7 +370,7 @@ def replication_plan(  # noqa: C901, PLR0911, PLR0912, PLR0913 - one decision ta
         return refuse(
             _UNATTACHABLE,
             f"service {service} holds {mine['databases']} database(s) and no GTID "
-            f"history, so it can not attach to {primary['service']} and is never "
+            f"history, so it can not attach to its {named} and is never "
             "seeded over its data. Nothing was dropped; recreating its volume, "
             "after which it is seeded, is your step",
         )
@@ -363,9 +379,10 @@ def replication_plan(  # noqa: C901, PLR0911, PLR0912, PLR0913 - one decision ta
         return {
             **refuse(
                 _DIVERGED,
-                f"service {service} holds GTIDs its primary {primary['service']} "
+                f"service {service} holds GTIDs its {named} "
                 f"never saw: {', '.join(unseen)} (its binary log state "
-                f"{mine['binlogState']}, the primary's {theirs['binlogState']}). It "
+                f"{mine['binlogState']}, the {named.split(maxsplit=1)[0]}'s "
+                f"{theirs['binlogState']}). It "
                 "diverged, so it is not attached and not emptied; nothing changed. "
                 "Recreating its volume, after which it is seeded, is your step",
             ),
@@ -629,6 +646,90 @@ def _undeclared_promotion(
     }
 
 
+_RELEASE = re.compile(r"(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})")
+_GRANT_ON_ALL = re.compile(r"GRANT (.+?) ON \*\.\* TO ")
+# Names a server prints for one right, in either release line.
+_SAME_RIGHT = {
+    "BINLOG MONITOR": {"BINLOG MONITOR", "REPLICATION CLIENT"},
+    "REPLICATION SLAVE": {"REPLICATION SLAVE", "REPLICATION REPLICA"},
+}
+
+
+def release(text: object) -> tuple[int, int, int]:
+    """Return the ``X.Y.Z`` a server's version string starts with, as numbers."""
+    if not isinstance(text, str):
+        message = f"a version must be a string, got {type(text).__name__}"
+        raise TypeError(message)
+    found = _RELEASE.match(text)
+    if found is None:
+        message = f"not a MariaDB version: {text!r}"
+        raise ValueError(message)
+    return int(found[1]), int(found[2]), int(found[3])
+
+
+def source_problems(
+    rows: dict[str, object],
+    *,
+    version: str,
+    server_id: int,
+    privileges: list[str],
+) -> list[str]:
+    """Return why a replica can not follow its outside source; ``[]`` when it can.
+
+    ``rows`` is what ``cloudfall_mariadb_source`` read: ``server``, one row
+    of ``VERSION()``, ``@@log_bin``, ``@@binlog_format`` and ``@@server_id``,
+    and ``grants``, the rows of ``SHOW GRANTS``. The source must be MariaDB,
+    write a binary log, row-based, run a release not newer than the
+    replica's ``version`` (compared as numbers, never as text), have another
+    ``server_id``, and its account hold every one of ``privileges`` on every
+    database, as ``cloudfall_repl`` does (S-019-18).
+    """
+    server = _mapping(rows, "rows").get("server")
+    grants = _mapping(rows, "rows").get("grants")
+    if not isinstance(server, list) or len(server) != 1 or not isinstance(grants, list):
+        message = "the source read lacks its server row or its grants"
+        raise ValueError(message)
+    text, log_bin, binlog_format, source_id = (str(value) for value in server[0])
+    problems: list[str] = []
+    if "mariadb" not in text.lower():
+        problems.append(
+            f"it runs {text}, not MariaDB: a replica follows its source by "
+            "MariaDB GTID"
+        )
+    elif release(text) > release(version):
+        problems.append(
+            f"it runs MariaDB {text}, newer than this replica's version "
+            f"{version}: a replica is never older than its source"
+        )
+    if log_bin != "1":
+        problems.append("it writes no binary log (log_bin is off)")
+    elif binlog_format.upper() != "ROW":
+        problems.append(
+            f"its binary log is {binlog_format}, not row-based (binlog_format = ROW)"
+        )
+    if int(source_id) == int(server_id):
+        problems.append(
+            f"its server_id is {source_id}, the serverId this replica declares"
+        )
+    held: set[str] = set()
+    for row in grants:
+        found = _GRANT_ON_ALL.match(str(row[0])) if isinstance(row, list) else None
+        if found is not None:
+            held |= {right.strip().upper() for right in found[1].split(",")}
+    missing = [
+        right
+        for right in privileges
+        if "ALL PRIVILEGES" not in held
+        and not (_SAME_RIGHT.get(right, {right}) & held)
+    ]
+    if missing:
+        problems.append(
+            f"its account lacks {', '.join(missing)} ON *.*, which the seed and "
+            "the link need"
+        )
+    return problems
+
+
 class FilterModule:
     """The role's replication filters."""
 
@@ -640,6 +741,7 @@ class FilterModule:
             "cloudfall_mariadb_vertical": vertical,
             "cloudfall_mariadb_replication_state": replication_state,
             "cloudfall_mariadb_link_peer": link_peer,
+            "cloudfall_mariadb_source_problems": source_problems,
             "cloudfall_mariadb_replication_plan": replication_plan,
             "cloudfall_mariadb_account_wait": account_wait,
         }

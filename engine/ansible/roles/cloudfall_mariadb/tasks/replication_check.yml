@@ -153,13 +153,43 @@
   check_mode: false
   when: cloudfall_mariadb_peer | length > 0
 
+# A replica of a source Cloudfall does not manage that has no link yet reads
+# that source's position and databases with its login, as the module reads
+# it: SELECT alone (S-019).
+- name: Read the outside source's replication position and databases
+  cloudfall_mariadb_source:
+    host: "{{ cloudfall_mariadb_source.host }}"
+    port: "{{ cloudfall_mariadb_source.port | int }}"
+    user: "{{ lookup('ansible.builtin.file', cloudfall_mariadb_replication_files.sourceUser) }}"
+    password: "{{ lookup('ansible.builtin.file', cloudfall_mariadb_replication_files.sourcePassword) }}"
+    ca: >-
+      {{
+        lookup('ansible.builtin.file', cloudfall_mariadb_replication_files.sourceCa)
+        if cloudfall_mariadb_source.tls else ''
+      }}
+    queries:
+      state: "{{ cloudfall_mariadb_replication_state_query }}"
+  register: cloudfall_mariadb_source_state_read
+  # One that can't be read is not reached: the plan refuses to seed or attach.
+  failed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - cloudfall_mariadb_source | length > 0
+    - cloudfall_mariadb_link | length == 0
+
 - name: Keep the other server's replication state
   ansible.builtin.set_fact:
-    cloudfall_mariadb_peer_reached: "{{ cloudfall_mariadb_peer_reachable }}"
+    cloudfall_mariadb_peer_reached: >-
+      {{ cloudfall_mariadb_peer_reachable or cloudfall_mariadb_source_reachable }}
     cloudfall_mariadb_peer_state: >-
       {{
         cloudfall_mariadb_peer_read.stdout | cloudfall_mariadb_replication_state
-        if cloudfall_mariadb_peer_reachable | bool else {}
+        if cloudfall_mariadb_peer_reachable | bool
+        else cloudfall_mariadb_source_state_read.rows.state[0][0]
+             | cloudfall_mariadb_replication_state
+        if cloudfall_mariadb_source_reachable | bool
+        else {}
       }}
     cloudfall_mariadb_peer_link: >-
       {{
@@ -175,6 +205,11 @@
         and cloudfall_mariadb_peer_read is not skipped
         and not (cloudfall_mariadb_peer_read.unreachable | default(false))
         and cloudfall_mariadb_peer_read.rc | default(1) == 0
+      }}
+    cloudfall_mariadb_source_reachable: >-
+      {{
+        cloudfall_mariadb_source_state_read is not skipped
+        and cloudfall_mariadb_source_state_read.rows is defined
       }}
 
 # The declared service the primary of a replica follows, by the server_id
@@ -269,6 +304,8 @@
   check_mode: false
   when:
     - cloudfall_mariadb_declared_role == 'replica'
+    # A source Cloudfall does not manage holds the team's own account
+    - cloudfall_mariadb_links.primary is defined
     - cloudfall_mariadb_plan.action in ['seed', 'attach']
 
 # The primary's server runs later in this run: it waits for that converge

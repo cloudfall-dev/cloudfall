@@ -63,6 +63,8 @@ from cloudfall.secrets import (
     mariadb_owner_passwords,
     mariadb_replication_pairs,
     mariadb_replication_passwords,
+    mariadb_source_credentials,
+    mariadb_source_logins,
     owned_databases,
     owned_role_passwords,
     sops_decrypt,
@@ -94,6 +96,7 @@ if TYPE_CHECKING:
         ElasticsearchUserPassword,
         MariadbOwnerPassword,
         MariadbReplicationPassword,
+        MariadbSourceLogin,
         OwnedRolePassword,
         SopsSecretProvider,
     )
@@ -1131,6 +1134,25 @@ class ServicesSecrets:
     elasticsearch_existing: tuple[ElasticsearchExistingClusterLogin, ...] = ()
     mariadb_owners: tuple[MariadbOwnerPassword, ...] = ()
     mariadb_replication: tuple[MariadbReplicationPassword, ...] = ()
+    mariadb_sources: tuple[MariadbSourceLogin, ...] = ()
+
+
+def _mariadb_source_cas(
+    inventory: PlatformInventory, project_directory: Path
+) -> dict[ResourceId, str]:
+    """Read the ``caCertificateFile`` of each replica of an outside source.
+
+    Validation checked each is CA certificates only, inside the project.
+    """
+    found: dict[ResourceId, str] = {}
+    for service in inventory.services:
+        replication = service.mariadb.replication if service.mariadb else None
+        source = None if replication is None else replication.source
+        if source is not None and source.ca_certificate_file is not None:
+            found[service.resource_id] = (
+                project_directory / source.ca_certificate_file.value
+            ).read_text(encoding="utf-8")
+    return found
 
 
 def services_passwords(
@@ -1169,6 +1191,11 @@ def services_passwords(
             mariadb_owner_passwords(mariadb_owned_databases(inventory), provider),
             mariadb_replication_passwords(
                 mariadb_replication_pairs(inventory), provider
+            ),
+            mariadb_source_logins(
+                mariadb_source_credentials(inventory),
+                provider,
+                _mariadb_source_cas(inventory, context.project_directory),
             ),
         )
     except SecretsError as error:
@@ -1218,6 +1245,7 @@ def run_services_playbook(
             existing=secrets.elasticsearch_existing,
             mariadb=secrets.mariadb_owners,
             replication=secrets.mariadb_replication,
+            sources=secrets.mariadb_sources,
         ) as extra,
         tempfile.TemporaryDirectory(prefix="cloudfall-replication-") as reports,
     ):

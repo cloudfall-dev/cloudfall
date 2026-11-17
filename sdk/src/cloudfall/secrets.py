@@ -445,6 +445,94 @@ def mariadb_replication_passwords(
 
 
 _REPLICATION_PASSWORD_PATTERN = re.compile(r"[A-Za-z0-9_\-.~+/=]{16,}")
+# A source's login is written into a client option file and a quoted
+# literal of the link statement: printable ASCII without quotes, a
+# backslash, a backtick, '#', ';' or blanks, which neither form can carry
+# unescaped.
+_SOURCE_USER_PATTERN = re.compile(r"[A-Za-z0-9_.\-]{1,80}")
+_SOURCE_PASSWORD_PATTERN = re.compile(r"[!$%&()*+,\-./0-9:<=>?@A-Z\[\]^_a-z{|}~]+")
+
+
+@dataclass(frozen=True, slots=True)
+class MariadbSourceLogin:
+    """The login of a replica's ``source``, a server Cloudfall does not manage.
+
+    ``credentialsRef`` names one key of the store whose value is
+    ``<username>:<password>`` on one line: an account the team made on the
+    source. The replica's server needs the password to log in, so it reaches
+    the replica's host in a 0600 file for the run only, and is kept
+    afterwards only where MariaDB keeps it (S-019). ``ca_certificate`` is the
+    PEM of ``caCertificateFile``, which is no secret; ``None`` without one, or
+    when the project is not at hand.
+    """
+
+    service: ResourceId
+    reference: SecretValueReference
+    username: str = field(repr=False)
+    password: str = field(repr=False)
+    ca_certificate: str | None = None
+
+
+def mariadb_source_credentials(
+    inventory: PlatformInventory,
+) -> tuple[tuple[ResourceId, SecretValueReference], ...]:
+    """Return each replica of an outside source with its ``credentialsRef``."""
+    return tuple(
+        (service.resource_id, service.mariadb.replication.source.credentials_ref)
+        for service in inventory.services
+        if service.mariadb is not None
+        and service.mariadb.replication is not None
+        and service.mariadb.replication.source is not None
+    )
+
+
+def mariadb_source_logins(
+    references: Iterable[tuple[ResourceId, SecretValueReference]],
+    provider: SopsSecretProvider,
+    ca_certificates: Mapping[ResourceId, str] | None = None,
+) -> tuple[MariadbSourceLogin, ...]:
+    """Decrypt the login each replica of an outside source names.
+
+    A missing file or key, or a value that is not ``<username>:<password>``
+    on one line in the characters a login can carry, fails naming the file
+    and the key, never the value, before any playbook.
+    """
+    found: list[MariadbSourceLogin] = []
+    for service_id, reference in references:
+        try:
+            value = provider.fetch_value(reference)
+        except SecretsError as error:
+            message = (
+                f"{error.message}; it holds the login of the source of MariaDB "
+                f"replica {service_id.value}, as <username>:<password> of an "
+                "account the team made on that server"
+            )
+            raise SecretsError(error.code, message) from error
+        username, separator, password = value.partition(":")
+        if (
+            not separator
+            or not _SOURCE_USER_PATTERN.fullmatch(username)
+            or not _SOURCE_PASSWORD_PATTERN.fullmatch(password)
+        ):
+            message = (
+                f"secret key {reference.key.value} in "
+                f"{provider.source_path(reference)} is not <username>:<password> "
+                "on one line, the form the source of MariaDB replica "
+                f"{service_id.value} reads; the username is letters, digits and "
+                "_.- and the password printable ASCII without quotes, a "
+                "backslash, a backtick, '#', ';' or blanks"
+            )
+            raise SecretsError(_ERROR_SOURCE_INVALID, message)
+        found.append(
+            MariadbSourceLogin(
+                service_id,
+                reference,
+                username,
+                password,
+                (ca_certificates or {}).get(service_id),
+            )
+        )
+    return tuple(found)
 
 
 _SCRAM_ITERATIONS = 4096
@@ -849,7 +937,9 @@ MARIADB_REPLICATION_FILES_VARIABLE = "cloudfall_services_mariadb_replication_fil
 
 A primary maps ``hash``, the ``mysql_native_password`` hash of its
 ``cloudfall_repl`` password; each of its replicas maps ``password``, that
-password, which the role copies 0600 for the run only (S-019, D-9).
+password, which the role copies 0600 for the run only (S-019, D-9). A
+replica of an outside source maps ``sourceUser`` and ``sourcePassword``, the
+login ``credentialsRef`` names, and with ``caCertificateFile``, ``sourceCa``.
 """
 MARIADB_FILES_VARIABLE = "cloudfall_services_mariadb_files"
 """The ``services.yml`` variable mapping a MariaDB service, then owner, to a hash file.
@@ -869,6 +959,7 @@ def staged_password_files(  # noqa: PLR0913 - one staging dir for every kind.
     existing: tuple[ElasticsearchExistingClusterLogin, ...] = (),
     mariadb: tuple[MariadbOwnerPassword, ...] = (),
     replication: tuple[MariadbReplicationPassword, ...] = (),
+    sources: tuple[MariadbSourceLogin, ...] = (),
 ) -> Iterator[dict[str, object]]:
     """Write each password's server form to a 0600 file, then remove it.
 
@@ -883,12 +974,15 @@ def staged_password_files(  # noqa: PLR0913 - one staging dir for every kind.
     node; a declared user's file holds its bcrypt hash alone; a MariaDB
     owner's file holds the hash its plugin stores, never the password; a
     MariaDB primary's replication file holds the hash of its ``cloudfall_repl``
-    password, and each of its replicas' that password. Yields
-    the extra vars ``services.yml`` reads: the controller paths only, so
-    neither crosses a command line, the inventory, or the project. Nothing to
-    stage yields no variable, leaving the run as it was.
+    password, and each of its replicas' that password; a replica of an
+    outside source has its source's username, password and CA in three
+    files. Yields the extra vars ``services.yml`` reads: the controller paths
+    only, so neither crosses a command line, the inventory, or the project.
+    Nothing to stage yields no variable, leaving the run as it was.
     """
-    if not any((passwords, accounts, s3, users, existing, mariadb, replication)):
+    if not any(
+        (passwords, accounts, s3, users, existing, mariadb, replication, sources)
+    ):
         yield {}
         return
     with tempfile.TemporaryDirectory(prefix="cloudfall-passwords-") as directory:
@@ -918,18 +1012,32 @@ def staged_password_files(  # noqa: PLR0913 - one staging dir for every kind.
             extra_vars[MARIADB_FILES_VARIABLE] = _stage_mariadb(
                 root / "mariadb", mariadb
             )
-        if replication:
+        if replication or sources:
             extra_vars[MARIADB_REPLICATION_FILES_VARIABLE] = _stage_replication(
-                root / "mariadb-replication", replication
+                root / "mariadb-replication", replication, sources
             )
         yield extra_vars
 
 
 def _stage_replication(
-    root: Path, passwords: tuple[MariadbReplicationPassword, ...]
+    root: Path,
+    passwords: tuple[MariadbReplicationPassword, ...],
+    sources: tuple[MariadbSourceLogin, ...],
 ) -> dict[str, dict[str, str]]:
     root.mkdir(mode=0o700)
     staged: dict[str, dict[str, str]] = {}
+    for login in sources:
+        service = login.service.value
+        files = {
+            "sourceUser": root / f"{service}.source-user",
+            "sourcePassword": root / f"{service}.source-password",
+        }
+        _write_private(files["sourceUser"], login.username)
+        _write_private(files["sourcePassword"], login.password)
+        if login.ca_certificate is not None:
+            files["sourceCa"] = root / f"{service}.source-ca.pem"
+            _write_private(files["sourceCa"], login.ca_certificate)
+        staged[service] = {key: str(path) for key, path in files.items()}
     for password in passwords:
         primary = password.pair.primary.value
         hashed = root / f"{primary}.hash"

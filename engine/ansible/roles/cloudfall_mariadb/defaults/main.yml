@@ -128,7 +128,9 @@ cloudfall_mariadb_remote_state_queries:
 # this service: on a primary 'hash', the controller path of the
 # mysql_native_password hash of its cloudfall_repl password; on a replica
 # 'password', the controller path of its primary's cloudfall_repl password,
-# copied 0600 for the run only (D-9 for the primary's side).
+# copied 0600 for the run only (D-9 for the primary's side); on a replica of
+# an outside source 'sourceUser', 'sourcePassword' and, with
+# caCertificateFile, 'sourceCa'.
 cloudfall_mariadb_replication_files: {}
 # Where the role reports each replication outcome, a controller directory
 # the services converge reads ('' reports nothing): a refusal turns into
@@ -151,6 +153,25 @@ cloudfall_mariadb_declared_role: >-
 # port and, for a replica, primary).
 cloudfall_mariadb_links: >-
   {{ (cloudfall_mariadb_replication | default({})).get(cloudfall_mariadb_service.id, {}) }}
+# A replica's source Cloudfall does not manage, as the inventory renders it
+# (host, port, and tls: whether caCertificateFile is declared); {} for any
+# other service (S-019).
+cloudfall_mariadb_source: "{{ cloudfall_mariadb_links.source | default({}) }}"
+# Where a replica keeps its source's CA, which its link verifies against.
+cloudfall_mariadb_source_ca_path: /etc/mysql/cloudfall/source-ca.crt
+# What the preflight reads on that source, and nothing else: the release,
+# the binary log, server_id, and the rights of the account.
+cloudfall_mariadb_source_queries:
+  server: >-
+    SELECT VERSION(), @@global.log_bin, @@global.binlog_format,
+    @@global.server_id
+  grants: SHOW GRANTS
+# Why the preflight stops, once source_check.yml found a problem.
+cloudfall_mariadb_source_message: >-
+  replica {{ cloudfall_mariadb_service.id }} can not follow its source
+  {{ cloudfall_mariadb_source.host }}:{{ cloudfall_mariadb_source.port }}:
+  {{ cloudfall_mariadb_source_problems | join('; ') }}. Nothing was installed
+  on {{ cloudfall_server_id }} and nothing on the source changed
 # The account hosts of cloudfall_repl on a primary: each replica's IPv4.
 cloudfall_mariadb_replica_hosts: >-
   {{

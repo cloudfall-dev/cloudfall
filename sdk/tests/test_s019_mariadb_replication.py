@@ -16,7 +16,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from cloudfall.domain import ResourceId
@@ -44,9 +44,14 @@ from cloudfall.secrets import (
 )
 from cloudfall.validation import validate_config
 from cloudfall_engine.ansible_inventory import render_ansible_inventory
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 from elasticsearch_hosts import FakeNodes
 from mariadb_project import (
     SCHEMAS,
+    SOURCE_CREDENTIALS_REF,
     mariadb_service,
     primary_replication,
     replica_service,
@@ -297,6 +302,123 @@ def test_the_pairs_name_each_primary_with_its_replicas(tmp_path: Path) -> None:
     assert pair.primary.value == "mariadb-main"
     assert pair.environment.value == "production"
     assert [replica.value for replica in pair.replicas] == ["mariadb-replica"]
+
+
+SOURCE_LOGIN = "mover:synthetic-source-value-42"
+
+
+def _old_ca() -> str:
+    """Return the PEM of a CA, as the team's old server was signed by."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "old-db-ca")])
+    now = dt.datetime.now(dt.UTC)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + dt.timedelta(days=30))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    return certificate.public_bytes(serialization.Encoding.PEM).decode("ascii")
+
+
+def _source_project(tmp_path: Path, secrets: str) -> tuple[Path, str]:
+    """Return a project whose replica on h2 follows an outside source, and its CA."""
+    replica = replica_service()
+    replication = cast("dict[str, object]", replica["spec"])["mariadb"]
+    source = {
+        "host": "10.0.0.11",
+        "port": 3306,
+        "credentialsRef": SOURCE_CREDENTIALS_REF,
+        "caCertificateFile": "pki/old-db-ca.pem",
+    }
+    cast("dict[str, object]", replication)["replication"] = {
+        "role": "replica",
+        "serverId": 12,
+        "source": source,
+    }
+    project = _project(tmp_path, secrets)
+    (project / "services" / "mariadb-main.yaml").unlink()
+    (project / "services" / "mariadb-replica.yaml").write_text(
+        json.dumps(replica), encoding="utf-8"
+    )
+    ca = _old_ca()
+    (project / "pki").mkdir()
+    (project / "pki" / "old-db-ca.pem").write_text(ca, encoding="utf-8")
+    return project, ca
+
+
+# proves: S-019-18
+def test_s019_18_the_source_login_is_staged_0600_and_in_no_argument(
+    tmp_path: Path,
+) -> None:
+    project, ca = _source_project(
+        tmp_path, f"{SECRETS}SOURCE_REPLICATION={SOURCE_LOGIN}\n"
+    )
+    recorder = Recorder(None)
+
+    _converge(project, recorder, [])
+
+    staged = recorder.staged["mariadb-replica"]
+    assert staged == {
+        "sourceUser": ("mover", 0o600),
+        "sourcePassword": ("synthetic-source-value-42", 0o600),
+        "sourceCa": (ca, 0o600),
+    }
+    inventory = render_ansible_inventory(
+        PlatformInventory.from_state(validate_config(project, SCHEMAS))
+    )
+    rendered = json.dumps(inventory)
+    assert "synthetic-source-value-42" not in rendered
+    hosts = cast("dict[str, Any]", inventory["all"])["children"]["cloudfall_servers"]
+    host = hosts["hosts"]["h2"]
+    # The pair names where the source is, never its login
+    assert host["cloudfall_mariadb_replication"]["mariadb-replica"]["source"] == {
+        "host": "10.0.0.11",
+        "port": 3306,
+        "tls": True,
+    }
+    for step in recorder.steps:
+        assert "synthetic-source-value-42" not in " ".join(step.argv)
+        assert "synthetic-source-value-42" not in json.dumps(dict(step.environment))
+
+
+# proves: S-019-18
+@pytest.mark.parametrize(
+    ("secrets", "said"),
+    [
+        pytest.param(SECRETS, "SOURCE_REPLICATION", id="missing key"),
+        pytest.param(
+            f"{SECRETS}SOURCE_REPLICATION=no-separator-value\n",
+            "is not <username>:<password>",
+            id="no username",
+        ),
+        pytest.param(
+            f"{SECRETS}SOURCE_REPLICATION=mover:it's-quoted\n",
+            "is not <username>:<password>",
+            id="a quote",
+        ),
+    ],
+)
+def test_s019_18_a_source_login_that_can_not_be_used_stops_before_any_playbook(
+    tmp_path: Path, secrets: str, said: str
+) -> None:
+    project, _ = _source_project(tmp_path, secrets)
+    recorder = Recorder(None)
+
+    with pytest.raises(LifecycleError) as error:
+        _converge(project, recorder, [])
+
+    assert error.value.code == ERROR_SERVICES_SECRET
+    assert said in error.value.detail
+    assert "source of MariaDB replica mariadb-replica" in error.value.detail
+    assert "it's-quoted" not in error.value.detail
+    assert "no-separator-value" not in error.value.detail
+    assert recorder.steps == []
 
 
 def test_a_malformed_report_is_refused(tmp_path: Path) -> None:

@@ -51,8 +51,8 @@ BILLING: dict[str, object] = {
 # task that changes the host
 REFUSALS = (
     "Validate MariaDB service target and declaration",
-    "Refuse a replica of a source Cloudfall does not manage",
-    "Refuse a replica without its rendered primary",
+    "Refuse a replica without its rendered primary or source",
+    "Check the source of a replica Cloudfall does not manage",
     "Refuse remote access that is not narrowed to declared sources",
     "Refuse a buffer pool above three quarters of the server's memory",
     "Refuse a series MariaDB publishes no package of for this Debian release",
@@ -322,23 +322,21 @@ def test_s019_3_the_data_directory_is_the_mounted_mariadb_volume() -> None:
     assert selected == [{"name": "mariadb", "path": "/var/lib/mysql"}]
 
 
-def test_a_replica_of_an_outside_source_is_refused_until_it_converges() -> None:
-    refuse = _task(
-        "Refuse a replica of a source Cloudfall does not manage",
+# proves: S-019-18
+def test_only_a_replica_of_an_outside_source_checks_it_before_any_change() -> None:
+    check = _task(
+        "Check the source of a replica Cloudfall does not manage",
         _tasks("main.yml"),
     )
-    primary = {"role": "primary", "serverId": 1, "listenAddress": "10.0.0.2"}
-    outside = {
-        "role": "replica",
-        "serverId": 12,
-        "source": {"host": "10.0.0.11", "port": 3306},
-    }
+    outside = {"source": {"host": "10.0.0.11", "port": 3306, "tls": True}}
 
-    assert _holds(
-        refuse, _variables(cloudfall_mariadb_service=_service(CRM, replication=primary))
+    assert check["ansible.builtin.include_tasks"] == "source_check.yml"
+    assert not _template(
+        "{{ " + check["when"] + " }}", _variables(cloudfall_mariadb_replication={})
     )
-    assert not _holds(
-        refuse, _variables(cloudfall_mariadb_service=_service(replication=outside))
+    assert _template(
+        "{{ " + check["when"] + " }}",
+        _variables(cloudfall_mariadb_replication={"mariadb-main": outside}),
     )
 
 
@@ -679,6 +677,30 @@ def test_a_declared_user_made_by_hand_is_adopted(tmp_path: Path) -> None:
     assert after["users"]["crm"]["plugin"] == "unix_socket"
     assert after["users"]["crm"]["managed"] is True
     assert after["databases"].count("crm") == 1
+
+
+# proves: S-019-17
+def test_s019_17_a_promoted_replicas_database_is_adopted_with_its_owner(
+    tmp_path: Path,
+) -> None:
+    # What a promoted replica of an outside source holds: the source's
+    # databases, seeded and replicated, and none of its users
+    state = fresh_state()
+    cast("list[str]", state["databases"]).append("billing")
+    server = Server(tmp_path, state)
+
+    done, _ = server.converge(_service(BILLING), {"billing": NATIVE})
+
+    after = server.state
+    # The database is kept as it is, never created again nor dropped
+    assert after["databases"].count("billing") == 1
+    assert not any("DATABASE" in text.upper() for text in server.writes())
+    # Its owner is created with the declared password, as a hash, and its grant
+    assert after["users"]["billing"]["plugin"] == "mysql_native_password"
+    assert after["users"]["billing"]["hash"] == NATIVE
+    assert after["users"]["billing"]["managed"] is True
+    assert "billing|billing" in after["grants"]
+    _assert_nothing_leaked(done, server)
 
 
 def test_an_underscore_in_a_database_name_is_escaped_in_its_grant(

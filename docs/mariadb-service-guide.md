@@ -1,9 +1,10 @@
 # Run a MariaDB service
 
 Status: standalone servers, primary and replica pairs, promotion, backups and
-the restore drill are built and converge on real hosts. A replica of a server
-Cloudfall does not manage is declared and validated, but its converge is not
-built yet (section 8).
+the restore drill are built and converge on real hosts. A replica of a MariaDB
+server Cloudfall does not manage converges too (section 8); its check of the
+source is proven against a stand-in, not yet against a live MariaDB 10.11 or
+11.x.
 
 A MariaDB `Service` is one server: standalone, a `primary`, or a `replica` of a
 primary in the same project. There is no cluster and no automatic failover. A
@@ -348,12 +349,10 @@ any new replica.
 
 ## 8. Move in from a server Cloudfall does not manage
 
-Not built: a replica declared with `source` validates, but the MariaDB role
-refuses it before it changes the server, saying this release validates such a
-replica and does not converge it yet. Converging it, and the checks of the
-source listed below, wait on a later release.
-
-The declaration names the source instead of a `primary`:
+A team that already runs MariaDB elsewhere moves in by declaring a replica of
+it, letting it catch up, and promoting it. The source must be MariaDB: the
+link replicates by MariaDB GTID, so a MySQL server is not supported as the
+`source` for now. The declaration names the source instead of a `primary`:
 
 ```yaml
 mariadb:
@@ -369,22 +368,41 @@ mariadb:
       caCertificateFile: pki/old-db-ca.pem
 ```
 
-`credentialsRef` names one key whose value is `<username>:<password>` on one
-line. `caCertificateFile` is a path inside the project to the certificate of
-the CA that signed the source's certificate; one that is missing, outside the
+`port` defaults to 3306. `credentialsRef` names one key whose value is
+`<username>:<password>` on one line. The username is letters, digits and
+`_.-`, at most 80 characters. The password is printable ASCII without quotes,
+a backslash, a backtick, `#`, `;` or blanks, since it is written into a client
+option file and a quoted literal of the link statement. A missing key, or a
+value of another form, stops the converge with `PRECONDITION` before any
+playbook runs, naming the file and the key, never the value. The login is
+staged `0600` for the run only and never reaches the rendered inventory, a
+command line or the answer.
+
+`caCertificateFile` is a path inside the project to the certificate of the CA
+that signed the source's certificate; one that is missing, outside the
 project or no CA certificate is refused (`service_mariadb_replication_source`).
-Without it the link is not encrypted, and `config validate` warns
-`MARIADB_REPLICATION_UNENCRYPTED`. `port` defaults to 3306.
+With it, both the check below and the link connect over TLS and verify the
+source's certificate chain against that CA and its name against `host`, and a
+source that offers no TLS is refused. Without it neither is encrypted, and
+`config validate` warns `MARIADB_REPLICATION_UNENCRYPTED`. The CA is staged by
+a services converge (`converge_services` or `cloudfall operator approve`);
+`cloudfall-engine playbook run services` does not stage it, and the role stops
+a replica that declares one.
 
 Cloudfall changes nothing on the source. Prepare it yourself:
 
+- **The release**: MariaDB, no newer than the replica's `version`; an older
+  series is fine
 - **The binary log**: on, row-based (`binlog_format = ROW`), with a
   `server_id` other than the replica's `serverId`, and kept long enough for
   the replica to catch up after its seed
-- **The account**: one account that may replicate and read every database,
+- **The account**: one account, logging in with `mysql_native_password`,
   connecting from the replica server's IPv4 and, with a CA file, only over
-  TLS. On a MariaDB source, Cloudfall's own `cloudfall_repl` holds these
-  rights for the same seed and link:
+  TLS. It holds, `ON *.*` and granted to it directly (a right that comes
+  through a role is not counted), the rights Cloudfall's own `cloudfall_repl`
+  holds for the same seed and link. `ALL PRIVILEGES` covers them, and
+  `REPLICATION CLIENT` and `REPLICATION REPLICA`, as older and newer releases
+  name them, count as `BINLOG MONITOR` and `REPLICATION SLAVE`:
 
   ```sql
   CREATE USER 'cloudfall_seed'@'203.0.113.20' IDENTIFIED BY '<password>' REQUIRE SSL;
@@ -394,12 +412,44 @@ Cloudfall changes nothing on the source. Prepare it yourself:
 
 - **The network**: admit the replica server's IPv4 on the source's port in
   the source's firewall
-- **The version**: a source no newer than the replica's `version`
 
-Per spec 019, once built, the converge checks the source before installing
-anything, seeds the replica with the source's databases but not its users,
-and follows it until you promote the replica as in section 6, then declare
-`databases` for what it holds.
+Before it installs anything on the replica's server, every services converge
+logs in to the source with that login, through a client of the role's own
+(no `mariadb` client is needed yet), and reads its `VERSION()`, `log_bin`,
+`binlog_format`, `server_id` and `SHOW GRANTS`. It sends the source `SELECT`
+and `SHOW` statements only. When the source can't be followed, the converge
+stops with `PRECONDITION`, the code `service_mariadb_source_unfit` in
+`error.context.code`, and a message that names every reason it found. Nothing
+was installed on the replica's server and nothing on the source changed:
+
+| Reason | What to do |
+| --- | --- |
+| It can't be reached, refuses the login, offers no TLS while `caCertificateFile` is declared, or its certificate does not verify | Check the network, the login and the CA; the message is the client's own and never holds the password |
+| It asks for another authentication plugin than `mysql_native_password` | Give the account `mysql_native_password` |
+| It runs something other than MariaDB, such as MySQL | Not supported: the link replicates by MariaDB GTID |
+| It writes no binary log (`log_bin` is off) | Turn on the binary log and restart the source |
+| Its binary log is not row-based | Set `binlog_format = ROW` |
+| It runs a release newer than the replica's `version` | Declare a `version` no older than the source's; a replica is never older than its source |
+| Its `server_id` is the replica's `serverId` | Declare another `serverId` |
+| Its account lacks a right, named in the message, `ON *.*` | Grant it as above |
+
+An empty replica is then **seeded** as in section 4, from one consistent dump
+of the source's databases (MariaDB's own left out) at a recorded GTID
+position, and follows the source by GTID, read-only. The source's users are
+not in the seed, and the replica ignores `mysql.%`
+(`replicate_wild_ignore_table`), so a user created or granted on the source
+afterwards is not applied: the replica's accounts are Cloudfall's. The answer
+names the outcome `seed`, and a second converge changes nothing.
+
+To finish the move, stop the writers and the source, then promote the replica
+as in section 6: declare it `role: primary` with a `listenAddress` (or remove
+its `replication`) and converge it. The source is no declared service, so the
+replica is promoted only when the source refuses a connection from the
+replica's server; a source that still runs refuses the promotion with
+`service_mariadb_promotion_unsafe`. Once promoted, the server is writable and
+no longer ignores `mysql.%`. Then declare `databases` for what it holds: a
+declared database that exists is adopted with its rows, and its `owner` is
+created or given the declared password.
 
 ## Audit
 

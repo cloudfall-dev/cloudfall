@@ -12,27 +12,22 @@
       MariaDB deployment requires its declared Debian server and a
       loopback-only bind address
 
-# A replica of a server Cloudfall does not manage (#424) is declared and
-# validated, and converges in a later release: a server is never left
-# half-replicating.
-- name: Refuse a replica of a source Cloudfall does not manage
+- name: Refuse a replica without its rendered primary or source
   ansible.builtin.assert:
     that:
-      - cloudfall_mariadb_service.mariadb.replication.source is not defined
+      - >-
+        cloudfall_mariadb_links.primary is defined
+        or cloudfall_mariadb_links.source is defined
     fail_msg: >-
-      Service {{ cloudfall_mariadb_service.id }} is the replica of a source
-      Cloudfall does not manage, which this Cloudfall release validates but
-      does not converge yet; declare a primary of the project instead
-  when: cloudfall_mariadb_service.mariadb.replication is defined
-
-- name: Refuse a replica without its rendered primary
-  ansible.builtin.assert:
-    that:
-      - cloudfall_mariadb_links.primary is defined
-    fail_msg: >-
-      Replica {{ cloudfall_mariadb_service.id }} has no rendered primary;
-      render the inventory with cloudfall-engine inventory render
+      Replica {{ cloudfall_mariadb_service.id }} has no rendered primary or
+      source; render the inventory with cloudfall-engine inventory render
   when: cloudfall_mariadb_declared_role == 'replica'
+
+# A replica of a server Cloudfall does not manage reads its source before
+# anything is installed, and stops when it can not follow it (S-019-18).
+- name: Check the source of a replica Cloudfall does not manage
+  ansible.builtin.include_tasks: source_check.yml
+  when: cloudfall_mariadb_source | length > 0
 
 # The listener opens on listenAddress only to accounts from the allowed
 # sources, each requiring TLS; the firewall admits the port from those

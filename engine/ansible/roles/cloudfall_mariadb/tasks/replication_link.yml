@@ -1,15 +1,39 @@
 ---
 # Link a replica to its primary, by GTID, over TLS verified against the
-# project CA (S-019, Replication). An empty replica is seeded first from one
+# project CA (S-019, Replication), or to a source Cloudfall does not manage,
+# with the login its credentialsRef names, over TLS verified against its
+# caCertificateFile when declared. An empty replica is seeded first from one
 # consistent dump of every database of the primary, taken at a recorded GTID
 # position; one that holds data attaches from its own position, with no new
-# copy. The replication password is staged in a 0600 file for the run only,
-# read by the client and the server themselves, and removed on every path;
-# the session that hands it to the server writes no statement log. It is in
-# no command line, task argument or Ansible output.
+# copy. A source's users are not in its seed. The password is staged in a
+# 0600 file for the run only, read by the client and the server themselves,
+# and removed on every path; the session that hands it to the server writes
+# no statement log. It is in no command line, task argument or Ansible
+# output.
 - name: Link this replica to its primary
   vars:
-    cloudfall_mariadb_primary: "{{ cloudfall_mariadb_links.primary }}"
+    cloudfall_mariadb_primary: >-
+      {{ cloudfall_mariadb_links.primary | default(cloudfall_mariadb_source) }}
+    cloudfall_mariadb_external: "{{ cloudfall_mariadb_source | length > 0 }}"
+    cloudfall_mariadb_upstream_name: >-
+      {{
+        ('source ' ~ cloudfall_mariadb_source.host ~ ':' ~ cloudfall_mariadb_source.port)
+        if cloudfall_mariadb_external
+        else cloudfall_mariadb_primary.service
+      }}
+    cloudfall_mariadb_link_tls: >-
+      {{ not cloudfall_mariadb_external or cloudfall_mariadb_source.tls }}
+    cloudfall_mariadb_link_ca: >-
+      {{
+        cloudfall_mariadb_source_ca_path if cloudfall_mariadb_external
+        else cloudfall_mariadb_ca_path
+      }}
+    cloudfall_mariadb_link_password_file: >-
+      {{
+        cloudfall_mariadb_replication_files.sourcePassword
+        if cloudfall_mariadb_external
+        else cloudfall_mariadb_replication_files.password
+      }}
     cloudfall_mariadb_link_files:
       client: >-
         {{ cloudfall_mariadb_state_directory }}/{{ cloudfall_mariadb_service.id }}-replication.cnf
@@ -21,12 +45,27 @@
     - name: Require the staged replication password
       ansible.builtin.assert:
         that:
-          - cloudfall_mariadb_replication_files.password is defined
+          - >-
+            cloudfall_mariadb_replication_files.password is defined
+            or cloudfall_mariadb_external
+          - >-
+            cloudfall_mariadb_replication_files.sourcePassword is defined
+            or not cloudfall_mariadb_external
         fail_msg: >-
           Replica {{ cloudfall_mariadb_service.id }} has no staged replication
           password; run services.yml through cloudfall (converge_services,
           operator approve, or cloudfall-engine playbook run services.yml),
-          which reads its primary's generated password from --secrets-dir
+          which reads its primary's generated password, or its source's
+          credentialsRef, from --secrets-dir
+
+    - name: Keep the user the link logs in as
+      ansible.builtin.set_fact:
+        cloudfall_mariadb_link_user: >-
+          {{
+            lookup('ansible.builtin.file', cloudfall_mariadb_replication_files.sourceUser)
+            if cloudfall_mariadb_external
+            else cloudfall_mariadb_replication_user
+          }}
 
     - name: Create the MariaDB role state directory
       ansible.builtin.file:
@@ -36,16 +75,31 @@
         group: root
         mode: "0700"
 
+    # The source's CA, which the link verifies the source's certificate
+    # against at each reconnect, so it stays.
+    - name: Install the CA of the source Cloudfall does not manage
+      ansible.builtin.copy:
+        src: "{{ cloudfall_mariadb_replication_files.sourceCa }}"
+        dest: "{{ cloudfall_mariadb_source_ca_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when: cloudfall_mariadb_external and cloudfall_mariadb_source.tls
+
     - name: Stage the client login to the primary, which holds the password
       ansible.builtin.copy:
         content: |
           [client]
-          user = {{ cloudfall_mariadb_replication_user }}
-          password = {{ lookup('ansible.builtin.file', cloudfall_mariadb_replication_files.password) }}
+          user = {{ cloudfall_mariadb_link_user }}
+          password = {{ lookup('ansible.builtin.file', cloudfall_mariadb_link_password_file) }}
           host = {{ cloudfall_mariadb_primary.host }}
           port = {{ cloudfall_mariadb_primary.port }}
-          ssl-ca = {{ cloudfall_mariadb_ca_path }}
+          {% if cloudfall_mariadb_link_tls %}
+          ssl-ca = {{ cloudfall_mariadb_link_ca }}
           ssl-verify-server-cert
+          {% else %}
+          skip-ssl
+          {% endif %}
         dest: "{{ cloudfall_mariadb_link_files.client }}"
         owner: root
         group: root
@@ -60,11 +114,15 @@
           CHANGE MASTER TO
             MASTER_HOST = '{{ cloudfall_mariadb_primary.host }}',
             MASTER_PORT = {{ cloudfall_mariadb_primary.port }},
-            MASTER_USER = '{{ cloudfall_mariadb_replication_user }}',
-            MASTER_PASSWORD = '{{ lookup('ansible.builtin.file', cloudfall_mariadb_replication_files.password) }}',
+            MASTER_USER = '{{ cloudfall_mariadb_link_user }}',
+            MASTER_PASSWORD = '{{ lookup('ansible.builtin.file', cloudfall_mariadb_link_password_file) }}',
+          {% if cloudfall_mariadb_link_tls %}
             MASTER_SSL = 1,
-            MASTER_SSL_CA = '{{ cloudfall_mariadb_ca_path }}',
+            MASTER_SSL_CA = '{{ cloudfall_mariadb_link_ca }}',
             MASTER_SSL_VERIFY_SERVER_CERT = 1,
+          {% else %}
+            MASTER_SSL = 0,
+          {% endif %}
             MASTER_USE_GTID = slave_pos;
         dest: "{{ cloudfall_mariadb_link_files.statement }}"
         owner: root
@@ -86,14 +144,35 @@
               - --skip-column-names
               - --execute
               - "{{ cloudfall_mariadb_databases_query }}"
-          delegate_to: "{{ cloudfall_mariadb_primary.server }}"
+          # Evaluated before the condition: a source has no server.
+          delegate_to: "{{ cloudfall_mariadb_primary.server | default(inventory_hostname) }}"
           register: cloudfall_mariadb_primary_databases
           changed_when: false
+          when: not cloudfall_mariadb_external
 
-        # One consistent snapshot at a recorded GTID position, over TLS as
-        # cloudfall_repl; the primary's users come with it, created only
-        # where missing. The file's first statement keeps the load out of
-        # this server's binary log, so the seed is no GTID of its own.
+        - name: Read the outside source's databases
+          cloudfall_mariadb_source:
+            host: "{{ cloudfall_mariadb_primary.host }}"
+            port: "{{ cloudfall_mariadb_primary.port | int }}"
+            user: "{{ cloudfall_mariadb_link_user }}"
+            password: "{{ lookup('ansible.builtin.file', cloudfall_mariadb_link_password_file) }}"
+            ca: >-
+              {{
+                lookup('ansible.builtin.file', cloudfall_mariadb_replication_files.sourceCa)
+                if cloudfall_mariadb_link_tls else ''
+              }}
+            queries:
+              databases: "{{ cloudfall_mariadb_databases_query }}"
+          register: cloudfall_mariadb_source_databases
+          no_log: true
+          when: cloudfall_mariadb_external
+
+        # One consistent snapshot at a recorded GTID position. A primary of
+        # the project is read as cloudfall_repl over TLS and its users come
+        # with it, created only where missing; a source's users never do,
+        # since this replica's accounts are Cloudfall's. The file's first
+        # statement keeps the load out of this server's binary log, so the
+        # seed is no GTID of its own.
         - name: Dump the primary's databases at a recorded position
           ansible.builtin.shell:
             cmd: >-
@@ -104,12 +183,22 @@
               --defaults-extra-file={{ cloudfall_mariadb_link_files.client | quote }}
               --single-transaction --gtid --master-data=2
               --routines --triggers --events
-              --system=users --insert-ignore
-              {% if cloudfall_mariadb_primary_databases.stdout_lines %}
-              --databases {{ cloudfall_mariadb_primary_databases.stdout_lines | map('quote') | join(' ') }}
+              {% if not cloudfall_mariadb_external %}
+              --system=users
+              {% endif %}
+              --insert-ignore
+              {% if cloudfall_mariadb_seed_databases %}
+              --databases {{ cloudfall_mariadb_seed_databases | map('quote') | join(' ') }}
               {% endif %}
               ; } > {{ cloudfall_mariadb_link_files.seed | quote }}
             executable: /bin/bash
+          vars:
+            cloudfall_mariadb_seed_databases: >-
+              {{
+                cloudfall_mariadb_source_databases.rows.databases | map('first') | list
+                if cloudfall_mariadb_external
+                else cloudfall_mariadb_primary_databases.stdout_lines
+              }}
           changed_when: true
 
         - name: Read the GTID position the dump was taken at
@@ -233,9 +322,28 @@
               - --skip-column-names
               - --execute
               - SELECT @@global.gtid_binlog_pos
-          delegate_to: "{{ cloudfall_mariadb_primary.server }}"
+          # Evaluated before the condition: a source has no server.
+          delegate_to: "{{ cloudfall_mariadb_primary.server | default(inventory_hostname) }}"
           register: cloudfall_mariadb_primary_position
           changed_when: false
+          when: not cloudfall_mariadb_external
+
+        - name: Read the outside source's position now the load has ended
+          cloudfall_mariadb_source:
+            host: "{{ cloudfall_mariadb_primary.host }}"
+            port: "{{ cloudfall_mariadb_primary.port | int }}"
+            user: "{{ cloudfall_mariadb_link_user }}"
+            password: "{{ lookup('ansible.builtin.file', cloudfall_mariadb_link_password_file) }}"
+            ca: >-
+              {{
+                lookup('ansible.builtin.file', cloudfall_mariadb_replication_files.sourceCa)
+                if cloudfall_mariadb_link_tls else ''
+              }}
+            queries:
+              position: SELECT @@global.gtid_binlog_pos
+          register: cloudfall_mariadb_source_position
+          no_log: true
+          when: cloudfall_mariadb_external
 
         - name: Wait for the replica to apply it
           ansible.builtin.command:
@@ -246,8 +354,15 @@
               - --skip-column-names
               - --execute
               - >-
-                SELECT MASTER_GTID_WAIT('{{ cloudfall_mariadb_primary_position.stdout
-                | trim }}', {{ cloudfall_mariadb_catch_up_seconds }})
+                SELECT MASTER_GTID_WAIT('{{ cloudfall_mariadb_upstream_position }}',
+                {{ cloudfall_mariadb_catch_up_seconds }})
+          vars:
+            cloudfall_mariadb_upstream_position: >-
+              {{
+                cloudfall_mariadb_source_position.rows.position[0][0]
+                if cloudfall_mariadb_external
+                else cloudfall_mariadb_primary_position.stdout | trim
+              }}
           register: cloudfall_mariadb_caught_up
           changed_when: false
           failed_when: cloudfall_mariadb_caught_up.stdout | trim != '0'
@@ -264,23 +379,51 @@
               - --execute
               - "{{ cloudfall_mariadb_table_counts_query }}"
           delegate_to: "{{ item }}"
-          loop:
-            - "{{ cloudfall_mariadb_primary.server }}"
-            - "{{ inventory_hostname }}"
+          loop: >-
+            {{
+              ([] if cloudfall_mariadb_external else [cloudfall_mariadb_primary.server])
+              + [inventory_hostname]
+            }}
           register: cloudfall_mariadb_table_counts
           changed_when: false
+
+        - name: Count the tables of every database on the outside source
+          cloudfall_mariadb_source:
+            host: "{{ cloudfall_mariadb_primary.host }}"
+            port: "{{ cloudfall_mariadb_primary.port | int }}"
+            user: "{{ cloudfall_mariadb_link_user }}"
+            password: "{{ lookup('ansible.builtin.file', cloudfall_mariadb_link_password_file) }}"
+            ca: >-
+              {{
+                lookup('ansible.builtin.file', cloudfall_mariadb_replication_files.sourceCa)
+                if cloudfall_mariadb_link_tls else ''
+              }}
+            queries:
+              tables: "{{ cloudfall_mariadb_table_counts_query }}"
+          register: cloudfall_mariadb_source_tables
+          no_log: true
+          when: cloudfall_mariadb_external
+
+        - name: Keep the tables of both servers
+          ansible.builtin.set_fact:
+            cloudfall_mariadb_upstream_tables: >-
+              {{
+                cloudfall_mariadb_source_tables.rows.tables | map('first') | list
+                if cloudfall_mariadb_external
+                else cloudfall_mariadb_table_counts.results[0].stdout_lines
+              }}
+            cloudfall_mariadb_replica_tables: >-
+              {{ cloudfall_mariadb_table_counts.results[-1].stdout_lines }}
 
         - name: Refuse a seed whose tables differ from the primary's
           ansible.builtin.assert:
             that:
-              - >-
-                cloudfall_mariadb_table_counts.results[0].stdout_lines
-                == cloudfall_mariadb_table_counts.results[1].stdout_lines
+              - cloudfall_mariadb_upstream_tables == cloudfall_mariadb_replica_tables
             fail_msg: >-
               Replica {{ cloudfall_mariadb_service.id }} was seeded from
-              {{ cloudfall_mariadb_primary.service }}, but their tables differ:
-              the primary holds {{ cloudfall_mariadb_table_counts.results[0].stdout_lines }},
-              the replica {{ cloudfall_mariadb_table_counts.results[1].stdout_lines }}
+              {{ cloudfall_mariadb_upstream_name }}, but their tables differ:
+              the primary holds {{ cloudfall_mariadb_upstream_tables }},
+              the replica {{ cloudfall_mariadb_replica_tables }}
               (database|tables). Nothing was dropped
 
     - name: Keep the link's outcome
@@ -310,7 +453,7 @@
       ansible.builtin.fail:
         msg: >-
           Replica {{ cloudfall_mariadb_service.id }} could not follow
-          {{ cloudfall_mariadb_primary.service }} at
+          {{ cloudfall_mariadb_upstream_name }} at
           {{ cloudfall_mariadb_primary.host }}:{{ cloudfall_mariadb_primary.port }}:
           {{ cloudfall_mariadb_failure }}. Its databases were kept; nothing was
           dropped

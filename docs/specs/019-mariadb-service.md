@@ -229,8 +229,9 @@ the empty server is seeded like any other.
 
 ### A replica of a server Cloudfall does not manage
 
-A team that already runs MariaDB or MySQL elsewhere moves in by declaring a replica of it,
-letting it catch up, and promoting it:
+A team that already runs MariaDB elsewhere moves in by declaring a replica of it, letting it
+catch up, and promoting it. The link replicates by MariaDB GTID, so a MySQL server is not
+supported as the `source` for now; a later spec may add a link that does not use GTID:
 
 ```yaml
 mariadb:
@@ -433,9 +434,9 @@ ROADMAP.md, ARCHITECTURE.md, and the guide.
 - Semi-synchronous replication
 - Changing the series of an installed server (10.11 to 11.4); moving up is a new server
   seeded as a replica of the old one, then promoted
-- MySQL and Percona Server as a kind: a separate `serviceKind` with its own packages. A
-  MySQL server can still be the `source` of a move, where MariaDB can replicate from its
-  version
+- MySQL and Percona Server as a kind: a separate `serviceKind` with its own packages
+- A MySQL server as the `source` of a move: the link replicates by MariaDB GTID, which MySQL
+  does not write; a later spec may add a link that does not use GTID
 - Physical backups (`mariadb-backup`) and point-in-time recovery from the binary log
 - Connection pooling and proxies (ProxySQL, MaxScale)
 - A pass-through of server settings in the declaration
@@ -463,3 +464,7 @@ ROADMAP.md, ARCHITECTURE.md, and the guide.
 ## Verification
 
 No criterion is verified yet.
+
+- S-019-17, S-019-18: the in-house client that reads a source before anything is installed
+  (`cloudfall_mariadb_source`) is proven against a stand-in only; it needs a live proving run
+  against MariaDB 10.11 and 11.x before the stable release

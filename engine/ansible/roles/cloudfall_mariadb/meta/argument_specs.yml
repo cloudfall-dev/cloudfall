@@ -102,7 +102,9 @@ argument_specs:
         description: >-
           Controller paths of what replication needs: on a primary 'hash', the
           hash of its cloudfall_repl password; on a replica 'password', its
-          primary's cloudfall_repl password, staged 0600 for the run only
+          primary's cloudfall_repl password, staged 0600 for the run only; on
+          a replica of a source Cloudfall does not manage 'sourceUser',
+          'sourcePassword' and, with caCertificateFile, 'sourceCa'
       cloudfall_mariadb_report_directory:
         type: str
         default: ""

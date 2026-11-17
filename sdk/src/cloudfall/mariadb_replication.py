@@ -154,6 +154,15 @@ def replication_links_for_server(
         links: dict[str, object] = {"peers": [_peer(item) for item in others]}
         if replication is not None and replication.primary is not None:
             links["primary"] = _primary(replication.primary, declared)
+        if replication is not None and replication.source is not None:
+            # A server Cloudfall does not manage: where the link connects, and
+            # whether it verifies the source's certificate. Its login is a
+            # reference the converge resolves, never rendered (S-019).
+            links["source"] = {
+                "host": replication.source.host.value,
+                "port": replication.source.port.value,
+                "tls": replication.source.ca_certificate_file is not None,
+            }
         if (
             replication is not None
             and replication.role is MariadbReplicationRole.PRIMARY
