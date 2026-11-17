@@ -1246,7 +1246,10 @@ def test_the_state_query_reads_read_only_in_the_form_a_real_server_gave(
         .render(
             cloudfall_mariadb_system_databases=defaults[
                 "cloudfall_mariadb_system_databases"
-            ]
+            ],
+            cloudfall_mariadb_no_database_pattern=defaults[
+                "cloudfall_mariadb_no_database_pattern"
+            ],
         )
     )
     state = server_state(
