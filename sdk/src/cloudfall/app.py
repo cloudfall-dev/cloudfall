@@ -2560,7 +2560,9 @@ def _recorded[T](
     """Run ``execute`` with ``run``'s record started before its first step.
 
     ``verify`` settles the record ``verified`` or ``failed``; a run or check
-    that raises leaves it ``failed`` and raises as it was.
+    that raises leaves it ``failed`` and raises as it was. A record the store
+    cannot take exits ``PRECONDITION`` (D-5), a granted run's and a
+    person-approved run's alike.
     """
     executed_at = datetime.now(UTC)
     stage = "run"
