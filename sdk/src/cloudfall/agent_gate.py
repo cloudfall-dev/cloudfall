@@ -11,23 +11,39 @@ environment it touches grants it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+import json
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
+from cloudfall.audit import AuditStatus
 from cloudfall.operator import (
+    AgentClient,
+    AgentRequest,
+    ApprovalMode,
+    ApprovalRecord,
     OperationKind,
+    OperatorProposal,
+    ProposalOutcome,
+    ProposalStatus,
+    TriggerKind,
+    fingerprint_of,
     grant_decision,
     incomplete_history,
+    proposal_identifier,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
     from datetime import datetime
+    from pathlib import Path
 
+    from cloudfall.audit import AuditReport
     from cloudfall.domain import ResourceId
     from cloudfall.inventory import PlatformInventory
-    from cloudfall.operator import ProposalStore
+    from cloudfall.lifecycle import DomainObserved, ExecutionStep, StepRun, StepRunner
+    from cloudfall.operator import ProposalBinding, ProposalStore
 
 GATED_TOOLS: Mapping[str, OperationKind] = MappingProxyType(
     {
@@ -260,3 +276,354 @@ def check_grant(
 def _unique(values: Iterable[ResourceId]) -> tuple[ResourceId, ...]:
     """Keep each value once, in the order first seen."""
     return tuple(dict.fromkeys(values))
+
+
+# The granted run (S-018): a confirmed call a grant covers runs as the
+# command always ran, and one record in the proposal store says so. It is on
+# disk, running, before the run's first engine step, and settles verified
+# only when the tool's own check passed.
+
+TOOL_COMMANDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "deploy": ("cloudfall", "deploy"),
+        "rollback": ("cloudfall", "rollback"),
+        "restart": ("cloudfall", "restart"),
+        "migrate": ("cloudfall", "migrate"),
+        "data_copy": ("cloudfall", "data", "copy"),
+        "domains_apply": ("cloudfall", "domains", "apply"),
+        "converge_baseline": ("cloudfall-engine", "playbook", "baseline.yml"),
+        "converge_services": ("cloudfall-engine", "playbook", "services.yml"),
+        "converge_domains": ("cloudfall-engine", "playbook", "domains.yml"),
+    }
+)
+"""The command each gated tool runs, as an agent record's ``operation.command``."""
+
+REASON_MAX_LENGTH = 1000
+"""The most characters an agent's ``reason`` holds."""
+
+_SUMMARY_MAX = 1000
+_EVIDENCE_MAX = 500
+_DETAIL_MAX = 1000
+_ELLIPSIS = "..."
+
+
+def check_reason(reason: str | None) -> str | None:
+    """Return the agent's reason, refusing a blank or an overlong one."""
+    if reason is None:
+        return None
+    if not reason.strip():
+        message = "reason is blank; give why the run is asked for, or leave it out"
+        raise ValueError(message)
+    if len(reason) > REASON_MAX_LENGTH:
+        message = (
+            f"reason holds {len(reason)} characters; it holds at most "
+            f"{REASON_MAX_LENGTH}"
+        )
+        raise ValueError(message)
+    return reason
+
+
+def plan_sha256(plan: Mapping[str, object]) -> str:
+    """Return the sha256 of a plan as JSON, its keys sorted and no spaces.
+
+    The plan is the ``data`` an unconfirmed call answers, so an agent can
+    hash the plan it was shown and compare it with ``binding.planSha256``.
+    """
+    canonical = json.dumps(
+        plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class AgentCall:
+    """One confirmed call of a gated tool, as its record keeps it."""
+
+    tool: str
+    arguments: Mapping[str, object]
+    """The call's arguments, without the ones the server binds."""
+    reason: str | None
+    client: AgentClient
+
+
+@dataclass(frozen=True, slots=True)
+class Verdict:
+    """What the tool's own check said after the run."""
+
+    verified: bool
+    detail: str
+
+    @classmethod
+    def passed(cls, detail: str) -> Verdict:
+        """Say the check passed: the run is verified."""
+        return cls(verified=True, detail=detail)
+
+    @classmethod
+    def failed(cls, detail: str) -> Verdict:
+        """Say the check did not pass: the run failed."""
+        return cls(verified=False, detail=detail)
+
+
+def _bounded(text: str, limit: int) -> str:
+    """Keep ``text`` within ``limit`` characters, its end kept: it says why."""
+    if len(text) <= limit:
+        return text
+    return _ELLIPSIS + text[-(limit - len(_ELLIPSIS)) :]
+
+
+def failure_detail(stage: str, code: str, message: str) -> str:
+    """Name a failed run's or check's code and keep its message's end.
+
+    An engine failure carries the tail of the Ansible output, and its last
+    lines, the failing task and the play recap, are the ones that say why.
+    """
+    head = f"{stage} failed: {code}: "
+    return head + _bounded(message, _DETAIL_MAX - len(head))
+
+
+class GrantedRun:
+    """The record of one granted run, written before its first engine step.
+
+    ``watch`` wraps the run's step runner: the record is saved, ``running``,
+    when the first step starts, so a call refused before any step (a lock
+    held, an artifact that does not verify) writes no record. ``settle``
+    records the verdict, ``fail`` a run or check that raised.
+    """
+
+    def __init__(self, store: ProposalStore, record: OperatorProposal) -> None:
+        """Hold the running record, not yet written."""
+        self._store = store
+        self._record = record
+        self._path: Path | None = None
+
+    @classmethod
+    def prepare(  # noqa: PLR0913 - the record's every source.
+        cls,
+        store: ProposalStore,
+        check: GrantCheck,
+        call: AgentCall,
+        *,
+        binding: ProposalBinding,
+        evidence: Iterable[str],
+        now: datetime,
+    ) -> GrantedRun:
+        """Build the running record of a call ``check`` grants; write nothing."""
+        if not check.self_confirm:
+            message = "a run no grant covers writes no agent record of a run"
+            raise ValueError(message)
+        granted = check.environments[0]
+        if granted.policy is None:
+            message = "a granted environment names its policy"
+            raise ValueError(message)
+        fingerprint = fingerprint_of(
+            {
+                "tool": call.tool,
+                "arguments": dict(call.arguments),
+                "servers": [server.value for server in check.servers],
+            }
+        )
+        created_at = now.isoformat(timespec="seconds")
+        summary = (
+            _bounded(call.reason, _SUMMARY_MAX)
+            if call.reason is not None
+            else f"The agent called {call.tool} and gave no reason"
+        )
+        lines = [
+            *evidence,
+            *(
+                f"{environment.environment.value}: {environment.reason}"
+                for environment in check.environments
+            ),
+        ]
+        record = OperatorProposal(
+            resource_id=proposal_identifier(fingerprint, created_at),
+            created_at=created_at,
+            status=ProposalStatus.RUNNING,
+            trigger_kind=TriggerKind.AGENT,
+            fingerprint=fingerprint,
+            alert=None,
+            drift=None,
+            diagnosis_summary=summary,
+            evidence=tuple(_bounded(line, _EVIDENCE_MAX) for line in lines if line),
+            operation_kind=check.operation_kind,
+            operation_server=None,
+            operation_service=None,
+            command=TOOL_COMMANDS[call.tool],
+            approval=ApprovalRecord(
+                mode=ApprovalMode.AGENT,
+                policy=granted.policy,
+                grant=check.operation_kind,
+                client=call.client,
+            ),
+            outcome=None,
+            request=AgentRequest(
+                tool=call.tool, arguments=call.arguments, reason=call.reason
+            ),
+            operation_servers=check.servers,
+            operation_environments=tuple(
+                environment.environment for environment in check.environments
+            ),
+            binding=binding,
+        )
+        return cls(store, record)
+
+    @property
+    def record(self) -> OperatorProposal:
+        """The record as last written, or as it will be."""
+        return self._record
+
+    @property
+    def started(self) -> bool:
+        """The record is on disk: the run's first step started."""
+        return self._path is not None
+
+    def begin(self) -> Path:
+        """Write the running record, once; return its path."""
+        if self._path is None:
+            self._path = self._store.save(self._record)
+        return self._path
+
+    def watch(self, run: StepRunner) -> StepRunner:
+        """Wrap ``run`` so the record is written before the first step starts."""
+
+        def first_records(step: ExecutionStep) -> StepRun:
+            self.begin()
+            return run(step)
+
+        return first_records
+
+    def settle(self, verdict: Verdict, executed_at: datetime, now: datetime) -> Path:
+        """Record the check's verdict: ``verified`` or ``failed``."""
+        path = self.begin()
+        status = ProposalStatus.VERIFIED if verdict.verified else ProposalStatus.FAILED
+        self._record = replace(
+            self._record,
+            status=status,
+            outcome=ProposalOutcome(
+                executed_at=executed_at.isoformat(timespec="seconds"),
+                verified_at=now.isoformat(timespec="seconds"),
+                result=status.value,
+                detail=_bounded(verdict.detail, _DETAIL_MAX),
+            ),
+        )
+        self._store.update(self._record)
+        return path
+
+    def fail(self, detail: str, executed_at: datetime) -> Path | None:
+        """Record a run or check that raised as ``failed``; none if nothing ran.
+
+        A call refused before its first step left no record, and gets none.
+        """
+        if self._path is None:
+            return None
+        self._record = replace(
+            self._record,
+            status=ProposalStatus.FAILED,
+            outcome=ProposalOutcome(
+                executed_at=executed_at.isoformat(timespec="seconds"),
+                verified_at=None,
+                result=ProposalStatus.FAILED.value,
+                detail=_bounded(detail, _DETAIL_MAX),
+            ),
+        )
+        self._store.update(self._record)
+        return self._path
+
+    def approval(self) -> dict[str, object]:
+        """Serialize what the tool's result says of the run's approval (S-018-5)."""
+        approval = self._record.approval
+        if approval is None or approval.policy is None or approval.grant is None:
+            message = "a granted run's record names its policy and grant"
+            raise ValueError(message)
+        return {
+            "mode": approval.mode.value,
+            "policy": approval.policy.value,
+            "grant": approval.grant.value,
+            "record": str(self.begin()),
+            "status": self._record.status.value,
+        }
+
+
+def health_verdict(*, healthy: bool, servers: Iterable[ResourceId]) -> Verdict:
+    """``deploy``, ``rollback``, ``restart``: the health gate passed."""
+    names = ", ".join(server.value for server in servers)
+    if healthy:
+        return Verdict.passed(f"the health gate passed on {names}")
+    return Verdict.failed(f"the health gate did not pass on {names}")
+
+
+def migration_verdict(status: str, completed: int, total: int) -> Verdict:
+    """``migrate``: every step of the plan completed."""
+    if status == "ok" and completed == total:
+        return Verdict.passed(f"every step of the migration completed ({total})")
+    return Verdict.failed(
+        f"the migration ended {status} with {completed} of {total} steps completed"
+    )
+
+
+_DATA_COPY_VERIFIED = "per-table row counts matched"
+"""What a data-migration receipt's ``verification`` says of a verified copy."""
+
+
+def data_copy_verdict(receipt: Path | None) -> Verdict:
+    """``data_copy``: the copy's receipt reports it verified."""
+    if receipt is None or not receipt.is_file():
+        return Verdict.failed("the data copy wrote no receipt to verify it by")
+    document = json.loads(receipt.read_text(encoding="utf-8"))
+    spec = document.get("spec") if isinstance(document, dict) else None
+    verification = spec.get("verification") if isinstance(spec, dict) else None
+    if verification == _DATA_COPY_VERIFIED:
+        return Verdict.passed(f"the copy's receipt {receipt.name}: {verification}")
+    return Verdict.failed(
+        f"the copy's receipt {receipt.name} does not report the copy verified"
+    )
+
+
+def domains_verdict(observed: Iterable[DomainObserved]) -> Verdict:
+    """``domains_apply``, ``converge_domains``: each Domain matches its receipt.
+
+    ``domains observe`` reads the vhost on the proxy server; it matches when
+    its sha256 is the one the run's receipt declared.
+    """
+    readings = tuple(observed)
+    if not readings:
+        return Verdict.failed("no Domain was observed after the run")
+    differing = [
+        f"{reading.domain_id.value} on {reading.server.value}"
+        for reading in readings
+        if reading.receipt is None
+        or reading.vhost.sha256 != reading.receipt.configuration_sha256
+    ]
+    if differing:
+        return Verdict.failed(
+            "domains observe does not match the declared vhost: "
+            + "; ".join(differing)
+        )
+    names = ", ".join(reading.domain_id.value for reading in readings)
+    return Verdict.passed(f"domains observe matches the declared vhost of {names}")
+
+
+def audit_verdict(report: AuditReport, servers: Iterable[ResourceId]) -> Verdict:
+    """``converge_baseline``, ``converge_services``: no changed server fails a check.
+
+    A check that is not compliant fails, drift and unknown alike: the audit
+    proves the run, or it did not verify.
+    """
+    wanted = [server.value for server in servers]
+    audited = {audit.server_id: audit for audit in report.servers}
+    failing: list[str] = []
+    for server in wanted:
+        audit = audited.get(server)
+        if audit is None:
+            failing.append(f"{server}: not audited")
+            continue
+        failing.extend(
+            f"{server}: {check.check} {check.status.value}"
+            for check in audit.checks
+            if check.status is not AuditStatus.COMPLIANT
+        )
+    if failing:
+        return Verdict.failed(
+            "the audit after the run reports failing checks: " + "; ".join(failing)
+        )
+    return Verdict.passed(f"an audit of {', '.join(wanted)} reports no failing check")

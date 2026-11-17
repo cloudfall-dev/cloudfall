@@ -174,6 +174,18 @@ def changes(
     return tuple(found)
 
 
+def project_state(
+    project: BoundProject,
+) -> tuple[CommitId | None, Sha256Digest | None]:
+    """Return the HEAD commit and the digest of uncommitted changes (D-20).
+
+    Both are none outside a git work tree; the commit alone is none in a
+    repository with no commit yet. An agent record binds these as a decision
+    record does (S-018).
+    """
+    return _git_state(project)
+
+
 def file_sha256(path: Path) -> Sha256Digest | None:
     """Return the sha256 of a file's content; None when there is no such file."""
     if not path.is_file():

@@ -661,7 +661,7 @@ def propose_for_alert(
         f"fingerprint {alert.fingerprint}",
     )
     return OperatorProposal(
-        resource_id=_proposal_identifier(alert.fingerprint, now),
+        resource_id=proposal_identifier(alert.fingerprint, now),
         created_at=now,
         status=ProposalStatus.PROPOSED,
         trigger_kind=TriggerKind.ALERT,
@@ -696,7 +696,7 @@ def propose_for_drift(
     evidence = tuple(f"audit check drifted: {check}" for check in checks)
     drift = DriftTrigger(server=server, checks=checks, fingerprint=fingerprint)
     return OperatorProposal(
-        resource_id=_proposal_identifier(fingerprint, now),
+        resource_id=proposal_identifier(fingerprint, now),
         created_at=now,
         status=ProposalStatus.PROPOSED,
         trigger_kind=TriggerKind.DRIFT,
@@ -714,7 +714,8 @@ def propose_for_drift(
     )
 
 
-def _proposal_identifier(fingerprint: str, now: str) -> ResourceId:
+def proposal_identifier(fingerprint: str, now: str) -> ResourceId:
+    """Return a proposal's id: its creation moment and its trigger's fingerprint."""
     stamp = (
         now.replace("-", "").replace(":", "").replace("+0000", "")
         .replace("t", "").replace("T", "").split(".")[0].lower()
