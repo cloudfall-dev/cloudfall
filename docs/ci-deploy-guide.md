@@ -285,6 +285,41 @@ What each step does:
 If the project is not at the root of the repository, set `CLOUDFALL_PROJECT`
 to its directory in the job's `env`.
 
+## Deploying a worker
+
+A queue worker (Celery, RQ) is a component like an HTTP service, with two
+differences in its declaration:
+
+- **A command health check.** A worker has no HTTP port to probe, so give it
+  `healthCheck.type: command` with a command that proves it is up, such as
+  `[.venv/bin/celery, -A, crm, inspect, ping]`
+- **A stop timeout longer than its longest task.** Every deploy, `restart`
+  and `rollback` stops the service: systemd sends SIGTERM, which a worker
+  answers by finishing its running tasks, then SIGKILL once the stop timeout
+  runs out, after 90 seconds unless the component says otherwise. Set
+  `service.stop.timeoutSeconds` (1 to 1800) above the longest task the worker
+  runs, so a deploy never cuts one off; the deploy waits for the stop. The
+  unit takes a new value on the next deploy: `restart` and `rollback` keep
+  the unit as it was deployed
+
+```yaml
+  service:
+    manager: systemd
+    name: crm-worker
+    command: [.venv/bin/celery, -A, crm, worker]
+    stop:
+      timeoutSeconds: 900
+  healthCheck:
+    type: command
+    command: [.venv/bin/celery, -A, crm, inspect, ping]
+    timeoutSeconds: 30
+    attempts: 5
+```
+
+A task longer than 1800 seconds still dies on a deploy; such a task needs a
+queue that redelivers it, as Celery's `acks_late` does, and must be safe to
+run twice.
+
 ## Passing the release id
 
 `cloudfall deploy` takes the release to ship as `--release`, and only

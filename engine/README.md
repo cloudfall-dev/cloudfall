@@ -314,6 +314,15 @@ that server's `removedReleases` in the
 receipt (an empty list when nothing was removed). A failed gate removes
 nothing, and check mode only reports what a deploy would remove.
 
+A component's optional `service.stop.timeoutSeconds` (1 to 1800) is its
+unit's `TimeoutStopSec=`, how long systemd lets the service stop on SIGTERM
+before it sends SIGKILL; without it the unit sets none and keeps systemd's
+default. A deploy writes it into the unit; `restart` and `rollback` restart
+the unit as it was deployed. The runner's limit on the playbook run grows by
+the timeout for each restart the run may make, one per server for `restart`
+and `rollback`, two per server for a deploy, whose failed gate restarts the
+servers back.
+
 A `healthCheck` of `type: command` (a smoke check, say) is the gate's last
 step: after the switch and the restart, the command runs in a transient
 systemd unit, `cloudfall-health-<component>`, as the application's user, in

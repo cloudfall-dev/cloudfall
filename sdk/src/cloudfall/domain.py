@@ -1007,6 +1007,39 @@ class ReleaseCommandTimeout:
         return cls(value)
 
 
+_STOP_TIMEOUT_MINIMUM = 1
+_STOP_TIMEOUT_MAXIMUM = 1800
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceStopTimeout:
+    """How long a component's service may take to stop, in seconds.
+
+    Rendered as the unit's ``TimeoutStopSec=``: systemd sends SIGTERM, then
+    SIGKILL once this runs out.
+    """
+
+    value: int
+
+    def __post_init__(self) -> None:
+        """Hold the bound ``release.timeoutSeconds`` has."""
+        if isinstance(self.value, bool) or not (
+            _STOP_TIMEOUT_MINIMUM <= self.value <= _STOP_TIMEOUT_MAXIMUM
+        ):
+            message = f"invalid service stop timeout: {self.value!r}"
+            raise ValueError(message)
+
+    @classmethod
+    def from_boundary(cls, value: object) -> ServiceStopTimeout:
+        """Coerce a boundary value; the field has no default."""
+        if isinstance(value, bool) or not isinstance(value, int):
+            message = (
+                f"service stop timeout must be an integer, got {type(value).__name__}"
+            )
+            raise TypeError(message)
+        return cls(value)
+
+
 @dataclass(frozen=True, slots=True)
 class BuildToolName:
     """Executable a component build step runs, looked up on ``PATH``."""

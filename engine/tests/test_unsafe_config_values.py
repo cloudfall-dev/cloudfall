@@ -265,6 +265,49 @@ def test_a_service_command_reaches_the_unit_file_as_declared(
     )
 
 
+def test_a_stop_timeout_reaches_the_unit_file_through_the_inventory(
+    tmp_path: Path,
+) -> None:
+    """``service.stop.timeoutSeconds`` renders ``TimeoutStopSec=`` (#497)."""
+    inventory = _rendered_inventory(
+        tmp_path,
+        {
+            "service": {
+                "manager": "systemd",
+                "name": "crm-backend",
+                "command": [".venv/bin/celery", "-A", "crm", "worker"],
+                "stop": {"timeoutSeconds": 900},
+            }
+        },
+    )
+    unit = tmp_path / "crm-backend.service"
+    playbook = _play(
+        tmp_path,
+        [
+            {
+                "name": "Render the role's unit template",
+                "ansible.builtin.template": {
+                    "src": str(UNIT_TEMPLATE),
+                    "dest": str(unit),
+                    "mode": "0644",
+                },
+                "vars": {
+                    "cloudfall_deploy_environment_path": (
+                        "/srv/apps/crm/backend/shared/env/crm-backend.env"
+                    )
+                },
+            }
+        ],
+    )
+
+    assert _run(playbook, inventory, {}) == 0
+    lines = unit.read_text(encoding="utf-8").splitlines()
+    assert [line for line in lines if line.startswith("TimeoutStopSec=")] == [
+        "TimeoutStopSec=900"
+    ]
+    assert lines.index("TimeoutStopSec=900") == lines.index("RestartSec=2") + 1
+
+
 def test_a_release_command_reaches_its_run_as_declared(tmp_path: Path) -> None:
     """The role's release command tasks run the argv as written."""
     marker = tmp_path / "pwned"

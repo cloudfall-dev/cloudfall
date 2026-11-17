@@ -51,6 +51,17 @@ argument_specs:
                 type: list
                 elements: str
                 required: true
+              stop:
+                description:
+                  - How the service stops; absent, the unit keeps systemd's
+                    default stop timeout
+                type: dict
+                options:
+                  timeoutSeconds:
+                    description:
+                      - The unit's TimeoutStopSec=, 1 to 1800 seconds
+                    type: int
+                    required: true
           healthCheck:
             type: dict
             required: true

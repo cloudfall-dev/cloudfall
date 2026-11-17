@@ -17,6 +17,9 @@ ExecStart={{ executable }}{% for argument in command[1:] %} "{{ argument }}"{% e
 
 Restart=on-failure
 RestartSec=2
+{% if cloudfall_deploy_component.service.stop is defined %}
+TimeoutStopSec={{ cloudfall_deploy_component.service.stop.timeoutSeconds }}
+{% endif %}
 NoNewPrivileges=true
 PrivateTmp=true
 
