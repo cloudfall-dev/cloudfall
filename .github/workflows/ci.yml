@@ -16,10 +16,17 @@ name: CI
 permissions: {}
 
 jobs:
+  # Every supported Python (docs/compatibility.md); 3.14 keeps the job name
+  # `checks` that the release and publish runs, and the gates, already read
   checks:
+    name: ${{ matrix.python == '3.14' && 'checks' || format('checks (Python {0})', matrix.python) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.14", "3.15"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -28,7 +35,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          python-version: "3.14"
+          python-version: ${{ matrix.python }}
 
       - name: Install dependencies
         run: uv sync --locked
