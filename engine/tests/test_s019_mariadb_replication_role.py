@@ -1199,7 +1199,7 @@ def test_the_gtid_comparison_reads_sets_not_one_position() -> None:
         ("OFF", "0"),
         ("NO_LOCK", "1"),
         ("NO_LOCK_NO_ADMIN", "1"),
-        # and by its index, as read_only + 0 reads it
+        # and by its index, should a server give it as a number
         ("2", "1"),
         ("3", "1"),
     ],
@@ -1229,6 +1229,42 @@ def test_an_unknown_read_only_or_a_short_state_line_is_an_error() -> None:
         plugin.replication_state("YES|2|0-1-3|0-1-3|0-1-3|0-1-3|2")
     with pytest.raises(ValueError, match="read 6 field"):
         plugin.replication_state("1|2|0-1-3|0-1-3|0-1-3|0-1-3")
+
+
+# proves: S-019-13
+@SERIES
+def test_the_state_query_reads_read_only_in_the_form_a_real_server_gave(
+    tmp_path: Path,
+    read_only_enum: bool,  # noqa: FBT001 - the parametrized series
+) -> None:
+    # Not read_only + 0: no real 11.8 server has shown what that reads as, and
+    # a name read as a number is 0, a read-only server read as writable (#450)
+    defaults = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text("utf-8"))
+    query = (
+        Environment(undefined=StrictUndefined, autoescape=False)  # noqa: S701 - SQL.
+        .from_string(defaults["cloudfall_mariadb_replication_state_query"])
+        .render(
+            cloudfall_mariadb_system_databases=defaults[
+                "cloudfall_mariadb_system_databases"
+            ]
+        )
+    )
+    state = server_state(
+        address="203.0.113.11", names=["h1"], read_only_enum=read_only_enum
+    )
+    state["readOnly"] = True
+    client, _, _, _ = write_server(tmp_path / "h1", state, tmp_path / "network.json")
+
+    done = subprocess.run(  # noqa: S603 - the stand-in client the test wrote.
+        [str(client), "--batch", "--raw", "--skip-column-names", "--execute", query],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.split("|", 1)[0] == ("ON" if read_only_enum else "1")
+    assert _plugin().replication_state(done.stdout)["readOnly"] == "1"
 
 
 def _state(**fields: str) -> dict[str, str]:

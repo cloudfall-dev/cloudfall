@@ -193,10 +193,11 @@ cloudfall_mariadb_no_database_pattern: "#mysql50#%"
 # One line, '|' between fields: read_only, server_id, the binary log's
 # position and state, the applied position, the current position, and how
 # many databases are not MariaDB's own; the cloudfall_mariadb_replication_state
-# filter reads it. read_only as a number: 11.8 made it an enum, which reads
-# ON, not 1, in a string context such as CONCAT_WS (#450).
+# filter reads it. read_only by the form the server gives: 1 on the older
+# series, ON on 11.8 (#450); the filter reads both. Not '+ 0': no server has
+# shown what 11.8 reads it as in arithmetic, and a name read as a number is 0.
 cloudfall_mariadb_replication_state_query: >-
-  SELECT CONCAT_WS('|', @@global.read_only + 0, @@global.server_id,
+  SELECT CONCAT_WS('|', @@global.read_only, @@global.server_id,
   @@global.gtid_binlog_pos, @@global.gtid_binlog_state,
   @@global.gtid_slave_pos, @@global.gtid_current_pos,
   (SELECT COUNT(*) FROM information_schema.SCHEMATA

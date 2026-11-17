@@ -12,7 +12,8 @@ are about:
 - a locked account's flag reads ``true``, as on the older series, or ``1``,
   as on 11.8, and a read of locked accounts finds only the form it names
 - a server may report ``read_only`` as 11.8 does, ``ON`` in a string
-  context and ``1`` only as a number, or as the older series do, ``1``
+  context, or as the older series do, ``1``; ``read_only`` in arithmetic is
+  refused, as no real server has shown what it reads as there
 - a link logs in as ``cloudfall_repl`` at the replica's address only with
   the password whose ``mysql_native_password`` hash the account holds, over
   TLS only, and only when the replica verifies the primary's certificate
@@ -376,10 +377,12 @@ def listed(name, sql):
 
 
 def read_only(sql):
-    # MariaDB 11.8 made read_only an enum: in a string context such as
-    # CONCAT_WS it reads ON or OFF; as a number, 1 or 0. Older series read
-    # 1 or 0 either way.
-    if state["readOnlyEnum"] and "@@global.read_only + 0" not in sql:
+    # As a real 11.8.9 answered it in CONCAT_WS, ON or OFF (#450); the older
+    # series answer 1 or 0. No server has shown what read_only reads as in
+    # arithmetic on 11.8, so the stand-in refuses to model it.
+    if re.search(r"@@(global\.)?read_only\s*[-+*/]", sql):
+        sys.exit("the stand-in does not model read_only in arithmetic: " + sql)
+    if state["readOnlyEnum"]:
         return "ON" if state["readOnly"] else "OFF"
     return "1" if state["readOnly"] else "0"
 

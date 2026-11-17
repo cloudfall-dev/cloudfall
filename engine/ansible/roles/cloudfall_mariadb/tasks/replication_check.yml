@@ -158,7 +158,7 @@
     cloudfall_mariadb_peer_link: >-
       {{
         cloudfall_mariadb_peer_link_read.stdout | cloudfall_mariadb_vertical
-        if cloudfall_mariadb_peer_reachable
+        if cloudfall_mariadb_peer_reachable | bool
         and cloudfall_mariadb_peer_link_read.rc | default(1) == 0
         else {}
       }}
