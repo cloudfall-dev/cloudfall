@@ -34,7 +34,7 @@ cloudfall_inspect_mariadb_settings_path: /etc/mysql/mariadb.conf.d/90-cloudfall.
 # read_only as the server gives it, by name (11.8's enum) or by number (its
 # index, or the older series' boolean), and whether it takes no writes: the
 # values the role's cloudfall_mariadb_replication_state filter reads (#450).
-# Any other value fails inspect rather than reading as a server that is down.
+# Any other value leaves the server's role unknown, as when it does not answer.
 cloudfall_inspect_mariadb_read_only_values:
   "OFF": false
   "0": false

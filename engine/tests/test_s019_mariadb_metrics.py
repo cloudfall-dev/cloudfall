@@ -431,26 +431,6 @@ def _replication_filter() -> ModuleType:
     return module
 
 
-def _read_only_accepted(read_only: dict[str, object]) -> bool:
-    """Evaluate inspect's check of the read_only it read, as Ansible would."""
-    tasks = cast("Iterable[dict[str, Any]]", _yaml(INSPECT / "tasks" / "mariadb.yml"))
-    name = "Check the MariaDB server's read_only is a value inspect reads"
-    (check,) = (task for task in tasks if task["name"] == name)
-    defaults = _trusted(_yaml(INSPECT / "defaults" / "main.yml"))
-    templar = Templar(
-        variables={
-            **cast("dict[str, object]", defaults),
-            "cloudfall_inspect_mariadb_read_only": read_only,
-        }
-    )
-    if not templar.evaluate_conditional(trust_as_template(check["when"])):
-        return True
-    return all(
-        templar.evaluate_conditional(trust_as_template(condition))
-        for condition in check["ansible.builtin.assert"]["that"]
-    )
-
-
 # proves: S-019-19
 @pytest.mark.parametrize(
     ("reported", "read_only"),
@@ -477,15 +457,19 @@ def test_inspect_reads_read_only_in_every_form_the_role_reads(
 
     assert evidence["available"] is True
     assert evidence["readOnly"] is read_only
-    assert _read_only_accepted(answer)
 
 
-def test_inspect_fails_on_a_read_only_it_does_not_know() -> None:
-    # Not a server that is down: audit would call it unavailable
-    assert not _read_only_accepted(_answer("YES\n"))
-    assert not _read_only_accepted(_answer("\n"))
-    # A server that does not answer is read as unavailable, not checked
-    assert _read_only_accepted(_answer("", rc=1))
+@pytest.mark.parametrize("reported", ["YES\n", "\n"])
+def test_inspect_reads_a_read_only_it_does_not_know_as_unknown(reported: str) -> None:
+    # The inspect play stops every server after a failed one (any_errors_fatal,
+    # serial 1), so a value inspect can't read is no failure: that server's
+    # role reads unknown in audit and the rest of the fleet is still inspected
+    evidence = _inspected(_answer(reported), _answer(""))
+
+    assert {key: evidence[key] for key in ("available", "readOnly")} == {
+        "available": False,
+        "readOnly": None,
+    }
 
 
 def test_inspect_reads_read_only_as_the_role_does() -> None:
