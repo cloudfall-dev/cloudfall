@@ -359,6 +359,7 @@ from cloudfall.project import (
 )
 from cloudfall.project_format import SUPPORTED_FORMATS, ProjectFormatError
 from cloudfall.proposal_binding import BindingError, BoundProject, project_state
+from cloudfall.record_files import printable
 from cloudfall.recording import Recording, RecordingError
 from cloudfall.release_approval import (
     APPROVALS_DIRECTORY,
@@ -4012,18 +4013,6 @@ def operator_approve(
     return approved
 
 
-def _printable(text: str) -> str:
-    """Escape each character a terminal would not print as itself.
-
-    An agent's reason reaches the person's approval prompt: raw, an escape
-    code or a direction override could hide or reorder what follows it.
-    """
-    return "".join(
-        char if char.isprintable() else char.encode("unicode_escape").decode("ascii")
-        for char in text
-    )
-
-
 def _approve_agent_proposal(
     args: OperatorApproveArgs, ctx: Ctx, fleet: Fleet, recorded: OperatorProposal
 ) -> Approved:
@@ -4040,7 +4029,7 @@ def _approve_agent_proposal(
         message = f"agent proposal {recorded.resource_id.value} holds no request"
         raise ValueError(message)
     attestation = ctx.attest(
-        f"{_printable(recorded.diagnosis_summary)}. "
+        f"{printable(recorded.diagnosis_summary)}. "
         f"It runs {' '.join(recorded.command)} "
         f"with {json.dumps(dict(request.arguments), sort_keys=True)} on "
         f"{', '.join(server.value for server in recorded.operation_servers)}. "
@@ -4803,11 +4792,19 @@ class WhyArgs(DecisionsArgs):
             f"turn asked for each decision (default: {INVESTIGATION_DIRECTORY})"
         ),
     )
+    proposals: Path = Flag(
+        default=RecordStore.PROPOSALS.path,
+        description=(
+            "Proposal store holding the agent records and agent proposals to "
+            f"answer beside the decisions (default: {RecordStore.PROPOSALS.directory})"
+        ),
+    )
 
     def __post_init__(self) -> None:
         """Refuse a time the question cannot be asked with."""
         DecisionsArgs.__post_init__(self)
         _inside_project(self.investigations, "investigations")
+        _inside_project(self.proposals, "proposals")
         try:
             self.query()
         except WhyError as error:
@@ -4852,14 +4849,18 @@ class WhyPayload(Payload):
 def why(args: WhyArgs, ctx: Ctx) -> WhyPayload:
     """Answer from the record alone: no catalog, no fleet.
 
-    A decision record that cannot be read is skipped with a
-    ``RECORD_UNREADABLE`` warning naming it.
+    The agent records and agent proposals of the proposal store are
+    answered beside the decisions (S-018-16). A record of either that
+    cannot be read is skipped with a ``RECORD_UNREADABLE`` warning naming it.
     """
     catalog = SchemaCatalog(args.schemas)
     store = DecisionStore(directory=args.root / args.decisions, catalog=catalog)
+    proposals = ProposalStore(directory=args.root / args.proposals, catalog=catalog)
     try:
         investigations = Investigations.load(args.root / args.investigations, catalog)
-        result = answer(store, args.query(), investigations, args.clock())
+        result = answer(
+            store, args.query(), investigations, args.clock(), proposals=proposals
+        )
     except (DecisionError, WhyError) as error:
         raise Exit.RECORD_INVALID(error.detail, context={"code": error.code}) from error
     _warn_unreadable(ctx, result.unreadable)

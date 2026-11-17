@@ -15,6 +15,13 @@ it would need an inventory the record deliberately does not depend on.
 A decision an agent asked for is told with the turn that asked for it:
 the investigation records each tool call's decision and turn, and the
 turn's trace keeps the model's reasoning and the endpoint's ids.
+
+An agent's confirmed call of a gated MCP tool in a project leaves its own
+record in the proposal store: the run a policy grant let through, or the
+proposal a person approves (S-018). Those are told beside the decisions,
+from the same question: a host is in one when its record names the host
+among the servers the run changes. The agent's free text (its reason)
+is escaped in the story, so a terminal prints it as the characters it is.
 """
 
 from __future__ import annotations
@@ -30,6 +37,13 @@ from jsonschema import ValidationError
 from cloudfall.decision import ApprovalChannel, DecisionStatus, Requirement
 from cloudfall.domain import Hostname, ResourceId
 from cloudfall.investigation import INVESTIGATION_SCHEMA, StepOutcome
+from cloudfall.operator import (
+    ApprovalMode,
+    OperatorProposal,
+    ProposalStatus,
+    TriggerKind,
+)
+from cloudfall.record_files import printable
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -43,6 +57,7 @@ if TYPE_CHECKING:
         RunRecord,
         Staleness,
     )
+    from cloudfall.operator import AgentRequest, ApprovalRecord, ProposalStore
     from cloudfall.record_files import UnreadableRecord
     from cloudfall.validation import SchemaCatalog
 
@@ -164,9 +179,7 @@ class WhyQuery:
             result["stale"] = True
         return result
 
-    def matches(
-        self, decision: Decision, staleness: Staleness | None = None
-    ) -> bool:
+    def matches(self, decision: Decision, staleness: Staleness | None = None) -> bool:
         """Return whether one decision is part of the answer."""
         if self.operation is not None and decision.operation_id != self.operation:
             return False
@@ -178,10 +191,33 @@ class WhyQuery:
             return False
         if self.since is None and self.until is None:
             return True
+        return self._in_window(moments_of(decision))
+
+    def matches_agent(self, proposal: OperatorProposal) -> bool:
+        """Return whether one agent record is part of the answer (S-018).
+
+        An agent record runs no declared operation and has no basis to go
+        stale, so a question about either is not about it.
+        """
+        if self.operation is not None or self.stale:
+            return False
+        if self.statuses and proposal.status.value not in {
+            status.value for status in self.statuses
+        }:
+            return False
+        if self.host is not None and self.host.value not in {
+            server.value for server in proposal.servers
+        }:
+            return False
+        if self.since is None and self.until is None:
+            return True
+        return self._in_window(agent_moments_of(proposal))
+
+    def _in_window(self, moments: Iterable[Instant]) -> bool:
         return any(
             (self.since is None or self.since <= moment)
             and (self.until is None or moment <= self.until)
-            for moment in moments_of(decision)
+            for moment in moments
         )
 
 
@@ -305,6 +341,54 @@ class Investigations:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentExplanation:
+    """One agent record or agent proposal, told from its record (S-018)."""
+
+    proposal: OperatorProposal
+    story: tuple[str, ...]
+
+    @property
+    def moment(self) -> Instant:
+        """When the agent called: where the record sits among the answers."""
+        return Instant.from_boundary(self.proposal.created_at)
+
+    def summary(self) -> dict[str, object]:
+        """Name the tool, class, approver, policy, grant, reason, plan and status."""
+        proposal = self.proposal
+        approval = proposal.approval
+        return {
+            "tool": _request(proposal).tool,
+            "class": proposal.operation_kind.value,
+            "approver": _approver(approval),
+            "policy": (
+                approval.policy.value
+                if approval is not None and approval.policy is not None
+                else None
+            ),
+            "grant": (
+                approval.grant.value
+                if approval is not None and approval.grant is not None
+                else None
+            ),
+            "reason": _request(proposal).reason,
+            "plan_sha256": (
+                proposal.binding.plan_sha256 if proposal.binding is not None else None
+            ),
+            "status": proposal.status.value,
+        }
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the explanation with the record it is drawn from."""
+        return {
+            "id": self.proposal.resource_id.value,
+            "hosts": sorted(server.value for server in self.proposal.servers),
+            "story": list(self.story),
+            "agent_record": self.summary(),
+            "proposal": self.proposal.as_document(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class WhyAnswer:
     """Every decision the record holds that the question is about."""
 
@@ -313,15 +397,29 @@ class WhyAnswer:
     explanations: tuple[Explanation, ...]
     unreadable: tuple[UnreadableRecord, ...] = ()
     """Records that could not be read, so the answer could not draw on them."""
+    agent_records: tuple[AgentExplanation, ...] = ()
+    """The agent records and agent proposals the question is about (S-018)."""
 
     def as_dict(self) -> dict[str, object]:
-        """Serialize the answer for system boundaries."""
+        """Serialize the answer for system boundaries, newest first."""
+        answers = [entry.as_dict() for entry in self.explanations]
+        if self.agent_records:
+            entries: list[tuple[Instant, dict[str, object]]] = [
+                (Instant.from_boundary(entry.decision.proposed_at), document)
+                for entry, document in zip(self.explanations, answers, strict=True)
+            ]
+            entries.extend(
+                (entry.moment, entry.as_dict()) for entry in self.agent_records
+            )
+            # Stable: the decisions keep their order among themselves.
+            entries.sort(key=lambda entry: entry[0], reverse=True)
+            answers = [document for _, document in entries]
         return {
             "status": "ok",
             "query": self.query.as_dict(),
             "directory": self.directory,
-            "count": len(self.explanations),
-            "answers": [entry.as_dict() for entry in self.explanations],
+            "count": len(answers),
+            "answers": answers,
         }
 
 
@@ -330,11 +428,14 @@ def answer(
     query: WhyQuery,
     investigations: Investigations | None = None,
     clock: ObservationClock | None = None,
+    proposals: ProposalStore | None = None,
 ) -> WhyAnswer:
     """Answer the question from the record, newest decision first.
 
     With a ``clock``, each open proposal says whether it is stale; without
-    one, nothing is, so a ``stale`` question matches nothing.
+    one, nothing is, so a ``stale`` question matches nothing. With
+    ``proposals``, the agent records in that store are answered too; the
+    operator's own alert and drift proposals are not.
     """
     matched: list[tuple[Decision, Staleness | None]] = []
     listing = store.list()
@@ -344,6 +445,17 @@ def answer(
             matched.append((decision, staleness))
     matched.sort(key=lambda entry: entry[0].proposed_at, reverse=True)
     proposers = investigations.proposers if investigations is not None else {}
+    agent_records: tuple[AgentExplanation, ...] = ()
+    unreadable = listing.unreadable
+    if proposals is not None:
+        receipts = proposals.list()
+        agent_records = tuple(
+            explain_agent(proposal)
+            for proposal in receipts.records
+            if proposal.trigger_kind is TriggerKind.AGENT
+            and query.matches_agent(proposal)
+        )
+        unreadable = (*unreadable, *receipts.unreadable)
     return WhyAnswer(
         query=query,
         directory=str(store.directory),
@@ -351,8 +463,119 @@ def answer(
             explain(decision, proposers.get(decision.decision_id.value), staleness)
             for decision, staleness in matched
         ),
-        unreadable=listing.unreadable,
+        unreadable=unreadable,
+        agent_records=agent_records,
     )
+
+
+def explain_agent(proposal: OperatorProposal) -> AgentExplanation:
+    """Tell one agent record: the call, its reason, its plan, its approval, its end."""
+    return AgentExplanation(proposal=proposal, story=tuple(_agent_story(proposal)))
+
+
+def agent_moments_of(proposal: OperatorProposal) -> tuple[Instant, ...]:
+    """Return every moment an agent record dates: the call, the run, its end."""
+    stamps = [proposal.created_at]
+    if proposal.outcome is not None:
+        stamps.append(proposal.outcome.executed_at)
+        if proposal.outcome.verified_at is not None:
+            stamps.append(proposal.outcome.verified_at)
+    if proposal.interruption is not None:
+        stamps.append(proposal.interruption.confirmed_at)
+    return tuple(Instant.from_boundary(stamp) for stamp in stamps)
+
+
+def _request(proposal: OperatorProposal) -> AgentRequest:
+    request = proposal.request
+    if request is None:
+        # OperatorProposal refuses an agent record without its request.
+        message = f"agent record has no request: {proposal.resource_id.value}"
+        raise TypeError(message)
+    return request
+
+
+def _approver(approval: ApprovalRecord | None) -> dict[str, object] | None:
+    """Who approved it: the agent with its client, a person, or nobody yet."""
+    if approval is None:
+        return None
+    approver: dict[str, object] = {"mode": approval.mode.value}
+    if approval.client is not None:
+        approver["client"] = approval.client.as_dict()
+    if approval.via is not None:
+        approver["via"] = approval.via.value
+    return approver
+
+
+def _agent_story(proposal: OperatorProposal) -> Iterable[str]:
+    """Yield the agent record as sentences: called, why, bound, approved, ended."""
+    request = _request(proposal)
+    servers = ", ".join(server.value for server in proposal.servers)
+    environments = ", ".join(
+        environment.value for environment in proposal.operation_environments
+    )
+    changes = (
+        f"to change {servers} in {environments}"
+        if servers
+        else "to change no declared server"
+    )
+    yield (
+        f"At {proposal.created_at} an agent called the {request.tool} tool, "
+        f"of class {proposal.operation_kind.value}, {changes}."
+    )
+    if request.reason is None:
+        yield "It gave no reason."
+    else:
+        yield f'It gave the reason "{printable(request.reason)}".'
+    if proposal.binding is not None:
+        commit = (
+            f" at commit {proposal.binding.git_commit}"
+            if proposal.binding.git_commit is not None
+            else ""
+        )
+        yield (
+            f"It was bound to the plan with sha256 {proposal.binding.plan_sha256}"
+            f"{commit}."
+        )
+    if proposal.approval is not None:
+        yield _agent_approved(proposal.approval)
+    yield _agent_ended(proposal)
+
+
+def _agent_approved(approval: ApprovalRecord) -> str:
+    if approval.mode is ApprovalMode.AGENT and approval.client is not None:
+        policy = approval.policy.value if approval.policy is not None else "none"
+        grant = approval.grant.value if approval.grant is not None else "none"
+        return (
+            f"The agent approved it itself on the {grant} grant of policy {policy}, "
+            f"calling from {printable(approval.client.name)} "
+            f"{printable(approval.client.version)}."
+        )
+    if approval.mode is ApprovalMode.HUMAN and approval.via is not None:
+        return f"A person approved it (via {approval.via.value})."
+    policy = approval.policy.value if approval.policy is not None else "none"
+    return f"It was approved {approval.mode.value} on policy {policy}."
+
+
+def _agent_ended(proposal: OperatorProposal) -> str:
+    status = proposal.status
+    if status is ProposalStatus.PROPOSED:
+        return (
+            "It is still proposed: nothing ran, and only a person approves it, "
+            f"with cloudfall operator approve {proposal.resource_id.value}."
+        )
+    if status is ProposalStatus.RUNNING:
+        return (
+            "Its run started and no outcome is recorded: it is still running "
+            "or it was interrupted."
+        )
+    if status is ProposalStatus.INTERRUPTED and proposal.interruption is not None:
+        return (
+            f"It ended interrupted: {proposal.interruption.confirmed_by} confirmed "
+            f"at {proposal.interruption.confirmed_at} that its run is dead."
+        )
+    if proposal.outcome is not None:
+        return f"It ended {status.value}: {printable(proposal.outcome.detail)}."
+    return f"It ended {status.value}."
 
 
 def explain(
@@ -471,11 +694,30 @@ def render_why_document(document: Mapping[str, object]) -> str:
 
 
 def _render_card(entry: Mapping[str, object]) -> str:
+    if "agent_record" in entry:
+        summary = cast("Mapping[str, object]", entry["agent_record"])
+        return _card(
+            entry,
+            f"{summary['tool']} ({summary['class']})",
+            DecisionStatus(str(summary["status"])),
+        )
     decision = cast("Mapping[str, object]", entry["decision"])
     spec = cast("Mapping[str, object]", decision["spec"])
     operation = cast("Mapping[str, object]", spec["operation"])
-    status = DecisionStatus(str(spec["status"]))
-    ran_exit_code = spec.get("ranExitCode")
+    return _card(
+        entry,
+        str(operation["id"]),
+        DecisionStatus(str(spec["status"])),
+        spec.get("ranExitCode"),
+    )
+
+
+def _card(
+    entry: Mapping[str, object],
+    title: str,
+    status: DecisionStatus,
+    ran_exit_code: object = None,
+) -> str:
     story = cast("Sequence[str]", entry["story"])
     steps = "".join(f"<li>{escape(sentence)}</li>" for sentence in story)
     hosts = (
@@ -485,7 +727,7 @@ def _render_card(entry: Mapping[str, object]) -> str:
     return (
         '<article class="decision">'
         '<div class="decision-head">'
-        f"<div><h3>{escape(str(operation['id']))}</h3>"
+        f"<div><h3>{escape(title)}</h3>"
         f"<code>{escape(str(entry['id']))}</code></div>"
         f'<span class="badge {_tone(status, ran_exit_code)}">'
         f"{escape(status.value)}</span></div>"
