@@ -16,7 +16,13 @@
       migration guard (parallel with legacy agents preserved, or none)
 
 - name: Deliver the files Cloudfall provides for the stack
-  ansible.builtin.include_tasks: deliver.yml
+  ansible.builtin.include_role:
+    name: cloudfall_logging_common
+    tasks_from: deliver
+  vars:
+    cloudfall_logging_common_role: collector
+    cloudfall_logging_common_file_owner: "{{ cloudfall_logging_collector_file_owner }}"
+    cloudfall_logging_common_file_group: "{{ cloudfall_logging_collector_file_group }}"
 
 - name: Resolve the gateway name to the backend
   ansible.builtin.include_tasks: gateway_name.yml
@@ -94,9 +100,11 @@
 
 # Alloy runs as alloy:alloy, the account this role creates before the install
 - name: Check the service users reach their files before anything is installed
-  ansible.builtin.include_tasks: preflight.yml
+  ansible.builtin.include_role:
+    name: cloudfall_logging_common
+    tasks_from: preflight
   vars:
-    cloudfall_logging_collector_readers:
+    cloudfall_logging_common_readers:
       - user: alloy
         group: alloy
         paths:
@@ -175,16 +183,21 @@
   when: cloudfall_logging_collector_repository is changed
 
 - name: Check the package pins before anything is installed
-  ansible.builtin.include_tasks: pins.yml
+  ansible.builtin.include_role:
+    name: cloudfall_logging_common
+    tasks_from: pins
   vars:
-    cloudfall_logging_collector_pins:
+    cloudfall_logging_common_pins:
       - name: alloy
         version: "{{ cloudfall_logging_collector_stack.software.alloyPackageVersion }}"
 
 - name: Hold the pinned packages before they are installed
-  ansible.builtin.include_tasks: holds.yml
+  ansible.builtin.include_role:
+    name: cloudfall_logging_common
+    tasks_from: holds
   vars:
-    cloudfall_logging_collector_holds:
+    cloudfall_logging_common_apt_preferences_dir: "{{ cloudfall_logging_collector_apt_preferences_dir }}"
+    cloudfall_logging_common_holds:
       - name: alloy
         version: "{{ cloudfall_logging_collector_stack.software.alloyPackageVersion }}"
 

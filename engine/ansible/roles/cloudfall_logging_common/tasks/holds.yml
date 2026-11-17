@@ -18,12 +18,12 @@
       - --showformat
       - "${db:Status-Status} ${Version}"
       - "{{ item.name }}"
-  loop: "{{ cloudfall_logging_backend_holds | rejectattr('version', 'none') | list }}"
+  loop: "{{ cloudfall_logging_common_holds | rejectattr('version', 'none') | list }}"
   loop_control:
     label: "{{ item.name }}"
-  register: cloudfall_logging_backend_installed
+  register: cloudfall_logging_common_installed
   # rc 1: dpkg knows no such package, so nothing is installed
-  failed_when: cloudfall_logging_backend_installed.rc not in [0, 1]
+  failed_when: cloudfall_logging_common_installed.rc not in [0, 1]
   changed_when: false
   # A read: a dry run (--check) must refuse a drifted host too
   check_mode: false
@@ -37,13 +37,13 @@
       - gt
       - "{{ item.item.version }}"
   loop: >-
-    {{ cloudfall_logging_backend_installed.results | selectattr('rc', 'eq', 0)
+    {{ cloudfall_logging_common_installed.results | selectattr('rc', 'eq', 0)
        | selectattr('stdout', 'match', 'installed ') | list }}
   loop_control:
     label: "{{ item.item.name }}"
-  register: cloudfall_logging_backend_newer
+  register: cloudfall_logging_common_newer
   # rc 0: installed is newer; rc 1: it is not
-  failed_when: cloudfall_logging_backend_newer.rc not in [0, 1]
+  failed_when: cloudfall_logging_common_newer.rc not in [0, 1]
   changed_when: false
   check_mode: false
 
@@ -55,13 +55,13 @@
       {{ item.item.item.version }}: declare
       {{ item.item.stdout.split(' ', 1) | last }}, or downgrade
       {{ item.item.item.name }} by hand
-  loop: "{{ cloudfall_logging_backend_newer.results | selectattr('rc', 'eq', 0) | list }}"
+  loop: "{{ cloudfall_logging_common_newer.results | selectattr('rc', 'eq', 0) | list }}"
   loop_control:
     label: "{{ item.item.item.name }}"
 
 - name: Hold each pinned logging package at its declared version
   ansible.builtin.copy:
-    dest: "{{ cloudfall_logging_backend_apt_preferences_dir }}/cloudfall-logging-{{ item.name }}"
+    dest: "{{ cloudfall_logging_common_apt_preferences_dir }}/cloudfall-logging-{{ item.name }}"
     content: |
       Package: {{ item.name }}
       Pin: version {{ item.version }}
@@ -69,14 +69,14 @@
     owner: root
     group: root
     mode: "0644"
-  loop: "{{ cloudfall_logging_backend_holds | rejectattr('version', 'none') | list }}"
+  loop: "{{ cloudfall_logging_common_holds | rejectattr('version', 'none') | list }}"
   loop_control:
     label: "{{ item.name }}={{ item.version }}"
 
 - name: Release the hold of a logging package installed without a declared version
   ansible.builtin.file:
-    path: "{{ cloudfall_logging_backend_apt_preferences_dir }}/cloudfall-logging-{{ item.name }}"
+    path: "{{ cloudfall_logging_common_apt_preferences_dir }}/cloudfall-logging-{{ item.name }}"
     state: absent
-  loop: "{{ cloudfall_logging_backend_holds | selectattr('version', 'none') | list }}"
+  loop: "{{ cloudfall_logging_common_holds | selectattr('version', 'none') | list }}"
   loop_control:
     label: "{{ item.name }}"

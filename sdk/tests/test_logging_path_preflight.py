@@ -26,15 +26,15 @@ ROOT = Path(__file__).parents[2]
 ANSIBLE_PLAYBOOK = Path(sys.executable).with_name("ansible-playbook")
 ROLES = ROOT / "engine" / "ansible" / "roles"
 INCLUDE = "Check the service users reach their files before anything is installed"
+PREFLIGHT = {"name": "cloudfall_logging_common", "tasks_from": "preflight"}
 PASSWORD = "/etc/cloudfall/logging/grafana-admin-password"  # noqa: S105 - a path
 
 
-def _plugin(role: str) -> Path:
-    return ROLES / f"cloudfall_logging_{role}" / "filter_plugins" / "reach.py"
+PLUGIN = ROLES / "cloudfall_logging_common" / "filter_plugins" / "reach.py"
 
 
-def _blocking_parent(role: str) -> Blocking:
-    spec = importlib.util.spec_from_file_location(f"reach_{role}", _plugin(role))
+def _blocking_parent() -> Blocking:
+    spec = importlib.util.spec_from_file_location("reach", PLUGIN)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -69,15 +69,10 @@ def _chain(cloudfall: dict[str, object]) -> list[dict[str, object]]:
     ]
 
 
-def test_both_roles_carry_the_same_filter() -> None:
-    assert _plugin("backend").read_bytes() == _plugin("collector").read_bytes()
-
-
-@pytest.mark.parametrize("role", ["backend", "collector"])
-def test_a_0700_parent_blocks_the_service_user(role: str) -> None:
+def test_a_0700_parent_blocks_the_service_user() -> None:
     stats = _chain(_directory("/etc/cloudfall", "0700"))
 
-    blocking = _blocking_parent(role)(PASSWORD, "grafana", "grafana", stats)
+    blocking = _blocking_parent()(PASSWORD, "grafana", "grafana", stats)
 
     assert blocking == {
         "path": "/etc/cloudfall",
@@ -96,7 +91,7 @@ def test_a_0750_parent_lets_only_the_service_group_through(
 ) -> None:
     stats = _chain(_directory("/etc/cloudfall", "0750", group="grafana"))
 
-    blocking = _blocking_parent("backend")(PASSWORD, group, group, stats)
+    blocking = _blocking_parent()(PASSWORD, group, group, stats)
 
     assert (blocking is not None) is blocked
 
@@ -104,13 +99,13 @@ def test_a_0750_parent_lets_only_the_service_group_through(
 def test_the_owner_of_a_0700_parent_goes_through() -> None:
     stats = _chain(_directory("/etc/cloudfall", "0700", owner="grafana"))
 
-    assert _blocking_parent("backend")(PASSWORD, "grafana", "grafana", stats) is None
+    assert _blocking_parent()(PASSWORD, "grafana", "grafana", stats) is None
 
 
 def test_an_all_0755_chain_lets_every_user_through() -> None:
     stats = _chain(_directory("/etc/cloudfall", "0755"))
 
-    assert _blocking_parent("backend")(PASSWORD, "alloy", "alloy", stats) is None
+    assert _blocking_parent()(PASSWORD, "alloy", "alloy", stats) is None
 
 
 def test_a_parent_not_there_yet_is_skipped() -> None:
@@ -120,7 +115,7 @@ def test_a_parent_not_there_yet_is_skipped() -> None:
     }
     stats = [*_chain(_directory("/etc/cloudfall", "0755"))[:3], missing]
 
-    assert _blocking_parent("backend")(PASSWORD, "grafana", "grafana", stats) is None
+    assert _blocking_parent()(PASSWORD, "grafana", "grafana", stats) is None
 
 
 def test_a_parent_that_is_a_file_blocks() -> None:
@@ -130,7 +125,7 @@ def test_a_parent_that_is_a_file_blocks() -> None:
     stat["isdir"] = False
     stats = _chain(cloudfall)
 
-    blocking = _blocking_parent("backend")(PASSWORD, "grafana", "grafana", stats)
+    blocking = _blocking_parent()(PASSWORD, "grafana", "grafana", stats)
 
     assert blocking is not None
     assert blocking["path"] == "/etc/cloudfall"
@@ -145,7 +140,6 @@ def _tasks(role: str) -> list[dict[str, object]]:
 
 def _play(
     tmp_path: Path,
-    role: str,
     task: Mapping[str, object],
     variables: Mapping[str, object],
     *,
@@ -179,26 +173,21 @@ def _play(
         text=True,
         check=False,
         timeout=300,
-        env={
-            **os.environ,
-            # The role's own filters, as the role would load them
-            "ANSIBLE_FILTER_PLUGINS": str(_plugin(role).parent),
-        },
+        # The shared role is found, and loads its own filters, as in a deploy
+        env={**os.environ, "ANSIBLE_ROLES_PATH": str(ROLES)},
     )
 
 
 def _include(role: str) -> dict[str, object]:
+    """Return the role's own include of the shared preflight, with its readers."""
     include = next(task for task in _tasks(role) if task["name"] == INCLUDE)
-    include["ansible.builtin.include_tasks"] = str(
-        ROLES / f"cloudfall_logging_{role}" / "tasks" / "preflight.yml"
-    )
+    assert include["ansible.builtin.include_role"] == PREFLIGHT
     return include
 
 
-@pytest.mark.parametrize("role", ["backend", "collector"])
 @pytest.mark.parametrize("check_mode", [False, True])
 def test_the_preflight_names_the_directory_that_blocks(
-    tmp_path: Path, role: str, *, check_mode: bool
+    tmp_path: Path, *, check_mode: bool
 ) -> None:
     user = pwd.getpwuid(os.getuid()).pw_name
     group = grp.getgrgid(os.getgid()).gr_name
@@ -219,14 +208,12 @@ def test_the_preflight_names_the_directory_that_blocks(
         }
     ]
     task = {
-        "ansible.builtin.include_tasks": str(
-            ROLES / f"cloudfall_logging_{role}" / "tasks" / "preflight.yml"
-        ),
-        "vars": {f"cloudfall_logging_{role}_readers": readers},
+        "ansible.builtin.include_role": PREFLIGHT,
+        "vars": {"cloudfall_logging_common_readers": readers},
     }
 
     try:
-        done = _play(tmp_path, role, task, {}, check_mode=check_mode)
+        done = _play(tmp_path, task, {}, check_mode=check_mode)
     finally:
         blocked.chmod(0o700)
 
@@ -239,17 +226,14 @@ def test_the_preflight_names_the_directory_that_blocks(
     assert f"can't reach {tmp_path}/not-yet" not in done.stdout
 
 
-@pytest.mark.parametrize("role", ["backend", "collector"])
-def test_reachable_files_pass(tmp_path: Path, role: str) -> None:
+def test_reachable_files_pass(tmp_path: Path) -> None:
     user = pwd.getpwuid(os.getuid()).pw_name
     group = grp.getgrgid(os.getgid()).gr_name
     (tmp_path / "reachable").mkdir(mode=0o700)
     task = {
-        "ansible.builtin.include_tasks": str(
-            ROLES / f"cloudfall_logging_{role}" / "tasks" / "preflight.yml"
-        ),
+        "ansible.builtin.include_role": PREFLIGHT,
         "vars": {
-            f"cloudfall_logging_{role}_readers": [
+            "cloudfall_logging_common_readers": [
                 {
                     "user": user,
                     "group": group,
@@ -259,7 +243,7 @@ def test_reachable_files_pass(tmp_path: Path, role: str) -> None:
         },
     }
 
-    done = _play(tmp_path, role, task, {})
+    done = _play(tmp_path, task, {})
 
     assert done.returncode == 0, done.stdout
 
@@ -283,7 +267,6 @@ def test_the_backend_checks_grafana_and_alertmanager_files(tmp_path: Path) -> No
 
     done = _play(
         tmp_path,
-        "backend",
         _include("backend"),
         {
             "cloudfall_logging_backend_stack": stack,
@@ -306,7 +289,6 @@ def test_the_collector_checks_alloy_tls_files(tmp_path: Path) -> None:
 
     done = _play(
         tmp_path,
-        "collector",
         _include("collector"),
         {"cloudfall_logging_collector_stack": {"collectors": {"clientTls": paths}}},
     )

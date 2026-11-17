@@ -22,9 +22,14 @@ ROOT = Path(__file__).parents[2]
 EXAMPLES = ROOT / "config" / "examples"
 CLOUDFALL = Path(sys.executable).with_name("cloudfall")
 ANSIBLE_PLAYBOOK = Path(sys.executable).with_name("ansible-playbook")
-DELIVER_TASKS = (
-    ROOT / "engine/ansible/roles/cloudfall_logging_backend/tasks/deliver.yml"
-)
+ROLES = ROOT / "engine/ansible/roles"
+DELIVER = {
+    "ansible.builtin.include_role": {
+        "name": "cloudfall_logging_common",
+        "tasks_from": "deliver",
+    },
+    "vars": {"cloudfall_logging_common_role": "backend"},
+}
 SMTP_VALUE = "synthetic-smtp-value"
 FAKE_SOPS = f"""#!{sys.executable}
 '''Stand in for sops: "encrypts" by appending sops metadata, values stay in clear.'''
@@ -417,16 +422,14 @@ def test_the_role_delivers_a_missing_file_and_keeps_an_existing_one(
                     "vars": {
                         "cloudfall_server_id": "h1",
                         "cloudfall_logging_delivered_files": {"h1": files},
-                        "cloudfall_logging_backend_file_owner": pwd.getpwuid(
+                        "cloudfall_logging_common_file_owner": pwd.getpwuid(
                             os.getuid()
                         ).pw_name,
-                        "cloudfall_logging_backend_file_group": grp.getgrgid(
+                        "cloudfall_logging_common_file_group": grp.getgrgid(
                             os.getgid()
                         ).gr_name,
                     },
-                    "tasks": [
-                        {"ansible.builtin.include_tasks": str(DELIVER_TASKS)},
-                    ],
+                    "tasks": [DELIVER],
                 }
             ]
         ),
@@ -447,6 +450,7 @@ def test_the_role_delivers_a_missing_file_and_keeps_an_existing_one(
             text=True,
             check=True,
             timeout=300,
+            env={**os.environ, "ANSIBLE_ROLES_PATH": str(ROLES)},
         )
         return done.stdout
 
@@ -496,14 +500,14 @@ def test_the_role_replaces_a_certificate_signed_in_this_run(tmp_path: Path) -> N
                                 },
                             ]
                         },
-                        "cloudfall_logging_backend_file_owner": pwd.getpwuid(
+                        "cloudfall_logging_common_file_owner": pwd.getpwuid(
                             os.getuid()
                         ).pw_name,
-                        "cloudfall_logging_backend_file_group": grp.getgrgid(
+                        "cloudfall_logging_common_file_group": grp.getgrgid(
                             os.getgid()
                         ).gr_name,
                     },
-                    "tasks": [{"ansible.builtin.include_tasks": str(DELIVER_TASKS)}],
+                    "tasks": [DELIVER],
                 }
             ]
         ),
@@ -523,6 +527,7 @@ def test_the_role_replaces_a_certificate_signed_in_this_run(tmp_path: Path) -> N
         text=True,
         check=True,
         timeout=300,
+        env={**os.environ, "ANSIBLE_ROLES_PATH": str(ROLES)},
     )
 
     assert held.read_text(encoding="utf-8") == "new certificate"

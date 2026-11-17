@@ -1,0 +1,70 @@
+---
+# No main entry point: cloudfall_logging_backend and
+# cloudfall_logging_collector include each task file by name (tasks_from).
+argument_specs:
+  deliver:
+    short_description: Deliver the files Cloudfall provides for the calling role
+    options:
+      cloudfall_logging_common_role:
+        type: str
+        required: true
+        choices:
+          - backend
+          - collector
+        description: Which of the stack's delivered files to take
+      cloudfall_logging_common_file_owner:
+        type: str
+        required: true
+      cloudfall_logging_common_file_group:
+        type: str
+        required: true
+  preflight:
+    short_description: Require each service user to reach the files it reads
+    options:
+      cloudfall_logging_common_readers:
+        type: list
+        elements: dict
+        required: true
+        options:
+          user:
+            type: str
+            required: true
+          group:
+            type: str
+            required: true
+          paths:
+            type: list
+            elements: str
+            required: true
+  pins:
+    short_description: Require every pinned version in the host's APT sources
+    options:
+      cloudfall_logging_common_pins:
+        type: list
+        elements: dict
+        required: true
+        options:
+          name:
+            type: str
+            required: true
+          version:
+            type: str
+            required: true
+  holds:
+    short_description: Hold each pinned package at its declared version
+    options:
+      cloudfall_logging_common_holds:
+        type: list
+        elements: dict
+        required: true
+        description: A package without a version loses the hold an earlier deploy left
+        options:
+          name:
+            type: str
+            required: true
+          version:
+            type: str
+            required: false
+      cloudfall_logging_common_apt_preferences_dir:
+        type: path
+        required: true

@@ -28,7 +28,13 @@
     state: present
 
 - name: Deliver the files Cloudfall provides for the stack
-  ansible.builtin.include_tasks: deliver.yml
+  ansible.builtin.include_role:
+    name: cloudfall_logging_common
+    tasks_from: deliver
+  vars:
+    cloudfall_logging_common_role: backend
+    cloudfall_logging_common_file_owner: "{{ cloudfall_logging_backend_file_owner }}"
+    cloudfall_logging_common_file_group: "{{ cloudfall_logging_backend_file_group }}"
 
 - name: Inspect pre-provisioned backend secret files
   ansible.builtin.stat:
@@ -73,9 +79,11 @@
 # Alertmanager runs as prometheus:prometheus and reads the SMTP password and
 # Telegram token files.
 - name: Check the service users reach their files before anything is installed
-  ansible.builtin.include_tasks: preflight.yml
+  ansible.builtin.include_role:
+    name: cloudfall_logging_common
+    tasks_from: preflight
   vars:
-    cloudfall_logging_backend_readers:
+    cloudfall_logging_common_readers:
       - user: grafana
         group: grafana
         paths:
@@ -164,9 +172,11 @@
   when: cloudfall_logging_backend_repository is changed
 
 - name: Check the package pins before anything is installed
-  ansible.builtin.include_tasks: pins.yml
+  ansible.builtin.include_role:
+    name: cloudfall_logging_common
+    tasks_from: pins
   vars:
-    cloudfall_logging_backend_pins: >-
+    cloudfall_logging_common_pins: >-
       {{
         [{'name': 'loki', 'version': cloudfall_logging_backend_stack.software.lokiPackageVersion},
          {'name': 'grafana', 'version': cloudfall_logging_backend_stack.software.grafanaPackageVersion}]
@@ -181,9 +191,12 @@
       }}
 
 - name: Hold the pinned packages before they are installed
-  ansible.builtin.include_tasks: holds.yml
+  ansible.builtin.include_role:
+    name: cloudfall_logging_common
+    tasks_from: holds
   vars:
-    cloudfall_logging_backend_holds: >-
+    cloudfall_logging_common_apt_preferences_dir: "{{ cloudfall_logging_backend_apt_preferences_dir }}"
+    cloudfall_logging_common_holds: >-
       {{
         [{'name': 'loki', 'version': cloudfall_logging_backend_stack.software.lokiPackageVersion},
          {'name': 'grafana', 'version': cloudfall_logging_backend_stack.software.grafanaPackageVersion},
