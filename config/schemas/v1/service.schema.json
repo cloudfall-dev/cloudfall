@@ -410,8 +410,7 @@
           "type": "array",
           "items": {
             "$ref": "common.schema.json#/$defs/resourceId"
-          },
-          "minItems": 1
+          }
         },
         "vhosts": {
           "type": "array",

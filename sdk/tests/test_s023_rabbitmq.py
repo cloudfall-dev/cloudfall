@@ -218,8 +218,9 @@ def test_s023_18_supported_series_validate(
         ["h2", "h3", "h1", "h2"],
         ["h2", "h3", "h4"],
         ["h2"],
+        [],
     ],
-    ids=["two", "duplicate", "undeclared", "without-the-server"],
+    ids=["two", "duplicate", "undeclared", "without-the-server", "empty"],
 )
 def test_s023_18_nodes_are_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], nodes: list[str]
