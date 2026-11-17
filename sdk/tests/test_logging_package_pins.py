@@ -24,7 +24,7 @@ esac
 
 
 def _run(
-    tmp_path: Path, role: str, version: str, *, check_mode: bool = False
+    tmp_path: Path, version: str, *, check_mode: bool = False
 ) -> subprocess.CompletedProcess[str]:
     tools = tmp_path / "tools"
     tools.mkdir()
@@ -39,18 +39,16 @@ def _run(
                     "hosts": "localhost",
                     "gather_facts": False,
                     "vars": {
-                        f"cloudfall_logging_{role}_pins": [
+                        "cloudfall_logging_common_pins": [
                             {"name": "loki", "version": version}
                         ]
                     },
                     "tasks": [
                         {
-                            "ansible.builtin.include_tasks": str(
-                                ROLES
-                                / f"cloudfall_logging_{role}"
-                                / "tasks"
-                                / "pins.yml"
-                            )
+                            "ansible.builtin.include_role": {
+                                "name": "cloudfall_logging_common",
+                                "tasks_from": "pins",
+                            }
                         }
                     ],
                 }
@@ -74,22 +72,24 @@ def _run(
         text=True,
         check=False,
         timeout=300,
-        env={**os.environ, "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}"},
+        env={
+            **os.environ,
+            "ANSIBLE_ROLES_PATH": str(ROLES),
+            "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}",
+        },
     )
 
 
-@pytest.mark.parametrize("role", ["backend", "collector"])
-def test_an_offered_pin_passes(tmp_path: Path, role: str) -> None:
-    done = _run(tmp_path, role, "3.7.2")
+def test_an_offered_pin_passes(tmp_path: Path) -> None:
+    done = _run(tmp_path, "3.7.2")
 
     assert done.returncode == 0, done.stdout
 
 
-@pytest.mark.parametrize("role", ["backend", "collector"])
 def test_a_missing_pin_stops_the_run_naming_what_is_offered(
-    tmp_path: Path, role: str
+    tmp_path: Path,
 ) -> None:
-    done = _run(tmp_path, role, "9.9.9")
+    done = _run(tmp_path, "9.9.9")
 
     assert done.returncode != 0
     assert (
@@ -98,12 +98,11 @@ def test_a_missing_pin_stops_the_run_naming_what_is_offered(
     )
 
 
-@pytest.mark.parametrize("role", ["backend", "collector"])
 @pytest.mark.parametrize(("version", "passes"), [("3.7.2", True), ("9.9.9", False)])
 def test_a_dry_run_checks_the_pins_too(
-    tmp_path: Path, role: str, version: str, *, passes: bool
+    tmp_path: Path, version: str, *, passes: bool
 ) -> None:
-    done = _run(tmp_path, role, version, check_mode=True)
+    done = _run(tmp_path, version, check_mode=True)
 
     assert (done.returncode == 0) is passes, done.stdout
     if not passes:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ ROOT = Path(__file__).parents[2]
 ANSIBLE_PLAYBOOK = Path(sys.executable).with_name("ansible-playbook")
 ROLES = ROOT / "engine" / "ansible" / "roles"
 INCLUDE = "Hold the pinned packages before they are installed"
+COMMON = "cloudfall_logging_common"
 
 
 def _preference(package: str, version: str) -> str:
@@ -86,22 +88,28 @@ def _run(
     check_mode: bool = False,
     dpkg: Dpkg | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run the role's own holds include against ``tmp_path/preferences``.
+    """Run the role's own include of the shared holds against ``tmp_path/preferences``.
 
     The files are root:root on a host; a test run is not root, so the copy
     here drops the owner and group and keeps everything else as written.
     Without ``dpkg``, none of the pinned packages is installed.
     """
     tools = _tools(tmp_path, dpkg or Dpkg())
-    holds = _tasks(role, "holds.yml")
+    roles = tmp_path / "roles"
+    shutil.copytree(ROLES / COMMON, roles / COMMON)
+    holds_file = roles / COMMON / "tasks" / "holds.yml"
+    holds = yaml.safe_load(holds_file.read_text(encoding="utf-8"))
+    assert isinstance(holds, list)
     for task in holds:
         copy = task.get("ansible.builtin.copy")
         if isinstance(copy, dict):
             assert (copy.pop("owner"), copy.pop("group")) == ("root", "root")
-    holds_file = tmp_path / "holds.yml"
     holds_file.write_text(json.dumps(holds), encoding="utf-8")
     include = next(task for task in _tasks(role, "main.yml") if task["name"] == INCLUDE)
-    include["ansible.builtin.include_tasks"] = str(holds_file)
+    assert include["ansible.builtin.include_role"] == {
+        "name": COMMON,
+        "tasks_from": "holds",
+    }
     playbook = tmp_path / "play.yml"
     playbook.write_text(
         json.dumps(
@@ -135,7 +143,11 @@ def _run(
         text=True,
         check=False,
         timeout=300,
-        env={**os.environ, "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}"},
+        env={
+            **os.environ,
+            "ANSIBLE_ROLES_PATH": str(roles),
+            "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}",
+        },
     )
 
 

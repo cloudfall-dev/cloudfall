@@ -14,10 +14,10 @@
       - apt-cache
       - madison
       - "{{ item.name }}"
-  loop: "{{ cloudfall_logging_backend_pins }}"
+  loop: "{{ cloudfall_logging_common_pins }}"
   loop_control:
     label: "{{ item.name }}={{ item.version }}"
-  register: cloudfall_logging_backend_offered
+  register: cloudfall_logging_common_offered
   changed_when: false
   # A read: a dry run (--check) must see the offered versions too
   check_mode: false
@@ -32,6 +32,6 @@
       {{ item.item.name }}={{ item.item.version }} is not in this host's APT
       sources; they offer: {{ item.stdout_lines | map('split', '|')
       | map(attribute=1) | map('trim') | join(', ') or 'nothing' }}
-  loop: "{{ cloudfall_logging_backend_offered.results }}"
+  loop: "{{ cloudfall_logging_common_offered.results }}"
   loop_control:
     label: "{{ item.item.name }}={{ item.item.version }}"
