@@ -74,6 +74,7 @@ from cloudfall.secrets import (
     owned_role_passwords,
     staged_password_files,
 )
+from cloudfall.tool_checks import ANSIBLE_PLAYBOOK
 from cloudfall.validation import ConfigValidationError, validate_config
 from treaty import (
     App,
@@ -129,6 +130,7 @@ app = App(
     "cloudfall-engine",
     version=version("cloudfall"),
     description="Run validated Cloudfall operations with Ansible",
+    dependencies=[ANSIBLE_PLAYBOOK],
 )
 app.scalar(
     ResourceId,
