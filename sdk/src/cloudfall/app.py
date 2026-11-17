@@ -71,6 +71,8 @@ from cloudfall.agent_gate import (
     migrate_servers,
     migration_verdict,
     plan_sha256,
+    proposal_plan,
+    propose_call,
     tool_class,
 )
 from cloudfall.agent_server import (
@@ -133,6 +135,7 @@ from cloudfall.component_lock import (
     ERROR_LOCK_RECORD_INVALID,
     clear_lock,
     find_lock,
+    refuse_held,
 )
 from cloudfall.dashboard import RefreshInterval, build_dashboard
 from cloudfall.dashboard_server import (
@@ -2529,6 +2532,83 @@ def _granted[T](  # noqa: PLR0913 - a granted run's whole contract.
     return result, run.approval()
 
 
+def _gated[T](  # noqa: PLR0913 - a gated run's whole contract.
+    gate: _AgentGate,
+    check: GrantCheck,
+    call: AgentCall,
+    *,
+    plan: Mapping[str, object],
+    evidence: Iterable[str],
+    execute: Callable[[Callable[[StepRunner], StepRunner]], T],
+    verify: Callable[[T], Verdict],
+    component: ResourceId | None = None,
+) -> tuple[T, dict[str, object] | None]:
+    """Run an agent's confirmed call a grant covers, or only propose it (S-018).
+
+    A run that changes no declared server touches no environment to gate,
+    and runs as it always did. A run a grant covers runs with its record.
+    Any other refuses with ``operator_approval_required`` and leaves one
+    agent proposal in the store, after the checks a run makes first: the
+    ``component``'s lock, held by another run, refuses as the run would.
+    """
+    if not check.servers:
+        return execute(_unwatched), None
+    if check.self_confirm:
+        return _granted(
+            gate,
+            check,
+            call,
+            plan=plan,
+            evidence=evidence,
+            execute=execute,
+            verify=verify,
+        )
+    if component is not None:
+        try:
+            refuse_held(gate.project, component)
+        except LifecycleError as error:
+            raise _lifecycle_failed(error) from error
+    raise _proposed(gate, check, call, plan=plan, evidence=evidence)
+
+
+def _proposed(
+    gate: _AgentGate,
+    check: GrantCheck,
+    call: AgentCall,
+    *,
+    plan: Mapping[str, object],
+    evidence: Iterable[str],
+) -> CliExit:
+    """Leave the call no grant covers in the store, and say who approves it.
+
+    The proposal binds the plan without its grant check, and in a git
+    project HEAD and the uncommitted changes (D-20), which ``operator
+    approve`` recomputes before it runs anything.
+    """
+    try:
+        commit, worktree = project_state(
+            BoundProject(gate.project, gate.project / DECISION_DIRECTORY)
+        )
+    except BindingError as error:
+        return Exit.PRECONDITION(error.detail, context={"code": error.code})
+    try:
+        proposal = propose_call(
+            gate.store,
+            check,
+            call,
+            binding=ProposalBinding(
+                plan_sha256=plan_sha256(proposal_plan(plan)),
+                git_commit=None if commit is None else commit.value,
+                worktree_digest=None if worktree is None else worktree.value,
+            ),
+            evidence=evidence,
+            now=datetime.now(UTC),
+        )
+    except OperatorError as error:
+        return Exit.PRECONDITION(error.message, context={"code": error.code})
+    return Exit.PRECONDITION(proposal.message(), context=proposal.context())
+
+
 def _raised_detail(stage: str, raised: BaseException | None) -> str:
     """Name what ended a granted run or its check before it settled."""
     if isinstance(raised, CliExit):
@@ -4204,14 +4284,12 @@ def migrate(args: MigrateArgs, ctx: Ctx, fleet: Fleet) -> Migration:
             ),
         ),
     )
-    if not check.self_confirm:
-        return _migration(_migrate_run(args, fleet, config), None, fleet)
 
     def run(watch: Callable[[StepRunner], StepRunner]) -> Migration:
         watched = replace(config, run=watch(config.run))
         return _migration(_migrate_run(args, fleet, watched), None, fleet)
 
-    migration, granted = _granted(
+    migration, granted = _gated(
         gate,
         check,
         AgentCall("migrate", _call_arguments(args), args.reason, _UNKNOWN_CLIENT),
@@ -4226,7 +4304,7 @@ def migrate(args: MigrateArgs, ctx: Ctx, fleet: Fleet) -> Migration:
             done.status, done.completed, len(done.steps)
         ),
     )
-    return replace(migration, approval=granted)
+    return migration if granted is None else replace(migration, approval=granted)
 
 
 def _migrate_run(
@@ -5342,21 +5420,27 @@ def deploy_command(args: DeployArgs, ctx: Ctx, fleet: Fleet) -> DeployPayload:
             raise _lifecycle_failed(error) from error
 
     used = dict(AUTOMATIC_PLAN) if approval is None else approval.used()
-    if gate is None or preview is None or check is None or not check.self_confirm:
+    granted: dict[str, object] | None = None
+    if gate is None or preview is None or check is None:
         result = run(_unwatched)
+    else:
+        plan = _payload_document(_deploy_plan(preview, approval, check))
+        result, granted = _gated(
+            gate,
+            check,
+            AgentCall("deploy", _call_arguments(args), args.reason, _UNKNOWN_CLIENT),
+            plan=plan,
+            evidence=_plan_evidence(plan),
+            execute=run,
+            verify=lambda done: health_verdict(
+                healthy=done.healthy, servers=done.servers
+            ),
+            component=args.component,
+        )
+    if granted is None:
         return DeployPayload(
             {**result.as_dict(), "effect": "updated", "approval": used}
         )
-    plan = _payload_document(_deploy_plan(preview, approval, check))
-    result, granted = _granted(
-        gate,
-        check,
-        AgentCall("deploy", _call_arguments(args), args.reason, _UNKNOWN_CLIENT),
-        plan=plan,
-        evidence=_plan_evidence(plan),
-        execute=run,
-        verify=lambda done: health_verdict(healthy=done.healthy, servers=done.servers),
-    )
     # The release approval's own policy (manual or automatic) stays beside
     # the grant's, under its own name (S-008, S-018-5).
     release = {
@@ -5513,14 +5597,14 @@ def _component_run(
     args: ComponentArgs,
     run: Callable[[Callable[[StepRunner], StepRunner]], LifecycleResult],
 ) -> tuple[LifecycleResult, dict[str, object] | None]:
-    """Run a ``rollback`` or ``restart``; granted, with its agent record."""
+    """Run a ``rollback`` or ``restart``; an agent's, gated (S-018)."""
     if gate is None or planned is None:
         return run(_unwatched), None
     payload, check = planned
-    if check is None or not check.self_confirm:
+    if check is None:
         return run(_unwatched), None
     plan = _payload_document(payload)
-    return _granted(
+    return _gated(
         gate,
         check,
         AgentCall(tool, _call_arguments(args), args.reason, _UNKNOWN_CLIENT),
@@ -5528,6 +5612,7 @@ def _component_run(
         evidence=_plan_evidence(plan),
         execute=run,
         verify=lambda done: health_verdict(healthy=done.healthy, servers=done.servers),
+        component=args.component,
     )
 
 
@@ -6333,12 +6418,10 @@ def data_copy(
         except LifecycleError as error:
             raise _lifecycle_failed(error) from error
 
-    if gate is None or planned is None or planned[1] is None or not (
-        planned[1].self_confirm
-    ):
+    if gate is None or planned is None or planned[1] is None:
         return DataMigratePayload({**run(_unwatched), "effect": "updated"})
     document = _payload_document(planned[0])
-    body, granted = _granted(
+    body, granted = _gated(
         gate,
         planned[1],
         AgentCall("data_copy", _call_arguments(args), args.reason, _UNKNOWN_CLIENT),
@@ -6349,7 +6432,9 @@ def data_copy(
             Path(str(done["receipt"])) if done.get("receipt") is not None else None
         ),
     )
-    return DataMigratePayload({**body, "effect": "updated", "approval": granted})
+    return DataMigratePayload(
+        {**body, "effect": "updated", **_approval_key(granted)}
+    )
 
 
 domains = app.group(
@@ -6471,12 +6556,10 @@ def domains_apply(
         planned = None if gate is None else plan()
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error
-    if gate is None or planned is None or planned[1] is None or not (
-        planned[1].self_confirm
-    ):
+    if gate is None or planned is None or planned[1] is None:
         return DomainApplyPayload({**run(_unwatched).as_dict(), "effect": "updated"})
     document = _payload_document(planned[0])
-    applied, granted = _granted(
+    applied, granted = _gated(
         gate,
         planned[1],
         AgentCall(
@@ -6492,7 +6575,7 @@ def domains_apply(
         ),
     )
     return DomainApplyPayload(
-        {**applied.as_dict(), "effect": "updated", "approval": granted}
+        {**applied.as_dict(), "effect": "updated", **_approval_key(granted)}
     )
 
 
@@ -6938,12 +7021,14 @@ def _converge_granted[T](  # noqa: PLR0913 - a converge run's whole contract.
     execute: Callable[[Callable[[StepRunner], StepRunner]], T],
     verify: Callable[[T, PlatformInventory, tuple[ResourceId, ...]], Verdict],
 ) -> tuple[T, dict[str, object] | None]:
-    """Run a ``converge_*`` tool; granted, with its agent record (S-018).
+    """Run a ``converge_*`` tool a grant covers, or only propose it (S-018).
 
     No unconfirmed call answers a plan (the tool asks for
     ``confirm_destructive`` first), so the record binds the run as named:
     the tool, its playbook, the servers it changes and its arguments.
     """
+    reason = call.reason()
+    _checked_reason(reason)
     try:
         inventory = PlatformInventory.from_state(
             validate_config(root.directory, args.schemas)
@@ -6953,10 +7038,8 @@ def _converge_granted[T](  # noqa: PLR0913 - a converge run's whole contract.
     gate = _agent_gate(args.proposals, root.directory, inventory, args.schemas)
     changed = servers(inventory)
     check = None if gate is None or not changed else gate.check(call.tool, changed)
-    if gate is None or check is None or not check.self_confirm:
+    if gate is None or check is None:
         return execute(_unwatched), None
-    reason = call.reason()
-    _checked_reason(reason)
     names = [server.value for server in check.servers]
     plan: dict[str, object] = {
         "tool": call.tool,
@@ -6964,7 +7047,7 @@ def _converge_granted[T](  # noqa: PLR0913 - a converge run's whole contract.
         "servers": names,
         "arguments": call.recorded(),
     }
-    return _granted(
+    return _gated(
         gate,
         check,
         AgentCall(call.tool, call.recorded(), reason, _UNKNOWN_CLIENT),

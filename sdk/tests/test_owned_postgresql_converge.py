@@ -558,19 +558,26 @@ async def _converge_over_mcp(project: Path) -> dict[str, object]:
         return answer
 
 
-# proves: S-006-7
-def test_s006_7_the_converge_services_tool_answers_precondition(
+# proves: S-018-2
+def test_the_converge_services_tool_proposes_before_reading_a_secret(
     tmp_path: Path,
 ) -> None:
+    # No OperatorPolicy grants converge-services, so the confirmed call only
+    # proposes (S-018): the missing passwordRef is the run's to find, once a
+    # person approves it; the other S-006-7 tests prove that refusal.
     project = _project(tmp_path)
 
     answer = asyncio.run(_converge_over_mcp(project))
 
     error = cast("dict[str, object]", answer["error"])
+    context = cast("dict[str, object]", error["context"])
     assert error["code"] == "PRECONDITION", answer
-    message = str(error["message"])
-    assert str(project / "private" / "production" / "billing" / "postgresql.env") in (
-        message
-    )
-    assert "BILLING_PASSWORD" in message
+    assert context["code"] == "operator_approval_required"
+    assert "BILLING_PASSWORD" not in str(error["message"])
     assert not (project / "tmp" / "ansible-inventory.json").exists()
+    proposals = ProposalStore(
+        directory=project / RecordStore.PROPOSALS.path, catalog=SchemaCatalog(SCHEMAS)
+    ).list()
+    assert [record.status for record in proposals.records] == [
+        ProposalStatus.PROPOSED
+    ]

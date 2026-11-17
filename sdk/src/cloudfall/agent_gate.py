@@ -193,6 +193,13 @@ class GrantCheck:
             environment.granted for environment in self.environments
         )
 
+    def reasons(self) -> tuple[str, ...]:
+        """Return one line per environment: its name and the grant's reason."""
+        return tuple(
+            f"{environment.environment.value}: {environment.reason}"
+            for environment in self.environments
+        )
+
     def as_dict(self) -> dict[str, object]:
         """Serialize the fields a plan's ``approval`` gains (S-018-10)."""
         return {
@@ -415,55 +422,19 @@ class GrantedRun:
         if granted.policy is None:
             message = "a granted environment names its policy"
             raise ValueError(message)
-        fingerprint = fingerprint_of(
-            {
-                "tool": call.tool,
-                "arguments": dict(call.arguments),
-                "servers": [server.value for server in check.servers],
-            }
-        )
-        created_at = now.isoformat(timespec="seconds")
-        summary = (
-            _bounded(call.reason, _SUMMARY_MAX)
-            if call.reason is not None
-            else f"The agent called {call.tool} and gave no reason"
-        )
-        lines = [
-            *evidence,
-            *(
-                f"{environment.environment.value}: {environment.reason}"
-                for environment in check.environments
-            ),
-        ]
-        record = OperatorProposal(
-            resource_id=proposal_identifier(fingerprint, created_at),
-            created_at=created_at,
+        record = _agent_record(
+            check,
+            call,
             status=ProposalStatus.RUNNING,
-            trigger_kind=TriggerKind.AGENT,
-            fingerprint=fingerprint,
-            alert=None,
-            drift=None,
-            diagnosis_summary=summary,
-            evidence=tuple(_bounded(line, _EVIDENCE_MAX) for line in lines if line),
-            operation_kind=check.operation_kind,
-            operation_server=None,
-            operation_service=None,
-            command=TOOL_COMMANDS[call.tool],
             approval=ApprovalRecord(
                 mode=ApprovalMode.AGENT,
                 policy=granted.policy,
                 grant=check.operation_kind,
                 client=call.client,
             ),
-            outcome=None,
-            request=AgentRequest(
-                tool=call.tool, arguments=call.arguments, reason=call.reason
-            ),
-            operation_servers=check.servers,
-            operation_environments=tuple(
-                environment.environment for environment in check.environments
-            ),
             binding=binding,
+            evidence=evidence,
+            now=now,
         )
         return cls(store, record)
 
@@ -542,6 +513,160 @@ class GrantedRun:
             "record": str(self.begin()),
             "status": self._record.status.value,
         }
+
+
+def _agent_record(  # noqa: PLR0913 - the record's every source.
+    check: GrantCheck,
+    call: AgentCall,
+    *,
+    status: ProposalStatus,
+    approval: ApprovalRecord | None,
+    binding: ProposalBinding,
+    evidence: Iterable[str],
+    now: datetime,
+) -> OperatorProposal:
+    """Build the agent record of one confirmed call: a run's or a proposal's."""
+    fingerprint = fingerprint_of(
+        {
+            "tool": call.tool,
+            "arguments": dict(call.arguments),
+            "servers": [server.value for server in check.servers],
+        }
+    )
+    created_at = now.isoformat(timespec="seconds")
+    summary = (
+        _bounded(call.reason, _SUMMARY_MAX)
+        if call.reason is not None
+        else f"The agent called {call.tool} and gave no reason"
+    )
+    lines = [*evidence, *check.reasons()]
+    return OperatorProposal(
+        resource_id=proposal_identifier(fingerprint, created_at),
+        created_at=created_at,
+        status=status,
+        trigger_kind=TriggerKind.AGENT,
+        fingerprint=fingerprint,
+        alert=None,
+        drift=None,
+        diagnosis_summary=summary,
+        evidence=tuple(_bounded(line, _EVIDENCE_MAX) for line in lines if line),
+        operation_kind=check.operation_kind,
+        operation_server=None,
+        operation_service=None,
+        command=TOOL_COMMANDS[call.tool],
+        approval=approval,
+        outcome=None,
+        request=AgentRequest(
+            tool=call.tool, arguments=call.arguments, reason=call.reason
+        ),
+        operation_servers=check.servers,
+        operation_environments=tuple(
+            environment.environment for environment in check.environments
+        ),
+        binding=binding,
+    )
+
+
+# The call no grant covers (S-018): nothing runs, and one agent proposal in
+# the store waits for a person's `cloudfall operator approve`.
+
+APPROVAL_REQUIRED = "operator_approval_required"
+"""``error.context.code`` of a confirmed call no grant covers."""
+
+OPERATOR_APPROVE = "cloudfall operator approve"
+"""The command a person approves an agent proposal with, at a terminal."""
+
+_GRANT_FIELDS = frozenset({"selfConfirm", "self_confirm", "environments"})
+"""The keys a plan's ``approval`` gains from the grant check (S-018-10)."""
+
+
+def proposal_plan(plan: Mapping[str, object]) -> dict[str, object]:
+    """Return the plan an agent proposal binds: the grant check left out.
+
+    The grant check says whether the call could run on its own, which
+    changes with the store's history, the hour and the rate limit, not with
+    what the run does; a proposal made in quiet hours stays approvable after
+    them. What the plan's ``approval`` holds besides (a deploy's release
+    approval, S-008) stays, and an ``approval`` the grant alone filled goes.
+    """
+    bound = dict(plan)
+    existing = bound.get("approval")
+    if isinstance(existing, dict):
+        kept = {
+            key: value
+            for key, value in existing.items()
+            if key not in _GRANT_FIELDS
+        }
+        if kept:
+            bound["approval"] = kept
+        else:
+            del bound["approval"]
+    return bound
+
+
+@dataclass(frozen=True, slots=True)
+class AgentProposal:
+    """The agent proposal a confirmed call no grant covers left in the store."""
+
+    record: OperatorProposal
+    path: Path
+    reasons: tuple[str, ...]
+    """One line per environment the run touches: the grant check's reason."""
+
+    @property
+    def command(self) -> str:
+        """The command a person approves it with."""
+        return f"{OPERATOR_APPROVE} {self.record.resource_id.value}"
+
+    def message(self) -> str:
+        """Say that nothing ran, and who approves the proposal, and how."""
+        tool = self.record.request.tool if self.record.request is not None else "run"
+        return (
+            f"no OperatorPolicy grant covers this {tool} run in every environment "
+            f"it touches, so nothing ran: proposal {self.record.resource_id.value} "
+            f"waits for a person, who approves it at a terminal with `{self.command}`"
+        )
+
+    def context(self) -> dict[str, object]:
+        """Return the refusal's ``error.context`` (S-018-1)."""
+        return {
+            "code": APPROVAL_REQUIRED,
+            "proposal": self.record.resource_id.value,
+            "command": self.command,
+            "record": str(self.path),
+            "reasons": list(self.reasons),
+        }
+
+
+def propose_call(  # noqa: PLR0913 - the proposal's every source.
+    store: ProposalStore,
+    check: GrantCheck,
+    call: AgentCall,
+    *,
+    binding: ProposalBinding,
+    evidence: Iterable[str],
+    now: datetime,
+) -> AgentProposal:
+    """Leave a confirmed call no grant covers in the store, ``proposed``.
+
+    The same call (tool, arguments and servers) bound to the same plan,
+    commit and worktree while its proposal is still ``proposed`` returns
+    that proposal and writes nothing (S-018-4).
+    """
+    if check.self_confirm:
+        message = "a call a grant covers runs; it is not proposed"
+        raise ValueError(message)
+    record = _agent_record(
+        check,
+        call,
+        status=ProposalStatus.PROPOSED,
+        approval=None,
+        binding=binding,
+        evidence=evidence,
+        now=now,
+    )
+    kept, path = store.open_or_save(record)
+    return AgentProposal(record=kept, path=path, reasons=check.reasons())
 
 
 def health_verdict(*, healthy: bool, servers: Iterable[ResourceId]) -> Verdict:
