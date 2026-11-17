@@ -131,6 +131,7 @@ held="$(client --execute "
   SELECT SCHEMA_NAME FROM information_schema.SCHEMATA
   WHERE SCHEMA_NAME NOT IN ('information_schema', 'mysql',
     'performance_schema', 'sys', '${scratch}')
+    AND SCHEMA_NAME NOT LIKE '{{ cloudfall_mariadb_no_database_pattern }}'
   ORDER BY SCHEMA_NAME")"
 if [ -z "${held}" ]; then
   echo "replica {{ cloudfall_mariadb_service.id }} holds no database to check" >&2
