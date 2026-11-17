@@ -21,11 +21,11 @@ The runner is a controller like your laptop. It needs:
 
 - The project checked out: the repository `cloudfall init` created, with its
   `pyproject.toml` and `uv.lock` committed
-- `uv`, which installs Python 3.14, Cloudfall and `ansible-core` from the
-  project's lock file
+- `uv`, which installs Python, Cloudfall and `ansible-core` from the
+  project's lock file; see [Supported Python versions](compatibility.md#supported-python-versions)
 - `ansible-playbook` 2.21.0 or later: it comes with Cloudfall
-  (`ansible-core>=2.21,<2.22`), so `uv run` finds it in the project's
-  virtualenv
+  (`ansible-core>=2.21,<2.23`, and 2.22 on Python 3.15), so `uv run` finds
+  it in the project's virtualenv
 - `git` 2.24.0 or later, which `artifact build` uses to clone the
   component's repository; GitHub's Ubuntu runners ship a newer one
 - `sops` 3.8.0 or later, which `secrets render` runs to decrypt fragments;
