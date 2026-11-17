@@ -218,3 +218,12 @@ Status on 2026-11-15: partly built. component.service.j2 sets only User, Group, 
 - Why: MariaDB's account host has no netmask form for IPv6, so such a source validated, got a firewall rule, and failed only at converge after the host made its certificate key; Q-1 and Q-2 want that config to fail validation; no config that converges today stops validating; decided by `@romamo` on #434 (option 1)
 - Applies to: sdk/src/cloudfall/validation.py, docs/specs/019-mariadb-service.md (Validation), MariaDB remoteAccess
 - Enforced by: sdk/tests/test_s019_mariadb.py
+
+## D-27: A granted run's result names the agent's policy in approval.policy
+
+- Decided: 2026-11-17, in cloudfall-dev/cloudfall#487
+- Rule: On a gated MCP call an OperatorPolicy grant runs, the result's approval.policy is the OperatorPolicy id (S-018-5) and approval.status is the record's settled status; a deploy's S-008 release approval value (manual or automatic) moves to approval.release_policy on that path only, and every call no grant covers, CLI or MCP, keeps today's approval object
+- Why: S-018-5 gives approval.policy to the policy id while S-008 already used that key; the build issues after #475 (#476 to #478) read the same shape
+- Applies to: sdk/src/cloudfall/app.py, sdk/src/cloudfall/agent_gate.py, sdk/src/cloudfall/commands.py, deploy, cloudfall mcp serve
+- Enforced by: review; sdk/tests/test_s018_granted_run.py
+- Zone: contract-change (notify, veto until 2026-11-18T10:48:00Z)
