@@ -304,6 +304,8 @@
   check_mode: false
   when:
     - cloudfall_mariadb_declared_role == 'replica'
+    # A source Cloudfall does not manage holds the team's own account
+    - cloudfall_mariadb_links.primary is defined
     - cloudfall_mariadb_plan.action in ['seed', 'attach']
 
 # The primary's server runs later in this run: it waits for that converge

@@ -30,7 +30,7 @@ from cloudfall_engine.ansible_inventory import render_ansible_inventory
 from mariadb_pair import server_state, write_server
 from mariadb_project import SOURCE_CREDENTIALS_REF, mariadb_service, replica_service
 from mariadb_source import SourceServer, write_tls
-from test_s019_mariadb_replication_role import ADDRESSES, ROLE, Pair, Run
+from test_s019_mariadb_replication_role import ADDRESSES, PROBE, ROLE, Pair, Run
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -89,8 +89,8 @@ class Moving:
             "privileges": [],
         }
         network = json.loads(self.pair.network.read_text(encoding="utf-8"))
-        self.client, self.dump, self.state_path, self.log = write_server(
-            tmp_path / "source", state, self.pair.network
+        self.client, self.dump, _, self.state_path, self.log = write_server(
+            tmp_path / "source", state, self.pair.network, PROBE
         )
         self.server = SourceServer(self.state_path, self.client, (certificate, key))
         network[f"127.0.0.1:{self.server.port}"] = str(self.state_path)
@@ -336,6 +336,14 @@ def _refused(moving: Moving, run: Run) -> str:
             {"version": "12.3.1-MariaDB"},
             "newer than this replica's version 11.8.9",
             id="newer than version",
+        ),
+        pytest.param(
+            {"version": "8.0.36"}, "it runs 8.0.36, not MariaDB", id="mysql"
+        ),
+        pytest.param(
+            {"serverId": 2},
+            "its server_id is 2, the serverId this replica declares",
+            id="same server_id",
         ),
     ],
 )

@@ -646,7 +646,7 @@ def _undeclared_promotion(
     }
 
 
-_RELEASE =re.compile(r"(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})")
+_RELEASE = re.compile(r"(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})")
 _GRANT_ON_ALL = re.compile(r"GRANT (.+?) ON \*\.\* TO ")
 # Names a server prints for one right, in either release line.
 _SAME_RIGHT = {
