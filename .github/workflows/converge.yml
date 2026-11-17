@@ -3,8 +3,9 @@ name: Converge
 
 # The roles converged for real on Debian 13 with systemd, through the same
 # commands an operator runs: bootstrap, baseline, services, a deploy, a
-# failing deploy that rolls back, a backup and its restore drill, then the
-# converge again, which must change nothing (D-17). The host is a disposable
+# failing deploy that rolls back, a restart, an nginx Domain with a
+# self-signed certificate, a rollback, a backup and its restore drill, then
+# the converge again, which must change nothing (D-17). The host is a disposable
 # privileged container on the runner, reached over SSH on loopback; it is a
 # test host only, Cloudfall runs no containers of its own (D-10).
 "on":
@@ -12,11 +13,23 @@ name: Converge
     branches:
       - main
   pull_request:
+  # release.yml and publish.yml converge the commit they release, and release
+  # nothing unless this passed on it (D-23)
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
 
 permissions: {}
 
+# A release or publish run converges in a group of its own, so a push to main
+# never cancels the converge a release waits for, nor the other way round
 concurrency:
-  group: converge-${{ github.ref }}
+  group: >-
+    converge-${{
+      inputs.ref && format('{0}-{1}', inputs.ref, github.run_id) || github.ref
+    }}
   cancel-in-progress: true
 
 jobs:
@@ -34,6 +47,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Empty on push and pull_request: the commit that started the run
+          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
@@ -222,6 +237,64 @@ jobs:
           # The failed redeploy copy and its environment file are gone
           test -z "$(ssh 127.0.0.1 find /srv/apps/probe/web/releases \
             /srv/apps/probe/web/shared/env -name "'*.redeploy-*'")"
+
+      # cloudfall restart starts a new process of the same release behind
+      # the health check
+      - name: Restart the component
+        run: |
+          before="$(ssh 127.0.0.1 systemctl show --property=MainPID --value probe-web)"
+          uv run cloudfall restart probe-web --project . --yes
+          after="$(ssh 127.0.0.1 systemctl show --property=MainPID --value probe-web)"
+          if [ "${after}" = "0" ] || [ "${after}" = "${before}" ]; then
+            echo "::error::probe-web runs as PID ${after}, not a new process (was ${before})"
+            exit 1
+          fi
+          test "$(ssh 127.0.0.1 readlink /srv/apps/probe/web/current)" \
+            = "/srv/apps/probe/web/releases/${healthy}"
+          uv run cloudfall health probe-web --project .
+
+      # No ACME server reaches the container, so the job places a self-signed
+      # certificate where certbot would, and domains apply renders the TLS
+      # virtual host without --issue-certificate; the host then serves the
+      # probe over HTTPS with that certificate and redirects HTTP to it
+      - name: Serve the probe through an nginx Domain with a self-signed certificate
+        run: |
+          name=probe.converge.test
+          install --directory --mode=0700 tmp/tls
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+            -days 2 -subj "/CN=${name}" -addext "subjectAltName=DNS:${name}" \
+            -keyout tmp/tls/privkey.pem -out tmp/tls/fullchain.pem 2>/dev/null
+          ssh 127.0.0.1 install --directory --mode=0755 "/etc/letsencrypt/live/${name}"
+          ssh 127.0.0.1 "cat > /etc/letsencrypt/live/${name}/fullchain.pem" \
+            < tmp/tls/fullchain.pem
+          ssh 127.0.0.1 "umask 077 && cat > /etc/letsencrypt/live/${name}/privkey.pem" \
+            < tmp/tls/privkey.pem
+          ssh 127.0.0.1 "grep --quiet ' ${name}\$' /etc/hosts || echo '127.0.0.1 ${name}' >> /etc/hosts"
+          uv run cloudfall domains apply probe-site --project . --yes
+          test -f record/deployments/probe-site.json
+          ssh 127.0.0.1 python3 - "${name}" <<'PY'
+          import http.client
+          import ssl
+          import sys
+
+          name = sys.argv[1]
+          context = ssl.create_default_context(
+              cafile=f"/etc/letsencrypt/live/{name}/fullchain.pem"
+          )
+          # The certificate is its own issuer; strict mode wants a CA apart
+          context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+          secure = http.client.HTTPSConnection(name, 443, context=context, timeout=10)
+          secure.request("GET", "/health")
+          status = secure.getresponse().status
+          if status != 200:
+              sys.exit(f"https://{name}/health answered {status}, not 200")
+          plain = http.client.HTTPConnection(name, 80, timeout=10)
+          plain.request("GET", "/health")
+          response = plain.getresponse()
+          location = response.getheader("Location")
+          if response.status != 301 or location != f"https://{name}/health":
+              sys.exit(f"http://{name}/health answered {response.status} {location}")
+          PY
 
       - name: Roll back to a release and get its environment back
         run: |
