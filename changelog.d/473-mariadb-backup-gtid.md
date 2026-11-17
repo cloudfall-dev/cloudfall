@@ -1,0 +1,3 @@
+### Fixed
+
+- A MariaDB primary's and replica's scheduled dumps now record the GTID position of their snapshot (`mariadb-dump --gtid --master-data=2`, as the replica seed does), in commented lines a load never runs, so the restore drill still loads them as they are. A replica records its own binary log position, which holds its primary's GTIDs, and its replication is not stopped for the dump. A standalone server writes no binary log, so its dumps carry no position. Spec 019 and the service guide now say every MariaDB service keeps its own backup instead of suggesting backups on the replica alone, and ROADMAP.md and ARCHITECTURE.md list MariaDB as built (#473)

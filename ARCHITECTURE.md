@@ -224,8 +224,9 @@ by reusable `Baseline` resources; bare-metal baselines
 add software RAID1 and the hybrid storage layout, while cloud VPS types do
 not. Any server can run any declared service or component:
 
-- Infrastructure services (PostgreSQL and Redis today; MySQL, Elasticsearch,
-  and friends as the catalog grows) stay pinned to declared servers
+- Infrastructure services (PostgreSQL, Redis and MariaDB today, MariaDB with
+  manually promoted primary and replica pairs; Elasticsearch and friends as
+  the catalog grows) stay pinned to declared servers
 - Application components are movable: reassigning `crm-backend` from `h1,h2`
   to `h3` is a config change followed by convergence
 - Failover is manual with easy reassignment rather than automated
@@ -297,9 +298,11 @@ fleet operation without architectural change; the
 [fleet goals](docs/fleet-goals.md) state the requirements this must deliver
 and their current status:
 
-- **Catalog breadth** — MySQL, Elasticsearch, RabbitMQ, and Node runtime
-  services following the PostgreSQL and Redis pattern: pinned installs,
-  loopback-only binds, backup policies, audited evidence
+- **Catalog breadth** — Elasticsearch, RabbitMQ, and Node runtime services
+  following the PostgreSQL, Redis and MariaDB pattern: pinned installs,
+  loopback-only binds, backup policies, audited evidence. MariaDB is built
+  ([spec 019](docs/specs/019-mariadb-service.md)); MySQL and Percona Server
+  as a kind of their own are not
 - **Multi-server assignment at scale** — components spread across many
   servers and moved by editing the config; the model exists, fleet-scale
   operation is the unproven part

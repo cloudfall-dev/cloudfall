@@ -255,7 +255,7 @@ per-table row counts and writes a receipt. See the
 | [Secrets](docs/secrets-guide.md) | sops/age secrets rendered into per-component env files |
 | [CI deploy](docs/ci-deploy-guide.md) | Deploying from GitHub Actions with per-environment keys and required reviewers |
 | [Logging](docs/logging-service-guide.md) | Loki, Grafana and Alloy behind an mTLS gateway |
-| [MariaDB](docs/mariadb-service-guide.md) | A standalone server or a primary and replica pair, backups on the replica, planned switch and promotion |
+| [MariaDB](docs/mariadb-service-guide.md) | A standalone server or a primary and replica pair, backups on each server with the drill on the replica, planned switch and promotion |
 | [Storage](docs/new-server-storage-guide.md) | Destructive, new-server-only RAID provisioning ([design](docs/hybrid-storage-design.md)) |
 | [Compatibility](docs/compatibility.md) | What stays stable across releases, deprecations, the project format and `cloudfall config upgrade` |
 | [Architecture](ARCHITECTURE.md) | Module boundaries and the long-term fleet vision |
