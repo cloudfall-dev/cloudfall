@@ -444,6 +444,15 @@ ROADMAP.md, ARCHITECTURE.md, and the guide.
 
 ## Issues
 
+- cloudfall-dev/cloudfall#505: S-023-1, S-023-2, S-023-18
+- cloudfall-dev/cloudfall#506: S-023-3, S-023-4, S-023-5, S-023-6, S-023-7
+- cloudfall-dev/cloudfall#507: S-023-19
+- cloudfall-dev/cloudfall#508: S-023-8, S-023-9, S-023-10, S-023-11
+- cloudfall-dev/cloudfall#509: S-023-12, S-023-13
+- cloudfall-dev/cloudfall#510: S-023-14, S-023-15
+- cloudfall-dev/cloudfall#511: S-023-16, S-023-17
+- cloudfall-dev/cloudfall#512: S-023-20, S-023-21
+
 ## Verification
 
 No criterion is verified yet.
