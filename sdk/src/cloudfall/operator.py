@@ -1666,9 +1666,13 @@ def autonomous_pass(  # noqa: PLR0913 - boundary mirrors approve().
     for proposal in listing.records:
         if proposal.status is not ProposalStatus.PROPOSED:
             continue
-        if proposal.operation_server is None:
+        if (
+            proposal.trigger_kind is TriggerKind.AGENT
+            or proposal.operation_server is None
+        ):
             # An agent proposal waits for a person, or for the agent to call
-            # again once a grant covers its run (S-018).
+            # again once a grant covers its run (S-018), even one that also
+            # names a single server.
             withheld.append(
                 (
                     proposal.resource_id.value,

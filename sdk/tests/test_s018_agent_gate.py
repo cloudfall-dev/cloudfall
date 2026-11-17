@@ -672,6 +672,36 @@ def test_an_agent_proposal_is_never_run_from_the_store_in_this_release(
     assert store.load(proposal.resource_id).status is ProposalStatus.PROPOSED
 
 
+def test_an_agent_proposal_naming_one_server_is_still_withheld_by_the_pass(
+    tmp_path: Path,
+) -> None:
+    project = copy_examples(tmp_path / "project")
+    store = _store(project)
+    # The schema and the model let an agent record name `server` too.
+    proposal = dataclasses.replace(
+        _agent_record(
+            "op-20260501100000-0123456789abcdef",
+            OperationKind.CONVERGE_SERVICES,
+            ("h1",),
+            ("production",),
+            status=ProposalStatus.PROPOSED,
+        ),
+        approval=None,
+        operation_server=ResourceId("h1"),
+    )
+    store.save(proposal)
+    ran: list[OperatorProposal] = []
+
+    report = autonomous_pass(
+        store, _inventory(project), ran.append, lambda _: lambda _: True, now=NOW
+    )
+
+    assert report.withheld == (
+        (proposal.resource_id.value, "an agent proposal is approved only by a person"),
+    )
+    assert ran == []
+
+
 def test_s018_10_a_persons_command_shows_no_grant(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
