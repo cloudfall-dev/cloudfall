@@ -30,6 +30,22 @@
   changed_when: false
   check_mode: false
 
+# 1 or 0 on the older series, ON or OFF on 11.8 (#450): read as the server
+# gives it, never '+ 0'. A value the role would not read either is an error,
+# not a server that is down.
+- name: Check the MariaDB server's read_only is a value inspect reads
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudfall_inspect_mariadb_read_only.stdout | trim | upper
+        in cloudfall_inspect_mariadb_read_only_values
+    fail_msg: >-
+      MariaDB service {{ cloudfall_inspect_mariadb_service.id }} reports
+      read_only as {{ cloudfall_inspect_mariadb_read_only.stdout | trim }},
+      not one of {{ cloudfall_inspect_mariadb_read_only_values | join(', ') }}
+    quiet: true
+  when: cloudfall_inspect_mariadb_read_only.rc | default(1) == 0
+
 - name: Read the MariaDB server's link to a primary
   ansible.builtin.command:
     argv:
@@ -56,7 +72,6 @@
       {{
         cloudfall_inspect_mariadb_read_only.rc | default(1) == 0
         and cloudfall_inspect_mariadb_link.rc | default(1) == 0
-        and cloudfall_inspect_mariadb_read_only.stdout | trim in ['0', '1']
       }}
     # SHOW SLAVE STATUS prints one "Field: value" line per field, and nothing
     # on a server with no link.
@@ -81,7 +96,9 @@
       available: "{{ cloudfall_inspect_mariadb_answered }}"
       readOnly: >-
         {{
-          (cloudfall_inspect_mariadb_read_only.stdout | trim == '1')
+          cloudfall_inspect_mariadb_read_only_values[
+            cloudfall_inspect_mariadb_read_only.stdout | trim | upper
+          ]
           if cloudfall_inspect_mariadb_answered
           else none
         }}

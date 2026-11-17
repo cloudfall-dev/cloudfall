@@ -31,6 +31,23 @@ cloudfall_inspect_mariadb_services: []
 cloudfall_inspect_mariadb_client: /usr/bin/mariadb
 # The one file the MariaDB role writes its managed settings to
 cloudfall_inspect_mariadb_settings_path: /etc/mysql/mariadb.conf.d/90-cloudfall.cnf
+# read_only as the server gives it, by name (11.8's enum) or by number (its
+# index, or the older series' boolean), and whether it takes no writes: the
+# values the role's cloudfall_mariadb_replication_state filter reads (#450).
+# Any other value fails inspect rather than reading as a server that is down.
+cloudfall_inspect_mariadb_read_only_values:
+  "OFF": false
+  "0": false
+  "ON": true
+  "1": true
+  "NO_LOCK": true
+  "2": true
+  "NO_LOCK_NO_ADMIN": true
+  "3": true
+# A directory in the data directory that is no database, such as a data
+# volume's lost+found, shows as #mysql50#<name>: never a database of the
+# server, as in cloudfall_mariadb_no_database_pattern (#449)
+cloudfall_inspect_mariadb_no_database_pattern: "#mysql50#%"
 # The fields of SHOW SLAVE STATUS audit reads, one "Field: value" line each
 cloudfall_inspect_mariadb_link_pattern: >-
   ^\s*(Slave_IO_Running|Slave_SQL_Running|Seconds_Behind_Master|Master_Server_Id):\s*(.*?)\s*$
@@ -52,7 +69,9 @@ cloudfall_inspect_mariadb_queries:
     ELT(IFNULL(JSON_VALUE(Priv, '$.ssl_type'), '0') + 1,
     'NONE', 'ANY', 'X509', 'SPECIFIED'))
     FROM mysql.global_priv WHERE Host NOT IN ('', 'localhost')
-  databases: SELECT SCHEMA_NAME FROM information_schema.SCHEMATA
+  databases: >-
+    SELECT SCHEMA_NAME FROM information_schema.SCHEMATA
+    WHERE SCHEMA_NAME NOT LIKE '{{ cloudfall_inspect_mariadb_no_database_pattern }}'
   managedDatabases: >-
     SELECT DISTINCT REPLACE(d.Db, '\\_', '_') FROM mysql.db d
     JOIN mysql.roles_mapping m ON m.User = d.User AND m.Host = d.Host

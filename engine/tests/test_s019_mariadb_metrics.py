@@ -10,6 +10,7 @@ Alloy and MariaDB and is listed in the pull request as unverified.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -37,6 +38,7 @@ from mariadb_server import fresh_state, write_client
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+    from types import ModuleType
 
 ROOT = Path(__file__).parents[2]
 ROLES = ROOT / "engine" / "ansible" / "roles"
@@ -417,3 +419,82 @@ def test_inspect_reads_a_stopped_link_no_link_and_no_answer(
     evidence = _inspected(read_only, link)
 
     assert {key: evidence[key] for key in expected} == expected
+
+
+def _replication_filter() -> ModuleType:
+    path = ROLE / "filter_plugins" / "mariadb_replication.py"
+    spec = importlib.util.spec_from_file_location("mariadb_replication", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _read_only_accepted(read_only: dict[str, object]) -> bool:
+    """Evaluate inspect's check of the read_only it read, as Ansible would."""
+    tasks = cast("Iterable[dict[str, Any]]", _yaml(INSPECT / "tasks" / "mariadb.yml"))
+    name = "Check the MariaDB server's read_only is a value inspect reads"
+    (check,) = (task for task in tasks if task["name"] == name)
+    defaults = _trusted(_yaml(INSPECT / "defaults" / "main.yml"))
+    templar = Templar(
+        variables={
+            **cast("dict[str, object]", defaults),
+            "cloudfall_inspect_mariadb_read_only": read_only,
+        }
+    )
+    if not templar.evaluate_conditional(trust_as_template(check["when"])):
+        return True
+    return all(
+        templar.evaluate_conditional(trust_as_template(condition))
+        for condition in check["ansible.builtin.assert"]["that"]
+    )
+
+
+# proves: S-019-19
+@pytest.mark.parametrize(
+    ("reported", "read_only"),
+    [
+        # the older series' boolean
+        ("1", True),
+        ("0", False),
+        # 11.8's enum by name (#450), and by its index
+        ("ON", True),
+        ("OFF", False),
+        ("NO_LOCK", True),
+        ("NO_LOCK_NO_ADMIN", True),
+        ("2", True),
+        ("3", True),
+    ],
+)
+def test_inspect_reads_read_only_in_every_form_the_role_reads(
+    reported: str,
+    read_only: bool,  # noqa: FBT001 - the parametrized reading
+) -> None:
+    answer = _answer(f"{reported}\n")
+
+    evidence = _inspected(answer, _answer(""))
+
+    assert evidence["available"] is True
+    assert evidence["readOnly"] is read_only
+    assert _read_only_accepted(answer)
+
+
+def test_inspect_fails_on_a_read_only_it_does_not_know() -> None:
+    # Not a server that is down: audit would call it unavailable
+    assert not _read_only_accepted(_answer("YES\n"))
+    assert not _read_only_accepted(_answer("\n"))
+    # A server that does not answer is read as unavailable, not checked
+    assert _read_only_accepted(_answer("", rc=1))
+
+
+def test_inspect_reads_read_only_as_the_role_does() -> None:
+    # The role's filter and inspect take the same values the same way (#450):
+    # read-only "1" is True, writable "0" is False
+    role = _replication_filter()
+    inspect = _yaml(INSPECT / "defaults" / "main.yml")[
+        "cloudfall_inspect_mariadb_read_only_values"
+    ]
+
+    assert {key: role.read_only(key) == "1" for key in inspect} == inspect
+    assert set(inspect) == set(role._READ_ONLY)  # noqa: SLF001 - the role's table

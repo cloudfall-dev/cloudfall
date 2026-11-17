@@ -335,6 +335,47 @@ def test_s019_7_inspect_reads_a_locked_account_as_the_role_does() -> None:
     assert " ".join(query.split()).endswith(f"WHERE {condition}")
 
 
+def _not_like(name: str, pattern: str) -> bool:
+    """Whether ``name NOT LIKE pattern`` holds, by LIKE's two wildcards."""
+    expression = "".join(
+        ".*" if part == "%" else "." if part == "_" else re.escape(part)
+        for part in pattern
+    )
+    return re.fullmatch(expression, name, re.DOTALL) is None
+
+
+# proves: S-019-7
+def test_s019_7_inspect_leaves_a_mysql50_name_out_of_the_databases() -> None:
+    # A data volume's lost+found reads as #mysql50#lost+found (#449): audit
+    # leaves it out as the role does, and still lists a real undeclared one
+    inspect = cast(
+        "dict[str, Any]",
+        DataLoader().load_from_file(str(INSPECT / "defaults" / "main.yml")),
+    )
+    role = cast(
+        "dict[str, Any]",
+        DataLoader().load_from_file(
+            str(INSPECT.parent / "cloudfall_mariadb" / "defaults" / "main.yml")
+        ),
+    )
+    pattern = role["cloudfall_mariadb_no_database_pattern"]
+    query = Templar(loader=DataLoader(), variables=inspect).template(
+        trust_as_template(inspect["cloudfall_inspect_mariadb_queries"]["databases"])
+    )
+
+    assert inspect["cloudfall_inspect_mariadb_no_database_pattern"] == pattern
+    assert " ".join(query.split()) == (
+        "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA "
+        "WHERE SCHEMA_NAME NOT LIKE '#mysql50#%'"
+    )
+    on_disk = ["mysql", "crm", "legacy", "#mysql50#lost+found", "#mysql50#.snap"]
+    assert [name for name in on_disk if _not_like(name, pattern)] == [
+        "mysql",
+        "crm",
+        "legacy",
+    ]
+
+
 # proves: S-019-11
 def test_s019_11_inspect_reads_each_remote_accounts_tls_requirement() -> None:
     # REQUIRE SSL removed by hand must reach audit (#435): the read names each

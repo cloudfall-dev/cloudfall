@@ -1,0 +1,3 @@
+### Fixed
+
+- On MariaDB 11.8, `cloudfall audit` no longer reports a MariaDB server as unavailable because `read_only` reads `ON` rather than `1`, and no longer lists the data volume's `#mysql50#lost+found` as an undeclared database. Inspect now reads `read_only` in the forms the role's replication filter takes (`ON`, `NO_LOCK` and `NO_LOCK_NO_ADMIN`, or `1` to `3`, as read-only; `OFF` or `0` as writable) and fails on any other value instead of calling the server unavailable, and leaves every `#mysql50#` name out of the databases it reads, by the same pattern as the role. Tests keep inspect's values and pattern equal to the role's (S-019-7, S-019-19) (#468)
