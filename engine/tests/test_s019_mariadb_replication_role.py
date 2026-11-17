@@ -1256,7 +1256,9 @@ def test_the_state_query_reads_read_only_in_the_form_a_real_server_gave(
         address="203.0.113.11", names=["h1"], read_only_enum=read_only_enum
     )
     state["readOnly"] = True
-    client, _, _, _ = write_server(tmp_path / "h1", state, tmp_path / "network.json")
+    client, _, _, _, _ = write_server(
+        tmp_path / "h1", state, tmp_path / "network.json", PROBE
+    )
 
     done = subprocess.run(  # noqa: S603 - the stand-in client the test wrote.
         [str(client), "--batch", "--raw", "--skip-column-names", "--execute", query],
