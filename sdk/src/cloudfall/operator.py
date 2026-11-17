@@ -72,6 +72,8 @@ _NOT_OPEN_CODES = frozenset({_ERROR_PROPOSAL_NOT_OPEN, ERROR_PROPOSAL_INTERRUPTE
 _ERROR_CHANNEL_UNKNOWN = "operator_approval_channel_unknown"
 _ERROR_OPERATION_UNSUPPORTED = "operator_operation_unsupported"
 ERROR_GATEWAY_UNDECLARED = "operator_gateway_undeclared"
+ERROR_AGENT_PROPOSAL_UNSUPPORTED = "operator_agent_proposal_unsupported"
+"""Code of the refusal to run an agent proposal from the store (S-018)."""
 _SERVICE_CHECK_PREFIXES = ("services.bind[", "alerting.rules[")
 _OUTCOME_DETAIL_MAX = 1000
 """``spec.outcome.detail`` ``maxLength`` in the proposal schema."""
@@ -121,13 +123,40 @@ class TriggerKind(StrEnum):
 
     ALERT = "alert"
     DRIFT = "drift"
+    AGENT = "agent"
+    """An agent's call of a gated MCP tool in a project (S-018)."""
 
 
 class OperationKind(StrEnum):
-    """Existing engine entry points the operator may propose."""
+    """The operation classes an ``OperatorPolicy`` grant names.
+
+    The operator proposes the two converge kinds; the others are the classes
+    of the server-changing MCP tools of a project (S-018).
+    """
 
     CONVERGE_SERVICES = "converge-services"
     CONVERGE_BASELINE = "converge-baseline"
+    DEPLOY = "deploy"
+    ROLLBACK = "rollback"
+    RESTART = "restart"
+    MIGRATE = "migrate"
+    DATA_COPY = "data-copy"
+    DOMAINS_APPLY = "domains-apply"
+    CONVERGE_DOMAINS = "converge-domains"
+
+
+class ApprovalMode(StrEnum):
+    """Who licensed an execution."""
+
+    HUMAN = "human"
+    AUTONOMOUS = "autonomous"
+    """The operator's autonomous pass, on a policy grant."""
+    AGENT = "agent"
+    """An agent's own confirmed call, on a policy grant (S-018)."""
+
+
+_RATE_LIMITED_MODES = frozenset({ApprovalMode.AUTONOMOUS, ApprovalMode.AGENT})
+"""Approvals a policy's ``maxAutonomousPerHour`` counts: those no person gave."""
 
 
 _OPERATION_PLAYBOOKS: Mapping[OperationKind, str] = {
@@ -211,34 +240,113 @@ class DriftTrigger:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentClient:
+    """The MCP client that called, as it named itself at initialize."""
+
+    name: str
+    version: str
+
+    UNKNOWN = "unknown"
+    """What a client that did not name itself, or its version, reads as."""
+
+    def __post_init__(self) -> None:
+        """Reject an empty name or version: an unnamed one reads as unknown."""
+        if not self.name.strip() or not self.version.strip():
+            message = "an agent client names itself and its version, or unknown"
+            raise ValueError(message)
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the client for the proposal receipt."""
+        return {"name": self.name, "version": self.version}
+
+
+@dataclass(frozen=True, slots=True)
 class ApprovalRecord:
-    """Who licensed an execution: a person or a declared policy.
+    """Who licensed an execution: a person, the operator, or an agent on a grant.
 
     A person's approval says how it arrived (``via``); a policy's has no
-    channel, since no one typed anything.
+    channel, since no one typed anything. An agent's names the policy, the
+    operation class it granted, and the MCP client that called (S-018).
     """
 
-    mode: str
+    mode: ApprovalMode
     policy: ResourceId | None
     via: ApprovalChannel | None = None
+    grant: OperationKind | None = None
+    client: AgentClient | None = None
 
     def __post_init__(self) -> None:
         """Reject a person's approval without a channel, or a policy's with one."""
-        if (self.via is None) is (self.mode == "human"):
+        human = self.mode is ApprovalMode.HUMAN
+        if (self.via is None) is human:
             message = (
-                f"a {self.mode} approval "
-                f"{'names' if self.mode == 'human' else 'has no'} the channel it "
-                "arrived through"
+                f"a {self.mode.value} approval "
+                f"{'names' if human else 'has no'} the channel it arrived through"
             )
+            raise ValueError(message)
+        agent = self.mode is ApprovalMode.AGENT
+        if agent and (self.policy is None or self.grant is None or self.client is None):
+            message = "an agent approval names its policy, grant and client"
+            raise ValueError(message)
+        if not agent and (self.grant is not None or self.client is not None):
+            message = f"a {self.mode.value} approval names no grant or client"
             raise ValueError(message)
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the approval for the proposal receipt."""
-        result: dict[str, object] = {"mode": self.mode}
+        result: dict[str, object] = {"mode": self.mode.value}
         if self.policy is not None:
             result["policy"] = self.policy.value
         if self.via is not None:
             result["via"] = self.via.value
+        if self.grant is not None:
+            result["grant"] = self.grant.value
+        if self.client is not None:
+            result["client"] = self.client.as_dict()
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRequest:
+    """An agent's call of a gated MCP tool: what an agent proposal runs."""
+
+    tool: str
+    arguments: Mapping[str, object]
+    """The call's arguments, the ones the server binds left out."""
+    reason: str | None = None
+    """Why the agent asked, when it said."""
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the request for the proposal receipt."""
+        result: dict[str, object] = {
+            "tool": self.tool,
+            "arguments": dict(self.arguments),
+        }
+        if self.reason is not None:
+            result["reason"] = self.reason
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class ProposalBinding:
+    """What an agent proposal was computed against (D-20, S-018).
+
+    ``plan_sha256`` is the sha256 of the plan the command computed; in a git
+    project ``git_commit`` is HEAD and ``worktree_digest`` the digest of the
+    uncommitted changes outside ``decisions/``, ``record/`` and ``tmp/``.
+    """
+
+    plan_sha256: str
+    git_commit: str | None = None
+    worktree_digest: str | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the binding for the proposal receipt."""
+        result: dict[str, object] = {"planSha256": self.plan_sha256}
+        if self.git_commit is not None:
+            result["gitCommit"] = self.git_commit
+        if self.worktree_digest is not None:
+            result["worktreeDigest"] = self.worktree_digest
         return result
 
 
@@ -280,29 +388,68 @@ class OperatorProposal:
     diagnosis_summary: str
     evidence: tuple[str, ...]
     operation_kind: OperationKind
-    operation_server: ResourceId
+    operation_server: ResourceId | None
+    """The one server an alert or drift proposal runs on; none for an agent's."""
     operation_service: ResourceId | None
     command: tuple[str, ...]
     approval: ApprovalRecord | None
     outcome: ProposalOutcome | None
     interruption: Interruption | None = None
     """Who closed its ``running`` receipt as interrupted, and when."""
+    request: AgentRequest | None = None
+    """The agent's call, for an agent proposal (S-018)."""
+    operation_servers: tuple[ResourceId, ...] = ()
+    """Every server an agent proposal's run changes."""
+    operation_environments: tuple[ResourceId, ...] = ()
+    """The environments of those servers."""
+    binding: ProposalBinding | None = None
+    """What an agent proposal was computed against."""
 
     def __post_init__(self) -> None:
         """Reject proposals whose trigger payload contradicts its kind."""
-        has_alert = self.alert is not None
-        expects_alert = self.trigger_kind is TriggerKind.ALERT
-        if has_alert is not expects_alert or (self.drift is None) is not (
-            self.trigger_kind is not TriggerKind.DRIFT
+        payloads = {
+            TriggerKind.ALERT: self.alert is not None,
+            TriggerKind.DRIFT: self.drift is not None,
+            TriggerKind.AGENT: self.request is not None,
+        }
+        if any(
+            present is not (kind is self.trigger_kind)
+            for kind, present in payloads.items()
         ):
             message = (
                 "proposal trigger payload does not match its kind: "
                 f"{self.resource_id.value}"
             )
             raise ValueError(message)
+        agent = self.trigger_kind is TriggerKind.AGENT
+        names_servers = bool(self.operation_servers) and bool(
+            self.operation_environments
+        )
+        if agent and (not names_servers or self.binding is None):
+            message = (
+                "an agent proposal names the servers it changes, their "
+                f"environments and its binding: {self.resource_id.value}"
+            )
+            raise ValueError(message)
+        if not agent and self.operation_server is None:
+            message = (
+                "an alert or drift proposal names the server it runs on: "
+                f"{self.resource_id.value}"
+            )
+            raise ValueError(message)
 
-    def as_document(self) -> dict[str, object]:
-        """Serialize the proposal as a schema-valid receipt document."""
+    @property
+    def servers(self) -> tuple[ResourceId, ...]:
+        """Every server the proposal's run changes."""
+        if self.operation_server is not None:
+            return (self.operation_server, *(
+                server
+                for server in self.operation_servers
+                if server != self.operation_server
+            ))
+        return self.operation_servers
+
+    def _trigger(self) -> dict[str, object]:
         trigger: dict[str, object] = {
             "kind": self.trigger_kind.value,
             "fingerprint": self.fingerprint,
@@ -311,23 +458,39 @@ class OperatorProposal:
             trigger["alert"] = self.alert.as_dict()
         if self.drift is not None:
             trigger["drift"] = self.drift.as_dict()
-        operation: dict[str, object] = {
-            "kind": self.operation_kind.value,
-            "server": self.operation_server.value,
-            "command": list(self.command),
-        }
+        if self.request is not None:
+            trigger["request"] = self.request.as_dict()
+        return trigger
+
+    def _operation(self) -> dict[str, object]:
+        operation: dict[str, object] = {"kind": self.operation_kind.value}
+        if self.operation_server is not None:
+            operation["server"] = self.operation_server.value
+        if self.operation_servers:
+            operation["servers"] = [server.value for server in self.operation_servers]
+        if self.operation_environments:
+            operation["environments"] = [
+                environment.value for environment in self.operation_environments
+            ]
+        operation["command"] = list(self.command)
         if self.operation_service is not None:
             operation["service"] = self.operation_service.value
+        return operation
+
+    def as_document(self) -> dict[str, object]:
+        """Serialize the proposal as a schema-valid receipt document."""
         spec: dict[str, object] = {
             "createdAt": self.created_at,
             "status": self.status.value,
-            "trigger": trigger,
+            "trigger": self._trigger(),
             "diagnosis": {
                 "summary": self.diagnosis_summary,
                 "evidence": list(self.evidence),
             },
-            "operation": operation,
+            "operation": self._operation(),
         }
+        if self.binding is not None:
+            spec["binding"] = self.binding.as_dict()
         if self.approval is not None:
             spec["approval"] = self.approval.as_dict()
         if self.outcome is not None:
@@ -745,11 +908,24 @@ def _proposal_from_document(document: Mapping[str, object]) -> OperatorProposal:
             checks=tuple(cast("list[str]", raw_drift["checks"])),
             fingerprint=fingerprint,
         )
+    request = None
+    raw_request = trigger.get("request")
+    if isinstance(raw_request, dict):
+        raw_reason = raw_request.get("reason")
+        request = AgentRequest(
+            tool=cast("str", raw_request["tool"]),
+            arguments=MappingProxyType(
+                dict(cast("Mapping[str, object]", raw_request["arguments"]))
+            ),
+            reason=None if raw_reason is None else cast("str", raw_reason),
+        )
     raw_approval = spec.get("approval")
     approval = None
     if isinstance(raw_approval, dict):
         raw_policy = raw_approval.get("policy")
-        mode = cast("str", raw_approval["mode"])
+        mode = ApprovalMode(cast("str", raw_approval["mode"]))
+        raw_grant = raw_approval.get("grant")
+        raw_client = raw_approval.get("client")
         approval = ApprovalRecord(
             mode=mode,
             policy=(
@@ -760,9 +936,26 @@ def _proposal_from_document(document: Mapping[str, object]) -> OperatorProposal:
             # A person's approval written before the channel reads as unknown.
             via=(
                 ApprovalChannel.from_record(raw_approval.get("via"))
-                if mode == "human"
+                if mode is ApprovalMode.HUMAN
                 else None
             ),
+            grant=None if raw_grant is None else OperationKind(cast("str", raw_grant)),
+            client=(
+                None
+                if not isinstance(raw_client, dict)
+                else AgentClient(
+                    name=cast("str", raw_client["name"]),
+                    version=cast("str", raw_client["version"]),
+                )
+            ),
+        )
+    raw_binding = spec.get("binding")
+    binding = None
+    if isinstance(raw_binding, dict):
+        binding = ProposalBinding(
+            plan_sha256=cast("str", raw_binding["planSha256"]),
+            git_commit=cast("str | None", raw_binding.get("gitCommit")),
+            worktree_digest=cast("str | None", raw_binding.get("worktreeDigest")),
         )
     raw_outcome = spec.get("outcome")
     outcome = None
@@ -778,6 +971,7 @@ def _proposal_from_document(document: Mapping[str, object]) -> OperatorProposal:
             ),
         )
     raw_service = operation.get("service")
+    raw_server = operation.get("server")
     return OperatorProposal(
         resource_id=ResourceId.from_boundary(metadata["id"]),
         created_at=cast("str", spec["createdAt"]),
@@ -789,7 +983,9 @@ def _proposal_from_document(document: Mapping[str, object]) -> OperatorProposal:
         diagnosis_summary=cast("str", diagnosis["summary"]),
         evidence=tuple(cast("list[str]", diagnosis["evidence"])),
         operation_kind=OperationKind(cast("str", operation["kind"])),
-        operation_server=ResourceId.from_boundary(operation["server"]),
+        operation_server=(
+            ResourceId.from_boundary(raw_server) if raw_server is not None else None
+        ),
         operation_service=(
             ResourceId.from_boundary(raw_service)
             if raw_service is not None
@@ -799,6 +995,16 @@ def _proposal_from_document(document: Mapping[str, object]) -> OperatorProposal:
         approval=approval,
         outcome=outcome,
         interruption=Interruption.from_record(spec.get("interruption")),
+        request=request,
+        operation_servers=tuple(
+            ResourceId.from_boundary(server)
+            for server in cast("list[object]", operation.get("servers", []))
+        ),
+        operation_environments=tuple(
+            ResourceId.from_boundary(environment)
+            for environment in cast("list[object]", operation.get("environments", []))
+        ),
+        binding=binding,
     )
 
 
@@ -943,6 +1149,14 @@ def engine_executor(
             )
             raise OperatorError(_ERROR_OPERATION_UNSUPPORTED, message)
         server = proposal.operation_server
+        if server is None:
+            # An agent proposal names no one server; this executor never runs
+            # one on every server.
+            message = (
+                f"proposal {proposal.resource_id.value} names no one server to "
+                "limit its run to"
+            )
+            raise OperatorError(_ERROR_OPERATION_UNSUPPORTED, message)
         if proposal.operation_kind is OperationKind.CONVERGE_SERVICES:
             passwords = converge_services(context, secrets, server)
             return tuple(password.record() for password in passwords)
@@ -1055,14 +1269,31 @@ def approve(  # noqa: PLR0913 - the run's contract plus how the approval came.
         raise OperatorError(_ERROR_CHANNEL_UNKNOWN, message)
     proposal = store.load(proposal_id)
     refuse_not_open(proposal)
+    refuse_agent_proposal(proposal)
     return _execute_and_verify(
         store,
         proposal,
         executor,
         verifier,
-        ApprovalRecord(mode="human", policy=None, via=via),
+        ApprovalRecord(mode=ApprovalMode.HUMAN, policy=None, via=via),
         options=options,
     )
+
+
+def refuse_agent_proposal(proposal: OperatorProposal) -> None:
+    """Refuse to run an agent proposal, before anything runs.
+
+    Its request is a gated MCP tool's call, which this release does not run
+    from the proposal store; the receipt stays as it is.
+    """
+    if proposal.trigger_kind is not TriggerKind.AGENT:
+        return
+    message = (
+        f"proposal {proposal.resource_id.value} is an agent's call of "
+        f"{proposal.request.tool if proposal.request is not None else 'a tool'}, "
+        "which this release does not run from the proposal store"
+    )
+    raise OperatorError(ERROR_AGENT_PROPOSAL_UNSUPPORTED, message)
 
 
 def refuse_not_open(proposal: OperatorProposal) -> None:
@@ -1283,22 +1514,48 @@ def autonomy_decision(
     ``environments_by_server`` maps each declared server to its environment;
     a receipt of a server no longer declared counts for no environment.
     """
-    grant = policy.grant_for(proposal.operation_kind.value)
+    return grant_decision(
+        proposal.operation_kind,
+        policy,
+        store.list().records,
+        now,
+        environments_by_server,
+        exclude=proposal.resource_id,
+    )
+
+
+def grant_decision(  # noqa: PLR0913 - the grant's whole contract.
+    operation_kind: OperationKind,
+    policy: OperatorPolicyInventory,
+    receipts: tuple[OperatorProposal, ...],
+    now: datetime,
+    environments_by_server: Mapping[ResourceId, ResourceId],
+    *,
+    exclude: ResourceId | None = None,
+) -> AutonomyDecision:
+    """Decide whether ``policy`` grants a run of ``operation_kind`` now.
+
+    The rules of ``autonomy_decision``, over ``receipts`` read once: a
+    receipt is in the policy's environment when one of the servers it
+    changes is (D-19), and ``exclude`` leaves out the proposal being decided.
+    """
+    grant = policy.grant_for(operation_kind.value)
     if grant is None:
         reason = (
             f"policy {policy.resource_id.value} does not grant autonomy "
-            f"for {proposal.operation_kind.value}"
+            f"for {operation_kind.value}"
         )
         return AutonomyDecision(granted=False, reason=reason)
-    receipts = store.list().records
     history = [
         receipt
         for receipt in receipts
-        if receipt.operation_kind is proposal.operation_kind
-        and receipt.resource_id != proposal.resource_id
+        if receipt.operation_kind is operation_kind
+        and receipt.resource_id != exclude
         and receipt.status in _SETTLED_STATUSES
-        and environments_by_server.get(receipt.operation_server)
-        == policy.environment
+        and any(
+            environments_by_server.get(server) == policy.environment
+            for server in receipt.servers
+        )
     ]
     verified = sum(
         1
@@ -1308,7 +1565,7 @@ def autonomy_decision(
     if verified < grant.required_verified_runs.value:
         reason = (
             f"insufficient verified history for "
-            f"{proposal.operation_kind.value} in {policy.environment.value}: "
+            f"{operation_kind.value} in {policy.environment.value}: "
             f"{verified} of {grant.required_verified_runs.value} required"
         )
         return AutonomyDecision(granted=False, reason=reason)
@@ -1316,7 +1573,7 @@ def autonomy_decision(
         last = history[-1].status
         outcome = "failed" if last is ProposalStatus.FAILED else "was interrupted"
         reason = (
-            f"most recent {proposal.operation_kind.value} receipt {outcome} "
+            f"most recent {operation_kind.value} receipt {outcome} "
             f"in {policy.environment.value}; "
             "autonomy suspended until a human-approved run verifies"
         )
@@ -1335,7 +1592,7 @@ def autonomy_decision(
         1
         for receipt in receipts
         if receipt.approval is not None
-        and receipt.approval.mode == "autonomous"
+        and receipt.approval.mode in _RATE_LIMITED_MODES
         and (ran_at := _rate_limit_moment(receipt)) is not None
         and datetime.fromisoformat(ran_at).timestamp() > hour_ago
     )
@@ -1348,7 +1605,7 @@ def autonomy_decision(
         return AutonomyDecision(granted=False, reason=reason)
     reason = (
         f"policy {policy.resource_id.value} grants "
-        f"{proposal.operation_kind.value}: {verified} verified runs, "
+        f"{operation_kind.value}: {verified} verified runs, "
         "rate limit and quiet hours clear"
     )
     return AutonomyDecision(granted=True, reason=reason)
@@ -1409,6 +1666,16 @@ def autonomous_pass(  # noqa: PLR0913 - boundary mirrors approve().
     for proposal in listing.records:
         if proposal.status is not ProposalStatus.PROPOSED:
             continue
+        if proposal.operation_server is None:
+            # An agent proposal waits for a person, or for the agent to call
+            # again once a grant covers its run (S-018).
+            withheld.append(
+                (
+                    proposal.resource_id.value,
+                    "an agent proposal is approved only by a person",
+                )
+            )
+            continue
         environment = environments_by_server.get(proposal.operation_server)
         policy = (
             policies_by_environment.get(environment)
@@ -1424,7 +1691,7 @@ def autonomous_pass(  # noqa: PLR0913 - boundary mirrors approve().
             )
             continue
         decision = (
-            _incomplete_history(listing.unreadable)
+            incomplete_history(listing.unreadable)
             if listing.unreadable
             else autonomy_decision(
                 proposal, policy, store, moment, environments_by_server
@@ -1439,7 +1706,9 @@ def autonomous_pass(  # noqa: PLR0913 - boundary mirrors approve().
                 proposal,
                 executor,
                 verifier_for(proposal),
-                ApprovalRecord(mode="autonomous", policy=policy.resource_id),
+                ApprovalRecord(
+                    mode=ApprovalMode.AUTONOMOUS, policy=policy.resource_id
+                ),
                 options=options,
             )
         except OperatorError as error:
@@ -1459,7 +1728,7 @@ def autonomous_pass(  # noqa: PLR0913 - boundary mirrors approve().
     )
 
 
-def _incomplete_history(
+def incomplete_history(
     unreadable: tuple[record_files.UnreadableRecord, ...],
 ) -> AutonomyDecision:
     """Withhold a grant while a receipt cannot be read.

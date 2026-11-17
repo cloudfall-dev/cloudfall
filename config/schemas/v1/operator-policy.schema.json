@@ -31,9 +31,17 @@
                 "type": "object",
                 "properties": {
                   "kind": {
+                    "description": "The operation class granted: the operator's converge-services and converge-baseline, and the classes of the server-changing MCP tools of a project (deploy, rollback, restart, migrate, data-copy, domains-apply, converge-domains).",
                     "enum": [
                       "converge-services",
-                      "converge-baseline"
+                      "converge-baseline",
+                      "deploy",
+                      "rollback",
+                      "restart",
+                      "migrate",
+                      "data-copy",
+                      "domains-apply",
+                      "converge-domains"
                     ]
                   },
                   "requiredVerifiedRuns": {

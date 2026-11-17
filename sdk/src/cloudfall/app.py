@@ -53,6 +53,12 @@ from treaty import (
     Timeout,
 )
 
+from cloudfall.agent_gate import (
+    GrantCheck,
+    check_grant,
+    migrate_servers,
+    tool_class,
+)
 from cloudfall.agent_server import (
     APPROVAL_COMMAND,
     McpServeArgs,
@@ -255,7 +261,12 @@ from cloudfall.mariadb import (
     WARNING_REPLICATION_UNENCRYPTED as MARIADB_WARNING_REPLICATION_UNENCRYPTED,
 )
 from cloudfall.mariadb import WARNING_VERSION_ENDING as MARIADB_WARNING_VERSION_ENDING
-from cloudfall.migrate import MigrateError, MigrateOptions, execute_migration
+from cloudfall.migrate import (
+    MigrateError,
+    MigrateOptions,
+    StepStatus,
+    execute_migration,
+)
 from cloudfall.observation import load_observations
 from cloudfall.observe import (
     ObservationRequest,
@@ -266,6 +277,7 @@ from cloudfall.observe import (
 )
 from cloudfall.operations import FleetOperations, UtcTimestamp, build_operations_view
 from cloudfall.operator import (
+    ERROR_AGENT_PROPOSAL_UNSUPPORTED,
     ERROR_FEED_INVALID,
     ERROR_FEED_UNREACHABLE,
     ERROR_GATEWAY_MATERIAL_INVALID,
@@ -417,7 +429,7 @@ from cloudfall.why import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
     from datetime import date
 
     from cloudfall.audit import AuditReport
@@ -2342,6 +2354,56 @@ class EngineArgs(ProjectArgs):
         )
 
 
+# The agent gate's preview (S-018): over `cloudfall mcp serve` in a project,
+# the server binds --proposals on the server-changing commands, and the plan
+# of an unconfirmed call says whether an OperatorPolicy grant would let the
+# confirmed call run. A person's command names no store and is not gated.
+
+_AGENT_PROPOSALS_DESCRIPTION = (
+    "Proposal store an agent's call is gated by, which cloudfall mcp serve "
+    "sets to the project's; with it the plan's approval says whether an "
+    "OperatorPolicy grant lets the confirmed call run (default: none, for a "
+    "person's command)"
+)
+
+
+def _agent_grant(
+    proposals: Path | None,
+    fleet: Fleet,
+    schemas: Path,
+    tool: str,
+    servers: Iterable[ResourceId],
+) -> GrantCheck | None:
+    """Check the grant a confirmed agent call would run on; none off MCP."""
+    if proposals is None:
+        return None
+    store = ProposalStore(
+        directory=fleet.path(proposals), catalog=SchemaCatalog(schemas)
+    )
+    return check_grant(
+        tool_class(tool), servers, fleet.inventory, store, datetime.now(UTC)
+    )
+
+
+def _with_agent_approval(
+    plan: Mapping[str, object], grant: GrantCheck | None
+) -> dict[str, object]:
+    """Add the grant check to the plan's ``approval``, keeping what it holds.
+
+    A deploy's or rollback's plan already names its release approval there
+    (S-008); the grant's fields join them.
+    """
+    if grant is None:
+        return dict(plan)
+    existing = plan.get("approval")
+    approval = (
+        dict(cast("Mapping[str, object]", existing))
+        if isinstance(existing, Mapping)
+        else {}
+    )
+    return {**plan, "approval": {**approval, **grant.as_dict()}}
+
+
 # health
 
 
@@ -3436,6 +3498,7 @@ def _operator_failed(error: OperatorError) -> Exception:
     if error.code in {
         ERROR_GATEWAY_UNDECLARED,
         ERROR_GATEWAY_MATERIAL_INVALID,
+        ERROR_AGENT_PROPOSAL_UNSUPPORTED,
         ERROR_PROPOSAL_INTERRUPTED,
         ERROR_PROPOSAL_NOT_RUNNING,
     }:
@@ -3811,10 +3874,15 @@ class MigrateArgs(EngineArgs):
         ),
         secret=False,
     )
+    proposals: Path | None = Flag(
+        default=None, description=_AGENT_PROPOSALS_DESCRIPTION
+    )
 
     def __post_init__(self) -> None:
         """Refuse a malformed pair, and keep relative paths in the project."""
         EngineArgs.__post_init__(self)
+        if self.proposals is not None:
+            _inside_project(self.proposals, "proposals")
         for flag in (
             "observed",
             "service_observed",
@@ -3919,6 +3987,11 @@ class Migration:
     completed: int = 0
     next: str | None = None
     step: str | None = None
+    approval: dict[str, object] = Out(default_factory=dict, ordered=True)
+    """On an agent's plan over MCP: whether a grant lets the confirmed call run.
+
+    Empty off MCP, and on a run's result.
+    """
 
 
 @app.command(
@@ -3957,14 +4030,38 @@ def migrate(args: MigrateArgs, ctx: Ctx, fleet: Fleet) -> Migration:
             error.detail, context={"code": error.code}
         ) from error
     status = str(result["status"])
+    steps = cast("list[dict[str, object]]", snake_case_keys(result["steps"]))
+    grant = (
+        _agent_grant(
+            args.proposals,
+            fleet,
+            args.schemas,
+            "migrate",
+            migrate_servers(
+                fleet.inventory,
+                (
+                    str(step["id"])
+                    for step in steps
+                    if step["status"] == StepStatus.PENDING.value
+                ),
+            ),
+        )
+        if status == "plan"
+        else None
+    )
     migration = Migration(
         # A plan is the dry run --yes confirms.
         effect="would_update" if status == "plan" else "updated",
         status=status,
-        steps=cast("list[dict[str, object]]", snake_case_keys(result["steps"])),
+        steps=steps,
         completed=int(cast("int", result["completed"])),
         next=cast("str | None", result.get("next")),
         step=cast("str | None", result.get("step")),
+        approval=(
+            {}
+            if grant is None
+            else cast("dict[str, object]", snake_case_keys(grant.as_dict()))
+        ),
     )
     failure = _migration_failure(
         migration, cast("Mapping[str, object]", result.get("error", {}))
@@ -4754,6 +4851,15 @@ class ComponentArgs(EngineArgs):
             "and only shows what it would do"
         ),
     )
+    proposals: Path | None = Flag(
+        default=None, description=_AGENT_PROPOSALS_DESCRIPTION
+    )
+
+    def __post_init__(self) -> None:
+        """Keep relative paths inside the project."""
+        EngineArgs.__post_init__(self)
+        if self.proposals is not None:
+            _inside_project(self.proposals, "proposals")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -4840,11 +4946,16 @@ class DataMigrateArgs(EngineArgs):
             "and only shows what it would do"
         ),
     )
+    proposals: Path | None = Flag(
+        default=None, description=_AGENT_PROPOSALS_DESCRIPTION
+    )
 
     def __post_init__(self) -> None:
         """Keep relative paths inside the project."""
         EngineArgs.__post_init__(self)
         _inside_project(self.data_migrations, "data-migrations")
+        if self.proposals is not None:
+            _inside_project(self.proposals, "proposals")
 
     def source_schemas(self) -> DataCopySchemas:
         """Return the named source schemas.
@@ -4962,12 +5073,19 @@ def deploy_command(args: DeployArgs, ctx: Ctx, fleet: Fleet) -> DeployPayload:
         if not args.yes:
             preview = preview_deploy(context, args.component, args.release, artifacts)
             return DeployPayload(
-                {
-                    **_plan(preview),
-                    "approval": (
-                        dict(AUTOMATIC_PLAN) if approval is None else approval.plan()
+                _with_agent_approval(
+                    {
+                        **_plan(preview),
+                        "approval": (
+                            dict(AUTOMATIC_PLAN)
+                            if approval is None
+                            else approval.plan()
+                        ),
+                    },
+                    _agent_grant(
+                        args.proposals, fleet, args.schemas, "deploy", preview.servers
                     ),
-                }
+                )
             )
         # Refused before the inventory render or any playbook: nothing on a
         # server changes and no receipt is written.
@@ -5025,11 +5143,23 @@ def rollback_command(args: RollbackArgs, ctx: Ctx, fleet: Fleet) -> RollbackPayl
         if not args.yes:
             # A rollback never waits for an approval, even for a manual
             # application; the plan says so and why (S-008-13).
+            preview = preview_rollback(context, args.component, args.release)
             return RollbackPayload(
-                {
-                    **_plan(preview_rollback(context, args.component, args.release)),
-                    "approval": rollback_approval(fleet.inventory, args.component),
-                }
+                _with_agent_approval(
+                    {
+                        **_plan(preview),
+                        "approval": rollback_approval(
+                            fleet.inventory, args.component
+                        ),
+                    },
+                    _agent_grant(
+                        args.proposals,
+                        fleet,
+                        args.schemas,
+                        "rollback",
+                        preview.servers,
+                    ),
+                )
             )
         result = rollback(context, args.component, args.release)
     except LifecycleError as error:
@@ -5059,7 +5189,15 @@ def restart_command(args: ComponentArgs, ctx: Ctx, fleet: Fleet) -> RestartPaylo
     context = args.context(fleet, ctx)
     try:
         if not args.yes:
-            return RestartPayload(_plan(preview_restart(context, args.component)))
+            preview = preview_restart(context, args.component)
+            return RestartPayload(
+                _with_agent_approval(
+                    _plan(preview),
+                    _agent_grant(
+                        args.proposals, fleet, args.schemas, "restart", preview.servers
+                    ),
+                )
+            )
         result = restart(context, args.component)
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error
@@ -5841,11 +5979,19 @@ def data_copy(
     try:
         schemas = args.source_schemas()
         if not args.yes:
+            preview = preview_data_migration(
+                context, args.service, args.database, source, schemas
+            )
             return DataMigratePayload(
-                _plan(
-                    preview_data_migration(
-                        context, args.service, args.database, source, schemas
-                    )
+                _with_agent_approval(
+                    _plan(preview),
+                    _agent_grant(
+                        args.proposals,
+                        fleet,
+                        args.schemas,
+                        "data_copy",
+                        preview.servers,
+                    ),
                 )
             )
         body = migrate_data(
@@ -5893,11 +6039,16 @@ class DomainApplyArgs(EngineArgs):
             "request and only shows what it would do"
         ),
     )
+    proposals: Path | None = Flag(
+        default=None, description=_AGENT_PROPOSALS_DESCRIPTION
+    )
 
     def __post_init__(self) -> None:
         """Keep relative paths inside the project."""
         EngineArgs.__post_init__(self)
         _inside_project(self.deployments, "deployments")
+        if self.proposals is not None:
+            _inside_project(self.proposals, "proposals")
 
 
 class DomainApplyPayload(Payload):
@@ -5942,11 +6093,20 @@ def domains_apply(
         if not args.yes:
             preview = preview_domain_apply(context, request, SystemNameResolver())
             return DomainApplyPayload(
-                {
-                    **preview.as_dict(),
-                    "instruction": _PLAN_INSTRUCTION,
-                    "effect": "would_update",
-                }
+                _with_agent_approval(
+                    {
+                        **preview.as_dict(),
+                        "instruction": _PLAN_INSTRUCTION,
+                        "effect": "would_update",
+                    },
+                    _agent_grant(
+                        args.proposals,
+                        fleet,
+                        args.schemas,
+                        "domains_apply",
+                        (preview.server,),
+                    ),
+                )
             )
         applied = apply_domain(context, request, SystemNameResolver())
     except LifecycleError as error:

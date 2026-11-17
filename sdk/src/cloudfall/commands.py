@@ -592,7 +592,10 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         CommandEffect.SERVERS,
         "restart one component behind its health check",
         gate=_YES,
-        output=(_plan("component"), _shape(*_EXECUTED, when="with `--yes`")),
+        output=(
+            _plan("component", "approval?"),
+            _shape(*_EXECUTED, when="with `--yes`"),
+        ),
     ),
     CommandContract(
         "cloudfall",
@@ -716,7 +719,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "dump an external database and restore it into a declared service",
         gate=_YES,
         output=(
-            _plan("service"),
+            _plan("service", "approval?"),
             _shape(
                 "status",
                 "action",
@@ -737,7 +740,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         "its proxy server alone; no baseline, firewall or service task runs",
         gate=_YES,
         output=(
-            _plan("domain", "dnsCheck?"),
+            _plan("domain", "dnsCheck?", "approval?"),
             _shape(
                 "status",
                 "action",
@@ -785,6 +788,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
                 "steps",
                 "completed",
                 "next:string?",
+                "approval",
                 when="`plan` without `--yes`; `ok` when every step is done",
             ),
             _shape(
