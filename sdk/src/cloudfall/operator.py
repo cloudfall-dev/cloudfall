@@ -60,7 +60,8 @@ _FINGERPRINT_LENGTH = 16
 ERROR_FEED_UNREACHABLE = "operator_feed_unreachable"
 ERROR_FEED_INVALID = "operator_feed_invalid"
 ERROR_GATEWAY_MATERIAL_INVALID = "operator_gateway_material_invalid"
-_ERROR_PROPOSAL_EXISTS = "operator_proposal_exists"
+ERROR_PROPOSAL_EXISTS = "operator_proposal_exists"
+"""Code of the refusal to save a receipt under an id the store already holds."""
 ERROR_PROPOSAL_MISSING = "operator_proposal_missing"
 """Code of the error ``ProposalStore`` raises for an id it holds no receipt for."""
 _ERROR_PROPOSAL_NOT_OPEN = "operator_proposal_not_open"
@@ -741,7 +742,7 @@ class ProposalStore:
                 record_files.create(path, content)
             except FileExistsError as error:
                 message = f"proposal already exists: {path}"
-                raise OperatorError(_ERROR_PROPOSAL_EXISTS, message) from error
+                raise OperatorError(ERROR_PROPOSAL_EXISTS, message) from error
         return path
 
     def open_or_save(self, proposal: OperatorProposal) -> tuple[OperatorProposal, Path]:
@@ -766,7 +767,7 @@ class ProposalStore:
                 record_files.create(path, self._content(proposal))
             except FileExistsError as error:
                 message = f"proposal already exists: {path}"
-                raise OperatorError(_ERROR_PROPOSAL_EXISTS, message) from error
+                raise OperatorError(ERROR_PROPOSAL_EXISTS, message) from error
         return proposal, path
 
     def update(self, proposal: OperatorProposal) -> Path:

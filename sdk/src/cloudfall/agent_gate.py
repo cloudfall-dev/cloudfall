@@ -19,11 +19,13 @@ from typing import TYPE_CHECKING
 
 from cloudfall.audit import AuditStatus
 from cloudfall.operator import (
+    ERROR_PROPOSAL_EXISTS,
     AgentClient,
     AgentRequest,
     ApprovalMode,
     ApprovalRecord,
     OperationKind,
+    OperatorError,
     OperatorProposal,
     ProposalOutcome,
     ProposalStatus,
@@ -322,6 +324,17 @@ TOOL_COMMANDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
 REASON_MAX_LENGTH = 1000
 """The most characters an agent's ``reason`` holds."""
 
+ERROR_AGENT_RECORD_EXISTS = "agent_record_exists"
+"""Code of a granted run refused: a record of its id is already in the store."""
+
+ERROR_AGENT_RECORD_UNWRITABLE = "agent_record_unwritable"
+"""Code of a granted run whose record the store folder cannot take."""
+
+
+class RecordNotSavedError(OperatorError):
+    """A granted run's record could not be written to the proposal store."""
+
+
 _SUMMARY_MAX = 1000
 _EVIDENCE_MAX = 500
 _DETAIL_MAX = 1000
@@ -408,7 +421,8 @@ class GrantedRun:
     ``watch`` wraps the run's step runner: the record is saved, ``running``,
     when the first step starts, so a call refused before any step (a lock
     held, an artifact that does not verify) writes no record. ``settle``
-    records the verdict, ``fail`` a run or check that raised.
+    records the verdict, ``fail`` a run or check that raised. A write the
+    store refuses raises ``RecordNotSavedError``.
     """
 
     def __init__(self, store: ProposalStore, record: OperatorProposal) -> None:
@@ -463,10 +477,45 @@ class GrantedRun:
         return self._path is not None
 
     def begin(self) -> Path:
-        """Write the running record, once; return its path."""
+        """Write the running record, once; return its path.
+
+        An id the store already holds, an identical call recorded in the same
+        second, refuses the run rather than taking another id: the first may
+        still be running. Either refusal raises ``RecordNotSavedError`` before the
+        step the record precedes starts.
+        """
         if self._path is None:
-            self._path = self._store.save(self._record)
+            try:
+                self._path = self._store.save(self._record)
+            except OperatorError as error:
+                if error.code != ERROR_PROPOSAL_EXISTS:
+                    raise
+                identifier = self._record.resource_id.value
+                message = (
+                    "an identical granted call started in the same second is "
+                    f"already recorded as {identifier} "
+                    f"({self._store.directory / f'{identifier}.json'}); "
+                    "nothing ran: read that record before calling again"
+                )
+                raise RecordNotSavedError(ERROR_AGENT_RECORD_EXISTS, message) from error
+            except OSError as error:
+                raise self._unwritable(error) from error
         return self._path
+
+    def _update(self) -> None:
+        """Write the record's new state over the one on disk."""
+        try:
+            self._store.update(self._record)
+        except OSError as error:
+            raise self._unwritable(error) from error
+
+    def _unwritable(self, error: OSError) -> RecordNotSavedError:
+        reason = error.strerror or str(error)
+        message = (
+            f"cannot write the agent record {self._record.resource_id.value} to "
+            f"{self._store.directory}: {reason}"
+        )
+        return RecordNotSavedError(ERROR_AGENT_RECORD_UNWRITABLE, message)
 
     def watch(self, run: StepRunner) -> StepRunner:
         """Wrap ``run`` so the record is written before the first step starts."""
@@ -491,7 +540,7 @@ class GrantedRun:
                 detail=_bounded(verdict.detail, _DETAIL_MAX),
             ),
         )
-        self._store.update(self._record)
+        self._update()
         return path
 
     def fail(self, detail: str, executed_at: datetime) -> Path | None:
@@ -511,7 +560,7 @@ class GrantedRun:
                 detail=_bounded(detail, _DETAIL_MAX),
             ),
         )
-        self._store.update(self._record)
+        self._update()
         return self._path
 
     def approval(self) -> dict[str, object]:
@@ -556,9 +605,16 @@ class ApprovedRun(GrantedRun):
         )
 
     def begin(self) -> Path:
-        """Record the approved run as started, once; return its path."""
+        """Record the approved run as started, once; return its path.
+
+        A store folder that cannot take it raises ``RecordNotSavedError``
+        before the step the record precedes starts.
+        """
         if self._path is None:
-            self._path = self._store.start(self._record)
+            try:
+                self._path = self._store.start(self._record)
+            except OSError as error:
+                raise self._unwritable(error) from error
         return self._path
 
     def approval(self) -> dict[str, object]:

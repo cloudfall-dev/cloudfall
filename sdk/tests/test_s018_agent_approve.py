@@ -16,6 +16,8 @@ deploy playbook runs on the controller and writes the release receipt.
 
 from __future__ import annotations
 
+import dataclasses
+import errno
 import io
 import json
 from datetime import UTC, datetime
@@ -23,7 +25,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from cloudfall.agent_gate import check_grant
+from cloudfall.agent_gate import (
+    ERROR_AGENT_RECORD_UNWRITABLE,
+    ApprovedRun,
+    Verdict,
+    check_grant,
+)
 from cloudfall.app import (
     ComponentArgs,
     DataMigrateArgs,
@@ -33,6 +40,7 @@ from cloudfall.app import (
     MigrateArgs,
     RollbackArgs,
     _call_arguments,
+    _recorded,
     _stored_arguments,
     app,
 )
@@ -52,7 +60,15 @@ from cloudfall.validation import SchemaCatalog, validate_config
 from test_decision import _Terminal
 from test_deploy_approval import _write_artifact
 from test_s018_agent_gate import _agent_record
-from test_s018_granted_run import _committed, _engine, _git, _staging_project
+from test_s018_granted_run import (
+    _committed,
+    _engine,
+    _FirstUpdateFails,
+    _git,
+    _render_with,
+    _staging_project,
+    _Steps,
+)
 from test_s018_ungranted_call import (
     _command,
     _marker_engine,
@@ -413,6 +429,72 @@ def test_s018_12_a_change_in_decisions_record_or_tmp_keeps_the_binding(
 
     assert exit_code == 0, payload
     assert _record(project, proposal).status is ProposalStatus.VERIFIED
+
+
+# A person-approved run's record the store can't save (#489)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _StartFails(ProposalStore):
+    """A store whose folder cannot take the approved run's start."""
+
+    def start(self, running: OperatorProposal) -> Path:
+        message = f"cannot start {running.resource_id.value}"
+        raise OSError(errno.EIO, message)
+
+
+def _approved_run(
+    project: Path, engine: Path, store: ProposalStore
+) -> ApprovedRun:
+    proposal = _record(project, _proposal(project, engine))
+    return ApprovedRun.of(store, proposal, ApprovalChannel.TERMINAL)
+
+
+def test_an_approved_run_whose_start_cannot_be_saved_exits_precondition(
+    tmp_path: Path,
+) -> None:
+    project = _ungranted_project(tmp_path, policy=False)
+    engine = _engine(tmp_path, project, healthy=True)
+    store = _StartFails(directory=project / PROPOSALS, catalog=SchemaCatalog(SCHEMAS))
+    steps = _Steps()
+
+    with pytest.raises(CliExit) as raised:
+        _recorded(
+            _approved_run(project, engine, store),
+            _render_with(steps),
+            lambda _: Verdict.passed("crm-site matches its receipt"),
+        )
+
+    assert raised.value.code == "PRECONDITION"
+    assert raised.value.context["code"] == ERROR_AGENT_RECORD_UNWRITABLE
+    assert str(project / PROPOSALS) in raised.value.message
+    assert steps.started == []
+
+
+def test_a_lost_settle_of_an_approved_run_never_records_it_failed(
+    tmp_path: Path,
+) -> None:
+    project = _ungranted_project(tmp_path, policy=False)
+    engine = _engine(tmp_path, project, healthy=True)
+    store = _FirstUpdateFails(
+        directory=project / PROPOSALS, catalog=SchemaCatalog(SCHEMAS)
+    )
+    steps = _Steps()
+
+    with pytest.raises(CliExit) as raised:
+        _recorded(
+            _approved_run(project, engine, store),
+            _render_with(steps),
+            lambda _: Verdict.passed("crm-site matches its receipt"),
+        )
+
+    assert raised.value.code == "PRECONDITION"
+    assert raised.value.context["ran"] is True
+    assert raised.value.context["verified"] is True
+    assert "the run completed and verified" in raised.value.message
+    assert store.updates == [ProposalStatus.VERIFIED.value]
+    record = _store(project).read(Path(str(raised.value.context["record"])))
+    assert record.status is ProposalStatus.RUNNING
 
 
 def test_s018_13_a_person_approved_run_earns_the_grant(tmp_path: Path) -> None:
