@@ -258,11 +258,11 @@ def test_s012_5_the_second_node_admits_9300_from_the_first_node_only(
         lines = [line.strip() for line in rendered.splitlines() if "dport 9300" in line]
         assert lines == [
             (
-                f'ip saddr 203.0.113.{other}/32 tcp dport 9300 accept comment '
+                f"ip saddr 203.0.113.{other}/32 tcp dport 9300 accept comment "
                 '"search-main transport"'
             ),
             (
-                f'ip6 saddr 2001:db8:{other}::/64 tcp dport 9300 accept comment '
+                f"ip6 saddr 2001:db8:{other}::/64 tcp dport 9300 accept comment "
                 '"search-main transport"'
             ),
         ]
@@ -350,8 +350,9 @@ def test_remote_access_is_refused_on_a_cluster_of_two_or_more(tmp_path: Path) ->
     assert not holds(["h1", "h2"], remoteAccess=remote)
 
 
-def test_the_transport_is_opened_and_its_certificate_in_place_before_the_config(
-) -> None:
+def test_the_transport_is_opened_and_its_certificate_in_place_before_the_config() -> (
+    None
+):
     names = [task["name"] for task in _load("main.yml")]
     transport = [task["name"] for task in _load("transport.yml")]
 
@@ -441,13 +442,17 @@ def test_s012_6_a_restarted_node_rejoins_on_the_new_version_before_the_next(
     hosts = _hosts(_rendered(tmp_path))
     tasks = _load("node-start.yml")
     guarded, back = tasks
-    start, rejoining = guarded["block"]
-    steps = [*rejoining["block"], *guarded["always"], *back["block"]]
+    start, *rejoining = guarded["block"]
+    steps = [*rejoining, *guarded["always"], *back["block"]]
     rolling = {"cloudfall_elasticsearch_rolling": {"status": "green", "nodes": "2"}}
     variables = _variables(hosts["h2"], **rolling)
 
     assert start["ansible.builtin.systemd_service"]["state"] == "restarted"
     assert "when" not in start
+    # The rejoin steps run only on a node node-stop.yml took out, not in check mode
+    for step in rejoining:
+        assert _true(step["when"], variables)
+        assert not _true(step["when"], _variables(hosts["h2"]))
     assert [step["name"] for step in steps] == [
         "Wait for the node to rejoin its cluster",
         "Read the version the node reports",
@@ -724,9 +729,12 @@ def test_s012_5_a_two_node_s3_project_validates_renders_and_passes_the_guards(
 ) -> None:
     """The project S-012-5 converges: no guard of the role stops either node."""
     project = _rendered_project(tmp_path)
-    assert main(
-        ["config", "validate", "--project", str(project), "--schemas", str(SCHEMAS)]
-    ) == 0, capsys.readouterr().out
+    assert (
+        main(
+            ["config", "validate", "--project", str(project), "--schemas", str(SCHEMAS)]
+        )
+        == 0
+    ), capsys.readouterr().out
     rendered = cast(
         "dict[str, Any]",
         render_ansible_inventory(
