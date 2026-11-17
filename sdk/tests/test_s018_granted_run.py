@@ -16,12 +16,14 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
 from cloudfall.agent_gate import (
+    ERROR_AGENT_RECORD_EXISTS,
+    ERROR_AGENT_RECORD_UNWRITABLE,
     AgentCall,
     GrantCheck,
     audit_verdict,
@@ -38,6 +40,7 @@ from cloudfall.agent_server import (
 )
 from cloudfall.app import (
     _agent_gate,
+    _AgentGate,
     _converge_granted,
     _ConvergeCall,
     _granted,
@@ -61,6 +64,8 @@ from cloudfall.operator import (
     OperatorProposal,
     ProposalStatus,
     ProposalStore,
+    fingerprint_of,
+    proposal_identifier,
 )
 from cloudfall.service_evidence import DeploymentReceipt, EvidenceTimestamp
 from cloudfall.validation import SchemaCatalog, validate_config
@@ -69,6 +74,7 @@ from test_agent_server import _serve, _talk
 from test_deploy_approval import _write_artifact
 from test_operator import _audit_report, _Finished
 from test_s018_agent_gate import _agent_record
+from treaty import CliExit
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -559,6 +565,138 @@ def test_s018_7_a_run_that_raises_after_its_first_step_ends_failed(
     assert record.status is ProposalStatus.FAILED
     assert record.outcome is not None
     assert "OSError" in record.outcome.detail
+
+
+# A record the store can't save refuses the call before any step (#489)
+
+
+_DOMAINS_CALL = AgentCall(
+    "domains_apply",
+    {"domain": "crm-site"},
+    None,
+    AgentClient(name=AgentClient.UNKNOWN, version=AgentClient.UNKNOWN),
+)
+
+
+def _domains_gate(project: Path) -> tuple[_AgentGate, GrantCheck]:
+    inventory = PlatformInventory.from_state(validate_config(project, SCHEMAS))
+    gate = _agent_gate(PROPOSALS, project, inventory, SCHEMAS)
+    assert gate is not None
+    check = gate.check("domains_apply", (ResourceId("h2"),))
+    assert check.self_confirm, check
+    return gate, check
+
+
+def _granted_domains(
+    gate: _AgentGate,
+    check: GrantCheck,
+    run: Callable[[Callable[[StepRunner], StepRunner]], str],
+) -> None:
+    _granted(
+        gate,
+        check,
+        _DOMAINS_CALL,
+        plan={"domain": "crm-site", "servers": ["h2"]},
+        evidence=(),
+        execute=run,
+        verify=lambda _: domains_verdict(()),
+    )
+
+
+def _render_with(steps: _Steps) -> Callable[[Callable[[StepRunner], StepRunner]], str]:
+    def run(watch: Callable[[StepRunner], StepRunner]) -> str:
+        watch(steps)(
+            ExecutionStep(
+                description="render Domain crm-site",
+                argv=("ansible-playbook", "domains.yml"),
+                environment={},
+            )
+        )
+        return "crm-site"
+
+    return run
+
+
+def _store_folder_replaced_by_a_file(project: Path) -> Path:
+    """Put a file where the store folder was: no record can be written there."""
+    folder = project / PROPOSALS
+    shutil.rmtree(folder)
+    folder.write_text("not a folder\n", encoding="utf-8")
+    return folder
+
+
+def test_a_same_second_identical_call_refuses_naming_the_existing_record(
+    tmp_path: Path,
+) -> None:
+    project = _staging_project(tmp_path, "domains-apply")
+    gate, check = _domains_gate(project)
+    fingerprint = fingerprint_of(
+        {
+            "tool": _DOMAINS_CALL.tool,
+            "arguments": dict(_DOMAINS_CALL.arguments),
+            "servers": [server.value for server in check.servers],
+        }
+    )
+    # An identical call already recorded in each of the next few seconds.
+    start = datetime.now(UTC)
+    identifiers = [
+        proposal_identifier(
+            fingerprint, (start + timedelta(seconds=offset)).isoformat("T", "seconds")
+        )
+        for offset in range(5)
+    ]
+    existing = [project / PROPOSALS / f"{item.value}.json" for item in identifiers]
+    for path in existing:
+        path.write_text("{}\n", encoding="utf-8")
+    steps = _Steps()
+
+    with pytest.raises(CliExit) as raised:
+        _granted_domains(gate, check, _render_with(steps))
+
+    assert raised.value.code == "PRECONDITION"
+    assert raised.value.context["code"] == ERROR_AGENT_RECORD_EXISTS
+    assert any(str(path) in raised.value.message for path in existing)
+    assert steps.started == []
+    assert all(path.read_text(encoding="utf-8") == "{}\n" for path in existing)
+
+
+def test_a_store_folder_that_cannot_be_written_exits_precondition_naming_it(
+    tmp_path: Path,
+) -> None:
+    project = _staging_project(tmp_path, "domains-apply")
+    gate, check = _domains_gate(project)
+    folder = _store_folder_replaced_by_a_file(project)
+    steps = _Steps()
+
+    with pytest.raises(CliExit) as raised:
+        _granted_domains(gate, check, _render_with(steps))
+
+    assert raised.value.code == "PRECONDITION"
+    assert raised.value.context["code"] == ERROR_AGENT_RECORD_UNWRITABLE
+    assert str(folder) in raised.value.message
+    assert steps.started == []
+
+
+def test_a_failed_save_after_the_run_started_keeps_the_runs_own_error(
+    tmp_path: Path,
+) -> None:
+    project = _staging_project(tmp_path, "domains-apply")
+    gate, check = _domains_gate(project)
+    steps = _Steps()
+
+    def run(watch: Callable[[StepRunner], StepRunner]) -> str:
+        _render_with(steps)(watch)
+        _store_folder_replaced_by_a_file(project)
+        message = "the receipt directory went away"
+        raise OSError(message)
+
+    with pytest.raises(OSError, match="receipt directory went away") as raised:
+        _granted_domains(gate, check, run)
+
+    assert steps.started
+    assert any(
+        str(project / PROPOSALS) in note for note in raised.value.__notes__
+    )
 
 
 def test_s018_17_a_domains_apply_run_whose_observe_differs_ends_failed(

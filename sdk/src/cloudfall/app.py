@@ -70,6 +70,7 @@ from cloudfall.agent_gate import (
     ApprovedRun,
     GrantCheck,
     GrantedRun,
+    RecordNotSavedError,
     Verdict,
     audit_verdict,
     binding_changes,
@@ -2571,11 +2572,15 @@ def _recorded[T](
         verdict = verify(result)
         run.settle(verdict, executed_at, datetime.now(UTC))
         settled = True
+    except RecordNotSavedError as error:
+        # A record the store cannot take refuses the call (D-5); its first
+        # save precedes the first engine step, so a refused call ran nothing.
+        raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
     finally:
         # Whatever raised, a usage exit or any other error, a started record
         # never stays running: it ends failed and the error propagates.
         if not settled:
-            run.fail(_raised_detail(stage, sys.exception()), executed_at)
+            _record_failure(run, stage, executed_at)
     return result, run.approval()
 
 
@@ -2721,6 +2726,21 @@ def _proposed(
     except OperatorError as error:
         return Exit.PRECONDITION(error.message, context={"code": error.code})
     return Exit.PRECONDITION(proposal.message(), context=proposal.context())
+
+
+def _record_failure(run: GrantedRun, stage: str, executed_at: datetime) -> None:
+    """Record the raised error as the run's failure, never masking that error.
+
+    A store that cannot take the failure leaves the run's own error to
+    propagate, with a note naming the record that was not written.
+    """
+    raised = sys.exception()
+    try:
+        run.fail(_raised_detail(stage, raised), executed_at)
+    except RecordNotSavedError as error:
+        if raised is None:
+            raise
+        raised.add_note(error.message)
 
 
 def _raised_detail(stage: str, raised: BaseException | None) -> str:
