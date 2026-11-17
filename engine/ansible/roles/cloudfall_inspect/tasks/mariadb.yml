@@ -52,11 +52,16 @@
         )
       }}
   vars:
+    # read_only is 1 or 0 on the older series, ON or OFF on 11.8 (#450): read
+    # as the server gives it, never '+ 0'. A value the role would not read
+    # either leaves the server's role unknown; failing here would stop the
+    # inspection of every server after this one (any_errors_fatal, serial 1).
     cloudfall_inspect_mariadb_answered: >-
       {{
         cloudfall_inspect_mariadb_read_only.rc | default(1) == 0
         and cloudfall_inspect_mariadb_link.rc | default(1) == 0
-        and cloudfall_inspect_mariadb_read_only.stdout | trim in ['0', '1']
+        and cloudfall_inspect_mariadb_read_only.stdout | trim | upper
+        in cloudfall_inspect_mariadb_read_only_values
       }}
     # SHOW SLAVE STATUS prints one "Field: value" line per field, and nothing
     # on a server with no link.
@@ -81,7 +86,9 @@
       available: "{{ cloudfall_inspect_mariadb_answered }}"
       readOnly: >-
         {{
-          (cloudfall_inspect_mariadb_read_only.stdout | trim == '1')
+          cloudfall_inspect_mariadb_read_only_values[
+            cloudfall_inspect_mariadb_read_only.stdout | trim | upper
+          ]
           if cloudfall_inspect_mariadb_answered
           else none
         }}
