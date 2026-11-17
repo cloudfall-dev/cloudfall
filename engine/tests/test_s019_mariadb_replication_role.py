@@ -144,10 +144,17 @@ class Run:
 class Pair:
     """Two stand-in servers and the role's replication tasks to converge them."""
 
-    def __init__(self, tmp_path: Path, locked_flag: str = "true") -> None:
+    def __init__(
+        self,
+        tmp_path: Path,
+        locked_flag: str = "true",
+        *,
+        read_only_enum: bool = False,
+    ) -> None:
         """Write both servers, fresh, and the role's tasks without ownership.
 
         ``locked_flag``: how both read a locked account's flag (#452).
+        ``read_only_enum``: both report ``read_only`` as MariaDB 11.8 does.
         """
         self.tmp_path = tmp_path
         self.network = tmp_path / "network.json"
@@ -162,6 +169,7 @@ class Pair:
                     address=address,
                     names=[f"{host}.example.internal", address],
                     locked_flag=locked_flag,
+                    read_only_enum=read_only_enum,
                 ),
                 self.network,
                 PROBE,
@@ -455,13 +463,29 @@ def _primary_with_data(pair: Pair) -> None:
     )
 
 
-@pytest.fixture
-def pair(tmp_path: Path) -> Pair:
+def _declared_pair(tmp_path: Path, *, read_only_enum: bool = False) -> Pair:
     """Return h1 holding data, declared primary, and an empty h2, its replica."""
-    pair = Pair(tmp_path)
+    pair = Pair(tmp_path, read_only_enum=read_only_enum)
     _primary_with_data(pair)
     pair.declare(_primary(), replica_service())
     return pair
+
+
+@pytest.fixture
+def pair(tmp_path: Path) -> Pair:
+    """Return h1 holding data, declared primary, and an empty h2, its replica."""
+    return _declared_pair(tmp_path)
+
+
+# How a server reports read_only in the role's state query: 1 on the older
+# series, ON on 11.8, where it is an enum (#450).
+SERIES = pytest.mark.parametrize(
+    "read_only_enum",
+    [
+        pytest.param(False, id="read_only reads 1"),
+        pytest.param(True, id="read_only reads ON, as on 11.8"),
+    ],
+)
 
 
 def _seeded(pair: Pair) -> Run:
@@ -612,9 +636,12 @@ def test_s019_12_the_managed_files_hold_the_binary_log_and_read_only() -> None:
 
 
 # proves: S-019-13
+@SERIES
 def test_s019_13_a_second_converge_changes_nothing_and_does_not_seed_again(
-    pair: Pair,
+    tmp_path: Path,
+    read_only_enum: bool,  # noqa: FBT001 - the parametrized series
 ) -> None:
+    pair = _declared_pair(tmp_path, read_only_enum=read_only_enum)
     _seeded(pair)
     before = pair.state("h2")
 
@@ -1008,10 +1035,14 @@ def test_s019_14_an_undeclared_source_is_probed_from_the_replicas_server(
 
 
 # proves: S-019-15
+@SERIES
 @pytest.mark.parametrize("order", ["inventory", "reverse_inventory"])
 def test_s019_15_a_role_swap_ends_within_two_converges_with_no_row_lost(
-    pair: Pair, order: str
+    tmp_path: Path,
+    order: str,
+    read_only_enum: bool,  # noqa: FBT001 - the parametrized series
 ) -> None:
+    pair = _declared_pair(tmp_path, read_only_enum=read_only_enum)
     _seeded(pair)
     assert pair.write("h1", "billing", "invoices", 4)
     rows = pair.state("h1")["databases"]
@@ -1031,6 +1062,15 @@ def test_s019_15_a_role_swap_ends_within_two_converges_with_no_row_lost(
     }
     assert outcomes["mariadb-replica"] == "promote"
     assert outcomes["mariadb-main"] == "attach"
+    # The promotion took its read-only source's branch, whatever form the
+    # server reported read_only in
+    promoted = next(
+        run.outcomes["mariadb-replica"]
+        for run in (first, second)
+        if run.outcomes.get("mariadb-replica") is not None
+        and run.outcomes["mariadb-replica"].outcome == "promote"
+    )
+    assert promoted.get("reason") == "its source mariadb-main is read-only and applied"
     _assert_follows(pair, "h1", "h2")
     new_primary = pair.state("h2")
     assert new_primary["link"] is None
@@ -1148,6 +1188,90 @@ def test_the_gtid_comparison_reads_sets_not_one_position() -> None:
         plugin.gtids("0-1")
 
 
+# proves: S-019-13
+@pytest.mark.parametrize(
+    ("reported", "read"),
+    [
+        ("1", "1"),
+        ("0", "0"),
+        # 11.8's enum by name, as a string context reads it
+        ("ON", "1"),
+        ("OFF", "0"),
+        ("NO_LOCK", "1"),
+        ("NO_LOCK_NO_ADMIN", "1"),
+        # and by its index, should a server give it as a number
+        ("2", "1"),
+        ("3", "1"),
+    ],
+)
+def test_read_only_is_read_the_same_in_every_form_a_server_reports(
+    reported: str, read: str
+) -> None:
+    plugin = _plugin()
+
+    state = plugin.replication_state(f"{reported}|2|0-1-3|0-1-3|0-1-3|0-1-3|2\n")
+
+    assert state == {
+        "readOnly": read,
+        "serverId": "2",
+        "binlogPos": "0-1-3",
+        "binlogState": "0-1-3",
+        "slavePos": "0-1-3",
+        "currentPos": "0-1-3",
+        "databases": "2",
+    }
+
+
+def test_an_unknown_read_only_or_a_short_state_line_is_an_error() -> None:
+    plugin = _plugin()
+
+    with pytest.raises(ValueError, match="not a MariaDB read_only value: 'YES'"):
+        plugin.replication_state("YES|2|0-1-3|0-1-3|0-1-3|0-1-3|2")
+    with pytest.raises(ValueError, match="read 6 field"):
+        plugin.replication_state("1|2|0-1-3|0-1-3|0-1-3|0-1-3")
+
+
+# proves: S-019-13
+@SERIES
+def test_the_state_query_reads_read_only_in_the_form_a_real_server_gave(
+    tmp_path: Path,
+    read_only_enum: bool,  # noqa: FBT001 - the parametrized series
+) -> None:
+    # Not read_only + 0: no real 11.8 server has shown what that reads as, and
+    # a name read as a number is 0, a read-only server read as writable (#450)
+    defaults = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text("utf-8"))
+    query = (
+        Environment(undefined=StrictUndefined, autoescape=False)  # noqa: S701 - SQL.
+        .from_string(defaults["cloudfall_mariadb_replication_state_query"])
+        .render(
+            cloudfall_mariadb_system_databases=defaults[
+                "cloudfall_mariadb_system_databases"
+            ],
+            cloudfall_mariadb_no_database_pattern=defaults[
+                "cloudfall_mariadb_no_database_pattern"
+            ],
+        )
+    )
+    state = server_state(
+        address="203.0.113.11", names=["h1"], read_only_enum=read_only_enum
+    )
+    state["readOnly"] = True
+    client, _, _, _, _ = write_server(
+        tmp_path / "h1", state, tmp_path / "network.json", PROBE
+    )
+
+    done = subprocess.run(  # noqa: S603 - the stand-in client the test wrote.
+        [str(client), "--batch", "--raw", "--skip-column-names", "--execute", query],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.split("|", 1)[0] == ("ON" if read_only_enum else "1")
+    assert _plugin().replication_state(done.stdout)["readOnly"] == "1"
+
+
 def _state(**fields: str) -> dict[str, str]:
     return {
         "readOnly": "1",
@@ -1247,6 +1371,22 @@ def _down(errno_: str = "2003", **fields: str) -> dict[str, str]:
             "",
             "refuse",
             id="read-only source not applied",
+        ),
+        pytest.param(
+            {"Master_Server_Id": "1", "Slave_IO_Running": "Yes"},
+            {"service": "mariadb-main", "server": "h1", "role": "primary"},
+            _state(readOnly="ON", serverId="1"),
+            "",
+            "promote",
+            id="source read-only as 11.8 says it, applied",
+        ),
+        pytest.param(
+            {"Master_Server_Id": "1", "Slave_IO_Running": "Yes"},
+            {"service": "mariadb-main", "server": "h1", "role": "primary"},
+            _state(readOnly="OFF", serverId="1"),
+            "",
+            "refuse",
+            id="source writable as 11.8 says it",
         ),
     ],
 )

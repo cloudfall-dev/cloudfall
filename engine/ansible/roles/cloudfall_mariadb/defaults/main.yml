@@ -192,7 +192,10 @@ cloudfall_mariadb_link_poll_seconds: 2
 cloudfall_mariadb_no_database_pattern: "#mysql50#%"
 # One line, '|' between fields: read_only, server_id, the binary log's
 # position and state, the applied position, the current position, and how
-# many databases are not MariaDB's own.
+# many databases are not MariaDB's own; the cloudfall_mariadb_replication_state
+# filter reads it. read_only by the form the server gives: 1 on the older
+# series, ON on 11.8 (#450); the filter reads both. Not '+ 0': no server has
+# shown what 11.8 reads it as in arithmetic, and a name read as a number is 0.
 cloudfall_mariadb_replication_state_query: >-
   SELECT CONCAT_WS('|', @@global.read_only, @@global.server_id,
   @@global.gtid_binlog_pos, @@global.gtid_binlog_state,
@@ -200,14 +203,6 @@ cloudfall_mariadb_replication_state_query: >-
   (SELECT COUNT(*) FROM information_schema.SCHEMATA
   WHERE SCHEMA_NAME NOT IN ('{{ cloudfall_mariadb_system_databases | join("', '") }}')
   AND SCHEMA_NAME NOT LIKE '{{ cloudfall_mariadb_no_database_pattern }}'))
-cloudfall_mariadb_replication_state_fields:
-  - readOnly
-  - serverId
-  - binlogPos
-  - binlogState
-  - slavePos
-  - currentPos
-  - databases
 # The databases of a server that are not MariaDB's own, and how many tables
 # each holds, as database|count.
 cloudfall_mariadb_databases_query: >-

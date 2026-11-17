@@ -17,6 +17,9 @@ grow along one history.
   has, on the replica, the same GTID or a higher sequence (S-019-14)
 - ``cloudfall_mariadb_vertical(stdout)``: the first row of ``--vertical``
   output (``SHOW SLAVE STATUS``) as a mapping; ``{}`` with no row
+- ``cloudfall_mariadb_replication_state(stdout)``: the role's state query's
+  line as a mapping, ``readOnly`` read as ``1`` or ``0`` whether the server
+  said ``ON`` (11.8's enum) or ``1`` (#450); any other value is an error
 - ``cloudfall_mariadb_link_peer(link, peers)``: the declared service a link
   replicates from, by the ``server_id`` it reports, else, whatever
   ``server_id`` it reports, by the host and port it names; ``{}`` when it is
@@ -127,6 +130,18 @@ _STATE_FIELDS = (
     "currentPos",
     "databases",
 )
+# read_only by name (11.8's enum) and by number (its index, or the older
+# series' boolean), as read-only "1" or writable "0".
+_READ_ONLY = {
+    "OFF": "0",
+    "0": "0",
+    "ON": "1",
+    "1": "1",
+    "NO_LOCK": "1",
+    "2": "1",
+    "NO_LOCK_NO_ADMIN": "1",
+    "3": "1",
+}
 _UNSAFE = "service_mariadb_promotion_unsafe"
 _UNATTACHABLE = "service_mariadb_replica_unattachable"
 _DIVERGED = "service_mariadb_replica_diverged"
@@ -147,6 +162,45 @@ _PROBE_OUTCOMES = frozenset({"open", "refused", "unresolved", *_PROBE_SAYS})
 _SOURCE_ANSWERED = frozenset({1045, 1129, 1130, 1236, 1251, 2026})
 
 
+def read_only(value: object) -> str:
+    """Return ``read_only`` as ``1`` (read-only) or ``0`` (writable).
+
+    MariaDB 11.8 made it an enum, ``OFF``, ``ON``, ``NO_LOCK`` or
+    ``NO_LOCK_NO_ADMIN``, which a string context reads by name and a number
+    by its index (0 to 3); the older series read ``0`` or ``1`` (#450). Every
+    value but ``OFF`` takes no writes from a user without ``READ_ONLY ADMIN``.
+    Anything else is an error.
+    """
+    text = str(value).strip().upper()
+    if text not in _READ_ONLY:
+        message = f"not a MariaDB read_only value: {value!r}"
+        raise ValueError(message)
+    return _READ_ONLY[text]
+
+
+def replication_state(stdout: str) -> dict[str, str]:
+    """Parse the role's replication state query, one ``|``-separated line.
+
+    The fields are ``_STATE_FIELDS``, in order; ``readOnly`` is read by
+    :func:`read_only`, so it is ``1`` or ``0`` whatever form the server used.
+    """
+    if not isinstance(stdout, str):
+        message = (
+            f"the state query's output must be a string, got {type(stdout).__name__}"
+        )
+        raise TypeError(message)
+    values = stdout.strip().split("|")
+    if len(values) != len(_STATE_FIELDS):
+        message = (
+            f"the state query read {len(values)} field(s), not "
+            f"{len(_STATE_FIELDS)}: {stdout.strip()!r}"
+        )
+        raise ValueError(message)
+    state = dict(zip(_STATE_FIELDS, values, strict=True))
+    state["readOnly"] = read_only(state["readOnly"])
+    return state
+
+
 def _state(value: object, name: str, *, required: bool) -> dict[str, str]:
     """Check one server's state as replication_check.yml keeps it."""
     if not isinstance(value, dict):
@@ -158,7 +212,9 @@ def _state(value: object, name: str, *, required: bool) -> dict[str, str]:
     if missing:
         message = f"{name} lacks {', '.join(missing)}"
         raise ValueError(message)
-    return {field: str(value[field]) for field in _STATE_FIELDS}
+    state = {field: str(value[field]) for field in _STATE_FIELDS}
+    state["readOnly"] = read_only(state["readOnly"])
+    return state
 
 
 def _mapping(value: object, name: str) -> dict[str, object]:
@@ -519,6 +575,7 @@ class FilterModule:
             "cloudfall_mariadb_gtid_unseen": gtid_unseen,
             "cloudfall_mariadb_gtid_applied": gtid_applied,
             "cloudfall_mariadb_vertical": vertical,
+            "cloudfall_mariadb_replication_state": replication_state,
             "cloudfall_mariadb_link_peer": link_peer,
             "cloudfall_mariadb_replication_plan": replication_plan,
         }

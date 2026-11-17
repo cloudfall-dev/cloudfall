@@ -11,6 +11,9 @@ are about:
   ``read_only`` is on; a session with ``sql_log_bin = 0`` logs nothing
 - a locked account's flag reads ``true``, as on the older series, or ``1``,
   as on 11.8, and a read of locked accounts finds only the form it names
+- a server may report ``read_only`` as 11.8 does, ``ON`` in a string
+  context, or as the older series do, ``1``; ``read_only`` in arithmetic is
+  refused, as no real server has shown what it reads as there
 - a link logs in as ``cloudfall_repl`` at the replica's address only with
   the password whose ``mysql_native_password`` hash the account holds, over
   TLS only, and only when the replica verifies the primary's certificate
@@ -373,11 +376,22 @@ def listed(name, sql):
                 and "SCHEMA_NAME NOT LIKE '#mysql50#%'" in sql)
 
 
+def read_only(sql):
+    # As a real 11.8.9 answered it in CONCAT_WS, ON or OFF (#450); the older
+    # series answer 1 or 0. No server has shown what read_only reads as in
+    # arithmetic on 11.8, so the stand-in refuses to model it.
+    if re.search(r"@@(global\.)?read_only\s*[-+*/]", sql):
+        sys.exit("the stand-in does not model read_only in arithmetic: " + sql)
+    if state["readOnlyEnum"]:
+        return "ON" if state["readOnly"] else "OFF"
+    return "1" if state["readOnly"] else "0"
+
+
 def answer(sql):
     if "@@global.gtid_binlog_state" in sql:
         databases = [name for name in state["databases"] if listed(name, sql)]
         return ["|".join([
-            "1" if state["readOnly"] else "0", str(state["serverId"]),
+            read_only(sql), str(state["serverId"]),
             text(binlog_pos(state)), text(binlog_state(state)), state["slavePos"],
             text(current_pos(state)), str(len(databases))])]
     match = re.fullmatch(
@@ -548,11 +562,15 @@ def server_state(  # noqa: PLR0913 - one server's settings, each named.
     log_bin: bool = False,
     running: bool = True,
     locked_flag: str = "true",
+    read_only_enum: bool = False,
 ) -> dict[str, object]:
     """Return a freshly installed server: no database, no history, no link.
 
     ``locked_flag`` is what ``JSON_VALUE(Priv, '$.account_locked')`` returns
     for a locked account: ``true`` on the older series, ``1`` on 11.8 (#452).
+    ``read_only_enum`` makes it report ``read_only`` as MariaDB 11.8 does,
+    ``ON`` or ``OFF`` in a string context; otherwise ``1`` or ``0``, as the
+    older series do (#450).
     """
     return {
         "lockedFlag": locked_flag,
@@ -563,6 +581,7 @@ def server_state(  # noqa: PLR0913 - one server's settings, each named.
         "ca": CA,
         "logBin": log_bin,
         "readOnly": False,
+        "readOnlyEnum": read_only_enum,
         "binlog": [],
         "binlogState": {},
         "binlogStart": "",
