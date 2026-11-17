@@ -1,6 +1,6 @@
 # S-023: RabbitMQ service
 
-status: draft
+status: approved
 serves: G-1, G-3
 
 ## Problem
