@@ -6,18 +6,27 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pytest
+import yaml
+from ansible.inventory.manager import InventoryManager
+from ansible.parsing.dataloader import DataLoader
 from cloudfall.inventory import PlatformInventory
 from cloudfall.validation import validate_config
 from cloudfall_engine.ansible_inventory import render_ansible_inventory
 from cloudfall_engine.cli import main
+from elasticsearch_project import SNAPSHOT_REPOSITORY, elasticsearch_service
+from elasticsearch_project import write_project as write_elasticsearch_project
 from examples_project import copy_examples
+from mariadb_project import mariadb_service, primary_replication, replica_service
+from mariadb_project import write_project as write_mariadb_project
 
 if TYPE_CHECKING:
-    import pytest
+    from collections.abc import Callable
 
 ROOT = Path(__file__).parents[2]
 SCHEMAS = ROOT / "config" / "schemas" / "v1"
 EXAMPLES = ROOT / "config" / "examples"
+SERVICES = ROOT / "engine" / "ansible" / "playbooks" / "services.yml"
 
 
 def _rendered_inventory() -> dict[str, object]:
@@ -435,6 +444,61 @@ def test_engine_cli_can_write_inventory_file(
         "h1",
         "h2",
     ]
+
+
+def _primary_on_h2(directory: Path) -> Path:
+    """Declare a MariaDB primary on h2 and its replica on h1, which sorts first."""
+    primary = mariadb_service(
+        server="h2",
+        replication=primary_replication(server_id=2, listenAddress="203.0.113.12"),
+    )
+    replica = replica_service(server="h1", server_id=1)
+    return write_mariadb_project(directory, primary, replica, servers=("h1", "h2"))
+
+
+def _cluster_home_on_h2(directory: Path) -> Path:
+    """Declare an Elasticsearch cluster of h1 and h2 whose home, h2, sorts last."""
+    service = elasticsearch_service(
+        server="h2", nodes=["h1", "h2"], snapshotRepository=SNAPSHOT_REPOSITORY
+    )
+    return write_elasticsearch_project(directory, service, servers=("h1", "h2"))
+
+
+# The home runs first in a serial: 1 play over cloudfall_servers (S-012, S-019).
+@pytest.mark.parametrize("project", [_primary_on_h2, _cluster_home_on_h2])
+def test_engine_cli_writes_the_hosts_home_first(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    project: Callable[[Path], Path],
+) -> None:
+    output_path = tmp_path / "inventory.json"
+    exit_code = main(
+        [
+            "inventory",
+            "render",
+            "--project",
+            str(project(tmp_path / "project")),
+            "--schemas",
+            str(SCHEMAS),
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    answer = json.loads(capsys.readouterr().out)["data"]["inventory"]
+    assert exit_code == 0
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+    assert list(written["all"]["children"]["cloudfall_servers"]["hosts"]) == [
+        "h2",
+        "h1",
+    ]
+    # treaty's envelope sorts every object's keys, so only the file keeps order
+    assert answer == written
+    # Ansible runs the play's hosts in the order the file lists them
+    (play,) = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))
+    manager = InventoryManager(loader=DataLoader(), sources=[str(output_path)])
+    hosts = manager.get_hosts(play["hosts"], order="inventory")
+    assert (play["serial"], [host.name for host in hosts]) == (1, ["h2", "h1"])
 
 
 def test_engine_cli_writes_a_relative_output_inside_the_project(
