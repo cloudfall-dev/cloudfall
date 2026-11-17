@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import pytest
 from cloudfall.agent_gate import (
     AgentCall,
     GrantCheck,
@@ -515,6 +516,49 @@ def test_s018_17_a_domains_apply_run_whose_observe_matches_ends_verified(
     )
     assert record.outcome is not None
     assert "matches the declared vhost of crm-site" in record.outcome.detail
+
+
+def test_s018_7_a_run_that_raises_after_its_first_step_ends_failed(
+    tmp_path: Path,
+) -> None:
+    project = _staging_project(tmp_path, "domains-apply")
+    inventory = PlatformInventory.from_state(validate_config(project, SCHEMAS))
+    gate = _agent_gate(PROPOSALS, project, inventory, SCHEMAS)
+    assert gate is not None
+    check = gate.check("domains_apply", (ResourceId("h2"),))
+    assert check.self_confirm, check
+
+    def run(watch: Callable[[StepRunner], StepRunner]) -> str:
+        watch(_Steps())(
+            ExecutionStep(
+                description="render Domain crm-site",
+                argv=("ansible-playbook", "domains.yml"),
+                environment={},
+            )
+        )
+        message = "the receipt directory went away"
+        raise OSError(message)
+
+    with pytest.raises(OSError, match="receipt directory went away"):
+        _granted(
+            gate,
+            check,
+            AgentCall(
+                "domains_apply",
+                {"domain": "crm-site"},
+                None,
+                AgentClient(name=AgentClient.UNKNOWN, version=AgentClient.UNKNOWN),
+            ),
+            plan={"domain": "crm-site", "servers": ["h2"]},
+            evidence=(),
+            execute=run,
+            verify=lambda _: domains_verdict(()),
+        )
+
+    record = _settled(project)
+    assert record.status is ProposalStatus.FAILED
+    assert record.outcome is not None
+    assert "OSError" in record.outcome.detail
 
 
 def test_s018_17_a_domains_apply_run_whose_observe_differs_ends_failed(

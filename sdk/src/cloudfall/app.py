@@ -2512,24 +2512,31 @@ def _granted[T](  # noqa: PLR0913 - a granted run's whole contract.
         now=datetime.now(UTC),
     )
     executed_at = datetime.now(UTC)
+    stage = "run"
+    settled = False
     try:
         result = execute(run.watch)
-    except CliExit as error:
-        run.fail(_exit_detail("run", error), executed_at)
-        raise
-    run.begin()
-    try:
+        run.begin()
+        stage = "verification"
         verdict = verify(result)
-    except CliExit as error:
-        run.fail(_exit_detail("verification", error), executed_at)
-        raise
-    run.settle(verdict, executed_at, datetime.now(UTC))
+        run.settle(verdict, executed_at, datetime.now(UTC))
+        settled = True
+    finally:
+        # Whatever raised, a usage exit or any other error, a started record
+        # never stays running: it ends failed and the error propagates.
+        if not settled:
+            run.fail(_raised_detail(stage, sys.exception()), executed_at)
     return result, run.approval()
 
 
-def _exit_detail(stage: str, error: CliExit) -> str:
-    code = error.context.get("code", error.code)
-    return failure_detail(stage, str(code), error.message)
+def _raised_detail(stage: str, raised: BaseException | None) -> str:
+    """Name what ended a granted run or its check before it settled."""
+    if isinstance(raised, CliExit):
+        code = raised.context.get("code", raised.code)
+        return failure_detail(stage, str(code), raised.message)
+    if raised is None:
+        return failure_detail(stage, "unknown", "it ended without a verdict")
+    return failure_detail(stage, type(raised).__name__, str(raised))
 
 
 def _plan_evidence(plan: Mapping[str, object]) -> tuple[str, ...]:
