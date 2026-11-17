@@ -7226,7 +7226,7 @@ def _converge_baseline_handler(
     root: ServerRoot,
     context: Callable[[Ctx], EngineContext],
     approving: _Approving | None = None,
-) ->Callable[[Mapping[str, object], Ctx], Converged]:
+) -> Callable[[Mapping[str, object], Ctx], Converged]:
     """Return ``converge_baseline``, staging channel tokens from the secrets dir."""
 
     def converge_declared_baseline(
@@ -7288,7 +7288,7 @@ def _converge_services_handler(
     root: ServerRoot,
     context: Callable[[Ctx], EngineContext],
     approving: _Approving | None = None,
-) ->Callable[[Mapping[str, object], Ctx], ServicesConverged]:
+) -> Callable[[Mapping[str, object], Ctx], ServicesConverged]:
     """Return ``converge_services``: owner passwords from ``--secrets-dir`` first."""
 
     def converge_declared_services(
@@ -7450,7 +7450,7 @@ def _converge_domains_handler(
     root: ServerRoot,
     context: Callable[[Ctx], EngineContext],
     approving: _Approving | None = None,
-) ->Callable[[Mapping[str, object], Ctx], Converged]:
+) -> Callable[[Mapping[str, object], Ctx], Converged]:
     """Return ``converge_domains``: every Domain, or one on its proxy server."""
 
     def converge_domain_routes(
