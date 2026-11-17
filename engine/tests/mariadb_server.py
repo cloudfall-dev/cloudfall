@@ -33,6 +33,16 @@ remote_grants = state.setdefault("remoteGrants", [])
 def lines(values):
     sys.stdout.write("".join(value + "\\n" for value in values))
 
+def locked_read(sql):
+    # Whether a read of locked accounts finds the server's own form of the
+    # flag: 'true' on the older series, 1 on 11.8 (#452).
+    match = re.search(
+        r"JSON_VALUE\\(Priv, '\\$\\.account_locked'\\) (?:= '(\\w+)'|IN \\(([^)]*)\\))",
+        sql)
+    assert match, "an account_locked read of an unknown shape"
+    accepted = [match[1]] if match[1] else re.findall(r"'(\\w+)'", match[2])
+    return state["lockedFlag"] in accepted
+
 def account(name, host):
     return users if host == "localhost" else remote, (
         name if host == "localhost" else name + "@" + host)
@@ -145,7 +155,8 @@ elif "CONCAT_WS" in sql:
                + (("|1" if user.get("ssl") else "|0") if "ssl_type" in sql else "")])
 elif "Host NOT IN ('localhost', '')" in sql:
     if "account_locked" in sql:
-        lines(key for key, user in remote.items() if user["locked"])
+        lines(key for key, user in remote.items()
+              if user["locked"] and locked_read(sql))
     elif "roles_mapping" in sql:
         lines(key for key, user in remote.items() if user["managed"])
     elif "FROM mysql.db" in sql:
@@ -156,7 +167,7 @@ elif "unix_socket" in sql and sql.startswith("SELECT"):
     lines(name for name, user in users.items()
           if user["plugin"] == "unix_socket" and not user["authOr"])
 elif "account_locked" in sql:
-    lines(name for name, user in users.items() if user["locked"])
+    lines(name for name, user in users.items() if user["locked"] and locked_read(sql))
 elif "roles_mapping" in sql:
     lines(name for name, user in users.items() if user["managed"])
 elif "Host = ''" in sql:
@@ -177,10 +188,15 @@ state_path.write_text(json.dumps(state))
 SYSTEM_DATABASES = ["information_schema", "mysql", "performance_schema", "sys"]
 
 
-def fresh_state() -> dict[str, object]:
-    """Return a freshly installed server: Debian's accounts, no Cloudfall state."""
+def fresh_state(locked_flag: str = "true") -> dict[str, object]:
+    """Return a freshly installed server: Debian's accounts, no Cloudfall state.
+
+    ``locked_flag`` is what ``JSON_VALUE(Priv, '$.account_locked')`` returns
+    for a locked account: ``true`` on the older series, ``1`` on 11.8 (#452).
+    """
     system = {"plugin": "mysql_native_password", "hash": "invalid", "authOr": True}
     return {
+        "lockedFlag": locked_flag,
         "users": {
             "root": {**system, "locked": False, "managed": False},
             "mysql": {**system, "locked": False, "managed": False},

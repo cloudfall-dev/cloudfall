@@ -609,11 +609,24 @@ def test_a_staged_hash_of_another_shape_stops_without_quoting_it(
     assert not any(" USING " in text for text in server.statements())
 
 
+# What JSON_VALUE(Priv, '$.account_locked') reads for a locked account:
+# 'true' on the older series, 1 on 11.8 (#452).
+LOCKED_FLAGS = pytest.mark.parametrize(
+    "locked_flag",
+    [
+        pytest.param("true", id="locked reads true"),
+        pytest.param("1", id="locked reads 1, as on 11.8"),
+    ],
+)
+
+
 # proves: S-019-7
+# proves: S-019-4
+@LOCKED_FLAGS
 def test_s019_7_a_removed_database_keeps_its_rows_and_its_user_is_locked(
-    tmp_path: Path,
+    tmp_path: Path, locked_flag: str
 ) -> None:
-    server = Server(tmp_path)
+    server = Server(tmp_path, fresh_state(locked_flag))
     server.converge(_service(CRM, BILLING), {"billing": NATIVE})
     # A user made by hand, which Cloudfall never touches
     state = server.state

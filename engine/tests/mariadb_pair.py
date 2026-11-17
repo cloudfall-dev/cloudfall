@@ -9,6 +9,8 @@ are about:
 - every write on a server that logs gets the next GTID of domain 0 and its
   ``server_id``; a write by a user other than root is refused while
   ``read_only`` is on; a session with ``sql_log_bin = 0`` logs nothing
+- a locked account's flag reads ``true``, as on the older series, or ``1``,
+  as on 11.8, and a read of locked accounts finds only the form it names
 - a link logs in as ``cloudfall_repl`` at the replica's address only with
   the password whose ``mysql_native_password`` hash the account holds, over
   TLS only, and only when the replica verifies the primary's certificate
@@ -428,7 +430,7 @@ def answer(sql):
         return [account.split("@", 1)[1]
                 for account, user in sorted(state["users"].items())
                 if account.split("@", 1)[0] == match[1]
-                and (not match[2] or user["locked"])]
+                and (not match[2] or (user["locked"] and locked_read(match[2])))]
     match = re.search(r"WHERE GRANTEE LIKE '{{3}}([^']+)'{{2}}@%'", sql)
     if sql.startswith("SELECT CONCAT(GRANTEE, '|', PRIVILEGE_TYPE)") and match:
         return ["'%s'@'%s'|%s" % (match[1], account.split("@", 1)[1], privilege)
@@ -436,6 +438,18 @@ def answer(sql):
                 if account.split("@", 1)[0] == match[1]
                 for privilege in user["privileges"]]
     return None
+
+
+def locked_read(condition):
+    # Whether a read of locked accounts finds the server's own form of the
+    # flag: 'true' on the older series, 1 on 11.8 (#452).
+    match = re.fullmatch(
+        r" AND JSON_VALUE\(Priv, '\$\.account_locked'\) (?:= '(\w+)'|IN \(([^)]*)\))",
+        condition)
+    if match is None:
+        sys.exit("an account read of an unknown shape: " + condition)
+    accepted = [match[1]] if match[1] else re.findall(r"'(\w+)'", match[2])
+    return state["lockedFlag"] in accepted
 
 
 def applied(replica, source):
@@ -507,16 +521,22 @@ sys.stdout.write(
 """
 
 
-def server_state(
+def server_state(  # noqa: PLR0913 - one server's settings, each named.
     *,
     address: str,
     names: list[str],
     server_id: int = 1,
     log_bin: bool = False,
     running: bool = True,
+    locked_flag: str = "true",
 ) -> dict[str, object]:
-    """Return a freshly installed server: no database, no history, no link."""
+    """Return a freshly installed server: no database, no history, no link.
+
+    ``locked_flag`` is what ``JSON_VALUE(Priv, '$.account_locked')`` returns
+    for a locked account: ``true`` on the older series, ``1`` on 11.8 (#452).
+    """
     return {
+        "lockedFlag": locked_flag,
         "running": running,
         "serverId": server_id,
         "address": address,

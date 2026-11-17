@@ -49,7 +49,7 @@
       value: >-
         SELECT Host FROM mysql.global_priv
         WHERE User = '{{ cloudfall_mariadb_replication_user }}'
-        AND JSON_VALUE(Priv, '$.account_locked') = 'true'
+        AND {{ cloudfall_mariadb_account_locked }}
     - key: privileges
       value: >-
         SELECT CONCAT(GRANTEE, '|', PRIVILEGE_TYPE)

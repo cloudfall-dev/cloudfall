@@ -421,11 +421,14 @@ def _strip_ownership(tasks: list[dict[str, Any]]) -> None:
 class Server:
     """A replay of the role's account tasks, localhost and remote, on the stand-in."""
 
-    def __init__(self, tmp_path: Path) -> None:
-        """Write the stand-in client and the tasks."""
+    def __init__(self, tmp_path: Path, locked_flag: str = "true") -> None:
+        """Write the stand-in client and the tasks.
+
+        ``locked_flag``: how the server reads a locked account's flag (#452).
+        """
         self.tmp_path = tmp_path
         self.client, self.state_path, self.log = write_client(
-            tmp_path / "server", fresh_state()
+            tmp_path / "server", fresh_state(locked_flag)
         )
         self.tasks = tmp_path / "tasks"
         self.tasks.mkdir()
@@ -588,10 +591,19 @@ def test_s019_11_a_second_converge_with_remote_access_changes_nothing(
     assert len(server.writes()) == writes
 
 
+# What JSON_VALUE(Priv, '$.account_locked') reads for a locked account:
+# 'true' on the older series, 1 on 11.8 (#452).
+@pytest.mark.parametrize(
+    "locked_flag",
+    [
+        pytest.param("true", id="locked reads true"),
+        pytest.param("1", id="locked reads 1, as on 11.8"),
+    ],
+)
 def test_a_source_or_remote_access_no_longer_declared_locks_its_account(
-    tmp_path: Path,
+    tmp_path: Path, locked_flag: str
 ) -> None:
-    server = Server(tmp_path)
+    server = Server(tmp_path, locked_flag)
     server.converge(_role_service(CRM, BILLING, remoteAccess=SOURCES))
     writes = len(server.writes())
 
