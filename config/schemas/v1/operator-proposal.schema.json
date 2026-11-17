@@ -61,10 +61,36 @@
           "type": "object",
           "properties": {
             "kind": {
+              "description": "What raised the proposal: a firing alert, an audited drift, or an agent's call of a gated MCP tool (agent, with request).",
               "enum": [
                 "alert",
-                "drift"
+                "drift",
+                "agent"
               ]
+            },
+            "request": {
+              "description": "The agent's call: the MCP tool, its arguments without the ones the server binds, and the reason the agent gave, if any.",
+              "type": "object",
+              "properties": {
+                "tool": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "arguments": {
+                  "type": "object"
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                }
+              },
+              "required": [
+                "tool",
+                "arguments"
+              ],
+              "additionalProperties": false
             },
             "fingerprint": {
               "type": "string",
@@ -150,6 +176,11 @@
               "required": [
                 "drift"
               ]
+            },
+            {
+              "required": [
+                "request"
+              ]
             }
           ],
           "additionalProperties": false
@@ -182,13 +213,40 @@
           "type": "object",
           "properties": {
             "kind": {
+              "description": "The operation class: the operator's converge-services and converge-baseline, or the class of the gated MCP tool an agent called.",
               "enum": [
                 "converge-services",
-                "converge-baseline"
+                "converge-baseline",
+                "deploy",
+                "rollback",
+                "restart",
+                "migrate",
+                "data-copy",
+                "domains-apply",
+                "converge-domains"
               ]
             },
             "server": {
+              "description": "The one server an alert or drift proposal runs on; required for those.",
               "$ref": "common.schema.json#/$defs/resourceId"
+            },
+            "servers": {
+              "description": "Every server the run changes; required for an agent proposal.",
+              "type": "array",
+              "items": {
+                "$ref": "common.schema.json#/$defs/resourceId"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "environments": {
+              "description": "The environments of those servers; required for an agent proposal.",
+              "type": "array",
+              "items": {
+                "$ref": "common.schema.json#/$defs/resourceId"
+              },
+              "minItems": 1,
+              "uniqueItems": true
             },
             "service": {
               "$ref": "common.schema.json#/$defs/resourceId"
@@ -205,8 +263,27 @@
           },
           "required": [
             "kind",
-            "server",
             "command"
+          ],
+          "additionalProperties": false
+        },
+        "binding": {
+          "description": "What an agent proposal was computed against: the sha256 of the plan the command computed, and in a git project the HEAD commit and the digest of uncommitted changes outside decisions/, record/ and tmp/ (D-20).",
+          "type": "object",
+          "properties": {
+            "planSha256": {
+              "$ref": "common.schema.json#/$defs/sha256"
+            },
+            "gitCommit": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+            },
+            "worktreeDigest": {
+              "$ref": "common.schema.json#/$defs/sha256"
+            }
+          },
+          "required": [
+            "planSha256"
           ],
           "additionalProperties": false
         },
@@ -214,13 +291,52 @@
           "type": "object",
           "properties": {
             "mode": {
+              "description": "human: a person approved it; autonomous: the operator ran it on a policy grant; agent: an agent's call ran on a policy grant.",
               "enum": [
                 "human",
-                "autonomous"
+                "autonomous",
+                "agent"
               ]
             },
             "policy": {
               "$ref": "common.schema.json#/$defs/resourceId"
+            },
+            "grant": {
+              "description": "The operation class the policy granted an agent run.",
+              "enum": [
+                "converge-services",
+                "converge-baseline",
+                "deploy",
+                "rollback",
+                "restart",
+                "migrate",
+                "data-copy",
+                "domains-apply",
+                "converge-domains"
+              ]
+            },
+            "client": {
+              "description": "The MCP client that called, as it named itself at initialize; unknown when it did not.",
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "pattern": "\\S"
+                },
+                "version": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100,
+                  "pattern": "\\S"
+                }
+              },
+              "required": [
+                "name",
+                "version"
+              ],
+              "additionalProperties": false
             },
             "via": {
               "description": "How a person's approval arrived: terminal when a person typed the proposal id at a terminal. A human approval written before this field reads as unknown; an autonomous one has none.",
@@ -251,6 +367,48 @@
               ]
             }
           },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "mode": {
+                    "const": "agent"
+                  }
+                },
+                "required": [
+                  "mode"
+                ]
+              },
+              "then": {
+                "required": [
+                  "policy",
+                  "grant",
+                  "client"
+                ],
+                "not": {
+                  "required": [
+                    "via"
+                  ]
+                }
+              },
+              "else": {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "grant"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "client"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
           "additionalProperties": false
         },
         "outcome": {
@@ -378,6 +536,59 @@
               "approval",
               "interruption"
             ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "trigger": {
+                "properties": {
+                  "kind": {
+                    "const": "agent"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            },
+            "required": [
+              "trigger"
+            ]
+          },
+          "then": {
+            "properties": {
+              "trigger": {
+                "required": [
+                  "request"
+                ]
+              },
+              "operation": {
+                "required": [
+                  "servers",
+                  "environments"
+                ]
+              }
+            },
+            "required": [
+              "binding"
+            ]
+          },
+          "else": {
+            "properties": {
+              "trigger": {
+                "not": {
+                  "required": [
+                    "request"
+                  ]
+                }
+              },
+              "operation": {
+                "required": [
+                  "server"
+                ]
+              }
+            }
           }
         }
       ],
