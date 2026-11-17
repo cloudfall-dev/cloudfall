@@ -357,6 +357,36 @@ def served_commands(args: McpServeArgs) -> frozenset[str]:
     return PROJECT_COMMANDS
 
 
+PROJECT_BOUND_FIELDS = frozenset(
+    {
+        "schemas",
+        "engine",
+        "project",
+        "inventory",
+        "inventory_file",
+        "observed",
+        "service_observed",
+        "deployments",
+        "artifacts",
+        "releases",
+        "backups",
+        "data_migrations",
+        "env_receipts",
+        "output_dir",
+        "env_dir",
+        "plan_file",
+        "proposals",
+        "approvals",
+        "secrets_dir",
+        "api_url",
+        "output_file",
+    }
+)
+"""The fields ``bound_arguments`` fixes on a project: no call passes them.
+
+An agent record keeps a call's arguments without them (S-018).
+"""
+
 _IMPORT_CONFIG = "tmp/import/config"
 _IMPORT_ENV = "tmp/import/env"
 _MIGRATE_PLAN = "tmp/migrate/plan.json"

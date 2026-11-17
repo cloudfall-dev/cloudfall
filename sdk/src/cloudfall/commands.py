@@ -182,6 +182,10 @@ class CommandContract:
 
 
 _YES = "`--yes`; without it the command validates and prints the plan only"
+_GRANTED_RUN = (
+    "with `--yes`; `approval` only on a run an `OperatorPolicy` grant covered "
+    "over `cloudfall mcp serve`: the agent approval and its record"
+)
 
 _ADDED = (_shape("status", "project", "added"),)
 _IMPORTED = (
@@ -567,7 +571,10 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
                 "approval",
                 when=(
                     "with `--yes`; `approval` names the record the deploy went on "
-                    "when the application declares `approval: manual`"
+                    "when the application declares `approval: manual`, and on a "
+                    "run an `OperatorPolicy` grant covered over `cloudfall mcp "
+                    "serve` the agent approval and its record, the release's "
+                    "own policy as `release_policy`"
                 ),
             ),
         ),
@@ -583,7 +590,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         ),
         output=(
             _plan("component", "release", "releaseCommandSkipped?", "approval"),
-            _shape(*_EXECUTED, "release", when="with `--yes`"),
+            _shape(*_EXECUTED, "release", "approval?", when=_GRANTED_RUN),
         ),
     ),
     CommandContract(
@@ -594,7 +601,7 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
         gate=_YES,
         output=(
             _plan("component", "approval?"),
-            _shape(*_EXECUTED, when="with `--yes`"),
+            _shape(*_EXECUTED, "approval?", when=_GRANTED_RUN),
         ),
     ),
     CommandContract(
@@ -728,7 +735,8 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
                 "servers",
                 "verification",
                 "receipt",
-                when="with `--yes`",
+                "approval?",
+                when=_GRANTED_RUN,
             ),
         ),
     ),
@@ -748,7 +756,12 @@ CLI_COMMANDS: tuple[CommandContract, ...] = (
                 "servers",
                 "dnsCheck?",
                 "receipt",
-                when="with `--yes`; `dnsCheck` only with `--issue-certificate`",
+                "approval?",
+                when=(
+                    "with `--yes`; `dnsCheck` only with `--issue-certificate`; "
+                    "`approval` only on a run an `OperatorPolicy` grant covered "
+                    "over `cloudfall mcp serve`"
+                ),
             ),
         ),
     ),

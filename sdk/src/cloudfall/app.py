@@ -54,13 +54,28 @@ from treaty import (
 )
 
 from cloudfall.agent_gate import (
+    REASON_MAX_LENGTH,
+    AgentCall,
     GrantCheck,
+    GrantedRun,
+    Verdict,
+    audit_verdict,
     check_grant,
+    check_reason,
+    data_copy_verdict,
+    declared_servers,
+    domain_servers,
+    domains_verdict,
+    failure_detail,
+    health_verdict,
     migrate_servers,
+    migration_verdict,
+    plan_sha256,
     tool_class,
 )
 from cloudfall.agent_server import (
     APPROVAL_COMMAND,
+    PROJECT_BOUND_FIELDS,
     McpServeArgs,
     ServerMode,
     ServerRoot,
@@ -200,13 +215,16 @@ from cloudfall.lifecycle import (
     ERROR_EXECUTION_FAILED,
     DataCopySchemas,
     DeployOptions,
+    DomainApplied,
     DomainApply,
     DomainObserve,
+    DomainObserved,
     DomainsRun,
     EngineContext,
     ExecutionStep,
     LifecycleError,
     LifecyclePreview,
+    LifecycleResult,
     StepRun,
     StepRunner,
     SystemNameResolver,
@@ -285,12 +303,14 @@ from cloudfall.operator import (
     ERROR_PROPOSAL_INTERRUPTED,
     ERROR_PROPOSAL_MISSING,
     ERROR_PROPOSAL_NOT_RUNNING,
+    AgentClient,
     AlertFeed,
     ApproveOptions,
     DriftCheck,
     Executor,
     OperatorError,
     PassKind,
+    ProposalBinding,
     ProposalStatus,
     ProposalStore,
     TriggerKind,
@@ -320,6 +340,7 @@ from cloudfall.project import (
     resolve_project_directory,
 )
 from cloudfall.project_format import SUPPORTED_FORMATS, ProjectFormatError
+from cloudfall.proposal_binding import BindingError, BoundProject, project_state
 from cloudfall.recording import Recording, RecordingError
 from cloudfall.release_approval import (
     APPROVALS_DIRECTORY,
@@ -432,11 +453,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
     from datetime import date
 
+    from _typeshed import DataclassInstance
+
     from cloudfall.audit import AuditReport
     from cloudfall.catalog import Operation
     from cloudfall.mariadb_replication import ReplicationOutcome
     from cloudfall.operator import OperatorProposal
     from cloudfall.record_files import UnreadableRecord
+    from cloudfall.secrets import OwnedRolePassword
 
 def _serve_setup(args: McpServeArgs, _ctx: Ctx) -> None:
     """Check the served fleet before ``mcp serve`` accepts a client."""
@@ -2367,22 +2391,161 @@ _AGENT_PROPOSALS_DESCRIPTION = (
 )
 
 
-def _agent_grant(
-    proposals: Path | None,
-    fleet: Fleet,
-    schemas: Path,
-    tool: str,
-    servers: Iterable[ResourceId],
-) -> GrantCheck | None:
-    """Check the grant a confirmed agent call would run on; none off MCP."""
+_AGENT_REASON_DESCRIPTION = (
+    "Why an agent asks for this run, at most 1000 characters; over cloudfall "
+    "mcp serve a run a grant covers keeps it in its record"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _AgentGate:
+    """The proposal store an agent's call is gated by, and the fleet it reads."""
+
+    store: ProposalStore
+    project: Path
+    inventory: PlatformInventory
+
+    def check(self, tool: str, servers: Iterable[ResourceId]) -> GrantCheck:
+        """Check each environment of ``servers`` for a grant of the tool's class."""
+        return check_grant(
+            tool_class(tool), servers, self.inventory, self.store, datetime.now(UTC)
+        )
+
+
+def _agent_gate(
+    proposals: Path | None, project: Path, inventory: PlatformInventory, schemas: Path
+) -> _AgentGate | None:
+    """Return the gate of an agent's call; none for a person's command."""
     if proposals is None:
         return None
-    store = ProposalStore(
-        directory=fleet.path(proposals), catalog=SchemaCatalog(schemas)
+    directory = proposals if proposals.is_absolute() else project / proposals
+    return _AgentGate(
+        store=ProposalStore(directory=directory, catalog=SchemaCatalog(schemas)),
+        project=project,
+        inventory=inventory,
     )
-    return check_grant(
-        tool_class(tool), servers, fleet.inventory, store, datetime.now(UTC)
+
+
+def _checked_reason(reason: str | None) -> None:
+    """Refuse a blank or overlong ``reason`` as a usage error."""
+    try:
+        check_reason(reason)
+    except ValueError as error:
+        raise ParseError(str(error), context={"flag": "reason"}) from error
+
+
+def _json_argument(value: object) -> object:
+    """Return one argument as its call passed it: JSON, a value object's value."""
+    if value is None or isinstance(value, bool | int | str):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, tuple | list):
+        return [_json_argument(item) for item in value]
+    inner = getattr(value, "value", None)
+    if isinstance(inner, str):
+        return inner
+    message = f"an agent record cannot keep an argument of type {type(value).__name__}"
+    raise TypeError(message)
+
+
+_UNRECORDED_ARGUMENTS = frozenset({"yes", "reason"})
+"""Fields a record keeps elsewhere: the confirmation, and the reason itself."""
+
+
+def _call_arguments(args: DataclassInstance) -> dict[str, object]:
+    """Return a call's arguments as given: no bound field, no default left as is."""
+    recorded: dict[str, object] = {}
+    for item in dataclasses.fields(args):
+        if item.name in PROJECT_BOUND_FIELDS or item.name in _UNRECORDED_ARGUMENTS:
+            continue
+        value = getattr(args, item.name)
+        if item.default is not dataclasses.MISSING and value == item.default:
+            continue
+        recorded[item.name] = _json_argument(value)
+    return recorded
+
+
+_UNKNOWN_CLIENT = AgentClient(name=AgentClient.UNKNOWN, version=AgentClient.UNKNOWN)
+"""The client an agent record names: the MCP server does not pass a call the
+``clientInfo`` its client sent at initialize, so every call reads as unknown."""
+
+
+def _granted[T](  # noqa: PLR0913 - a granted run's whole contract.
+    gate: _AgentGate,
+    check: GrantCheck,
+    call: AgentCall,
+    *,
+    plan: Mapping[str, object],
+    evidence: Iterable[str],
+    execute: Callable[[Callable[[StepRunner], StepRunner]], T],
+    verify: Callable[[T], Verdict],
+) -> tuple[T, dict[str, object]]:
+    """Run a confirmed agent call a grant covers, and keep its record (S-018).
+
+    The record binds the plan an unconfirmed call answers and, in a git
+    project, HEAD and the uncommitted changes (D-20). ``execute`` runs the
+    command with its step runner wrapped, so the record is on disk,
+    ``running``, before the first engine step; a call refused before that
+    writes none. ``verify`` is the tool's own check, which decides
+    ``verified`` or ``failed``. A run or check that fails is recorded
+    ``failed`` and raised as it was.
+    """
+    try:
+        commit, worktree = project_state(
+            BoundProject(gate.project, gate.project / DECISION_DIRECTORY)
+        )
+    except BindingError as error:
+        raise Exit.PRECONDITION(
+            error.detail, context={"code": error.code}
+        ) from error
+    run = GrantedRun.prepare(
+        gate.store,
+        check,
+        call,
+        binding=ProposalBinding(
+            plan_sha256=plan_sha256(plan),
+            git_commit=None if commit is None else commit.value,
+            worktree_digest=None if worktree is None else worktree.value,
+        ),
+        evidence=evidence,
+        now=datetime.now(UTC),
     )
+    executed_at = datetime.now(UTC)
+    stage = "run"
+    settled = False
+    try:
+        result = execute(run.watch)
+        run.begin()
+        stage = "verification"
+        verdict = verify(result)
+        run.settle(verdict, executed_at, datetime.now(UTC))
+        settled = True
+    finally:
+        # Whatever raised, a usage exit or any other error, a started record
+        # never stays running: it ends failed and the error propagates.
+        if not settled:
+            run.fail(_raised_detail(stage, sys.exception()), executed_at)
+    return result, run.approval()
+
+
+def _raised_detail(stage: str, raised: BaseException | None) -> str:
+    """Name what ended a granted run or its check before it settled."""
+    if isinstance(raised, CliExit):
+        code = raised.context.get("code", raised.code)
+        return failure_detail(stage, str(code), raised.message)
+    if raised is None:
+        return failure_detail(stage, "unknown", "it ended without a verdict")
+    return failure_detail(stage, type(raised).__name__, str(raised))
+
+
+def _plan_evidence(plan: Mapping[str, object]) -> tuple[str, ...]:
+    """Return the plan's summary lines, a record's evidence."""
+    lines = [f"plan: {plan['would_run']}"] if plan.get("would_run") else []
+    servers = plan.get("servers")
+    if isinstance(servers, list) and servers:
+        lines.append(f"servers: {', '.join(str(server) for server in servers)}")
+    return tuple(lines)
 
 
 def _with_agent_approval(
@@ -3877,12 +4040,14 @@ class MigrateArgs(EngineArgs):
     proposals: Path | None = Flag(
         default=None, description=_AGENT_PROPOSALS_DESCRIPTION
     )
+    reason: str | None = Flag(default=None, description=_AGENT_REASON_DESCRIPTION)
 
     def __post_init__(self) -> None:
         """Refuse a malformed pair, and keep relative paths in the project."""
         EngineArgs.__post_init__(self)
         if self.proposals is not None:
             _inside_project(self.proposals, "proposals")
+        _checked_reason(self.reason)
         for flag in (
             "observed",
             "service_observed",
@@ -3990,7 +4155,8 @@ class Migration:
     approval: dict[str, object] = Out(default_factory=dict, ordered=True)
     """On an agent's plan over MCP: whether a grant lets the confirmed call run.
 
-    Empty off MCP, and on a run's result.
+    On a granted run's result: the agent approval and its record (S-018).
+    Empty off MCP, and on any other run's result.
     """
 
 
@@ -4021,21 +4187,76 @@ class Migration:
 )
 def migrate(args: MigrateArgs, ctx: Ctx, fleet: Fleet) -> Migration:
     """Run each pending step, saving progress after every one."""
+    gate = _agent_gate(args.proposals, fleet.directory, fleet.inventory, args.schemas)
+    config = args.config(fleet, ctx)
+    if not args.yes or gate is None:
+        return _migration(_migrate_run(args, fleet, config), gate, fleet)
+    # An agent's confirmed call recomputes the plan its record binds.
+    planned = _migration(_migrate_run(args, fleet, config, execute=False), gate, fleet)
+    check = gate.check(
+        "migrate",
+        migrate_servers(
+            fleet.inventory,
+            (
+                str(step["id"])
+                for step in planned.steps
+                if step["status"] == StepStatus.PENDING.value
+            ),
+        ),
+    )
+    if not check.self_confirm:
+        return _migration(_migrate_run(args, fleet, config), None, fleet)
+
+    def run(watch: Callable[[StepRunner], StepRunner]) -> Migration:
+        watched = replace(config, run=watch(config.run))
+        return _migration(_migrate_run(args, fleet, watched), None, fleet)
+
+    migration, granted = _granted(
+        gate,
+        check,
+        AgentCall("migrate", _call_arguments(args), args.reason, _UNKNOWN_CLIENT),
+        plan=dataclasses.asdict(planned),
+        evidence=tuple(
+            f"pending step: {step['id']}"
+            for step in planned.steps
+            if step["status"] == StepStatus.PENDING.value
+        ),
+        execute=run,
+        verify=lambda done: migration_verdict(
+            done.status, done.completed, len(done.steps)
+        ),
+    )
+    return replace(migration, approval=granted)
+
+
+def _migrate_run(
+    args: MigrateArgs, fleet: Fleet, config: AgentConfig, *, execute: bool = True
+) -> dict[str, object]:
+    """Run the migration, or with ``execute`` false compute its plan alone."""
     try:
-        result = execute_migration(args.config(fleet, ctx), args.options(fleet))
+        options = args.options(fleet)
+        return execute_migration(
+            config, options if execute else replace(options, execute=False)
+        )
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error
     except MigrateError as error:
         raise Exit.PRECONDITION(
             error.detail, context={"code": error.code}
         ) from error
+
+
+def _migration(
+    result: Mapping[str, object], gate: _AgentGate | None, fleet: Fleet
+) -> Migration:
+    """Answer a migration's result; a paused or failed run raises its exit.
+
+    A plan carries the grant check of an agent's call in ``approval``.
+    """
     status = str(result["status"])
     steps = cast("list[dict[str, object]]", snake_case_keys(result["steps"]))
     grant = (
-        _agent_grant(
-            args.proposals,
-            fleet,
-            args.schemas,
+        gate.check(
             "migrate",
             migrate_servers(
                 fleet.inventory,
@@ -4046,7 +4267,7 @@ def migrate(args: MigrateArgs, ctx: Ctx, fleet: Fleet) -> Migration:
                 ),
             ),
         )
-        if status == "plan"
+        if status == "plan" and gate is not None
         else None
     )
     migration = Migration(
@@ -4854,12 +5075,14 @@ class ComponentArgs(EngineArgs):
     proposals: Path | None = Flag(
         default=None, description=_AGENT_PROPOSALS_DESCRIPTION
     )
+    reason: str | None = Flag(default=None, description=_AGENT_REASON_DESCRIPTION)
 
     def __post_init__(self) -> None:
         """Keep relative paths inside the project."""
         EngineArgs.__post_init__(self)
         if self.proposals is not None:
             _inside_project(self.proposals, "proposals")
+        _checked_reason(self.reason)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -4949,6 +5172,7 @@ class DataMigrateArgs(EngineArgs):
     proposals: Path | None = Flag(
         default=None, description=_AGENT_PROPOSALS_DESCRIPTION
     )
+    reason: str | None = Flag(default=None, description=_AGENT_REASON_DESCRIPTION)
 
     def __post_init__(self) -> None:
         """Keep relative paths inside the project."""
@@ -4956,6 +5180,7 @@ class DataMigrateArgs(EngineArgs):
         _inside_project(self.data_migrations, "data-migrations")
         if self.proposals is not None:
             _inside_project(self.proposals, "proposals")
+        _checked_reason(self.reason)
 
     def source_schemas(self) -> DataCopySchemas:
         """Return the named source schemas.
@@ -5068,52 +5293,106 @@ def deploy_command(args: DeployArgs, ctx: Ctx, fleet: Fleet) -> DeployPayload:
     """Activate the release on the component's servers, or show the plan."""
     context = args.context(fleet, ctx)
     artifacts = fleet.path(args.artifacts)
+    gate = _agent_gate(args.proposals, fleet.directory, fleet.inventory, args.schemas)
     try:
         approval = _deploy_approval(args, fleet, artifacts)
         if not args.yes:
-            preview = preview_deploy(context, args.component, args.release, artifacts)
-            return DeployPayload(
-                _with_agent_approval(
-                    {
-                        **_plan(preview),
-                        "approval": (
-                            dict(AUTOMATIC_PLAN)
-                            if approval is None
-                            else approval.plan()
-                        ),
-                    },
-                    _agent_grant(
-                        args.proposals, fleet, args.schemas, "deploy", preview.servers
-                    ),
-                )
+            shown = preview_deploy(context, args.component, args.release, artifacts)
+            return _deploy_plan(
+                shown,
+                approval,
+                None if gate is None else gate.check("deploy", shown.servers),
             )
         # Refused before the inventory render or any playbook: nothing on a
         # server changes and no receipt is written.
         if approval is not None and approval.counting is None:
             raise approval.refusal()
-        result = deploy(
-            context,
-            args.component,
-            args.release,
-            artifacts,
-            DeployOptions(
-                environment_file=(
-                    fleet.path(args.env_file) if args.env_file is not None else None
-                ),
-                receipt_directory=fleet.path(args.releases),
-                approved_sha256=(
-                    None if approval is None else approval.candidate.artifact_sha256
-                ),
+        # An agent's confirmed call recomputes the plan its record binds.
+        preview = (
+            None
+            if gate is None
+            else preview_deploy(context, args.component, args.release, artifacts)
+        )
+        check = (
+            None if gate is None or preview is None
+            else gate.check("deploy", preview.servers)
+        )
+        options = DeployOptions(
+            environment_file=(
+                fleet.path(args.env_file) if args.env_file is not None else None
+            ),
+            receipt_directory=fleet.path(args.releases),
+            approved_sha256=(
+                None if approval is None else approval.candidate.artifact_sha256
             ),
         )
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error
+
+    def run(watch: Callable[[StepRunner], StepRunner]) -> LifecycleResult:
+        try:
+            return deploy(
+                replace(context, run=watch(context.run)),
+                args.component,
+                args.release,
+                artifacts,
+                options,
+            )
+        except LifecycleError as error:
+            raise _lifecycle_failed(error) from error
+
+    used = dict(AUTOMATIC_PLAN) if approval is None else approval.used()
+    if gate is None or preview is None or check is None or not check.self_confirm:
+        result = run(_unwatched)
+        return DeployPayload(
+            {**result.as_dict(), "effect": "updated", "approval": used}
+        )
+    plan = _payload_document(_deploy_plan(preview, approval, check))
+    result, granted = _granted(
+        gate,
+        check,
+        AgentCall("deploy", _call_arguments(args), args.reason, _UNKNOWN_CLIENT),
+        plan=plan,
+        evidence=_plan_evidence(plan),
+        execute=run,
+        verify=lambda done: health_verdict(healthy=done.healthy, servers=done.servers),
+    )
+    # The release approval's own policy (manual or automatic) stays beside
+    # the grant's, under its own name (S-008, S-018-5).
+    release = {
+        ("release_policy" if key == "policy" else key): value
+        for key, value in used.items()
+    }
     return DeployPayload(
         {
             **result.as_dict(),
             "effect": "updated",
-            "approval": dict(AUTOMATIC_PLAN) if approval is None else approval.used(),
+            "approval": {**release, **granted},
         }
+    )
+
+
+def _unwatched(run: StepRunner) -> StepRunner:
+    """Leave ``run`` as it is: no record, for a person's or an ungranted call."""
+    return run
+
+
+def _deploy_plan(
+    preview: LifecyclePreview,
+    approval: ApprovalCheck | None,
+    check: GrantCheck | None,
+) -> DeployPayload:
+    """Return the plan ``deploy`` answers without ``--yes``."""
+    return DeployPayload(
+        _with_agent_approval(
+            {
+                **_plan(preview),
+                "approval": (
+                    dict(AUTOMATIC_PLAN) if approval is None else approval.plan()
+                ),
+            },
+            check,
+        )
     )
 
 
@@ -5139,32 +5418,42 @@ def deploy_command(args: DeployArgs, ctx: Ctx, fleet: Fleet) -> DeployPayload:
 def rollback_command(args: RollbackArgs, ctx: Ctx, fleet: Fleet) -> RollbackPayload:
     """Switch the component back to the release, or show the plan."""
     context = args.context(fleet, ctx)
+    gate = _agent_gate(args.proposals, fleet.directory, fleet.inventory, args.schemas)
+
+    def plan() -> tuple[RollbackPayload, GrantCheck | None]:
+        # A rollback never waits for an approval, even for a manual
+        # application; the plan says so and why (S-008-13).
+        preview = preview_rollback(context, args.component, args.release)
+        check = None if gate is None else gate.check("rollback", preview.servers)
+        payload = RollbackPayload(
+            _with_agent_approval(
+                {
+                    **_plan(preview),
+                    "approval": rollback_approval(fleet.inventory, args.component),
+                },
+                check,
+            )
+        )
+        return payload, check
+
+    def run(watch: Callable[[StepRunner], StepRunner]) -> LifecycleResult:
+        try:
+            return rollback(
+                replace(context, run=watch(context.run)), args.component, args.release
+            )
+        except LifecycleError as error:
+            raise _lifecycle_failed(error) from error
+
     try:
         if not args.yes:
-            # A rollback never waits for an approval, even for a manual
-            # application; the plan says so and why (S-008-13).
-            preview = preview_rollback(context, args.component, args.release)
-            return RollbackPayload(
-                _with_agent_approval(
-                    {
-                        **_plan(preview),
-                        "approval": rollback_approval(
-                            fleet.inventory, args.component
-                        ),
-                    },
-                    _agent_grant(
-                        args.proposals,
-                        fleet,
-                        args.schemas,
-                        "rollback",
-                        preview.servers,
-                    ),
-                )
-            )
-        result = rollback(context, args.component, args.release)
+            return plan()[0]
+        planned = None if gate is None else plan()
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error
-    return RollbackPayload({**result.as_dict(), "effect": "updated"})
+    result, granted = _component_run(gate, planned, "rollback", args, run)
+    return RollbackPayload(
+        {**result.as_dict(), "effect": "updated", **_approval_key(granted)}
+    )
 
 
 @app.command(
@@ -5187,21 +5476,59 @@ def rollback_command(args: RollbackArgs, ctx: Ctx, fleet: Fleet) -> RollbackPayl
 def restart_command(args: ComponentArgs, ctx: Ctx, fleet: Fleet) -> RestartPayload:
     """Restart the component, or show the plan."""
     context = args.context(fleet, ctx)
+    gate = _agent_gate(args.proposals, fleet.directory, fleet.inventory, args.schemas)
+
+    def plan() -> tuple[RestartPayload, GrantCheck | None]:
+        preview = preview_restart(context, args.component)
+        check = None if gate is None else gate.check("restart", preview.servers)
+        return RestartPayload(_with_agent_approval(_plan(preview), check)), check
+
+    def run(watch: Callable[[StepRunner], StepRunner]) -> LifecycleResult:
+        try:
+            return restart(replace(context, run=watch(context.run)), args.component)
+        except LifecycleError as error:
+            raise _lifecycle_failed(error) from error
+
     try:
         if not args.yes:
-            preview = preview_restart(context, args.component)
-            return RestartPayload(
-                _with_agent_approval(
-                    _plan(preview),
-                    _agent_grant(
-                        args.proposals, fleet, args.schemas, "restart", preview.servers
-                    ),
-                )
-            )
-        result = restart(context, args.component)
+            return plan()[0]
+        planned = None if gate is None else plan()
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error
-    return RestartPayload({**result.as_dict(), "effect": "updated"})
+    result, granted = _component_run(gate, planned, "restart", args, run)
+    return RestartPayload(
+        {**result.as_dict(), "effect": "updated", **_approval_key(granted)}
+    )
+
+
+def _approval_key(granted: dict[str, object] | None) -> dict[str, object]:
+    """Return the result's ``approval`` of a granted run; nothing for another."""
+    return {} if granted is None else {"approval": granted}
+
+
+def _component_run(
+    gate: _AgentGate | None,
+    planned: tuple[Payload, GrantCheck | None] | None,
+    tool: str,
+    args: ComponentArgs,
+    run: Callable[[Callable[[StepRunner], StepRunner]], LifecycleResult],
+) -> tuple[LifecycleResult, dict[str, object] | None]:
+    """Run a ``rollback`` or ``restart``; granted, with its agent record."""
+    if gate is None or planned is None:
+        return run(_unwatched), None
+    payload, check = planned
+    if check is None or not check.self_confirm:
+        return run(_unwatched), None
+    plan = _payload_document(payload)
+    return _granted(
+        gate,
+        check,
+        AgentCall(tool, _call_arguments(args), args.reason, _UNKNOWN_CLIENT),
+        plan=plan,
+        evidence=_plan_evidence(plan),
+        execute=run,
+        verify=lambda done: health_verdict(healthy=done.healthy, servers=done.servers),
+    )
 
 
 # lock clear: a person removes the lock a run left behind (#221)
@@ -5976,35 +6303,53 @@ def data_copy(
     """Restore the source database into the service, or show the plan."""
     context = args.context(fleet, ctx)
     source = fleet.path(args.source_url_file)
+    gate = _agent_gate(args.proposals, fleet.directory, fleet.inventory, args.schemas)
+
+    def plan(schemas: DataCopySchemas) -> tuple[DataMigratePayload, GrantCheck | None]:
+        preview = preview_data_migration(
+            context, args.service, args.database, source, schemas
+        )
+        check = None if gate is None else gate.check("data_copy", preview.servers)
+        return DataMigratePayload(_with_agent_approval(_plan(preview), check)), check
+
     try:
         schemas = args.source_schemas()
         if not args.yes:
-            preview = preview_data_migration(
-                context, args.service, args.database, source, schemas
-            )
-            return DataMigratePayload(
-                _with_agent_approval(
-                    _plan(preview),
-                    _agent_grant(
-                        args.proposals,
-                        fleet,
-                        args.schemas,
-                        "data_copy",
-                        preview.servers,
-                    ),
-                )
-            )
-        body = migrate_data(
-            context,
-            args.service,
-            args.database,
-            source,
-            fleet.path(args.data_migrations),
-            schemas=schemas,
-        )
+            return plan(schemas)[0]
+        planned = None if gate is None else plan(schemas)
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error
-    return DataMigratePayload({**body, "effect": "updated"})
+
+    def run(watch: Callable[[StepRunner], StepRunner]) -> dict[str, object]:
+        try:
+            return migrate_data(
+                replace(context, run=watch(context.run)),
+                args.service,
+                args.database,
+                source,
+                fleet.path(args.data_migrations),
+                schemas=schemas,
+            )
+        except LifecycleError as error:
+            raise _lifecycle_failed(error) from error
+
+    if gate is None or planned is None or planned[1] is None or not (
+        planned[1].self_confirm
+    ):
+        return DataMigratePayload({**run(_unwatched), "effect": "updated"})
+    document = _payload_document(planned[0])
+    body, granted = _granted(
+        gate,
+        planned[1],
+        AgentCall("data_copy", _call_arguments(args), args.reason, _UNKNOWN_CLIENT),
+        plan=document,
+        evidence=_plan_evidence(document),
+        execute=run,
+        verify=lambda done: data_copy_verdict(
+            Path(str(done["receipt"])) if done.get("receipt") is not None else None
+        ),
+    )
+    return DataMigratePayload({**body, "effect": "updated", "approval": granted})
 
 
 domains = app.group(
@@ -6042,6 +6387,7 @@ class DomainApplyArgs(EngineArgs):
     proposals: Path | None = Flag(
         default=None, description=_AGENT_PROPOSALS_DESCRIPTION
     )
+    reason: str | None = Flag(default=None, description=_AGENT_REASON_DESCRIPTION)
 
     def __post_init__(self) -> None:
         """Keep relative paths inside the project."""
@@ -6049,6 +6395,7 @@ class DomainApplyArgs(EngineArgs):
         _inside_project(self.deployments, "deployments")
         if self.proposals is not None:
             _inside_project(self.proposals, "proposals")
+        _checked_reason(self.reason)
 
 
 class DomainApplyPayload(Payload):
@@ -6089,29 +6436,96 @@ def domains_apply(
         issue_certificate=args.issue_certificate,
         receipt_directory=fleet.path(args.deployments),
     )
+    gate = _agent_gate(args.proposals, fleet.directory, fleet.inventory, args.schemas)
+
+    def plan() -> tuple[DomainApplyPayload, GrantCheck | None]:
+        preview = preview_domain_apply(context, request, SystemNameResolver())
+        check = (
+            None if gate is None else gate.check("domains_apply", (preview.server,))
+        )
+        payload = DomainApplyPayload(
+            _with_agent_approval(
+                {
+                    **preview.as_dict(),
+                    "instruction": _PLAN_INSTRUCTION,
+                    "effect": "would_update",
+                },
+                check,
+            )
+        )
+        return payload, check
+
+    def run(watch: Callable[[StepRunner], StepRunner]) -> DomainApplied:
+        try:
+            return apply_domain(
+                replace(context, run=watch(context.run)),
+                request,
+                SystemNameResolver(),
+            )
+        except LifecycleError as error:
+            raise _lifecycle_failed(error) from error
+
     try:
         if not args.yes:
-            preview = preview_domain_apply(context, request, SystemNameResolver())
-            return DomainApplyPayload(
-                _with_agent_approval(
-                    {
-                        **preview.as_dict(),
-                        "instruction": _PLAN_INSTRUCTION,
-                        "effect": "would_update",
-                    },
-                    _agent_grant(
-                        args.proposals,
-                        fleet,
-                        args.schemas,
-                        "domains_apply",
-                        (preview.server,),
-                    ),
-                )
-            )
-        applied = apply_domain(context, request, SystemNameResolver())
+            return plan()[0]
+        planned = None if gate is None else plan()
     except LifecycleError as error:
         raise _lifecycle_failed(error) from error
-    return DomainApplyPayload({**applied.as_dict(), "effect": "updated"})
+    if gate is None or planned is None or planned[1] is None or not (
+        planned[1].self_confirm
+    ):
+        return DomainApplyPayload({**run(_unwatched).as_dict(), "effect": "updated"})
+    document = _payload_document(planned[0])
+    applied, granted = _granted(
+        gate,
+        planned[1],
+        AgentCall(
+            "domains_apply", _call_arguments(args), args.reason, _UNKNOWN_CLIENT
+        ),
+        plan=document,
+        evidence=_plan_evidence(document),
+        execute=run,
+        verify=lambda done: domains_verdict(
+            _observe_domains(
+                context, (done.domain_id,), fleet.path(args.deployments)
+            )
+        ),
+    )
+    return DomainApplyPayload(
+        {**applied.as_dict(), "effect": "updated", "approval": granted}
+    )
+
+
+def _observe_domains(
+    context: EngineContext, domains: Iterable[ResourceId], receipts: Path
+) -> tuple[DomainObserved, ...]:
+    """Read each Domain on its proxy server, as ``domains observe`` does.
+
+    The verify step of a granted ``domains_apply`` or ``converge_domains``
+    (S-018): the inventory and readings go to a scratch directory.
+    """
+    observed: list[DomainObserved] = []
+    with tempfile.TemporaryDirectory(prefix="cloudfall-domains-verify-") as scratch:
+        reading = replace(
+            context, inventory_file=Path(scratch) / "ansible-inventory.json"
+        )
+        for domain in domains:
+            try:
+                observed.append(
+                    observe_domain(
+                        reading,
+                        DomainObserve(
+                            domain_id=domain,
+                            receipt_directory=receipts,
+                            reading_file=Path(scratch) / f"{domain.value}.json",
+                        ),
+                    )
+                )
+            except LifecycleError as error:
+                raise _lifecycle_failed(error) from error
+            except ConfigValidationError as error:
+                raise _config_invalid(error) from error
+    return tuple(observed)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -6333,11 +6747,16 @@ class ArtifactBuilt:
 
 @dataclass(frozen=True, slots=True)
 class Converged:
-    """A ``converge_*`` tool: the engine playbook that ran on every server."""
+    """A ``converge_*`` tool: the engine playbook that ran on every server.
+
+    ``approval`` names the agent approval and its record when a policy grant
+    covered the run (S-018); it is empty otherwise.
+    """
 
     status: str
     action: str
     playbook: str
+    approval: dict[str, object] = Out(default_factory=dict, ordered=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -6347,7 +6766,9 @@ class ServicesConverged:
     ``owned_roles`` names each role's ``passwordRef``, its key, and the
     value's SHA-256; never the value. ``mariadb_replication`` names what
     replication did for each MariaDB service of a pair: a seed, an attach, a
-    promotion with the last GTID it applied, or a wait (S-019).
+    promotion with the last GTID it applied, or a wait (S-019). ``approval``
+    names the agent approval and its record when a policy grant covered the
+    run (S-018); it is empty otherwise.
     """
 
     status: str
@@ -6359,6 +6780,7 @@ class ServicesConverged:
     mariadb_replication: list[dict[str, object]] = Out(
         default_factory=list, ordered=True, high_entropy=False
     )
+    approval: dict[str, object] = Out(default_factory=dict, ordered=True)
 
 
 _ENGINE_EXIT_CODES = ("PRECONDITION", "ENGINE_STEP_FAILED")
@@ -6373,29 +6795,46 @@ def _converge_baseline_handler(
     def converge_declared_baseline(
         arguments: Mapping[str, object], call: Ctx
     ) -> Converged:
-        del arguments  # the tool takes none
         engine = context(call)
         store = SecretStore(
             root.path(args.secrets_dir),
             decrypt=_sops_decrypt(call),
             encrypt=_sops_encrypt(call),
         )
-        try:
-            state = validate_config(engine.project_directory, engine.schema_directory)
-            hosts = host_channels(PlatformInventory.from_state(state))
-            run_baseline(engine, hosts, store)
-        except TokenMissingError as error:
-            raise _token_missing(error) from error
-        except SecretsError as error:
-            raise Exit.PRECONDITION(
-                error.message, context={"code": error.code}
-            ) from error
-        except LifecycleError as error:
-            raise _lifecycle_failed(error) from error
-        except ConfigValidationError as error:
-            raise _config_invalid(error) from error
+
+        def run(watch: Callable[[StepRunner], StepRunner]) -> None:
+            try:
+                state = validate_config(
+                    engine.project_directory, engine.schema_directory
+                )
+                hosts = host_channels(PlatformInventory.from_state(state))
+                run_baseline(replace(engine, run=watch(engine.run)), hosts, store)
+            except TokenMissingError as error:
+                raise _token_missing(error) from error
+            except SecretsError as error:
+                raise Exit.PRECONDITION(
+                    error.message, context={"code": error.code}
+                ) from error
+            except LifecycleError as error:
+                raise _lifecycle_failed(error) from error
+            except ConfigValidationError as error:
+                raise _config_invalid(error) from error
+
+        _, granted = _converge_granted(
+            args,
+            root,
+            _ConvergeCall("converge_baseline", "baseline.yml", arguments),
+            servers=declared_servers,
+            execute=run,
+            verify=lambda _, inventory, servers: _audit_after(
+                engine, inventory, root.path(args.observed), servers
+            ),
+        )
         return Converged(
-            status="ok", action="converge-baseline", playbook="baseline.yml"
+            status="ok",
+            action="converge-baseline",
+            playbook="baseline.yml",
+            approval=granted or {},
         )
 
     converge_declared_baseline.__annotations__ = {
@@ -6414,20 +6853,37 @@ def _converge_services_handler(
     def converge_declared_services(
         arguments: Mapping[str, object], call: Ctx
     ) -> ServicesConverged:
-        del arguments  # the tool takes none
+        engine = context(call)
         provider = SopsSecretProvider(
             secrets_directory=root.path(args.secrets_dir),
             decrypt=_sops_decrypt(call),
         )
         replication: list[ReplicationOutcome] = []
-        try:
-            passwords = converge_services(
-                context(call), provider, replication=replication
-            )
-        except LifecycleError as error:
-            raise _lifecycle_failed(error) from error
-        except ConfigValidationError as error:
-            raise _config_invalid(error) from error
+
+        def run(
+            watch: Callable[[StepRunner], StepRunner],
+        ) -> tuple[OwnedRolePassword, ...]:
+            try:
+                return converge_services(
+                    replace(engine, run=watch(engine.run)),
+                    provider,
+                    replication=replication,
+                )
+            except LifecycleError as error:
+                raise _lifecycle_failed(error) from error
+            except ConfigValidationError as error:
+                raise _config_invalid(error) from error
+
+        passwords, granted = _converge_granted(
+            args,
+            root,
+            _ConvergeCall("converge_services", "services.yml", arguments),
+            servers=declared_servers,
+            execute=run,
+            verify=lambda _, inventory, servers: _audit_after(
+                engine, inventory, root.path(args.observed), servers
+            ),
+        )
         return ServicesConverged(
             status="ok",
             action="converge-services",
@@ -6440,6 +6896,7 @@ def _converge_services_handler(
                 cast("dict[str, object]", snake_case_keys(outcome.as_dict()))
                 for outcome in replication
             ],
+            approval=granted or {},
         )
 
     converge_declared_services.__annotations__ = {
@@ -6448,6 +6905,155 @@ def _converge_services_handler(
         "return": ServicesConverged,
     }
     return converge_declared_services
+
+
+@dataclass(frozen=True, slots=True)
+class _ConvergeCall:
+    """One call of a ``converge_*`` tool: its name, playbook and arguments."""
+
+    tool: str
+    playbook: str
+    arguments: Mapping[str, object]
+
+    def recorded(self) -> dict[str, object]:
+        """Return the arguments a record keeps: not the confirmation or reason."""
+        return {
+            name: value
+            for name, value in self.arguments.items()
+            if name not in {"reason", "confirm_destructive"}
+        }
+
+    def reason(self) -> str | None:
+        """Return the reason the agent gave, if it gave one."""
+        given = self.arguments.get("reason")
+        return None if given is None else str(given)
+
+
+def _converge_granted[T](  # noqa: PLR0913 - a converge run's whole contract.
+    args: McpServeArgs,
+    root: ServerRoot,
+    call: _ConvergeCall,
+    *,
+    servers: Callable[[PlatformInventory], tuple[ResourceId, ...]],
+    execute: Callable[[Callable[[StepRunner], StepRunner]], T],
+    verify: Callable[[T, PlatformInventory, tuple[ResourceId, ...]], Verdict],
+) -> tuple[T, dict[str, object] | None]:
+    """Run a ``converge_*`` tool; granted, with its agent record (S-018).
+
+    No unconfirmed call answers a plan (the tool asks for
+    ``confirm_destructive`` first), so the record binds the run as named:
+    the tool, its playbook, the servers it changes and its arguments.
+    """
+    try:
+        inventory = PlatformInventory.from_state(
+            validate_config(root.directory, args.schemas)
+        )
+    except ConfigValidationError as error:
+        raise _config_invalid(error) from error
+    gate = _agent_gate(args.proposals, root.directory, inventory, args.schemas)
+    changed = servers(inventory)
+    check = None if gate is None or not changed else gate.check(call.tool, changed)
+    if gate is None or check is None or not check.self_confirm:
+        return execute(_unwatched), None
+    reason = call.reason()
+    _checked_reason(reason)
+    names = [server.value for server in check.servers]
+    plan: dict[str, object] = {
+        "tool": call.tool,
+        "playbook": call.playbook,
+        "servers": names,
+        "arguments": call.recorded(),
+    }
+    return _granted(
+        gate,
+        check,
+        AgentCall(call.tool, call.recorded(), reason, _UNKNOWN_CLIENT),
+        plan=plan,
+        evidence=(f"plan: run {call.playbook} on {', '.join(names)}",),
+        execute=execute,
+        verify=lambda done: verify(done, inventory, check.servers),
+    )
+
+
+def _audit_after(
+    engine: EngineContext,
+    inventory: PlatformInventory,
+    observed: Path,
+    servers: tuple[ResourceId, ...],
+) -> Verdict:
+    """Audit the changed servers after a converge: the verify step (S-018)."""
+    try:
+        report = engine_auditor(engine, inventory, observed)()
+    except LifecycleError as error:
+        raise _lifecycle_failed(error) from error
+    except ConfigValidationError as error:
+        raise _config_invalid(error) from error
+    return audit_verdict(report, servers)
+
+
+def _converge_domains_handler(
+    args: McpServeArgs, root: ServerRoot, context: Callable[[Ctx], EngineContext]
+) -> Callable[[Mapping[str, object], Ctx], Converged]:
+    """Return ``converge_domains``: every Domain, or one on its proxy server."""
+
+    def converge_domain_routes(
+        arguments: Mapping[str, object], call: Ctx
+    ) -> Converged:
+        domain = arguments.get("domain")
+        domain_id = None if domain is None else ResourceId.from_boundary(domain)
+        domains_run = DomainsRun(
+            issue_certificates=bool(arguments.get("issue_certificates", False)),
+            receipt_directory=root.path(args.deployments),
+            domain_id=domain_id,
+        )
+        engine = context(call)
+
+        def run(watch: Callable[[StepRunner], StepRunner]) -> None:
+            try:
+                converge_domains(replace(engine, run=watch(engine.run)), domains_run)
+            except LifecycleError as error:
+                raise _lifecycle_failed(error) from error
+            except ConfigValidationError as error:
+                raise _config_invalid(error) from error
+
+        def changed(inventory: PlatformInventory) -> tuple[ResourceId, ...]:
+            declared = {item.resource_id for item in inventory.domains}
+            if domain_id is not None and domain_id not in declared:
+                # converge_domains refuses an undeclared Domain itself.
+                return ()
+            return domain_servers(inventory, domain_id)
+
+        _, granted = _converge_granted(
+            args,
+            root,
+            _ConvergeCall("converge_domains", "domains.yml", arguments),
+            servers=changed,
+            execute=run,
+            verify=lambda _, inventory, __: domains_verdict(
+                _observe_domains(
+                    engine,
+                    (
+                        (domain_id,)
+                        if domain_id is not None
+                        else tuple(item.resource_id for item in inventory.domains)
+                    ),
+                    root.path(args.deployments),
+                )
+            ),
+        )
+        return Converged(
+            status="ok",
+            action="converge-domains",
+            playbook="domains.yml",
+            approval=granted or {},
+        )
+
+    converge_domain_routes.__annotations__ = {
+        "arguments": Mapping[str, object],
+        "call": Ctx,
+        "return": Converged,
+    }
+    return converge_domain_routes
 
 
 def _engine_tools(args: McpServeArgs, root: ServerRoot, ctx: Ctx) -> list[McpTool]:
@@ -6497,26 +7103,15 @@ def _engine_tools(args: McpServeArgs, root: ServerRoot, ctx: Ctx) -> list[McpToo
         }
         return run
 
-    def converge_domain_routes(
-        arguments: Mapping[str, object], call: Ctx
-    ) -> Converged:
-        domain = arguments.get("domain")
-        run = DomainsRun(
-            issue_certificates=bool(arguments.get("issue_certificates", False)),
-            receipt_directory=root.path(args.deployments),
-            domain_id=None if domain is None else ResourceId.from_boundary(domain),
-        )
-        try:
-            converge_domains(context(call), run)
-        except LifecycleError as error:
-            raise _lifecycle_failed(error) from error
-        except ConfigValidationError as error:
-            raise _config_invalid(error) from error
-        return Converged(status="ok", action="converge-domains", playbook="domains.yml")
-
+    reason_input: dict[str, object] = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": REASON_MAX_LENGTH,
+        "description": _AGENT_REASON_DESCRIPTION,
+    }
     no_inputs: dict[str, object] = {
         "type": "object",
-        "properties": {},
+        "properties": {"reason": reason_input},
         "additionalProperties": False,
     }
     return [
@@ -6574,10 +7169,11 @@ def _engine_tools(args: McpServeArgs, root: ServerRoot, ctx: Ctx) -> list[McpToo
                 "properties": {
                     "issue_certificates": {"type": "boolean"},
                     "domain": {"type": "string", "pattern": _COMPONENT_PATTERN},
+                    "reason": reason_input,
                 },
                 "additionalProperties": False,
             },
-            handler=converge_domain_routes,
+            handler=_converge_domains_handler(args, root, context),
             danger_level="destructive",
             exit_codes=(*_ENGINE_EXIT_CODES, "CONFIG_INVALID"),
         ),
