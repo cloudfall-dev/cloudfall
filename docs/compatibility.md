@@ -5,6 +5,31 @@ in its `pyproject.toml`, and it outlives that release. This page says what the p
 the agents and scripts that drive it, can rely on when the pin moves. Its source is spec
 [S-017](specs/017-compatibility-policy.md).
 
+## Supported Python versions
+
+Cloudfall runs on the Python that runs the project's `uv` environment, and ansible-core runs on
+the same interpreter. A new environment (a fresh checkout, a new worktree, a CI runner) takes
+the newest Python the project's `requires-python` allows, so the release line has to start
+ansible-core on that Python.
+
+| Release line | Python | ansible-core |
+|---|---|---|
+| 0.7.x | 3.14 only | 2.21; it fails at start on Python 3.15 |
+| 0.8.x | 3.14 and 3.15 | 2.21 or 2.22 on Python 3.14; 2.22 on Python 3.15 |
+
+0.7.0 declares `requires-python = ">=3.14"` but pins `ansible-core` 2.21, which fails at start on
+Python 3.15 (`AttributeError: module 'dataclasses' has no attribute '_is_type'`). A project
+pinned to 0.7.0 caps its Python in its own `pyproject.toml`, then runs `uv lock` and `uv sync`:
+
+```toml
+[project]
+requires-python = ">=3.14,<3.15"
+```
+
+`cloudfall doctor` starts `ansible-playbook --version` on the project's Python (its
+`ansible-start` check) and, when it fails to start, names the error and the fix: relock, or
+cap `requires-python` as above.
+
 ## What is stable
 
 These surfaces are the contract between a release and the projects that use it. Every other

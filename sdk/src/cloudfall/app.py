@@ -117,6 +117,7 @@ from cloudfall.ansible_api import (
     read_inventory,
 )
 from cloudfall.ansible_reader import FleetRead, read_fleet
+from cloudfall.ansible_start import ansible_starts
 from cloudfall.audit import AuditStatus, audit_inventory
 from cloudfall.authoring import (
     ERROR_KEY_FILE_MISSING,
@@ -502,6 +503,7 @@ app = App(
     # `treaty changelog-add cloudfall.app:app` records each release's
     # interface changes here, beside the manifest snapshot it diffs against.
     schema_changelog=Path(__file__).with_name("schema-changelog.json"),
+    checks=[ansible_starts],
     mcp=McpServe(
         args=McpServeArgs,
         setup=_serve_setup,

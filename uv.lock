@@ -357,7 +357,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ansible-core", specifier = ">=2.21,<2.23" },
+    { name = "ansible-core", marker = "python_full_version < '3.15'", specifier = ">=2.21,<2.23" },
+    { name = "ansible-core", marker = "python_full_version >= '3.15'", specifier = ">=2.22,<2.23" },
     { name = "bcrypt", specifier = ">=5,<6" },
     { name = "cryptography", specifier = ">=46,<51" },
     { name = "jsonschema", extras = ["format"], specifier = ">=4.23,<5" },
