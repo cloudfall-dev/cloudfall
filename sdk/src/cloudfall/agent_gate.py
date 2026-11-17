@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from cloudfall.audit import AuditReport
+    from cloudfall.decision import ApprovalChannel
     from cloudfall.domain import ResourceId
     from cloudfall.inventory import PlatformInventory
     from cloudfall.lifecycle import DomainObserved, ExecutionStep, StepRun, StepRunner
@@ -526,6 +527,94 @@ class GrantedRun:
             "record": str(self.begin()),
             "status": self._record.status.value,
         }
+
+
+class ApprovedRun(GrantedRun):
+    """The run of an agent proposal a person approved (S-018-11).
+
+    The proposal's own record becomes the run's: ``running`` with the
+    person's approval when the first step starts, read again under the
+    store's lock so a second approval is refused, then settled by the tool's
+    own check as a granted run is.
+    """
+
+    @classmethod
+    def of(
+        cls, store: ProposalStore, proposal: OperatorProposal, via: ApprovalChannel
+    ) -> ApprovedRun:
+        """Build the run of ``proposal``, approved by a person through ``via``."""
+        if proposal.trigger_kind is not TriggerKind.AGENT:
+            message = "only an agent proposal is run as its stored request"
+            raise ValueError(message)
+        return cls(
+            store,
+            replace(
+                proposal,
+                status=ProposalStatus.RUNNING,
+                approval=ApprovalRecord(mode=ApprovalMode.HUMAN, policy=None, via=via),
+            ),
+        )
+
+    def begin(self) -> Path:
+        """Record the approved run as started, once; return its path."""
+        if self._path is None:
+            self._path = self._store.start(self._record)
+        return self._path
+
+    def approval(self) -> dict[str, object]:
+        """Serialize what the result says of the run's approval."""
+        approval = self._record.approval
+        if approval is None or approval.via is None:
+            message = "an approved run's record names the person's channel"
+            raise ValueError(message)
+        return {
+            "mode": approval.mode.value,
+            "via": approval.via.value,
+            "proposal": self._record.resource_id.value,
+            "record": str(self.begin()),
+            "status": self._record.status.value,
+        }
+
+
+BINDING_CHANGED = "proposal_binding_changed"
+"""``error.context.code`` of an approval whose proposal no longer matches."""
+
+
+def binding_changes(
+    proposal: OperatorProposal,
+    *,
+    binding: ProposalBinding,
+    servers: Iterable[ResourceId],
+) -> tuple[str, ...]:
+    """Name each part of an agent proposal's binding that differs now (D-20).
+
+    Empty when the run would change what the person read: the same servers,
+    the same plan, commit and uncommitted changes.
+    """
+    recorded = proposal.binding
+    if recorded is None:
+        return ("the proposal records no binding",)
+    found: list[str] = []
+    now = tuple(servers)
+    if now != proposal.operation_servers:
+        was = ", ".join(server.value for server in proposal.operation_servers)
+        found.append(
+            f"the servers the run changes (were {was}, now "
+            f"{', '.join(server.value for server in now) or 'none'})"
+        )
+    if binding.plan_sha256 != recorded.plan_sha256:
+        found.append(
+            f"the plan (its sha256 was {recorded.plan_sha256}, now "
+            f"{binding.plan_sha256})"
+        )
+    if binding.git_commit != recorded.git_commit:
+        found.append(
+            f"the git commit (was {recorded.git_commit or 'none'}, now "
+            f"{binding.git_commit or 'none'})"
+        )
+    if binding.worktree_digest != recorded.worktree_digest:
+        found.append("the uncommitted changes in the project")
+    return tuple(found)
 
 
 def _agent_record(  # noqa: PLR0913 - the record's every source.

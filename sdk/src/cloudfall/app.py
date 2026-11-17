@@ -17,6 +17,7 @@ from __future__ import annotations
 import dataclasses
 import errno
 import getpass
+import json
 import os
 import shutil
 import sys
@@ -32,7 +33,16 @@ from functools import partial
 from http import HTTPStatus
 from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Self, cast
+from types import UnionType
+from typing import (
+    TYPE_CHECKING,
+    ClassVar,
+    Self,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from treaty import (
     App,
@@ -54,12 +64,15 @@ from treaty import (
 )
 
 from cloudfall.agent_gate import (
+    BINDING_CHANGED,
     REASON_MAX_LENGTH,
     AgentCall,
+    ApprovedRun,
     GrantCheck,
     GrantedRun,
     Verdict,
     audit_verdict,
+    binding_changes,
     check_grant,
     check_reason,
     data_copy_verdict,
@@ -323,6 +336,7 @@ from cloudfall.operator import (
     engine_auditor,
     engine_executor,
     gateway_feed,
+    refuse_not_open,
     watch,
 )
 from cloudfall.operator import approve as approve_proposal
@@ -2402,12 +2416,26 @@ _AGENT_REASON_DESCRIPTION = (
 
 
 @dataclass(frozen=True, slots=True)
+class _Approving:
+    """An agent proposal a person approved at a terminal, being run (S-018)."""
+
+    proposal: OperatorProposal
+    via: ApprovalChannel
+
+
+@dataclass(frozen=True, slots=True)
 class _AgentGate:
-    """The proposal store an agent's call is gated by, and the fleet it reads."""
+    """The proposal store an agent's call is gated by, and the fleet it reads.
+
+    ``approving`` is set when ``operator approve`` runs an agent proposal's
+    stored request: the call then runs on the person's approval, once its
+    binding still holds, and grants are not checked.
+    """
 
     store: ProposalStore
     project: Path
     inventory: PlatformInventory
+    approving: _Approving | None = None
 
     def check(self, tool: str, servers: Iterable[ResourceId]) -> GrantCheck:
         """Check each environment of ``servers`` for a grant of the tool's class."""
@@ -2417,7 +2445,11 @@ class _AgentGate:
 
 
 def _agent_gate(
-    proposals: Path | None, project: Path, inventory: PlatformInventory, schemas: Path
+    proposals: Path | None,
+    project: Path,
+    inventory: PlatformInventory,
+    schemas: Path,
+    approving: _Approving | None = None,
 ) -> _AgentGate | None:
     """Return the gate of an agent's call; none for a person's command."""
     if proposals is None:
@@ -2427,6 +2459,7 @@ def _agent_gate(
         store=ProposalStore(directory=directory, catalog=SchemaCatalog(schemas)),
         project=project,
         inventory=inventory,
+        approving=approving,
     )
 
 
@@ -2515,6 +2548,19 @@ def _granted[T](  # noqa: PLR0913 - a granted run's whole contract.
         evidence=evidence,
         now=datetime.now(UTC),
     )
+    return _recorded(run, execute, verify)
+
+
+def _recorded[T](
+    run: GrantedRun,
+    execute: Callable[[Callable[[StepRunner], StepRunner]], T],
+    verify: Callable[[T], Verdict],
+) -> tuple[T, dict[str, object]]:
+    """Run ``execute`` with ``run``'s record started before its first step.
+
+    ``verify`` settles the record ``verified`` or ``failed``; a run or check
+    that raises leaves it ``failed`` and raises as it was.
+    """
     executed_at = datetime.now(UTC)
     stage = "run"
     settled = False
@@ -2551,7 +2597,13 @@ def _gated[T](  # noqa: PLR0913 - a gated run's whole contract.
     it), refuses with ``operator_approval_required`` and leaves one
     agent proposal in the store, after the checks a run makes first: the
     ``component``'s lock, held by another run, refuses as the run would.
+    The stored request of an agent proposal a person approved runs on that
+    approval, once its binding still holds.
     """
+    if gate.approving is not None:
+        return _approved(
+            gate, gate.approving, check, call, plan=plan, execute=execute, verify=verify
+        )
     if check.self_confirm:
         return _granted(
             gate,
@@ -2570,6 +2622,78 @@ def _gated[T](  # noqa: PLR0913 - a gated run's whole contract.
     raise _proposed(gate, check, call, plan=plan, evidence=evidence)
 
 
+def _current_binding(gate: _AgentGate, plan: Mapping[str, object]) -> ProposalBinding:
+    """Return what an agent proposal of ``plan`` binds now (D-20)."""
+    try:
+        commit, worktree = project_state(
+            BoundProject(gate.project, gate.project / DECISION_DIRECTORY)
+        )
+    except BindingError as error:
+        raise Exit.PRECONDITION(
+            error.detail, context={"code": error.code}
+        ) from error
+    return ProposalBinding(
+        plan_sha256=plan_sha256(proposal_plan(plan)),
+        git_commit=None if commit is None else commit.value,
+        worktree_digest=None if worktree is None else worktree.value,
+    )
+
+
+def _approved[T](  # noqa: PLR0913 - an approved run's whole contract.
+    gate: _AgentGate,
+    approving: _Approving,
+    check: GrantCheck,
+    call: AgentCall,
+    *,
+    plan: Mapping[str, object],
+    execute: Callable[[Callable[[StepRunner], StepRunner]], T],
+    verify: Callable[[T], Verdict],
+) -> tuple[T, dict[str, object]]:
+    """Run an agent proposal's stored request on a person's approval (S-018-11).
+
+    The plan, commit and uncommitted changes are recomputed and compared
+    with the proposal's binding before anything runs; any difference
+    refuses with ``proposal_binding_changed`` and the proposal stays
+    ``proposed`` (S-018-12).
+    """
+    proposal = approving.proposal
+    request = proposal.request
+    if request is None or (request.tool, dict(request.arguments)) != (
+        call.tool,
+        dict(call.arguments),
+    ):
+        message = (
+            f"proposal {proposal.resource_id.value} does not hold the call being "
+            "run; it is never run as another"
+        )
+        raise Exit.PRECONDITION(message, context={"code": BINDING_CHANGED})
+    changed = binding_changes(
+        proposal, binding=_current_binding(gate, plan), servers=check.servers
+    )
+    if changed:
+        message = (
+            f"proposal {proposal.resource_id.value} no longer matches the project: "
+            f"{'; '.join(changed)} changed since it was proposed, so nothing ran "
+            "and it stays proposed; the agent calls the tool again for a new "
+            "proposal"
+        )
+        raise Exit.PRECONDITION(
+            message,
+            context={
+                "code": BINDING_CHANGED,
+                "proposal": proposal.resource_id.value,
+                "changed": list(changed),
+            },
+        )
+    try:
+        return _recorded(
+            ApprovedRun.of(gate.store, proposal, approving.via), execute, verify
+        )
+    except OperatorError as error:
+        # The store refused to start it: approved or run since it was read.
+        raise _operator_failed(error) from error
+
+
 def _proposed(
     gate: _AgentGate,
     check: GrantCheck,
@@ -2584,22 +2708,13 @@ def _proposed(
     project HEAD and the uncommitted changes (D-20), which ``operator
     approve`` recomputes before it runs anything.
     """
-    try:
-        commit, worktree = project_state(
-            BoundProject(gate.project, gate.project / DECISION_DIRECTORY)
-        )
-    except BindingError as error:
-        return Exit.PRECONDITION(error.detail, context={"code": error.code})
+    binding = _current_binding(gate, plan)
     try:
         proposal = propose_call(
             gate.store,
             check,
             call,
-            binding=ProposalBinding(
-                plan_sha256=plan_sha256(proposal_plan(plan)),
-                git_commit=None if commit is None else commit.value,
-                worktree_digest=None if worktree is None else worktree.value,
-            ),
+            binding=binding,
             evidence=evidence,
             now=datetime.now(UTC),
         )
@@ -3769,7 +3884,9 @@ class Approved:
     requires_person=True,
     description=(
         "Execute a proposal and verify its trigger resolves; a person types "
-        "the proposal id at a terminal, and `operator show` previews it"
+        "the proposal id at a terminal, and `operator show` previews it. An "
+        "agent's proposal runs its stored tool call once its plan, commit and "
+        "uncommitted changes still match, verified by the tool's own check"
     ),
     danger_level="mutating",
     exit_codes=[
@@ -3782,6 +3899,10 @@ class Approved:
         "RECORD_INVALID",
         "ENGINE_STEP_FAILED",
         "NOT_VERIFIED",
+        # An agent proposal's command: a component lock another run holds,
+        # a migration that stopped partway.
+        "CONFLICT",
+        "PARTIAL_FAILURE",
     ],
     timeout=None,
     supports_raw_payload=True,
@@ -3802,6 +3923,8 @@ def operator_approve(
     verifier_for = args.verifier_for(fleet, ctx, partial(args.feed, fleet))
     try:
         recorded = store.load(args.proposal)
+        if recorded.trigger_kind is TriggerKind.AGENT:
+            return _approve_agent_proposal(args, ctx, fleet, recorded)
         verifier = verifier_for(recorded)
         # Off a terminal this ends with PERSON_REQUIRED, and a mistyped id with
         # ATTESTATION_MISMATCH, before anything runs: --yes never approves.
@@ -3833,6 +3956,169 @@ def operator_approve(
         message = "the run finished but its trigger did not resolve"
         raise Exit.NOT_VERIFIED(message, data=approved)
     return approved
+
+
+def _approve_agent_proposal(
+    args: OperatorApproveArgs, ctx: Ctx, fleet: Fleet, recorded: OperatorProposal
+) -> Approved:
+    """Run an agent proposal's stored request once a person typed its id (S-018).
+
+    The request runs through its own command, as the agent's confirmed call
+    would have, with the proposal as its approval: the command recomputes
+    the plan and the binding and refuses any difference before an engine
+    step, and the tool's own check settles the record.
+    """
+    request = recorded.request
+    if request is None:
+        # OperatorProposal refuses an agent record without its request.
+        message = f"agent proposal {recorded.resource_id.value} holds no request"
+        raise ValueError(message)
+    attestation = ctx.attest(
+        f"{recorded.diagnosis_summary}. It runs {' '.join(recorded.command)} "
+        f"with {json.dumps(dict(request.arguments), sort_keys=True)} on "
+        f"{', '.join(server.value for server in recorded.operation_servers)}. "
+        f"Type the proposal id to approve {recorded.resource_id.value} and run it",
+        expected=recorded.resource_id.value,
+    )
+    try:
+        refuse_not_open(recorded)
+    except OperatorError as error:
+        raise _operator_failed(error) from error
+    _run_stored_request(
+        args,
+        ctx,
+        fleet,
+        _Approving(proposal=recorded, via=ApprovalChannel(attestation.channel)),
+    )
+    proposal = args.store(fleet).load(recorded.resource_id)
+    verified = proposal.status is ProposalStatus.VERIFIED
+    approved = Approved(
+        effect="updated",
+        status="ok" if verified else "failed",
+        proposal=proposal.as_document(),
+    )
+    if not verified:
+        message = "the run finished but the tool's own check did not pass"
+        raise Exit.NOT_VERIFIED(message, data=approved)
+    return approved
+
+
+def _run_stored_request(
+    args: OperatorApproveArgs, ctx: Ctx, fleet: Fleet, approving: _Approving
+) -> None:
+    """Run an approved agent proposal's request through the tool's own command."""
+    request = approving.proposal.request
+    if request is None:
+        message = "an approved agent proposal holds its request"
+        raise ValueError(message)
+    converge = _CONVERGE_HANDLERS.get(request.tool)
+    if converge is not None:
+        mcp_args = McpServeArgs(
+            project=fleet.directory,
+            schemas=args.schemas,
+            engine=args.engine,
+            inventory_file=args.inventory_file,
+            observed=args.observed,
+            proposals=args.proposals,
+            secrets_dir=args.secrets_dir,
+        )
+        root = ServerRoot(ServerMode.PROJECT, fleet.directory)
+
+        def context(call: Ctx) -> EngineContext:
+            return EngineContext(
+                project_directory=fleet.directory,
+                schema_directory=args.schemas,
+                engine_directory=args.engine,
+                inventory_file=fleet.path(args.inventory_file),
+                run=_step_runner(call, fleet.directory),
+            )
+
+        reason = {} if request.reason is None else {"reason": request.reason}
+        converge(mcp_args, root, context, approving)(
+            {**request.arguments, **reason, "confirm_destructive": True}, ctx
+        )
+        return
+    command = _STORED_COMMANDS.get(request.tool)
+    if command is None:
+        message = (
+            f"agent proposal {approving.proposal.resource_id.value} asks for tool "
+            f"{request.tool}, which operator approve does not run"
+        )
+        raise Exit.PRECONDITION(message, context={"code": BINDING_CHANGED})
+    arguments_type, run = command
+    shared: dict[str, object] = {
+        "project": fleet.directory,
+        "schemas": args.schemas,
+        "engine": args.engine,
+        "inventory_file": args.inventory_file,
+        "proposals": args.proposals,
+        "yes": True,
+        "reason": request.reason,
+    }
+    names = {item.name for item in dataclasses.fields(arguments_type)}
+    for name in ("observed", "secrets_dir"):
+        if name in names:
+            shared[name] = getattr(args, name)
+    stored = _stored_arguments(arguments_type, request.tool, request.arguments)
+    run(arguments_type(**shared, **stored), ctx, fleet, approving)
+
+
+def _stored_arguments(
+    arguments_type: type, tool: str, arguments: Mapping[str, object]
+) -> dict[str, object]:
+    """Type an agent request's stored arguments as its command's fields.
+
+    A stored argument is JSON, as ``_call_arguments`` wrote it; one the
+    command does not take, or one the server binds, refuses the request.
+    """
+    hints = get_type_hints(arguments_type)
+    taken = {item.name for item in dataclasses.fields(arguments_type)}
+    typed: dict[str, object] = {}
+    for name, value in arguments.items():
+        if (
+            name not in taken
+            or name in PROJECT_BOUND_FIELDS
+            or name in _UNRECORDED_ARGUMENTS
+        ):
+            message = (
+                f"the stored {tool} request names {name}, which a call of {tool} "
+                "does not pass"
+            )
+            raise Exit.PRECONDITION(message, context={"code": BINDING_CHANGED})
+        typed[name] = _stored_argument(hints[name], value, name)
+    return typed
+
+
+def _stored_argument(hint: object, value: object, name: str) -> object:
+    """Type one stored argument: a path, a tuple of strings, a value object."""
+    if get_origin(hint) is UnionType:
+        (hint,) = (item for item in get_args(hint) if item is not type(None))
+    malformed = Exit.PRECONDITION(
+        f"the stored argument {name} is not what a call of its tool passes",
+        context={"code": BINDING_CHANGED, "argument": name},
+    )
+    if get_origin(hint) is tuple:
+        if not isinstance(value, list) or not all(
+            isinstance(item, str) for item in value
+        ):
+            raise malformed
+        return tuple(value)
+    if hint is Path:
+        if not isinstance(value, str):
+            raise malformed
+        return Path(value)
+    if hint in {bool, str, int, float}:
+        if type(value) is not hint:
+            raise malformed
+        return value
+    boundary = getattr(hint, "from_boundary", None)
+    if boundary is None:
+        message = f"the stored argument {name} has no type a request is read as"
+        raise TypeError(message)
+    try:
+        return boundary(value)
+    except ValueError as error:
+        raise malformed from error
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -4266,7 +4552,16 @@ class Migration:
 )
 def migrate(args: MigrateArgs, ctx: Ctx, fleet: Fleet) -> Migration:
     """Run each pending step, saving progress after every one."""
-    gate = _agent_gate(args.proposals, fleet.directory, fleet.inventory, args.schemas)
+    return _migrate(args, ctx, fleet, None)
+
+
+def _migrate(
+    args: MigrateArgs, ctx: Ctx, fleet: Fleet, approving: _Approving | None
+) -> Migration:
+    """Migrate, or show the plan; ``approving`` runs an approved proposal."""
+    gate = _agent_gate(
+        args.proposals, fleet.directory, fleet.inventory, args.schemas, approving
+    )
     config = args.config(fleet, ctx)
     if not args.yes or gate is None:
         return _migration(_migrate_run(args, fleet, config), gate, fleet)
@@ -5367,9 +5662,18 @@ def _deploy_approval(
 )
 def deploy_command(args: DeployArgs, ctx: Ctx, fleet: Fleet) -> DeployPayload:
     """Activate the release on the component's servers, or show the plan."""
+    return _deploy(args, ctx, fleet, None)
+
+
+def _deploy(
+    args: DeployArgs, ctx: Ctx, fleet: Fleet, approving: _Approving | None
+) -> DeployPayload:
+    """Deploy, or show the plan; ``approving`` runs an approved agent proposal."""
     context = args.context(fleet, ctx)
     artifacts = fleet.path(args.artifacts)
-    gate = _agent_gate(args.proposals, fleet.directory, fleet.inventory, args.schemas)
+    gate = _agent_gate(
+        args.proposals, fleet.directory, fleet.inventory, args.schemas, approving
+    )
     try:
         approval = _deploy_approval(args, fleet, artifacts)
         if not args.yes:
@@ -5499,8 +5803,17 @@ def _deploy_plan(
 )
 def rollback_command(args: RollbackArgs, ctx: Ctx, fleet: Fleet) -> RollbackPayload:
     """Switch the component back to the release, or show the plan."""
+    return _rollback(args, ctx, fleet, None)
+
+
+def _rollback(
+    args: RollbackArgs, ctx: Ctx, fleet: Fleet, approving: _Approving | None
+) -> RollbackPayload:
+    """Roll back, or show the plan; ``approving`` runs an approved proposal."""
     context = args.context(fleet, ctx)
-    gate = _agent_gate(args.proposals, fleet.directory, fleet.inventory, args.schemas)
+    gate = _agent_gate(
+        args.proposals, fleet.directory, fleet.inventory, args.schemas, approving
+    )
 
     def plan() -> tuple[RollbackPayload, GrantCheck | None]:
         # A rollback never waits for an approval, even for a manual
@@ -5557,8 +5870,17 @@ def rollback_command(args: RollbackArgs, ctx: Ctx, fleet: Fleet) -> RollbackPayl
 )
 def restart_command(args: ComponentArgs, ctx: Ctx, fleet: Fleet) -> RestartPayload:
     """Restart the component, or show the plan."""
+    return _restart(args, ctx, fleet, None)
+
+
+def _restart(
+    args: ComponentArgs, ctx: Ctx, fleet: Fleet, approving: _Approving | None
+) -> RestartPayload:
+    """Restart, or show the plan; ``approving`` runs an approved proposal."""
     context = args.context(fleet, ctx)
-    gate = _agent_gate(args.proposals, fleet.directory, fleet.inventory, args.schemas)
+    gate = _agent_gate(
+        args.proposals, fleet.directory, fleet.inventory, args.schemas, approving
+    )
 
     def plan() -> tuple[RestartPayload, GrantCheck | None]:
         preview = preview_restart(context, args.component)
@@ -6384,9 +6706,18 @@ def data_copy(
     args: DataMigrateArgs, ctx: Ctx, fleet: Fleet
 ) -> DataMigratePayload:
     """Restore the source database into the service, or show the plan."""
+    return _data_copy(args, ctx, fleet, None)
+
+
+def _data_copy(
+    args: DataMigrateArgs, ctx: Ctx, fleet: Fleet, approving: _Approving | None
+) -> DataMigratePayload:
+    """Copy, or show the plan; ``approving`` runs an approved proposal."""
     context = args.context(fleet, ctx)
     source = fleet.path(args.source_url_file)
-    gate = _agent_gate(args.proposals, fleet.directory, fleet.inventory, args.schemas)
+    gate = _agent_gate(
+        args.proposals, fleet.directory, fleet.inventory, args.schemas, approving
+    )
 
     def plan(schemas: DataCopySchemas) -> tuple[DataMigratePayload, GrantCheck | None]:
         preview = preview_data_migration(
@@ -6513,13 +6844,22 @@ def domains_apply(
     args: DomainApplyArgs, ctx: Ctx, fleet: Fleet
 ) -> DomainApplyPayload:
     """Converge the Domain on its proxy server alone, or show the plan."""
+    return _domains_apply(args, ctx, fleet, None)
+
+
+def _domains_apply(
+    args: DomainApplyArgs, ctx: Ctx, fleet: Fleet, approving: _Approving | None
+) -> DomainApplyPayload:
+    """Apply, or show the plan; ``approving`` runs an approved proposal."""
     context = args.context(fleet, ctx)
     request = DomainApply(
         domain_id=args.domain,
         issue_certificate=args.issue_certificate,
         receipt_directory=fleet.path(args.deployments),
     )
-    gate = _agent_gate(args.proposals, fleet.directory, fleet.inventory, args.schemas)
+    gate = _agent_gate(
+        args.proposals, fleet.directory, fleet.inventory, args.schemas, approving
+    )
 
     def plan() -> tuple[DomainApplyPayload, GrantCheck | None]:
         preview = preview_domain_apply(context, request, SystemNameResolver())
@@ -6869,8 +7209,11 @@ _COMPONENT_PATTERN = r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
 
 
 def _converge_baseline_handler(
-    args: McpServeArgs, root: ServerRoot, context: Callable[[Ctx], EngineContext]
-) -> Callable[[Mapping[str, object], Ctx], Converged]:
+    args: McpServeArgs,
+    root: ServerRoot,
+    context: Callable[[Ctx], EngineContext],
+    approving: _Approving | None = None,
+) ->Callable[[Mapping[str, object], Ctx], Converged]:
     """Return ``converge_baseline``, staging channel tokens from the secrets dir."""
 
     def converge_declared_baseline(
@@ -6910,6 +7253,7 @@ def _converge_baseline_handler(
             verify=lambda _, inventory, servers: _audit_after(
                 engine, inventory, root.path(args.observed), servers
             ),
+            approving=approving,
         )
         return Converged(
             status="ok",
@@ -6927,8 +7271,11 @@ def _converge_baseline_handler(
 
 
 def _converge_services_handler(
-    args: McpServeArgs, root: ServerRoot, context: Callable[[Ctx], EngineContext]
-) -> Callable[[Mapping[str, object], Ctx], ServicesConverged]:
+    args: McpServeArgs,
+    root: ServerRoot,
+    context: Callable[[Ctx], EngineContext],
+    approving: _Approving | None = None,
+) ->Callable[[Mapping[str, object], Ctx], ServicesConverged]:
     """Return ``converge_services``: owner passwords from ``--secrets-dir`` first."""
 
     def converge_declared_services(
@@ -6964,6 +7311,7 @@ def _converge_services_handler(
             verify=lambda _, inventory, servers: _audit_after(
                 engine, inventory, root.path(args.observed), servers
             ),
+            approving=approving,
         )
         return ServicesConverged(
             status="ok",
@@ -7018,6 +7366,7 @@ def _converge_granted[T](  # noqa: PLR0913 - a converge run's whole contract.
     servers: Callable[[PlatformInventory], tuple[ResourceId, ...] | None],
     execute: Callable[[Callable[[StepRunner], StepRunner]], T],
     verify: Callable[[T, PlatformInventory, tuple[ResourceId, ...]], Verdict],
+    approving: _Approving | None = None,
 ) -> tuple[T, dict[str, object] | None]:
     """Run a ``converge_*`` tool a grant covers, or only propose it (S-018).
 
@@ -7036,10 +7385,16 @@ def _converge_granted[T](  # noqa: PLR0913 - a converge run's whole contract.
         )
     except ConfigValidationError as error:
         raise _config_invalid(error) from error
-    gate = _agent_gate(args.proposals, root.directory, inventory, args.schemas)
+    gate = _agent_gate(
+        args.proposals, root.directory, inventory, args.schemas, approving
+    )
     changed = servers(inventory)
+    # An approved proposal is checked against its binding even when the run
+    # would now refuse itself: a Domain gone since is a difference too.
     check = (
-        None if gate is None or changed is None else gate.check(call.tool, changed)
+        None
+        if gate is None or (changed is None and approving is None)
+        else gate.check(call.tool, changed or ())
     )
     if gate is None or check is None:
         return execute(_unwatched), None
@@ -7078,8 +7433,11 @@ def _audit_after(
 
 
 def _converge_domains_handler(
-    args: McpServeArgs, root: ServerRoot, context: Callable[[Ctx], EngineContext]
-) -> Callable[[Mapping[str, object], Ctx], Converged]:
+    args: McpServeArgs,
+    root: ServerRoot,
+    context: Callable[[Ctx], EngineContext],
+    approving: _Approving | None = None,
+) ->Callable[[Mapping[str, object], Ctx], Converged]:
     """Return ``converge_domains``: every Domain, or one on its proxy server."""
 
     def converge_domain_routes(
@@ -7127,6 +7485,7 @@ def _converge_domains_handler(
                     root.path(args.deployments),
                 )
             ),
+            approving=approving,
         )
         return Converged(
             status="ok",
@@ -7265,6 +7624,36 @@ def _engine_tools(args: McpServeArgs, root: ServerRoot, ctx: Ctx) -> list[McpToo
             exit_codes=(*_ENGINE_EXIT_CODES, "CONFIG_INVALID"),
         ),
     ]
+
+
+# What `operator approve` runs an approved agent proposal's request through:
+# the command or handler the gated tool's call ran (S-018).
+
+type _StoredCommand = Callable[..., object]
+"""A gated command's body: its arguments, ctx, fleet, and the approval."""
+type _ConvergeFactory = Callable[
+    [
+        McpServeArgs,
+        ServerRoot,
+        Callable[[Ctx], EngineContext],
+        _Approving | None,
+    ],
+    Callable[[Mapping[str, object], Ctx], object],
+]
+
+_STORED_COMMANDS: Mapping[str, tuple[type, _StoredCommand]] = {
+    "deploy": (DeployArgs, _deploy),
+    "rollback": (RollbackArgs, _rollback),
+    "restart": (ComponentArgs, _restart),
+    "migrate": (MigrateArgs, _migrate),
+    "data_copy": (DataMigrateArgs, _data_copy),
+    "domains_apply": (DomainApplyArgs, _domains_apply),
+}
+_CONVERGE_HANDLERS: Mapping[str, _ConvergeFactory] = {
+    "converge_baseline": _converge_baseline_handler,
+    "converge_services": _converge_services_handler,
+    "converge_domains": _converge_domains_handler,
+}
 
 
 # Renamed commands keep answering at their old paths, naming the new one.

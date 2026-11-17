@@ -73,7 +73,7 @@ _ERROR_CHANNEL_UNKNOWN = "operator_approval_channel_unknown"
 _ERROR_OPERATION_UNSUPPORTED = "operator_operation_unsupported"
 ERROR_GATEWAY_UNDECLARED = "operator_gateway_undeclared"
 ERROR_AGENT_PROPOSAL_UNSUPPORTED = "operator_agent_proposal_unsupported"
-"""Code of the refusal to run an agent proposal from the store (S-018)."""
+"""Code of the refusal to run an agent proposal through an operator executor."""
 _SERVICE_CHECK_PREFIXES = ("services.bind[", "alerting.rules[")
 _OUTCOME_DETAIL_MAX = 1000
 """``spec.outcome.detail`` ``maxLength`` in the proposal schema."""
@@ -1309,17 +1309,18 @@ def approve(  # noqa: PLR0913 - the run's contract plus how the approval came.
 
 
 def refuse_agent_proposal(proposal: OperatorProposal) -> None:
-    """Refuse to run an agent proposal, before anything runs.
+    """Refuse to run an agent proposal through an operator executor.
 
-    Its request is a gated MCP tool's call, which this release does not run
-    from the proposal store; the receipt stays as it is.
+    Its request is a gated MCP tool's call: ``cloudfall operator approve``
+    runs it through that tool's own command and check (S-018), never through
+    the executor of an alert or drift proposal; the receipt stays as it is.
     """
     if proposal.trigger_kind is not TriggerKind.AGENT:
         return
     message = (
         f"proposal {proposal.resource_id.value} is an agent's call of "
         f"{proposal.request.tool if proposal.request is not None else 'a tool'}, "
-        "which this release does not run from the proposal store"
+        "which runs through its own command, not an operator executor"
     )
     raise OperatorError(ERROR_AGENT_PROPOSAL_UNSUPPORTED, message)
 
