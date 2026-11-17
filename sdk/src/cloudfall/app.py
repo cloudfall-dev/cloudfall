@@ -3958,6 +3958,18 @@ def operator_approve(
     return approved
 
 
+def _printable(text: str) -> str:
+    """Escape each character a terminal would not print as itself.
+
+    An agent's reason reaches the person's approval prompt: raw, an escape
+    code or a direction override could hide or reorder what follows it.
+    """
+    return "".join(
+        char if char.isprintable() else char.encode("unicode_escape").decode("ascii")
+        for char in text
+    )
+
+
 def _approve_agent_proposal(
     args: OperatorApproveArgs, ctx: Ctx, fleet: Fleet, recorded: OperatorProposal
 ) -> Approved:
@@ -3974,7 +3986,8 @@ def _approve_agent_proposal(
         message = f"agent proposal {recorded.resource_id.value} holds no request"
         raise ValueError(message)
     attestation = ctx.attest(
-        f"{recorded.diagnosis_summary}. It runs {' '.join(recorded.command)} "
+        f"{_printable(recorded.diagnosis_summary)}. "
+        f"It runs {' '.join(recorded.command)} "
         f"with {json.dumps(dict(request.arguments), sort_keys=True)} on "
         f"{', '.join(server.value for server in recorded.operation_servers)}. "
         f"Type the proposal id to approve {recorded.resource_id.value} and run it",

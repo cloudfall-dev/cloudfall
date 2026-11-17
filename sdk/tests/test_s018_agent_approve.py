@@ -227,6 +227,47 @@ def test_s018_11_a_mistyped_id_runs_nothing(tmp_path: Path) -> None:
     assert not _receipt(project).exists()
 
 
+_OVERRIDE = chr(0x202E)
+"""RIGHT-TO-LEFT OVERRIDE: shown raw, it reverses the text after it."""
+
+
+def test_s018_11_the_prompt_shows_the_agents_reason_without_its_control_codes(
+    tmp_path: Path,
+) -> None:
+    # The reason is the agent's text: raw, an escape code could hide the
+    # command and servers that follow it on the person's terminal (Q-2).
+    project = _ungranted_project(tmp_path, policy=False)
+    engine = _engine(tmp_path, project, healthy=True)
+    _, refused = _run(
+        [
+            *("deploy", "crm-backend", "--release", RELEASE, "--yes"),
+            *("--project", str(project), "--schemas", str(SCHEMAS)),
+            *("--engine", str(engine)),
+            *("--proposals", str(PROPOSALS)),
+            *("--reason", f"a harmless restart\x1b[8m{_OVERRIDE}"),
+        ]
+    )
+    proposal = refused["error"]["context"]["proposal"]
+    stderr = io.StringIO()
+
+    app.run(
+        [
+            *("operator", "approve", proposal),
+            *("--project", str(project), "--schemas", str(SCHEMAS)),
+            *("--engine", str(engine), "--format", "json"),
+        ],
+        stdin=_Terminal(f"{proposal}\n"),
+        stdout=_Terminal(),
+        stderr=stderr,
+    )
+
+    shown = stderr.getvalue()
+    assert "a harmless restart\\x1b[8m\\u202e" in shown, shown
+    assert "\x1b" not in shown
+    assert _OVERRIDE not in shown
+    assert "on h1, h2" in shown
+
+
 def test_s018_11_a_person_approves_a_migrate_that_changes_no_declared_server(
     tmp_path: Path,
 ) -> None:
