@@ -224,6 +224,12 @@ cloudfall_mariadb_read_only: >-
     cloudfall_mariadb_declared_role == 'replica'
     or (cloudfall_mariadb_plan | default({})).get('action') == 'wait-promotion'
   }}
+# The replication plans that change nothing yet and finish in a later
+# converge; each names why, and the answer says so (#451).
+cloudfall_mariadb_waits:
+  - demote
+  - wait-promotion
+  - wait-primary
 # Whether this server takes writes, so converges its databases and users.
 cloudfall_mariadb_writer: >-
   {{

@@ -39,15 +39,19 @@
   ansible.builtin.debug:
     msg: >-
       {{ cloudfall_mariadb_service.id }}: {{ cloudfall_mariadb_plan.action }},
-      {{ cloudfall_mariadb_plan.reason }}; converge again once it has
-  when: cloudfall_mariadb_plan.action in ['demote', 'wait-promotion']
+      {{ cloudfall_mariadb_plan.reason }}
+  when: cloudfall_mariadb_plan.action in cloudfall_mariadb_waits
 
+# A wait names why, and that another converge finishes it, in the answer.
 - name: Report the replication outcome to the services converge
   ansible.builtin.copy:
     content: >-
       {{ {'service': cloudfall_mariadb_service.id,
           'server': cloudfall_server_id,
           'outcome': cloudfall_mariadb_plan.action}
+         | combine({'reason': cloudfall_mariadb_plan.reason}
+                   if cloudfall_mariadb_plan.action in cloudfall_mariadb_waits
+                   else {})
          | combine(cloudfall_mariadb_outcome | default({})) | to_json }}
     dest: >-
       {{ cloudfall_mariadb_report_directory }}/{{ cloudfall_mariadb_service.id }}.json
@@ -56,4 +60,4 @@
   become: false
   when:
     - cloudfall_mariadb_report_directory | length > 0
-    - cloudfall_mariadb_plan.action in ['seed', 'attach', 'demote', 'promote', 'wait-promotion']
+    - cloudfall_mariadb_plan.action in ['seed', 'attach', 'promote'] + cloudfall_mariadb_waits

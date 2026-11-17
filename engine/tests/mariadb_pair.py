@@ -15,7 +15,8 @@ are about:
   context, or as the older series do, ``1``; ``read_only`` in arithmetic is
   refused, as no real server has shown what it reads as there
 - a link logs in as ``cloudfall_repl`` at the replica's address only with
-  the password whose ``mysql_native_password`` hash the account holds, over
+  the password whose ``mysql_native_password`` hash the account holds (from
+  an address no account names, error 1130, as MariaDB answers), over
   TLS only, and only when the replica verifies the primary's certificate
   (the address it connects to is a name of it) against the CA that signed it
 - a link reports its source's ``server_id`` only while its IO thread is
@@ -131,6 +132,9 @@ def apply_event(state, event):
 def authenticate(primary, address, user, password, ssl, ca_file, verify, host):
     # Return an error of a login to ``primary``, or None.
     account = primary["users"].get(user + "@" + address)
+    if not any(key.split("@", 1)[1] == address for key in primary["users"]):
+        return (1130, "Host '%s' is not allowed to connect to this MariaDB server"
+                % address)
     if account is None or account.get("locked") or account["hash"] != native(password):
         return (1045, "Access denied for user '%s'@'%s'" % (user, address))
     if account.get("ssl") and not ssl:
