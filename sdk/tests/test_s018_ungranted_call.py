@@ -26,7 +26,12 @@ from typing import Any
 
 import pytest
 from ansible_repository import MARKER, PURGE, ansible_repository
-from cloudfall.agent_gate import GATED_TOOLS, plan_sha256, proposal_plan
+from cloudfall.agent_gate import (
+    GATED_TOOLS,
+    NO_DECLARED_SERVER,
+    plan_sha256,
+    proposal_plan,
+)
 from cloudfall.agent_server import McpServeArgs, server_instructions
 from cloudfall.cli import main
 from cloudfall.component_lock import LOCK_DIRECTORY, LockHolder
@@ -308,6 +313,73 @@ def _run(argv: list[str]) -> tuple[int, dict[str, Any]]:
     payload = json.loads(out.getvalue())
     assert isinstance(payload, dict)
     return exit_code, payload
+
+
+def server_free_migration(project: Path, pending: frozenset[str]) -> None:
+    """Save a migration plan whose only pending steps are ``pending``.
+
+    Every other step of the examples' plan is saved completed, as a run that
+    got that far leaves it.
+    """
+    _, planned = _run(
+        [
+            *("migrate", "--build", "crm-backend=main"),
+            *("--project", str(project), "--schemas", str(SCHEMAS)),
+        ]
+    )
+    steps = [
+        {
+            "id": step["id"],
+            "description": step["description"],
+            "status": "pending" if step["id"] in pending else "completed",
+            **(
+                {}
+                if step["id"] in pending
+                else {"completedAt": "2026-06-01T12:00:00+00:00"}
+            ),
+        }
+        for step in planned["data"]["steps"]
+    ]
+    plan = project / "tmp" / "migrate" / "plan.json"
+    plan.parent.mkdir(parents=True, exist_ok=True)
+    plan.write_text(json.dumps({"version": 1, "steps": steps}), encoding="utf-8")
+
+
+SERVER_FREE_STEPS = frozenset(
+    {"ttl-lower", "build:crm-backend", "parallel-run", "dns-verify", "rollback-window"}
+)
+"""Steps of the examples' migration that change no declared server."""
+
+
+# proves: S-018-1
+def test_s018_1_a_migrate_that_changes_no_declared_server_proposes(
+    tmp_path: Path,
+) -> None:
+    # ttl-lower changes DNS and build runs on the controller: no server's
+    # environment can grant the run, so it waits for a person (Q-2).
+    project = _unpoliced_project(tmp_path / "project")
+    server_free_migration(project, SERVER_FREE_STEPS)
+    marker = tmp_path / "playbook-started"
+
+    _, payload = _command(
+        project,
+        _marker_engine(tmp_path / "engine", marker),
+        "migrate",
+        *("--build", "crm-backend=main"),
+    )
+
+    context = _refusal(payload)
+    assert context["command"] == f"cloudfall operator approve {context['proposal']}"
+    assert context["reasons"] == [NO_DECLARED_SERVER]
+    assert "only a person approves it" in NO_DECLARED_SERVER
+    assert not marker.exists()
+    (path,) = _records(project)
+    spec = json.loads(path.read_text(encoding="utf-8"))["spec"]
+    assert spec["status"] == "proposed"
+    assert spec["operation"]["kind"] == "migrate"
+    assert spec["operation"]["servers"] == []
+    assert spec["operation"]["environments"] == []
+    assert _store(project).read(path).status is ProposalStatus.PROPOSED
 
 
 def test_s018_8_one_environment_without_a_grant_proposes_the_whole_run(

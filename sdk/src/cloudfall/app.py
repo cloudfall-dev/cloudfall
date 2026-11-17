@@ -2545,14 +2545,12 @@ def _gated[T](  # noqa: PLR0913 - a gated run's whole contract.
 ) -> tuple[T, dict[str, object] | None]:
     """Run an agent's confirmed call a grant covers, or only propose it (S-018).
 
-    A run that changes no declared server touches no environment to gate,
-    and runs as it always did. A run a grant covers runs with its record.
-    Any other refuses with ``operator_approval_required`` and leaves one
+    A run a grant covers runs with its record. Any other, a run that
+    changes no declared server among them (no environment's grant covers
+    it), refuses with ``operator_approval_required`` and leaves one
     agent proposal in the store, after the checks a run makes first: the
     ``component``'s lock, held by another run, refuses as the run would.
     """
-    if not check.servers:
-        return execute(_unwatched), None
     if check.self_confirm:
         return _granted(
             gate,
@@ -7017,7 +7015,7 @@ def _converge_granted[T](  # noqa: PLR0913 - a converge run's whole contract.
     root: ServerRoot,
     call: _ConvergeCall,
     *,
-    servers: Callable[[PlatformInventory], tuple[ResourceId, ...]],
+    servers: Callable[[PlatformInventory], tuple[ResourceId, ...] | None],
     execute: Callable[[Callable[[StepRunner], StepRunner]], T],
     verify: Callable[[T, PlatformInventory, tuple[ResourceId, ...]], Verdict],
 ) -> tuple[T, dict[str, object] | None]:
@@ -7026,6 +7024,9 @@ def _converge_granted[T](  # noqa: PLR0913 - a converge run's whole contract.
     No unconfirmed call answers a plan (the tool asks for
     ``confirm_destructive`` first), so the record binds the run as named:
     the tool, its playbook, the servers it changes and its arguments.
+    ``servers`` answers none for a call the run refuses itself before any
+    playbook (nothing to run, so nothing to gate); a run that would start a
+    playbook on no declared server proposes like any other.
     """
     reason = call.reason()
     _checked_reason(reason)
@@ -7037,7 +7038,9 @@ def _converge_granted[T](  # noqa: PLR0913 - a converge run's whole contract.
         raise _config_invalid(error) from error
     gate = _agent_gate(args.proposals, root.directory, inventory, args.schemas)
     changed = servers(inventory)
-    check = None if gate is None or not changed else gate.check(call.tool, changed)
+    check = (
+        None if gate is None or changed is None else gate.check(call.tool, changed)
+    )
     if gate is None or check is None:
         return execute(_unwatched), None
     names = [server.value for server in check.servers]
@@ -7099,11 +7102,12 @@ def _converge_domains_handler(
             except ConfigValidationError as error:
                 raise _config_invalid(error) from error
 
-        def changed(inventory: PlatformInventory) -> tuple[ResourceId, ...]:
+        def changed(inventory: PlatformInventory) -> tuple[ResourceId, ...] | None:
             declared = {item.resource_id for item in inventory.domains}
             if domain_id is not None and domain_id not in declared:
-                # converge_domains refuses an undeclared Domain itself.
-                return ()
+                # converge_domains refuses an undeclared Domain itself,
+                # before any playbook: nothing runs, so nothing is gated.
+                return None
             return domain_servers(inventory, domain_id)
 
         _, granted = _converge_granted(

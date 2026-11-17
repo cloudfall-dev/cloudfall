@@ -154,6 +154,13 @@ def migrate_servers(
     return _unique(servers)
 
 
+NO_DECLARED_SERVER = (
+    "the run changes no declared server, so no environment's grant covers it "
+    "and only a person approves it"
+)
+"""The reason a run that touches no environment is never self-confirmed."""
+
+
 @dataclass(frozen=True, slots=True)
 class EnvironmentGrant:
     """Whether one environment a run touches grants it, and why."""
@@ -194,7 +201,13 @@ class GrantCheck:
         )
 
     def reasons(self) -> tuple[str, ...]:
-        """Return one line per environment: its name and the grant's reason."""
+        """Return one line per environment: its name and the grant's reason.
+
+        A run that changes no declared server has no environment whose
+        grant could cover it: one line says so.
+        """
+        if not self.environments:
+            return (NO_DECLARED_SERVER,)
         return tuple(
             f"{environment.environment.value}: {environment.reason}"
             for environment in self.environments
