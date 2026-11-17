@@ -110,6 +110,7 @@ from cloudfall.mariadb import (
     MariadbUserName,
     MariadbVersion,
 )
+from cloudfall.rabbitmq import RabbitmqUserName, RabbitmqVersion, RabbitmqVhostName
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -1237,6 +1238,56 @@ class MariadbService:
 
 
 @dataclass(frozen=True, slots=True)
+class RabbitmqVhost:
+    """A virtual host and the user that owns it (S-023).
+
+    The password stays behind ``passwordRef``; only its salted hash, computed
+    on the controller, ever reaches a node (D-9).
+    """
+
+    name: RabbitmqVhostName
+    owner: RabbitmqUserName
+    password_ref: SecretValueReference
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the virtual host with its owner and password reference."""
+        return {
+            "name": self.name.value,
+            "owner": self.owner.value,
+            "passwordRef": self.password_ref.as_dict(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RabbitmqService:
+    """RabbitMQ-specific service contract: a cluster of one node or three.
+
+    ``nodes`` holds its resolved value: absent in the declaration, it is the
+    service's server.
+    """
+
+    version: RabbitmqVersion
+    memory_high_watermark_mb: PositiveCount
+    nodes: tuple[ResourceId, ...]
+    vhosts: tuple[RabbitmqVhost, ...]
+    client_access: tuple[IpNetworkCidr, ...] | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the cluster contract without secret material."""
+        result: dict[str, object] = {
+            "version": self.version.value,
+            "memoryHighWatermarkMb": self.memory_high_watermark_mb.value,
+            "nodes": [node.value for node in self.nodes],
+            "vhosts": [vhost.as_dict() for vhost in self.vhosts],
+        }
+        if self.client_access is not None:
+            result["clientAccess"] = {
+                "allowedSources": [source.value for source in self.client_access]
+            }
+        return result
+
+
+@dataclass(frozen=True, slots=True)
 class ServiceBackup:
     """Scheduled dump-and-prune backup contract."""
 
@@ -1261,6 +1312,7 @@ class ServiceInventory:
     metrics_enabled: bool
     elasticsearch: ElasticsearchService | None = None
     mariadb: MariadbService | None = None
+    rabbitmq: RabbitmqService | None = None
 
     def __post_init__(self) -> None:
         """Reject services whose payload contradicts the declared kind."""
@@ -1269,6 +1321,7 @@ class ServiceInventory:
             (self.redis, ServiceKind.REDIS),
             (self.elasticsearch, ServiceKind.ELASTICSEARCH),
             (self.mariadb, ServiceKind.MARIADB),
+            (self.rabbitmq, ServiceKind.RABBITMQ),
         )
         if any(
             (payload is not None) is not (self.service_kind is kind)
@@ -1327,10 +1380,17 @@ class ServiceInventory:
             if self.redis.package_version is not None:
                 redis["packageVersion"] = self.redis.package_version.value
             result["redis"] = redis
-        if self.elasticsearch is not None:
-            result["elasticsearch"] = self.elasticsearch.as_dict()
-        if self.mariadb is not None:
-            result["mariadb"] = self.mariadb.as_dict()
+        payloads: tuple[
+            tuple[str, ElasticsearchService | MariadbService | RabbitmqService | None],
+            ...,
+        ] = (
+            ("elasticsearch", self.elasticsearch),
+            ("mariadb", self.mariadb),
+            ("rabbitmq", self.rabbitmq),
+        )
+        for name, payload in payloads:
+            if payload is not None:
+                result[name] = payload.as_dict()
         if self.metrics_enabled:
             result["metrics"] = {"enabled": True}
         return result
@@ -2450,6 +2510,54 @@ def _service_inventory(
             if service_kind is ServiceKind.MARIADB
             else None
         ),
+        rabbitmq=(
+            _rabbitmq_service(
+                _mapping(spec, "rabbitmq"),
+                server_id=ResourceId.from_boundary(spec.get("server")),
+            )
+            if service_kind is ServiceKind.RABBITMQ
+            else None
+        ),
+    )
+
+
+def _rabbitmq_service(
+    content: Mapping[str, object], *, server_id: ResourceId
+) -> RabbitmqService:
+    raw_nodes = content.get("nodes")
+    if raw_nodes is not None and not isinstance(raw_nodes, list):
+        message = "validated RabbitMQ nodes are not a list"
+        raise TypeError(message)
+    client_access = None
+    if "clientAccess" in content:
+        raw_sources = _mapping(content, "clientAccess").get("allowedSources")
+        if not isinstance(raw_sources, list):
+            message = "validated RabbitMQ client sources are not a list"
+            raise TypeError(message)
+        client_access = tuple(
+            IpNetworkCidr.from_boundary(source) for source in raw_sources
+        )
+    return RabbitmqService(
+        version=RabbitmqVersion.from_boundary(content.get("version")),
+        memory_high_watermark_mb=PositiveCount.from_boundary(
+            content.get("memoryHighWatermarkMb")
+        ),
+        nodes=(
+            (server_id,)
+            if raw_nodes is None
+            else tuple(ResourceId.from_boundary(node) for node in raw_nodes)
+        ),
+        vhosts=tuple(
+            RabbitmqVhost(
+                name=RabbitmqVhostName.from_boundary(vhost.get("name")),
+                owner=RabbitmqUserName.from_boundary(vhost.get("owner")),
+                password_ref=_secret_value_reference(_mapping(vhost, "passwordRef")),
+            )
+            for vhost in _mapping_list(
+                content.get("vhosts", []), "RabbitMQ virtual hosts"
+            )
+        ),
+        client_access=client_access,
     )
 
 

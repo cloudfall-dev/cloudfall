@@ -191,7 +191,8 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
                 for component in inventory.components
                 if server.resource_id in component.server_ids
             ],
-            # An Elasticsearch service lands on each of its nodes (S-012).
+            # An Elasticsearch or RabbitMQ service lands on each of its nodes
+            # (S-012, S-023).
             "cloudfall_services": [
                 service.as_dict()
                 for service in inventory.services
@@ -199,6 +200,10 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
                 or (
                     service.elasticsearch is not None
                     and server.resource_id in service.elasticsearch.nodes
+                )
+                or (
+                    service.rabbitmq is not None
+                    and server.resource_id in service.rabbitmq.nodes
                 )
             ],
             **(
