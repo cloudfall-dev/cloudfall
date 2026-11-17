@@ -224,11 +224,12 @@ again when it was stopped. A second converge of a pair never seeds again.
 
 ## 5. Backups and the restore drill
 
-Every MariaDB service, a replica included, has a `backup` block, so each server
-dumps on its own `onCalendar`. On a replica the dumps cover every database it
-holds that is not MariaDB's own, read when the dump runs; on a standalone
-server or a primary, the declared `databases`. Put the restore drill on the
-replica to keep its load off the primary:
+Every MariaDB service, a primary and a replica alike, keeps its own `backup`
+block, so each server dumps on its own `onCalendar`; a pair has no
+"replica-only" backup. On a replica the dumps cover every database it holds
+that is not MariaDB's own, read when the dump runs; on a standalone server or
+a primary, the declared `databases`. To keep the drill's load off the primary,
+give the replica the `restoreCheckOnCalendar` and leave it out on the primary:
 
 ```console
 uv run cloudfall backup run mariadb-replica
@@ -238,7 +239,14 @@ uv run cloudfall backup verify mariadb-replica
 `cloudfall-mariadb-backup` writes one gzip dump per database into
 `backup.directory`, each from one consistent snapshot taken without locking
 the tables, and beside it a count file with every table and its rows, counted
-from the dump itself. A table of another engine than InnoDB is outside the
+from the dump itself. On a primary or a replica, which write a binary log,
+each dump records the GTID position of its snapshot in commented lines near
+its top (`-- SET GLOBAL gtid_slave_pos='0-1-42';` and a `-- CHANGE MASTER TO`
+line), so you can tell which transactions a dump holds; a load never runs
+them, so the dump restores as it is. A replica records its own binary log
+position, which holds its primary's GTIDs, and its replication keeps running
+during the dump. A standalone server writes no binary log, so its dumps carry
+no position. A table of another engine than InnoDB is outside the
 snapshot, and the run names it. Users and grants are not dumped: converge
 recreates the declared ones. Dumps older than `retentionDays` are deleted,
 never a database's newest.

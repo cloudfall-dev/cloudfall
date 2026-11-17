@@ -4,7 +4,8 @@
 # {{ cloudfall_mariadb_service.id }} (on a replica, which declares none: of
 # every database it holds that is not MariaDB's own, read when it runs), each
 # from one consistent snapshot taken
-# without locking the tables (--single-transaction), and beside it a count
+# without locking the tables (--single-transaction), on a primary or a
+# replica with the GTID position of that snapshot in it, and beside it a count
 # file: every base table of the dump and its rows, counted from the stored
 # dump itself, so the restore drill compares a restore with the snapshot the
 # dump holds and never with the live source. Users and grants are not dumped:
@@ -89,8 +90,21 @@ dump_database() {
   part_counts="${counts}.part"
   # Without --databases the dump holds no CREATE DATABASE or USE, so the
   # drill loads it into its scratch database and nowhere else.
+{% if cloudfall_mariadb_service.mariadb.replication is defined %}
+  # A server of a pair writes a binary log, so each dump records the GTID
+  # position of its snapshot as the replica seed does: commented out
+  # (--master-data=2), so a load never runs it. A replica reads its own
+  # binary log, which holds its primary's GTIDs (log_slave_updates, strict
+  # mode); --dump-slave would stop its replication for the dump.
+  mariadb-dump --single-transaction --gtid --master-data=2 --quick --hex-blob \
+    --routines --triggers --default-character-set=utf8mb4 "${database}" \
+    | gzip > "${part_dump}"
+{% else %}
+  # A standalone server writes no binary log: it has no GTID position, and
+  # --master-data would fail.
   mariadb-dump --single-transaction --quick --hex-blob --routines --triggers \
     --default-character-set=utf8mb4 "${database}" | gzip > "${part_dump}"
+{% endif %}
   dump_counts "${part_dump}" > "${part_counts}"
   # The count file is in place before its dump, so a dump never lacks one.
   mv -- "${part_counts}" "${counts}"

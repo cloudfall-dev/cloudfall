@@ -11,6 +11,7 @@ socket login) is listed in the pull request as unverified.
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import stat
@@ -59,6 +60,15 @@ def dump(name):
     database = databases[name]
     out = ["-- MariaDB dump 10.19  Distrib 11.8.9-MariaDB", "",
            "/*!40101 SET NAMES utf8mb4 */;"]
+    if "--master-data=2" in argv:
+        # The position of the snapshot, commented out: a load never runs it.
+        # A server without a binary log has none, and the real dump fails
+        if not state.get("binlog"):
+            sys.exit("mariadb-dump: Error: Binlogging on server not active")
+        out += ["", "-- CHANGE MASTER TO MASTER_LOG_FILE='mariadb-bin.000003',"
+                " MASTER_LOG_POS=1234;"]
+        if "--gtid" in argv:
+            out.append("-- SET GLOBAL gtid_slave_pos='0-1-42';")
     for table, rows in database["tables"].items():
         out += ["", "DROP TABLE IF EXISTS " + quote_name(table) + ";",
                 "CREATE TABLE " + quote_name(table) + " (",
@@ -235,8 +245,14 @@ EXPECTED_CRM = "Order Lines\t3\ncustomers\t5\nempty\t0\nodd`name\t1\n"
 
 
 def _render(
-    template: str, directory: Path, *names: str, replica: bool = False
+    template: str, directory: Path, *names: str, role: str | None = None
 ) -> str:
+    """Render ``template`` for a standalone server, or one of ``role`` in a pair."""
+    replication: dict[str, object] = (
+        {"role": "replica", "serverId": 2, "primary": "mariadb-main"}
+        if role == "replica"
+        else {"role": "primary", "serverId": 1, "listenAddress": "10.0.0.2"}
+    )
     environment = Environment(
         loader=FileSystemLoader(ROLE / "templates"),
         undefined=StrictUndefined,
@@ -257,17 +273,7 @@ def _render(
                     {"name": name, "application": name, "owner": name}
                     for name in names
                 ],
-                **(
-                    {
-                        "replication": {
-                            "role": "replica",
-                            "serverId": 2,
-                            "primary": "mariadb-main",
-                        }
-                    }
-                    if replica
-                    else {}
-                ),
+                **({"replication": replication} if role else {}),
             },
             "backup": {
                 "directory": str(directory),
@@ -283,9 +289,13 @@ class Host:
     """A backup directory, the stand-in server and the two rendered scripts."""
 
     def __init__(
-        self, tmp_path: Path, *names: str, replica: bool = False
+        self, tmp_path: Path, *names: str, role: str | None = None
     ) -> None:
-        """Write the stand-ins and render the scripts for ``names``."""
+        """Write the stand-ins and render the scripts for ``names``.
+
+        A server of a pair (``role``) writes a binary log; a standalone one
+        does not, as ``90-cloudfall.cnf.j2`` renders them.
+        """
         self.tmp_path = tmp_path
         self.backups = tmp_path / "backups"
         self.backups.mkdir()
@@ -293,7 +303,9 @@ class Host:
         self.tools = tmp_path / "bin"
         self.tools.mkdir()
         self.state_path = tmp_path / "server.json"
-        self.state_path.write_text(json.dumps(_source()), encoding="utf-8")
+        self.state_path.write_text(
+            json.dumps({**_source(), "binlog": role is not None}), encoding="utf-8"
+        )
         self.log = tmp_path / "calls.log"
         self.log.touch()
         for tool in ("mariadb", "mariadb-dump"):
@@ -307,12 +319,10 @@ class Host:
                 encoding="utf-8",
             )
             path.chmod(0o700)
-        names = () if replica else (names or ("crm",))
+        names = () if role == "replica" else (names or ("crm",))
         for template in ("backup.sh.j2", "restore-check.sh.j2"):
             script = tmp_path / template.removesuffix(".j2")
-            script.write_text(
-                _render(template, self.backups, *names, replica=replica)
-            )
+            script.write_text(_render(template, self.backups, *names, role=role))
 
     def run(self, script: str) -> subprocess.CompletedProcess[str]:
         """Run one rendered script with the stand-ins first on PATH."""
@@ -397,7 +407,45 @@ def test_s019_8_backup_writes_one_dump_and_one_count_file_per_database(
         assert "--single-transaction" in call
         assert "--databases" not in call
         assert "--lock-tables" not in call
+        # A standalone server writes no binary log: it has no GTID position,
+        # and --master-data would fail the dump (#473)
         assert "--master-data" not in " ".join(call)
+        assert "--gtid" not in call
+
+
+def _gtid_dump(call: list[str]) -> bool:
+    """Return whether one ``mariadb-dump`` call records its GTID position."""
+    return (
+        "--gtid" in call
+        and "--master-data=2" in call
+        and "--single-transaction" in call
+        and not [flag for flag in call if flag.startswith("--dump-slave")]
+    )
+
+
+# proves: S-019-8
+def test_s019_8_a_primarys_dumps_record_their_gtid_position_and_restore(
+    tmp_path: Path,
+) -> None:
+    host = Host(tmp_path, "crm", "billing", role="primary")
+
+    done = host.backup()
+
+    dumps = [call for call in host.calls() if call[0] == "mariadb-dump"]
+    assert [call[-1] for call in dumps] == ["crm", "billing"]
+    assert all(_gtid_dump(call) for call in dumps), dumps
+    for database in ("crm", "billing"):
+        (dump,) = _dumps(host, database)
+        text = gzip.decompress(dump.read_bytes()).decode("utf-8")
+        # The position is in the dump, commented out (#473)
+        assert "\n-- SET GLOBAL gtid_slave_pos='0-1-42';\n" in text
+        assert "\n-- CHANGE MASTER TO MASTER_LOG_FILE=" in text
+    assert "backed up crm:" in done.stdout
+    # A dump with its commented CHANGE MASTER line still restores
+    drill = host.drill()
+    assert drill.returncode == 0, drill.stderr
+    assert "restore check passed for crm" in drill.stdout
+    assert "restore check passed for billing" in drill.stdout
 
 
 def test_a_table_outside_the_snapshot_is_named(tmp_path: Path) -> None:
@@ -660,7 +708,7 @@ def test_s019_8_a_replica_backs_up_and_drills_every_database_it_holds(
     tmp_path: Path,
 ) -> None:
     # A replica declares no databases: they arrive by replication (#423)
-    host = Host(tmp_path, replica=True)
+    host = Host(tmp_path, role="replica")
     # The drill's scratch database, left by a drill that runs now, is no
     # database of the replica's
     databases = host.state["databases"]
@@ -680,6 +728,9 @@ def test_s019_8_a_replica_backs_up_and_drills_every_database_it_holds(
     assert f"backed up crm: {crm} (4 tables, 9 rows)" in done.stdout
     dumps = [call for call in host.calls() if call[0] == "mariadb-dump"]
     assert [call[-1] for call in dumps] == ["billing", "crm"]
+    # Its own binary log position, never --dump-slave, which stops the
+    # replica's SQL thread for the dump (#473)
+    assert all(_gtid_dump(call) for call in dumps), dumps
     assert not _dumps(host, "cloudfall-restore-check")
     assert "lost+found" not in done.stdout
     databases = host.state["databases"]
@@ -694,7 +745,7 @@ def test_s019_8_a_replica_backs_up_and_drills_every_database_it_holds(
 def test_a_replica_that_holds_no_database_fails_both_scripts(
     tmp_path: Path,
 ) -> None:
-    host = Host(tmp_path, replica=True)
+    host = Host(tmp_path, role="replica")
     host.update(databases={})
 
     backup = host.run("backup.sh")

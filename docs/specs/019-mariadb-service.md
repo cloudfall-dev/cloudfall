@@ -270,14 +270,19 @@ account, the binary log settings, and admitting the replica's address.
 ### Backups and the restore drill
 
 `backup` keeps its contract: a schedule, a retention, an optional drill, receipts from
-`cloudfall backup run` and `cloudfall backup verify`. It works the same on a standalone
-server, a primary and a replica, so a team can take its backups on the replica.
+`cloudfall backup run` and `cloudfall backup verify`. Every MariaDB `Service` keeps its own
+`backup`, a standalone server, a primary and a replica alike, and it works the same on each:
+a pair is backed up on both servers, never on the replica alone.
 
 - `cloudfall-mariadb-backup` writes one compressed dump per database of the server, each
-  from one consistent snapshot without locking the tables, with the GTID position in it, and
-  deletes dumps older than `retentionDays`. On a server with declared `databases` those are
-  the databases; on a replica they are every non-system database it holds. Users and grants
-  are not in the dumps: converge recreates the declared ones
+  from one consistent snapshot without locking the tables, and deletes dumps older than
+  `retentionDays`. On a primary and a replica, which write a binary log, each dump carries
+  the GTID position of its snapshot in commented lines, as the replica seed does, so a load
+  never runs them; a replica records its own binary log position and its replication is not
+  stopped for the dump. A standalone server writes no binary log, so its dumps carry no
+  position. On a server with declared `databases` those are the databases; on a replica they
+  are every non-system database it holds. Users and grants are not in the dumps: converge
+  recreates the declared ones
 - Each dump is written with the row count of every table, read in the snapshot the dump
   was taken from, in a file beside it
 - `cloudfall-mariadb-restore-check` loads the newest dump of every database into a scratch
@@ -336,7 +341,7 @@ server, a primary and a replica, so a team can take its backups on the replica.
 ### Documentation
 
 `docs/mariadb-service-guide.md` covers declaring a standalone server, adding a replica,
-taking backups on the replica, a planned switch and a promotion after the primary is lost,
+backing up each server of a pair and drilling on the replica, a planned switch and a promotion after the primary is lost,
 bringing a former primary back, and moving in from a server Cloudfall does not manage.
 
 Touches `config/schemas/v1/service.schema.json`, `config/examples/services/`,
@@ -510,9 +515,14 @@ on the stand-ins only. Per criterion:
 - S-019-8: the rendered backup and drill scripts run against stand-in clients: one dump and one
   count file per database, the drill loads into a scratch database it drops on every path, a
   missing dump fails and says so, and a row written after the dump does not fail it
-  (`test_s019_8_*`); `backup.yml` runs both scripts as root. The `BackupReceipt` path of
+  (`test_s019_8_*`); on a primary and a replica each dump is taken with `--gtid
+  --master-data=2`, holds the commented position and still restores, and a standalone dump
+  takes neither flag (#473,
+  `test_s019_8_a_primarys_dumps_record_their_gtid_position_and_restore`); `backup.yml` runs
+  both scripts as root. The `BackupReceipt` path of
   `cloudfall backup run|verify` is the existing generic one, not run end to end for MariaDB, and
-  `mariadb-dump` 11.8's output format was not checked on a live server
+  `mariadb-dump` 11.8's output format, the position lines included, was not checked on a live
+  server
 - S-019-9: the rendered backup script deletes dumps older than `retentionDays`, keeps the newest
   even when older, and deletes nothing when the backup fails (`test_s019_9_*`). Holds
 - S-019-10: every refusal under Validation runs `cloudfall config validate` and asserts exit 80,
