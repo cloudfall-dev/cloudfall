@@ -268,14 +268,37 @@ def render(args: RenderArgs, _ctx: Ctx, project: Project) -> RenderedInventory:
     """
     rendered = cast(
         "dict[str, object]",
-        as_ansible_data(render_ansible_inventory(project.inventory)),
+        _sorted_but_rollout(
+            as_ansible_data(render_ansible_inventory(project.inventory))
+        ),
     )
     if args.output is None:
         return RenderedInventory(rendered)
     output = project.path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(f"{json.dumps(rendered, sort_keys=True)}\n", encoding="utf-8")
+    output.write_text(f"{json.dumps(rendered)}\n", encoding="utf-8")
     return RenderedInventory(rendered, output)
+
+
+# A play over cloudfall_servers runs its hosts in the order the file lists
+# them, and the render puts each cluster's home and MariaDB primary first.
+_ROLLOUT_HOSTS = ("all", "children", "cloudfall_servers", "hosts")
+
+
+def _sorted_but_rollout(value: object, path: tuple[str, ...] = ()) -> object:
+    """Return ``value`` with every mapping's keys sorted but the rollout's hosts.
+
+    The ``cloudfall_servers`` hosts keep the render's rollout order (S-012,
+    S-019, #465); everything else stays sorted, so the file is stable. The
+    stdout answer holds the same document, but treaty's envelope sorts every
+    object's keys, so only the file keeps the hosts' order.
+    """
+    if isinstance(value, dict):
+        keys = list(value) if path == _ROLLOUT_HOSTS else sorted(value)
+        return {key: _sorted_but_rollout(value[key], (*path, key)) for key in keys}
+    if isinstance(value, list):
+        return [_sorted_but_rollout(item, (*path, "[]")) for item in value]
+    return value
 
 
 artifact = app.group("artifact", description="Build release artifacts")
