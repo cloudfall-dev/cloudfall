@@ -388,8 +388,9 @@ def account_wait(  # noqa: PLR0913 - the wait's inputs, named.
 
     ``account_hosts`` are the hosts of ``cloudfall_repl`` on the primary now,
     ``admitted`` the hosts the primary's own declaration gives this replica,
-    which its converge creates the account at, and ``converged`` whether the
-    primary's server already converged in this run. A replica that sorts
+    which its converge creates the account at, and ``converged`` whether no
+    converge of the primary's server is left in this run (it already ran, or
+    a ``--limit`` leaves it out). A replica that sorts
     before its primary in a run (a former primary declared the replica of
     the server promoted over it) would be refused its login; it waits for
     the primary's converge instead, which creates the account, and attaches

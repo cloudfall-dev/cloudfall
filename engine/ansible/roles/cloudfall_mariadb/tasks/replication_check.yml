@@ -272,9 +272,11 @@
     - cloudfall_mariadb_plan.action in ['seed', 'attach']
 
 # The primary's server runs later in this run: it waits for that converge
-# rather than be refused its login. Once the primary has converged, or when
-# its declaration does not admit this replica, the link is tried as before
-# and a refusal stops the converge (#451).
+# rather than be refused its login. Once the primary has converged, when it
+# is not in this run (a --limit leaves it out, so no converge in the run
+# creates the account), or when its declaration does not admit this
+# replica, the link is tried as before and a refusal stops the converge
+# (#451).
 - name: Wait for a primary that creates this replica's account later in the run
   ansible.builtin.set_fact:
     cloudfall_mariadb_plan: >-
@@ -289,8 +291,10 @@
             | default([])
             | selectattr('service', 'equalto', cloudfall_mariadb_service.id)
             | map(attribute='hosts') | flatten | list),
-          converged=hostvars[cloudfall_mariadb_links.primary.server].cloudfall_mariadb_plan
-                    is defined)
+          converged=(
+            cloudfall_mariadb_links.primary.server not in ansible_play_hosts_all
+            or hostvars[cloudfall_mariadb_links.primary.server].cloudfall_mariadb_plan
+               is defined))
       }}
   when: cloudfall_mariadb_primary_accounts is not skipped
 

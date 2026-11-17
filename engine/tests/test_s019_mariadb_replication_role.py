@@ -1253,6 +1253,22 @@ def test_s019_15_a_replica_its_primary_does_not_admit_still_fails(
     assert pair.dumps("h1") == 0
 
 
+# proves: S-019-15
+def test_s019_15_a_replica_does_not_wait_for_a_primary_left_out_of_the_run(
+    pair: Pair,
+) -> None:
+    _former_primary_declared_replica(pair)
+
+    # h2 is not in this run, so no converge in it creates h1's account: a
+    # wait would repeat with every such run, so the login's refusal stops it
+    run = pair.converge(limit="h1", succeed=False)
+
+    assert "mariadb-main" not in run.outcomes
+    assert "Host '203.0.113.11' is not allowed to connect" in run.output
+    assert pair.state("h1")["link"] is None
+    assert pair.dumps("h1") == 0
+
+
 # proves: S-019-16
 def test_s019_16_a_former_primary_that_diverged_is_not_attached_nor_emptied(
     pair: Pair,
