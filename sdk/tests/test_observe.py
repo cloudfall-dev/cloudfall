@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -11,11 +12,14 @@ from typing import TYPE_CHECKING
 import pytest
 from cloudfall.ansible_api import InventorySource, read_inventory
 from cloudfall.ansible_reader import read_fleet
+from cloudfall.audit import AuditStatus, audit_inventory
 from cloudfall.inventory import PlatformInventory
+from cloudfall.observation import load_observations
 from cloudfall.observe import (
     OBSERVED_GROUP,
     OVERLAY_FILE,
     ObservationRequest,
+    ObservationResult,
     ObserveError,
     PlaybookRun,
     _run_playbook,
@@ -26,13 +30,17 @@ from cloudfall.observe import (
     write_overlay,
 )
 from cloudfall.resources import default_engine_directory, default_schema_directory
+from cloudfall.validation import validate_config
 from test_ansible_reader import _inventory
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
 SCHEMAS = default_schema_directory()
 ENGINE = default_engine_directory()
+ROOT = Path(__file__).parents[2]
+EXAMPLES = ROOT / "config" / "examples"
+COMPLIANT = ROOT / "config" / "tests" / "observed" / "compliant"
 
 
 def _fleet(tmp_path: Path) -> tuple[PlatformInventory, InventorySource]:
@@ -283,6 +291,98 @@ def test_a_limited_run_is_judged_against_the_hosts_it_asked_for(
     assert result.observed == ("web-2",)
     assert result.missing == ()
     assert result.complete is True
+
+
+def _observed_twice(
+    tmp_path: Path, second_run_writes: tuple[str, ...]
+) -> tuple[ObservationResult, Path]:
+    """Observe the example fleet fully, then again with a run writing only some."""
+    fleet = PlatformInventory.from_state(validate_config(EXAMPLES, SCHEMAS))
+    output = tmp_path / "observed"
+    request = ObservationRequest(
+        inventory_sources=(EXAMPLES,),
+        output_directory=output,
+        engine_directory=ENGINE,
+    )
+
+    def run_writing(
+        servers: tuple[str, ...], exit_code: int
+    ) -> Callable[[Sequence[str], Mapping[str, str]], PlaybookRun]:
+        def run(_argv: Sequence[str], _environment: Mapping[str, str]) -> PlaybookRun:
+            output.mkdir(parents=True, exist_ok=True)
+            for server in servers:
+                shutil.copy(COMPLIANT / f"{server}.json", output / f"{server}.json")
+            return PlaybookRun(exit_code=exit_code, output="PLAY RECAP")
+
+        return run
+
+    first = collect_observations(
+        fleet, request, tmp_path / "overlay", run_writing(("h1", "h2"), 0)
+    )
+    assert first.complete is True
+    second = collect_observations(
+        fleet, request, tmp_path / "overlay", run_writing(second_run_writes, 2)
+    )
+    return second, output
+
+
+def test_a_failed_rerun_does_not_read_the_last_runs_snapshots(
+    tmp_path: Path,
+) -> None:
+    """The first host fails, so ``any_errors_fatal`` stops the rest (#470).
+
+    Snapshots an earlier run left behind used to read as this run's, and
+    audit judged them as the hosts' current state.
+    """
+    fleet = PlatformInventory.from_state(validate_config(EXAMPLES, SCHEMAS))
+
+    result, output = _observed_twice(tmp_path, ())
+
+    assert result.observed == ()
+    assert result.missing == ("h1", "h2")
+    assert result.complete is False
+    report = audit_inventory(fleet, load_observations(output, SCHEMAS))
+    assert [server.status for server in report.servers] == [
+        AuditStatus.UNKNOWN,
+        AuditStatus.UNKNOWN,
+    ]
+
+
+def test_a_rerun_where_one_host_fails_lists_only_it_missing(
+    tmp_path: Path,
+) -> None:
+    fleet = PlatformInventory.from_state(validate_config(EXAMPLES, SCHEMAS))
+
+    result, output = _observed_twice(tmp_path, ("h1",))
+
+    assert result.observed == ("h1",)
+    assert result.missing == ("h2",)
+    report = audit_inventory(fleet, load_observations(output, SCHEMAS))
+    statuses = {server.server_id: server.status for server in report.servers}
+    assert statuses == {"h1": AuditStatus.COMPLIANT, "h2": AuditStatus.UNKNOWN}
+
+
+def test_a_limited_run_keeps_the_other_servers_snapshots(tmp_path: Path) -> None:
+    """Only the servers a run asks for lose their earlier snapshot."""
+    fleet, source = _fleet(tmp_path)
+    request = _request(tmp_path, source, limit="web-2")
+    request.output_directory.mkdir(parents=True)
+    for server in ("web-1", "web-2"):
+        (request.output_directory / f"{server}.json").write_text(
+            "{}", encoding="utf-8"
+        )
+
+    result = collect_observations(
+        fleet,
+        request,
+        request.output_directory,
+        lambda _argv, _env: PlaybookRun(exit_code=2, output="PLAY RECAP"),
+    )
+
+    assert result.missing == ("web-2",)
+    assert (request.output_directory / "web-1.json").is_file()
+    assert not (request.output_directory / "web-2.json").exists()
+    assert (request.output_directory / OVERLAY_FILE).is_file()
 
 
 def test_a_limit_matching_no_declared_server_is_refused(tmp_path: Path) -> None:

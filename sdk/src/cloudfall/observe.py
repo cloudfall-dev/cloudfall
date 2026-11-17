@@ -121,7 +121,7 @@ class ObservationResult:
     """Servers this run was asked to observe, after any ``--limit``."""
 
     observed: tuple[str, ...]
-    """Requested servers whose snapshot exists after the run."""
+    """Requested servers this run wrote a snapshot for."""
 
     missing: tuple[str, ...]
     """Requested servers the run produced no snapshot for."""
@@ -240,6 +240,7 @@ def collect_observations(
         raise ObserveError(_ERROR_NO_TARGETS, message)
     overlay = write_overlay(inventory, overlay_directory)
     argv, environment = observation_command(request, overlay)
+    _discard_earlier_snapshots(request.output_directory, requested)
     playbook_run = (run or _run_playbook)(argv, environment)
     observed = tuple(
         server
@@ -279,6 +280,22 @@ def requested_servers(
         ).hosts
     }
     return tuple(server for server in declared if server in matched)
+
+
+def _discard_earlier_snapshots(
+    output_directory: Path, requested: tuple[str, ...]
+) -> None:
+    """Delete the requested servers' snapshots so only this run's can count.
+
+    A snapshot left by an earlier run would otherwise read as this run's
+    when inspect fails before reaching its host, and audit would judge it as
+    current state (#470). Deleted rather than moved aside: observations are
+    read from every ``*.json`` under the folder, so a renamed copy there
+    would be read again. Other servers' snapshots stay: a ``--limit`` run
+    says nothing new about them.
+    """
+    for server in requested:
+        (output_directory / f"{server}{_SNAPSHOT_SUFFIX}").unlink(missing_ok=True)
 
 
 def _run_playbook(argv: Sequence[str], environment: Mapping[str, str]) -> PlaybookRun:
