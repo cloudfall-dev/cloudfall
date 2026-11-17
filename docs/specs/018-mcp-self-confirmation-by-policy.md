@@ -243,6 +243,12 @@ and `converge_*` handlers, `why`), `sdk/src/cloudfall/operator.py` (`OperationKi
 
 ## Issues
 
+- cloudfall-dev/cloudfall#474: S-018-19, S-018-10
+- cloudfall-dev/cloudfall#475: S-018-5, S-018-6, S-018-7, S-018-17
+- cloudfall-dev/cloudfall#476: S-018-1, S-018-2, S-018-3, S-018-4, S-018-8, S-018-9, S-018-15, S-018-18, S-018-20
+- cloudfall-dev/cloudfall#477: S-018-11, S-018-12, S-018-13, S-018-14
+- cloudfall-dev/cloudfall#478: S-018-16
+
 ## Verification
 
 No criterion is verified yet.
