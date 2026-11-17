@@ -102,6 +102,11 @@ cloudfall_mariadb_remote_accounts: >-
     cloudfall_mariadb_owners | map(attribute='owner')
     | product(cloudfall_mariadb_remote_hosts) | map('join', '@') | list
   }}
+# Whether an account of mysql.global_priv is locked, the one condition every
+# read of locked accounts uses: the flag reads 'true' on the older series
+# and 1 on 11.8 (#452).
+cloudfall_mariadb_account_locked: >-
+  JSON_VALUE(Priv, '$.account_locked') IN ('true', '1')
 # What remote_accounts.yml reads: the accounts at a host other than
 # localhost, as user@host, and their grants as user@host|database.
 cloudfall_mariadb_remote_state_queries:
@@ -111,7 +116,7 @@ cloudfall_mariadb_remote_state_queries:
   locked_users: >-
     SELECT CONCAT(User, '@', Host) FROM mysql.global_priv
     WHERE Host NOT IN ('localhost', '')
-    AND JSON_VALUE(Priv, '$.account_locked') = 'true'
+    AND {{ cloudfall_mariadb_account_locked }}
   managed_users: >-
     SELECT CONCAT(User, '@', Host) FROM mysql.roles_mapping
     WHERE Host NOT IN ('localhost', '')
@@ -228,7 +233,7 @@ cloudfall_mariadb_state_queries:
     AND JSON_EXTRACT(Priv, '$.auth_or') IS NULL
   locked_users: >-
     SELECT User FROM mysql.global_priv WHERE Host = 'localhost'
-    AND JSON_VALUE(Priv, '$.account_locked') = 'true'
+    AND {{ cloudfall_mariadb_account_locked }}
   managed_users: >-
     SELECT User FROM mysql.roles_mapping WHERE Host = 'localhost'
     AND Role = '{{ cloudfall_mariadb_managed_role }}' AND Admin_option = 'N'

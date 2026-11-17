@@ -1,0 +1,3 @@
+### Fixed
+
+- On MariaDB 11.8, where `JSON_VALUE(Priv, '$.account_locked')` reads `1` rather than `true` for a locked account, the role and inspect now find locked accounts by `IN ('true', '1')`, through one condition in the role's defaults that every read of locked accounts uses. A declared user that was locked is unlocked again, a replica's `cloudfall_repl` account locked while it was no replica is unlocked so its link logs in, and locking the account of a server that left the pair no longer reports a change on every converge (S-019-13); audit sees the accounts the role locked (S-019-7) (#452)

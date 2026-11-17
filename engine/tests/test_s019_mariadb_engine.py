@@ -314,6 +314,27 @@ def test_s019_7_inspect_hands_audit_the_names_never_a_hash() -> None:
     assert "password" not in queries.lower()
 
 
+# proves: S-019-7
+def test_s019_7_inspect_reads_a_locked_account_as_the_role_does() -> None:
+    # The flag reads 'true' on the older series and 1 on 11.8 (#452): audit
+    # finds the accounts the role locked by the same condition
+    inspect = cast(
+        "dict[str, Any]",
+        DataLoader().load_from_file(str(INSPECT / "defaults" / "main.yml")),
+    )
+    role = cast(
+        "dict[str, Any]",
+        DataLoader().load_from_file(
+            str(INSPECT.parent / "cloudfall_mariadb" / "defaults" / "main.yml")
+        ),
+    )
+    condition = role["cloudfall_mariadb_account_locked"]
+
+    assert condition == "JSON_VALUE(Priv, '$.account_locked') IN ('true', '1')"
+    query = inspect["cloudfall_inspect_mariadb_queries"]["lockedUsers"]
+    assert " ".join(query.split()).endswith(f"WHERE {condition}")
+
+
 # proves: S-019-11
 def test_s019_11_inspect_reads_each_remote_accounts_tls_requirement() -> None:
     # REQUIRE SSL removed by hand must reach audit (#435): the read names each

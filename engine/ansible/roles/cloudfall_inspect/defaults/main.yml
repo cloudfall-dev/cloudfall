@@ -40,9 +40,11 @@ cloudfall_inspect_mariadb_queries:
   managedUsers: >-
     SELECT CONCAT(User, '@', Host) FROM mysql.roles_mapping
     WHERE Role = 'cloudfall-managed' AND Admin_option = 'N'
+  # The flag reads 'true' on the older series and 1 on 11.8, as in
+  # cloudfall_mariadb_account_locked (#452)
   lockedUsers: >-
     SELECT CONCAT(User, '@', Host) FROM mysql.global_priv
-    WHERE JSON_VALUE(Priv, '$.account_locked') = 'true'
+    WHERE JSON_VALUE(Priv, '$.account_locked') IN ('true', '1')
   # Each remote account's TLS requirement as "user@host TYPE": an absent
   # ssl_type is 0 (NONE); REQUIRE SSL, which converge sets, is 1 (ANY)
   sslTypes: >-

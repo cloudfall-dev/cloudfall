@@ -140,8 +140,11 @@ class Run:
 class Pair:
     """Two stand-in servers and the role's replication tasks to converge them."""
 
-    def __init__(self, tmp_path: Path) -> None:
-        """Write both servers, fresh, and the role's tasks without ownership."""
+    def __init__(self, tmp_path: Path, locked_flag: str = "true") -> None:
+        """Write both servers, fresh, and the role's tasks without ownership.
+
+        ``locked_flag``: how both read a locked account's flag (#452).
+        """
         self.tmp_path = tmp_path
         self.network = tmp_path / "network.json"
         self.ca = tmp_path / "ca.crt"
@@ -152,7 +155,9 @@ class Pair:
             client, dump, state, log = write_server(
                 tmp_path / host,
                 server_state(
-                    address=address, names=[f"{host}.example.internal", address]
+                    address=address,
+                    names=[f"{host}.example.internal", address],
+                    locked_flag=locked_flag,
                 ),
                 self.network,
             )
@@ -611,6 +616,67 @@ def test_s019_13_a_second_converge_changes_nothing_and_does_not_seed_again(
     after = pair.state("h2")
     assert after["databases"] == before["databases"]
     assert after["link"] == before["link"]
+    _assert_follows(pair, "h2", "h1")
+
+
+# What JSON_VALUE(Priv, '$.account_locked') reads for a locked account:
+# 'true' on the older series, 1 on 11.8 (#452).
+LOCKED_FLAGS = pytest.mark.parametrize(
+    "locked_flag",
+    [
+        pytest.param("true", id="locked reads true"),
+        pytest.param("1", id="locked reads 1, as on 11.8"),
+    ],
+)
+
+
+def _locked_pair(tmp_path: Path, locked_flag: str) -> Pair:
+    """Return the fixture's pair, seeded, whose servers read the flag so."""
+    pair = Pair(tmp_path, locked_flag)
+    _primary_with_data(pair)
+    pair.declare(_primary(), replica_service())
+    _seeded(pair)
+    return pair
+
+
+# proves: S-019-13
+@LOCKED_FLAGS
+def test_s019_13_a_replicas_locked_replication_account_is_unlocked(
+    tmp_path: Path, locked_flag: str
+) -> None:
+    pair = _locked_pair(tmp_path, locked_flag)
+    # Its account was locked while h2 was no replica of h1 (it was the
+    # primary, say): its link is refused the login
+    account = f"cloudfall_repl@{ADDRESSES['h2']}"
+    users = pair.state("h1")["users"]
+    pair.edit("h1", users={**users, account: {**users[account], "locked": True}})
+    assert pair.state("h2")["link"]["ioErrno"] == 1045
+
+    pair.converge()
+
+    assert pair.state("h1")["users"][account]["locked"] is False
+    _assert_follows(pair, "h2", "h1")
+    again = pair.converge()
+    assert again.changed == 0, again.output
+
+
+# proves: S-019-13
+@LOCKED_FLAGS
+def test_s019_13_the_account_of_a_server_that_left_the_pair_is_locked_once(
+    tmp_path: Path, locked_flag: str
+) -> None:
+    pair = _locked_pair(tmp_path, locked_flag)
+    # A former replica, no server of the pair now, kept its account
+    gone = "cloudfall_repl@198.51.100.9"
+    users = pair.state("h1")["users"]
+    pair.edit("h1", users={**users, gone: users[f"cloudfall_repl@{ADDRESSES['h2']}"]})
+
+    first = pair.converge()
+    second = pair.converge()
+
+    assert first.changed == 1, first.output
+    assert pair.state("h1")["users"][gone]["locked"] is True
+    assert second.changed == 0, second.output
     _assert_follows(pair, "h2", "h1")
 
 
