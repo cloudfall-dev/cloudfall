@@ -661,7 +661,7 @@ def test_s018_10_self_confirm_is_true_exactly_when_the_grant_holds(
     assert _approval(withheld)["self_confirm"] is False
 
 
-def test_an_agent_proposal_is_never_run_from_the_store_in_this_release(
+def test_an_agent_proposal_never_runs_through_an_operator_executor(
     tmp_path: Path,
 ) -> None:
     project = copy_examples(tmp_path / "project")
