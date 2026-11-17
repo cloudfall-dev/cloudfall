@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, cast
 
+from ansible_repository import ansible_repository
 from cloudfall.agent_gate import plan_sha256
 from cloudfall.cli import main
 from cloudfall.operator import OperationKind, ProposalStatus
@@ -219,6 +220,17 @@ def test_why_skips_an_unreadable_agent_record_with_a_warning(
         entry for entry in payload["warnings"] if entry["code"] == "RECORD_UNREADABLE"
     ]
     assert warning["context"]["path"] == str(broken)
+
+
+def test_a_repository_server_binds_the_proposal_store_of_why(tmp_path: Path) -> None:
+    """An agent can't point ``why`` at a folder of its own choosing."""
+    repository = ansible_repository(tmp_path)
+
+    tools, _ = _talk(_serve("--repository", str(repository), cwd=tmp_path))
+
+    accepted = tools["why"].input_schema["properties"]
+    assert "host" in accepted
+    assert not {"decisions", "investigations", "proposals"} & set(accepted)
 
 
 def test_an_agent_record_renders_as_a_card(tmp_path: Path) -> None:
