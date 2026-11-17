@@ -60,6 +60,18 @@
         loop_var: cloudfall_service_item
         label: "{{ cloudfall_service_item.id }}"
   tasks:
+    # The declared firewall carries the services' port rules (S-011): a
+    # replication, remoteAccess or transport port opened to its sources only.
+    # Enforced here, before the services, so a role change needs no baseline
+    # converge to admit a new replica (#453); the ruleset is the one the
+    # baseline applies, and a host without a firewall is left alone.
+    - name: Enforce the declared firewall with the services' rules
+      ansible.builtin.include_role:
+        name: cloudfall_firewall
+      vars:
+        cloudfall_firewall_ruleset: "{{ cloudfall_firewall }}"
+      when: cloudfall_firewall is defined
+
     - name: Deploy declared PostgreSQL services
       ansible.builtin.include_role:
         name: cloudfall_postgresql
