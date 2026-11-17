@@ -256,8 +256,12 @@ jobs:
       # No ACME server reaches the container, so the job places a self-signed
       # certificate where certbot would, and domains apply renders the TLS
       # virtual host without --issue-certificate; the host then serves the
-      # probe over HTTPS with that certificate and redirects HTTP to it
+      # probe over HTTPS with that certificate and redirects HTTP to it.
+      # publish.yml calls this workflow from main on an older tag; a tag cut
+      # before the fixture had its Domain (#415) has no probe-site.yaml, so
+      # the step runs only where the checked-out tree declares it
       - name: Serve the probe through an nginx Domain with a self-signed certificate
+        if: hashFiles('engine/tests/converge/project/domains/probe-site.yaml') != ''
         run: |
           name=probe.converge.test
           install --directory --mode=0700 tmp/tls
