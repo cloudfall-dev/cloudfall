@@ -26,6 +26,7 @@ from cloudfall.agent_gate import (
     ERROR_AGENT_RECORD_UNWRITABLE,
     AgentCall,
     GrantCheck,
+    Verdict,
     audit_verdict,
     declared_servers,
     domains_verdict,
@@ -697,6 +698,38 @@ def test_a_failed_save_after_the_run_started_keeps_the_runs_own_error(
     assert any(
         str(project / PROPOSALS) in note for note in raised.value.__notes__
     )
+
+
+def test_a_settle_that_cannot_save_says_the_run_completed(tmp_path: Path) -> None:
+    project = _staging_project(tmp_path, "domains-apply")
+    gate, check = _domains_gate(project)
+    steps = _Steps()
+
+    def run(watch: Callable[[StepRunner], StepRunner]) -> str:
+        applied = _render_with(steps)(watch)
+        _store_folder_replaced_by_a_file(project)
+        return applied
+
+    with pytest.raises(CliExit) as raised:
+        _granted(
+            gate,
+            check,
+            _DOMAINS_CALL,
+            plan={"domain": "crm-site", "servers": ["h2"]},
+            evidence=(),
+            execute=run,
+            verify=lambda _: Verdict.passed("crm-site matches its receipt"),
+        )
+
+    # PRECONDITION reads as "nothing ran": the error says the run did, how
+    # its check ended, and that only its record was lost.
+    assert raised.value.code == "PRECONDITION"
+    assert raised.value.context["code"] == ERROR_AGENT_RECORD_UNWRITABLE
+    assert raised.value.context["ran"] is True
+    assert raised.value.context["verified"] is True
+    assert "the run completed and verified" in raised.value.message
+    assert str(project / PROPOSALS) in raised.value.message
+    assert steps.started
 
 
 def test_s018_17_a_domains_apply_run_whose_observe_differs_ends_failed(

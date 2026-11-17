@@ -2570,7 +2570,10 @@ def _recorded[T](
         run.begin()
         stage = "verification"
         verdict = verify(result)
-        run.settle(verdict, executed_at, datetime.now(UTC))
+        try:
+            run.settle(verdict, executed_at, datetime.now(UTC))
+        except RecordNotSavedError as error:
+            raise _settle_unsaved(error, verdict) from error
         settled = True
     except RecordNotSavedError as error:
         # A record the store cannot take refuses the call (D-5); its first
@@ -2726,6 +2729,23 @@ def _proposed(
     except OperatorError as error:
         return Exit.PRECONDITION(error.message, context={"code": error.code})
     return Exit.PRECONDITION(proposal.message(), context=proposal.context())
+
+
+def _settle_unsaved(error: RecordNotSavedError, verdict: Verdict) -> CliExit:
+    """Refuse a completed run whose verdict the store could not take (D-5).
+
+    The exit stays ``PRECONDITION``, but the error says the run happened and
+    how its check ended, so it does not read as a call that ran nothing.
+    """
+    outcome = "verified" if verdict.verified else "failed its check"
+    message = (
+        f"the run completed and {outcome} ({verdict.detail}); only its agent "
+        f"record was lost: {error.message}"
+    )
+    return Exit.PRECONDITION(
+        message,
+        context={"code": error.code, "ran": True, "verified": verdict.verified},
+    )
 
 
 def _record_failure(run: GrantedRun, stage: str, executed_at: datetime) -> None:
