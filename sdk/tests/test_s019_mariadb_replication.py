@@ -16,11 +16,14 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from cloudfall.domain import ResourceId
-from cloudfall.elasticsearch_converge import MARIADB_DELIVERED_VARIABLE
+from cloudfall.domain import ResourceId, ResourceKind
+from cloudfall.elasticsearch_converge import (
+    MARIADB_DELIVERED_VARIABLE,
+    mariadb_certificate_requirements,
+)
 from cloudfall.inventory import PlatformInventory
 from cloudfall.lifecycle import (
     ERROR_SERVICES_SECRET,
@@ -36,6 +39,12 @@ from cloudfall.mariadb_replication import (
     read_outcomes,
 )
 from cloudfall.pki import load_or_create_ca
+from cloudfall.requirements import (
+    CertificateRequirement,
+    Requirement,
+    ServerRequirements,
+    requirements_of,
+)
 from cloudfall.secret_store import SecretStore
 from cloudfall.secrets import (
     MARIADB_REPLICATION_FILES_VARIABLE,
@@ -57,6 +66,9 @@ from mariadb_project import (
     replica_service,
     write_project,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 ROOT = Path(__file__).parents[2]
 REPLICATION_PASSWORD = "synthetic-replication-password-0123456789"  # noqa: S105
@@ -133,9 +145,7 @@ def _project(tmp_path: Path, secrets: str) -> Path:
         decrypt=lambda path: path.read_text(encoding="utf-8"),
         encrypt=lambda _, text: text,
     )
-    load_or_create_ca(
-        store, ResourceId("production"), dt.datetime.now(dt.UTC)
-    )
+    load_or_create_ca(store, ResourceId("production"), dt.datetime.now(dt.UTC))
     return project
 
 
@@ -385,6 +395,80 @@ def test_s019_18_the_source_login_is_staged_0600_and_in_no_argument(
     for step in recorder.steps:
         assert "synthetic-source-value-42" not in " ".join(step.argv)
         assert "synthetic-source-value-42" not in json.dumps(dict(step.environment))
+
+
+# proves: S-019-17
+def test_s019_17_a_replica_of_an_outside_source_gets_its_server_certificate(
+    tmp_path: Path,
+) -> None:
+    project, _ = _source_project(
+        tmp_path, f"{SECRETS}SOURCE_REPLICATION={SOURCE_LOGIN}\n"
+    )
+    recorder = Recorder(None)
+
+    _converge(project, recorder, [])
+
+    # The role's tls.yml requires both before the settings name them (#494);
+    # the source's own CA is staged apart, as sourceCa, never as ca.crt
+    assert sorted(recorder.delivered["h2"]) == [
+        "/etc/mysql/cloudfall/ca.crt",
+        "/etc/mysql/cloudfall/server.crt",
+    ]
+
+
+def _owned_certificates(
+    servers: tuple[ServerRequirements, ...], services: set[ResourceId]
+) -> dict[str, list[Requirement]]:
+    """Return the certificate requirements ``services`` place, by server."""
+    found: dict[str, list[Requirement]] = {}
+    for server in servers:
+        for item in server.requirements:
+            if (
+                isinstance(item.spec, CertificateRequirement)
+                and item.owner.kind is ResourceKind.SERVICE
+                and item.owner.resource_id in services
+            ):
+                found.setdefault(server.server_id.value, []).append(item)
+    return found
+
+
+def _standalone_project(tmp_path: Path, _: str) -> tuple[Path, str]:
+    """Return a project of one server with ``remoteAccess`` and no replication."""
+    remote = {"listenAddress": "10.0.0.2", "allowedSources": ["10.0.0.0/24"]}
+    return write_project(tmp_path / "project", mariadb_service(remoteAccess=remote)), ""
+
+
+def _pair_project(tmp_path: Path, secrets: str) -> tuple[Path, str]:
+    return _project(tmp_path, secrets), ""
+
+
+@pytest.mark.parametrize(
+    ("build", "servers"),
+    [
+        pytest.param(_pair_project, ["h1", "h2"], id="primary and replica"),
+        pytest.param(_source_project, ["h2"], id="replica of an outside source"),
+        pytest.param(_standalone_project, ["h1"], id="standalone with remoteAccess"),
+    ],
+)
+def test_the_converge_asks_for_the_certificates_requirements_show_lists(
+    tmp_path: Path,
+    build: Callable[[Path, str], tuple[Path, str]],
+    servers: list[str],
+) -> None:
+    project, _ = build(tmp_path, f"{SECRETS}SOURCE_REPLICATION={SOURCE_LOGIN}\n")
+    inventory = PlatformInventory.from_state(validate_config(project, SCHEMAS))
+    mariadb = {
+        service.resource_id
+        for service in inventory.services
+        if service.mariadb is not None
+    }
+
+    # What `cloudfall requirements show` lists is requirements_of's
+    shown = _owned_certificates(requirements_of(inventory), mariadb)
+    asked = _owned_certificates(mariadb_certificate_requirements(inventory), mariadb)
+
+    assert asked == shown
+    assert sorted(asked) == servers
 
 
 # proves: S-019-18

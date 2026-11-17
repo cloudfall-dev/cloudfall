@@ -133,8 +133,10 @@ def mariadb_certificate_requirements(
     A service with ``remoteAccess`` serves TLS to its owners' clients, and one
     with ``replication`` to the other server of its pair, which verifies it
     against the project CA. A replica of a source Cloudfall does not manage
-    is left out: the role refuses it before it changes anything (#424), so
-    its server is not asked to make a key either.
+    gets one too: the role's settings name it for every server with
+    ``replication``, and once promoted its own replicas verify it (#494).
+    The source's CA, ``caCertificateFile``, is staged apart from it. These
+    are the certificate requirements ``cloudfall requirements show`` lists.
     """
     services = {
         service.resource_id
@@ -143,10 +145,6 @@ def mariadb_certificate_requirements(
         and (
             service.mariadb.remote_access is not None
             or service.mariadb.replication is not None
-        )
-        and (
-            service.mariadb.replication is None
-            or service.mariadb.replication.source is None
         )
     }
     return _owned(inventory, services, CertificateRequirement)
@@ -299,7 +297,8 @@ def prepared_nodes(
 
     A MariaDB server's data volume is decided with the nodes' (S-019), in the
     same read before any host changes, and the server certificate of one
-    with ``remoteAccess`` is requested and signed with the nodes'; it is
+    with ``remoteAccess`` or ``replication`` is requested and signed with the
+    nodes'; it is
     handed to the MariaDB role apart from the nodes' files, so neither role
     copies the other's. Nothing to meet yields no variable, leaving the run
     as it was. ``server`` meets that one server's alone, for a run limited to
