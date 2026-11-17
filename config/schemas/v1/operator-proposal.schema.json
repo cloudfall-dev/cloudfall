@@ -322,12 +322,14 @@
                 "name": {
                   "type": "string",
                   "minLength": 1,
-                  "maxLength": 200
+                  "maxLength": 200,
+                  "pattern": "\\S"
                 },
                 "version": {
                   "type": "string",
                   "minLength": 1,
-                  "maxLength": 100
+                  "maxLength": 100,
+                  "pattern": "\\S"
                 }
               },
               "required": [

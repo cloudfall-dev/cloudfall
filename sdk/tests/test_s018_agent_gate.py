@@ -337,6 +337,34 @@ def test_s018_19_an_agent_record_names_its_request_servers_and_binding(
         )
 
 
+def test_a_blank_client_name_is_an_unreadable_record_not_a_crash(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    document = _agent_record(
+        "op-20260501100000-0123456789abcdef",
+        OperationKind.RESTART,
+        ("h1",),
+        ("production",),
+        approval=ApprovalRecord(
+            mode=ApprovalMode.AGENT,
+            policy=ResourceId("production-operator"),
+            grant=OperationKind.RESTART,
+            client=AgentClient(name="unknown", version="unknown"),
+        ),
+    ).as_document()
+    document["spec"]["approval"]["client"]["name"] = " "  # type: ignore[index]
+    store.directory.mkdir(parents=True)
+    (store.directory / "op-20260501100000-0123456789abcdef.json").write_text(
+        json.dumps(document), encoding="utf-8"
+    )
+
+    listing = store.list()
+
+    assert listing.records == ()
+    assert len(listing.unreadable) == 1
+
+
 def test_s018_19_the_cli_exit_codes_and_mcp_tool_names_are_unchanged(
     tmp_path: Path,
 ) -> None:
