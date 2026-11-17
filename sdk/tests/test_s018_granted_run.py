@@ -13,6 +13,8 @@ writes the release receipt or fails the health gate.
 
 from __future__ import annotations
 
+import dataclasses
+import errno
 import json
 import shutil
 import subprocess
@@ -730,6 +732,49 @@ def test_a_settle_that_cannot_save_says_the_run_completed(tmp_path: Path) -> Non
     assert "the run completed and verified" in raised.value.message
     assert str(project / PROPOSALS) in raised.value.message
     assert steps.started
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _FirstUpdateFails(ProposalStore):
+    """A store whose first update fails and whose later ones succeed."""
+
+    updates: list[str] = dataclasses.field(default_factory=list)
+
+    def update(self, proposal: OperatorProposal) -> Path:
+        self.updates.append(proposal.status.value)
+        if len(self.updates) == 1:
+            raise OSError(errno.EIO, "Input/output error")
+        return ProposalStore.update(self, proposal)
+
+
+def test_a_lost_settle_of_a_verified_run_never_records_it_failed(
+    tmp_path: Path,
+) -> None:
+    project = _staging_project(tmp_path, "domains-apply")
+    gate, check = _domains_gate(project)
+    store = _FirstUpdateFails(
+        directory=gate.store.directory, catalog=gate.store.catalog
+    )
+    flaky = dataclasses.replace(gate, store=store)
+    steps = _Steps()
+
+    with pytest.raises(CliExit) as raised:
+        _granted(
+            flaky,
+            check,
+            _DOMAINS_CALL,
+            plan={"domain": "crm-site", "servers": ["h2"]},
+            evidence=(),
+            execute=_render_with(steps),
+            verify=lambda _: Verdict.passed("crm-site matches its receipt"),
+        )
+
+    assert raised.value.code == "PRECONDITION"
+    assert raised.value.context["verified"] is True
+    # The verified settle was lost; no later write may call the run failed.
+    assert store.updates == [ProposalStatus.VERIFIED.value]
+    record = _store(project).read(Path(str(raised.value.context["record"])))
+    assert record.status is ProposalStatus.RUNNING
 
 
 def test_s018_17_a_domains_apply_run_whose_observe_differs_ends_failed(

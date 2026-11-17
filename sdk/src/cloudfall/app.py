@@ -2573,15 +2573,19 @@ def _recorded[T](
         try:
             run.settle(verdict, executed_at, datetime.now(UTC))
         except RecordNotSavedError as error:
-            raise _settle_unsaved(error, verdict) from error
+            # The verdict is known: no later write may record another one, so
+            # the record stays as it is and the error says it was not settled.
+            settled = True
+            raise _settle_unsaved(error, verdict, run.begin()) from error
         settled = True
     except RecordNotSavedError as error:
         # A record the store cannot take refuses the call (D-5); its first
         # save precedes the first engine step, so a refused call ran nothing.
         raise Exit.PRECONDITION(error.message, context={"code": error.code}) from error
     finally:
-        # Whatever raised, a usage exit or any other error, a started record
-        # never stays running: it ends failed and the error propagates.
+        # Whatever raised before a verdict, a usage exit or any other error, a
+        # started record never stays running: it ends failed and the error
+        # propagates.
         if not settled:
             _record_failure(run, stage, executed_at)
     return result, run.approval()
@@ -2731,20 +2735,28 @@ def _proposed(
     return Exit.PRECONDITION(proposal.message(), context=proposal.context())
 
 
-def _settle_unsaved(error: RecordNotSavedError, verdict: Verdict) -> CliExit:
+def _settle_unsaved(
+    error: RecordNotSavedError, verdict: Verdict, record: Path
+) -> CliExit:
     """Refuse a completed run whose verdict the store could not take (D-5).
 
     The exit stays ``PRECONDITION``, but the error says the run happened and
-    how its check ended, so it does not read as a call that ran nothing.
+    how its check ended, so it does not read as a call that ran nothing, and
+    that its record still reads ``running``.
     """
     outcome = "verified" if verdict.verified else "failed its check"
     message = (
         f"the run completed and {outcome} ({verdict.detail}); only its agent "
-        f"record was lost: {error.message}"
+        f"record was lost, and {record} still reads running: {error.message}"
     )
     return Exit.PRECONDITION(
         message,
-        context={"code": error.code, "ran": True, "verified": verdict.verified},
+        context={
+            "code": error.code,
+            "ran": True,
+            "verified": verdict.verified,
+            "record": str(record),
+        },
     )
 
 
