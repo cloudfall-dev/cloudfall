@@ -2389,8 +2389,9 @@ class EngineArgs(ProjectArgs):
 _AGENT_PROPOSALS_DESCRIPTION = (
     "Proposal store an agent's call is gated by, which cloudfall mcp serve "
     "sets to the project's; with it the plan's approval says whether an "
-    "OperatorPolicy grant lets the confirmed call run (default: none, for a "
-    "person's command)"
+    "OperatorPolicy grant lets the confirmed call run, and a --yes call no "
+    "grant covers only leaves a proposal there, as the MCP server's call does "
+    "(default: none, for a person's command, which runs as before)"
 )
 
 
@@ -4271,17 +4272,16 @@ def migrate(args: MigrateArgs, ctx: Ctx, fleet: Fleet) -> Migration:
         return _migration(_migrate_run(args, fleet, config), gate, fleet)
     # An agent's confirmed call recomputes the plan its record binds.
     planned = _migration(_migrate_run(args, fleet, config, execute=False), gate, fleet)
-    check = gate.check(
-        "migrate",
-        migrate_servers(
-            fleet.inventory,
-            (
-                str(step["id"])
-                for step in planned.steps
-                if step["status"] == StepStatus.PENDING.value
-            ),
-        ),
-    )
+    pending = [
+        str(step["id"])
+        for step in planned.steps
+        if step["status"] == StepStatus.PENDING.value
+    ]
+    if not pending:
+        # A finished migration runs nothing, so nothing is gated (S-018-1):
+        # it answers complete as it always did.
+        return _migration(_migrate_run(args, fleet, config), None, fleet)
+    check = gate.check("migrate", migrate_servers(fleet.inventory, pending))
 
     def run(watch: Callable[[StepRunner], StepRunner]) -> Migration:
         watched = replace(config, run=watch(config.run))

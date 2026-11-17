@@ -382,6 +382,33 @@ def test_s018_1_a_migrate_that_changes_no_declared_server_proposes(
     assert _store(project).read(path).status is ProposalStatus.PROPOSED
 
 
+# proves: S-018-1
+def test_s018_1_a_migrate_with_no_pending_step_answers_complete(
+    tmp_path: Path,
+) -> None:
+    # S-018-1 gates a run; a finished migration has nothing left to run, so
+    # its confirmed call answers complete as before and proposes nothing.
+    project = _unpoliced_project(tmp_path / "project")
+    server_free_migration(project, frozenset())
+    marker = tmp_path / "playbook-started"
+
+    exit_code, payload = _command(
+        project,
+        _marker_engine(tmp_path / "engine", marker),
+        "migrate",
+        *("--build", "crm-backend=main"),
+    )
+
+    assert exit_code == 0, payload
+    done = payload["data"]
+    assert done["status"] == "ok", payload
+    assert done["completed"] == len(done["steps"])
+    assert done["next"] is None
+    assert done["approval"] == {}
+    assert _records(project) == []
+    assert not marker.exists()
+
+
 def test_s018_8_one_environment_without_a_grant_proposes_the_whole_run(
     tmp_path: Path,
 ) -> None:
