@@ -1,12 +1,14 @@
 ---
-# clientAccess (S-023): the node serves TLS on its IPv4 with its certificate
-# from the project CA. The node made its key and never let it leave; the
-# services converge had the project CA sign its certificate, and stages it
-# with the CA only when it is missing or due. RabbitMQ reads a renewed
-# certificate for new connections, so nothing here restarts the node.
+# The node's one certificate from the project CA (S-023): the nodes of three
+# meet over TLS with it, verified both ways, and with clientAccess the node
+# serves TLS to clients on its IPv4 with it. The node made its key and never
+# let it leave; the services converge had the project CA sign its
+# certificate, and stages it with the CA only when it is missing or due.
+# RabbitMQ reads a renewed certificate for new connections, so nothing here
+# restarts the node.
 - name: Create the directory of the node's certificate
   ansible.builtin.file:
-    path: "{{ cloudfall_rabbitmq_tls.certificatePath | dirname }}"
+    path: "{{ cloudfall_rabbitmq_certificate.certificatePath | dirname }}"
     state: directory
     owner: root
     group: root
@@ -30,33 +32,33 @@
     follow: true
     get_checksum: false
   loop:
-    - "{{ cloudfall_rabbitmq_tls.certificatePath }}"
-    - "{{ cloudfall_rabbitmq_tls.keyPath }}"
-    - "{{ cloudfall_rabbitmq_tls.caPath }}"
+    - "{{ cloudfall_rabbitmq_certificate.certificatePath }}"
+    - "{{ cloudfall_rabbitmq_certificate.keyPath }}"
+    - "{{ cloudfall_rabbitmq_certificate.caPath }}"
   register: cloudfall_rabbitmq_tls_files
 
-- name: Require the node certificate before clients use TLS
+- name: Require the node certificate before it serves TLS
   ansible.builtin.assert:
     that:
       - item.stat.exists
       - item.stat.isreg
     fail_msg: >-
-      {{ item.item }} is missing on {{ cloudfall_server_id }}: clientAccess of
-      RabbitMQ service {{ cloudfall_rabbitmq_service.id }} serves TLS with the
-      node's certificate from the project CA (requirement rabbitmq). Converge
-      the service through cloudfall, which has the node make its key and the
-      project CA sign its certificate; this converge stops here, before any
-      setting names the file
+      {{ item.item }} is missing on {{ cloudfall_server_id }}: RabbitMQ
+      service {{ cloudfall_rabbitmq_service.id }} serves TLS, between its nodes
+      or to the clients of clientAccess, with the node's certificate from the
+      project CA (requirement rabbitmq). Converge the service through
+      cloudfall, which has the node make its key and the project CA sign its
+      certificate; this converge stops here, before any setting names the file
   loop: "{{ cloudfall_rabbitmq_tls_files.results }}"
   loop_control:
     label: "{{ item.item }}"
   # A dry run does not issue the certificate, so only a real run can tell.
   when: not ansible_check_mode
 
-# The node runs as rabbitmq, and nobody else reads the key
+# The node and its tools run as rabbitmq, and nobody else reads the key
 - name: Let the node alone read its key
   ansible.builtin.file:
-    path: "{{ cloudfall_rabbitmq_tls.keyPath }}"
+    path: "{{ cloudfall_rabbitmq_certificate.keyPath }}"
     state: file
     owner: rabbitmq
     group: rabbitmq
@@ -71,6 +73,6 @@
     group: root
     mode: "0644"
   loop:
-    - "{{ cloudfall_rabbitmq_tls.certificatePath }}"
-    - "{{ cloudfall_rabbitmq_tls.caPath }}"
+    - "{{ cloudfall_rabbitmq_certificate.certificatePath }}"
+    - "{{ cloudfall_rabbitmq_certificate.caPath }}"
   when: not ansible_check_mode

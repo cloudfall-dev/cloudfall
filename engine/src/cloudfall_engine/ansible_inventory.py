@@ -32,6 +32,16 @@ from cloudfall.rabbitmq_access import (
 from cloudfall.rabbitmq_access import (
     client_access_rules_for_server as rabbitmq_client_access_rules_for_server,
 )
+from cloudfall.rabbitmq_cluster import (
+    CLUSTER_VARIABLE as RABBITMQ_CLUSTER_VARIABLE,
+)
+from cloudfall.rabbitmq_cluster import (
+    cluster_for_server as rabbitmq_cluster_for_server,
+)
+from cloudfall.rabbitmq_cluster import (
+    cluster_rules_for_server as rabbitmq_cluster_rules_for_server,
+)
+from cloudfall.rabbitmq_cluster import is_cluster as is_rabbitmq_cluster
 from cloudfall.requirements import (
     CertificateRequirement,
     VolumeRequirement,
@@ -244,6 +254,17 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
                 )
                 else {}
             ),
+            # A node of a RabbitMQ cluster of three: its address, every
+            # node's name and address, and its certificate (S-023)
+            **(
+                {RABBITMQ_CLUSTER_VARIABLE: cluster}
+                if (
+                    cluster := rabbitmq_cluster_for_server(
+                        server, inventory.servers, inventory.services
+                    )
+                )
+                else {}
+            ),
             "cloudfall_domains": [
                 _host_domain(domain, components_by_id)
                 for domain in inventory.domains
@@ -266,12 +287,14 @@ def _rollout_order(inventory: PlatformInventory) -> list[ServerInventory]:
     time: the home node of an Elasticsearch cluster of two or more moves its
     transport off loopback before a new node looks for it there, and the
     server of a MariaDB primary runs before its replicas, which are seeded
-    from it (S-019).
+    from it (S-019). The home of a RabbitMQ cluster of three runs first too,
+    so the other nodes join a running node one at a time (S-023).
     """
     homes = {
         service.server_id
         for service in inventory.services
         if (service.elasticsearch is not None and len(service.elasticsearch.nodes) > 1)
+        or is_rabbitmq_cluster(service)
         or (
             service.mariadb is not None
             and service.mariadb.replication is not None
@@ -371,11 +394,20 @@ def _host_firewall(
         server, inventory.servers, inventory.services
     )
     clients = rabbitmq_client_access_rules_for_server(server, inventory.services)
+    broker = rabbitmq_cluster_rules_for_server(
+        server, inventory.servers, inventory.services
+    )
     if baseline.firewall is None:
         if clients:
             message = (
                 "a RabbitMQ node with clientAccess needs a firewall on its "
                 f"server: {server.resource_id.value}"
+            )
+            raise ValueError(message)
+        if broker:
+            message = (
+                "a node of a RabbitMQ cluster needs a firewall on its server: "
+                f"{server.resource_id.value}"
             )
             raise ValueError(message)
         if replication:
@@ -414,6 +446,7 @@ def _host_firewall(
                 *(rule.as_dict() for rule in transport),
                 *(rule.as_dict() for rule in replication),
                 *(rule.as_dict() for rule in clients),
+                *(rule.as_dict() for rule in broker),
             ],
         }
     }

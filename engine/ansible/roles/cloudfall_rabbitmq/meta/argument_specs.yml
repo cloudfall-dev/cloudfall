@@ -74,3 +74,10 @@ argument_specs:
         description: >-
           Controller paths of the staged Erlang cookie ('cookie') and of each
           owner's password ('owners'), never the values
+      cloudfall_rabbitmq_report_directory:
+        type: str
+        default: ""
+        description: >-
+          Controller directory the role reports a converge it refused while
+          the cluster has no majority to, as the services converge reads it;
+          '' reports nothing

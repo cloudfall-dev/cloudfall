@@ -324,8 +324,10 @@ def public_listeners(sockets: str, allowed: list[str] | None = None) -> list[str
 
     ``sockets`` is ``ss -Htlnp``'s output; each answer is its local address
     and process, as ``0.0.0.0:4369 epmd``. ``allowed`` names the local
-    addresses a node listens on by design, as ``203.0.113.11:5671``: the
-    TLS client listener of ``clientAccess`` on its own IPv4.
+    addresses a node listens on by design, all on its own IPv4: node
+    discovery and the inter-node port of a node of three
+    (``203.0.113.11:4369``), and the TLS client listener of ``clientAccess``
+    (``203.0.113.11:5671``).
     """
     found: list[str] = []
     for line in sockets.splitlines():

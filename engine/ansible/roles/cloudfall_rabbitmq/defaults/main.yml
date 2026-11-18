@@ -94,17 +94,89 @@ cloudfall_rabbitmq_client_tls: >-
 cloudfall_rabbitmq_tls: >-
   {{ (cloudfall_rabbitmq_client_access | default({}))
      .get(cloudfall_rabbitmq_service.id, {}) }}
+# A cluster of three (S-023): the nodes meet on their IPv4 over TLS, verified
+# against the project CA both ways. The inventory renders, by service id, this
+# node's address, every node's name, hostname and address, and the paths of
+# its certificate (cloudfall_rabbitmq_cluster); one node has none.
+cloudfall_rabbitmq_clustered: >-
+  {{ cloudfall_rabbitmq_service.rabbitmq.nodes | length > 1 }}
+cloudfall_rabbitmq_node: >-
+  {{ (cloudfall_rabbitmq_cluster | default({}))
+     .get(cloudfall_rabbitmq_service.id, {}) }}
+# The node the others join first: the service's home, which runs first
+cloudfall_rabbitmq_home_node: >-
+  rabbit@{{ hostvars[cloudfall_rabbitmq_service.server].cloudfall_hostname.split('.')[0] }}
+# The node's one certificate from the project CA, which serves the nodes of
+# three between them and the clients of clientAccess alike: its paths, as the
+# rendered cluster or client access names them (the same files).
+cloudfall_rabbitmq_needs_certificate: >-
+  {{ cloudfall_rabbitmq_clustered | bool or cloudfall_rabbitmq_client_tls | bool }}
+cloudfall_rabbitmq_certificate: >-
+  {{
+    cloudfall_rabbitmq_node if cloudfall_rabbitmq_clustered | bool
+    else cloudfall_rabbitmq_tls
+  }}
 # What the services converge signed and staged for this node: its
 # certificate and the CA, only when they are missing or due.
 cloudfall_rabbitmq_delivered_files: >-
   {{ (cloudfall_services_rabbitmq_delivered_files | default({}))
      .get(cloudfall_server_id, []) }}
-# The listener a node with clientAccess opens outside loopback by design:
-# TLS on its own IPv4.
+# The Erlang terms of the inter-node TLS, which the node and the
+# command-line tools both read.
+cloudfall_rabbitmq_tls_options_path: /etc/rabbitmq/cloudfall/inter_node_tls.config
+cloudfall_rabbitmq_epmd_port: 4369
+# A node and the tools give up joining after these; a later converge resumes.
+cloudfall_rabbitmq_join_retries: 60
+# Healthy: every declared node a running member, no alarm, no partition, every
+# quorum queue with a leader and a member online on every node; waited for
+# up to one hour, then the converge stops with what is missing (S-023).
+cloudfall_rabbitmq_healthy_timeout: 3600
+cloudfall_rabbitmq_healthy_interval: 10
+# Where the role reports a converge it refused while the cluster has no
+# majority, a controller directory the services converge reads ('' reports
+# nothing): the refusal turns into PRECONDITION.
+cloudfall_rabbitmq_report_directory: ""
+cloudfall_rabbitmq_no_majority_code: service_rabbitmq_no_majority
+cloudfall_rabbitmq_no_majority_message: >-
+  RabbitMQ service {{ cloudfall_rabbitmq_service.id }} has no majority: of its
+  members {{ cloudfall_rabbitmq_membership.members | join(', ') }} only
+  {{ cloudfall_rabbitmq_membership.running | join(', ') or 'none' }} run, so it
+  takes no publish to a quorum queue and no change of a definition. Nothing on
+  {{ cloudfall_server_id }} changed and no node was restarted; start the
+  stopped nodes, which rejoin with no converge, then converge again
+# Every node's hostname and short name resolve to its IPv4, on every node and
+# before the host's own lines, so the nodes and the tools reach each other
+# there: the node's name is rabbit@ and its short hostname.
+cloudfall_rabbitmq_hosts_block: >-
+  {{ cloudfall_rabbitmq_node.nodes | default([]) | cloudfall_rabbitmq_hosts_lines }}
+# The Erlang arguments that make the node, and the tools, speak TLS between
+# nodes with the options file; the ssl application's directory is read on
+# the host, from the Erlang of the Debian release.
+cloudfall_rabbitmq_tls_erl_args: >-
+  -pa {{ cloudfall_rabbitmq_erl_ssl.stdout | default('') | trim }}
+  -proto_dist inet_tls -ssl_dist_optfile {{ cloudfall_rabbitmq_tls_options_path }}
+# rabbitmq-env.conf's managed lines: the node's name, where epmd listens and,
+# on a node of three, the inter-node TLS of the node and of the tools.
+cloudfall_rabbitmq_env_lines: >-
+  {{
+    ['NODENAME=' ~ cloudfall_rabbitmq_node_name,
+     'ERL_EPMD_ADDRESS=127.0.0.1' ~ (
+       ',' ~ cloudfall_rabbitmq_node.address
+       if cloudfall_rabbitmq_clustered | bool else '')]
+    + (['SERVER_ADDITIONAL_ERL_ARGS="' ~ cloudfall_rabbitmq_tls_erl_args ~ '"',
+        'CTL_ERL_ARGS="' ~ cloudfall_rabbitmq_tls_erl_args ~ '"']
+       if cloudfall_rabbitmq_clustered | bool else [])
+  }}
+# The listeners a node opens outside loopback by design, all on its own
+# IPv4: node discovery and the inter-node port on a node of three, and the
+# TLS client listener with clientAccess.
 cloudfall_rabbitmq_allowed_listeners: >-
   {{
-    [cloudfall_rabbitmq_tls.address ~ ':' ~ cloudfall_rabbitmq_tls.port]
-    if cloudfall_rabbitmq_client_tls | bool else []
+    ([cloudfall_rabbitmq_node.address ~ ':' ~ cloudfall_rabbitmq_epmd_port,
+      cloudfall_rabbitmq_node.address ~ ':' ~ cloudfall_rabbitmq_distribution_port]
+     if cloudfall_rabbitmq_clustered | bool else [])
+    + ([cloudfall_rabbitmq_tls.address ~ ':' ~ cloudfall_rabbitmq_tls.port]
+       if cloudfall_rabbitmq_client_tls | bool else [])
   }}
 # The account the package runs the node as, and the scratch node of the drill.
 cloudfall_rabbitmq_user: rabbitmq

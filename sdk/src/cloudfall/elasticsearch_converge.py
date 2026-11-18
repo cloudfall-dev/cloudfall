@@ -151,8 +151,9 @@ def rabbitmq_certificate_requirements(
 ) -> tuple[ServerRequirements, ...]:
     """Return the certificate of each node of a RabbitMQ service that needs one.
 
-    A node with ``clientAccess`` serves TLS to clients, which verify it
-    against the project CA (S-023); one node without it needs none.
+    The nodes of three verify each other's certificate against the project
+    CA in both directions, and the clients of ``clientAccess`` verify the
+    node's (S-023); one node without ``clientAccess`` needs none.
     """
     services = {
         service.resource_id
@@ -339,10 +340,10 @@ def prepared_nodes(
     with ``remoteAccess`` is requested and signed with the nodes'; it is
     handed to the MariaDB role apart from the nodes' files, so neither role
     copies the other's. A RabbitMQ node's data volume is decided in the same
-    read, and the certificate of a node with ``clientAccess`` is requested
-    and signed with the others and handed to the RabbitMQ role alone
-    (S-023). Nothing to meet yields no variable, leaving the run as it was.
-    ``server`` meets that one server's alone, for a run limited to it.
+    read, and the certificate of a node of three or with ``clientAccess`` is
+    requested and signed with the others and handed to the RabbitMQ role
+    alone (S-023). Nothing to meet yields no variable, leaving the run as it
+    was. ``server`` meets that one server's alone, for a run limited to it.
     """
     servers = tuple(
         found

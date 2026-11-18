@@ -48,6 +48,7 @@ from cloudfall.mariadb_replication import (
     refusal,
 )
 from cloudfall.project import RecordStore
+from cloudfall.rabbitmq_cluster import is_cluster as is_rabbitmq_cluster
 from cloudfall.secret_store import SecretStore, sops_encrypt
 from cloudfall.secrets import (
     SecretsError,
@@ -1229,7 +1230,8 @@ def run_services_playbook(
     pair; a refusal it reported (a promotion over a writable source, a
     replica that can't attach or diverged) stops the run as that refusal,
     which the command answers with ``PRECONDITION``, rather than as a failed
-    playbook. The outcomes are returned.
+    playbook. The RabbitMQ role reports the same way a converge it refused
+    while its cluster has no majority (S-023). The outcomes are returned.
     """
     state = validate_config(context.project_directory, context.schema_directory)
     inventory = PlatformInventory.from_state(state)
@@ -1261,8 +1263,13 @@ def run_services_playbook(
         tempfile.TemporaryDirectory(prefix="cloudfall-replication-") as reports,
     ):
         extra_vars: dict[str, object] = {**extra, **provided}
-        # A project without MariaDB runs as it did
-        if any(service.mariadb is not None for service in inventory.services):
+        # A project without MariaDB or a RabbitMQ cluster runs as it did; the
+        # RabbitMQ role reports there a converge it refused while its cluster
+        # has no majority (S-023)
+        if any(
+            service.mariadb is not None or is_rabbitmq_cluster(service)
+            for service in inventory.services
+        ):
             extra_vars[REPORT_DIRECTORY_VARIABLE] = reports
         try:
             run_engine_playbook(context, "services.yml", extra_vars, limit)
