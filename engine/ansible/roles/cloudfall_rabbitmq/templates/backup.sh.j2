@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Managed by Cloudfall. Local changes will be overwritten.
+# Exports the definitions of RabbitMQ service {{ cloudfall_rabbitmq_service.id }}
+# (virtual hosts, users, permissions, queues, exchanges, bindings, policies)
+# into one file, refuses one that does not parse or misses a declared
+# virtual host, then deletes the exports older than retentionDays, never the
+# newest, and only files of the name this script writes.
+#
+# The backup holds no message: RabbitMQ has no online backup of them, and a
+# message survives a lost server only through its copies on the other nodes
+# (S-023, Backups and the restore drill).
+#
+# The export holds the users' password hashes: this root shell writes it
+# under umask 077, so it is root's and 0600 from its first byte, and nothing
+# of it is printed.
+set -euo pipefail
+umask 077
+shopt -s nullglob
+export LC_ALL=C
+
+service="{{ cloudfall_rabbitmq_service.id }}"
+backup_directory="{{ cloudfall_rabbitmq_service.backup.directory }}"
+retention_days="{{ cloudfall_rabbitmq_service.backup.retentionDays }}"
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+export_path="${backup_directory}/definitions-${timestamp}.json"
+part="${export_path}.part"
+pattern='^definitions-[0-9]{8}T[0-9]{6}Z\.json$'
+
+# An export still being written is removed when the run fails.
+remove_part() {
+  rm -f -- "${part}"
+}
+trap remove_part EXIT
+
+"{{ cloudfall_rabbitmq_ctl }}" --quiet export_definitions - --format json \
+  > "${part}"
+chmod 0600 "${part}"
+
+# What the export holds, counted; it fails unless the file parses and names
+# every declared virtual host.
+IFS= read -r -d '' count <<'PY' || true
+import json
+import sys
+
+path, declared = sys.argv[1], sys.argv[2:]
+with open(path, encoding="utf-8") as handle:
+    try:
+        definitions = json.load(handle)
+    except ValueError as error:
+        sys.exit(f"the export of the definitions is not JSON: {error.msg}")
+if not isinstance(definitions, dict):
+    sys.exit("the export of the definitions is not a JSON object")
+names = {vhost.get("name") for vhost in definitions.get("vhosts", [])}
+missing = [name for name in declared if name not in names]
+if missing:
+    sys.exit(
+        "the export of the definitions names no virtual host "
+        + ", ".join(missing)
+    )
+print(
+    ", ".join(
+        f"{len(definitions.get(key, []))} {label}"
+        for key, label in (
+            ("vhosts", "virtual hosts"),
+            ("users", "users"),
+            ("queues", "queues"),
+            ("exchanges", "exchanges"),
+            ("bindings", "bindings"),
+            ("policies", "policies"),
+        )
+    )
+)
+PY
+summary="$(python3 -I -c "${count}" "${part}"{% for vhost in cloudfall_rabbitmq_service.rabbitmq.vhosts %} "{{ vhost.name }}"{% endfor %})"
+mv -- "${part}" "${export_path}"
+
+# The exports older than retentionDays, except the newest, whatever its age.
+newest=""
+for file in "${backup_directory}/definitions-"*.json; do
+  if [[ "${file##*/}" =~ ${pattern} ]]; then newest="${file}"; fi
+done
+for file in "${backup_directory}/definitions-"*.json; do
+  if [[ ! "${file##*/}" =~ ${pattern} ]] || [ "${file}" = "${newest}" ]; then
+    continue
+  fi
+  if [ -n "$(find "${file}" -prune -mtime "+${retention_days}")" ]; then
+    rm -f -- "${file}"
+    echo "removed ${file##*/}, older than ${retention_days} days"
+  fi
+done
+
+echo "no message is in this backup: a message is kept only by its copies on the other nodes"
+echo "backed up the definitions of ${service}: ${export_path} (${summary})"

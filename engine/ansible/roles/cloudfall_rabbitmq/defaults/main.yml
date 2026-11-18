@@ -106,3 +106,26 @@ cloudfall_rabbitmq_allowed_listeners: >-
     [cloudfall_rabbitmq_tls.address ~ ':' ~ cloudfall_rabbitmq_tls.port]
     if cloudfall_rabbitmq_client_tls | bool else []
   }}
+# The account the package runs the node as, and the scratch node of the drill.
+cloudfall_rabbitmq_user: rabbitmq
+# Every service's backup directory sits in this root (#342).
+cloudfall_rabbitmq_backup_root: /var/backups/cloudfall
+# The real scripts of the package, not the /usr/sbin wrappers, which run the
+# node's own environment: the drill's scratch node needs one of its own.
+cloudfall_rabbitmq_bin_directory: /usr/lib/rabbitmq/bin
+# The restore drill's scratch node (S-023, Backups and the restore drill): a
+# node name, cookie, data directory, configuration and loopback ports of its
+# own, epmd included, and no node list, so it never joins the cluster. Its
+# directory, beside the node's own data directory where the rabbitmq user
+# can reach it, is removed after every drill; one a stopped drill left is
+# removed by the next.
+cloudfall_rabbitmq_scratch_directory: /var/lib/rabbitmq/cloudfall-restore-check
+cloudfall_rabbitmq_scratch_node_name: cloudfall_restore_check@localhost
+cloudfall_rabbitmq_scratch_ports:
+  amqp: 45672
+  distribution: 45673
+  epmd: 45674
+# The scratch node's memory watermark; the drill refuses to start it on a
+# server with less free memory than that.
+cloudfall_rabbitmq_scratch_watermark_mb: 256
+cloudfall_rabbitmq_meminfo_path: /proc/meminfo

@@ -1,0 +1,302 @@
+#!/usr/bin/env bash
+# Managed by Cloudfall. Local changes will be overwritten.
+# Imports the newest export of RabbitMQ service
+# {{ cloudfall_rabbitmq_service.id }} into a second, empty node on this server
+# and compares the virtual hosts, users, queues, exchanges, bindings and
+# policies the node then holds with the export (S-023, Backups and the
+# restore drill). The scratch node has a node name, an Erlang cookie, a data
+# directory, a configuration, an epmd and loopback ports of its own, and no
+# node list, so it never joins the cluster; it imports the export at boot,
+# which also keeps it from creating a default user or virtual host. It is
+# stopped and its directory removed on every path, and the drill fails when
+# a process or a listener of it is left.
+set -euo pipefail
+umask 077
+shopt -s nullglob
+export LC_ALL=C
+
+service="{{ cloudfall_rabbitmq_service.id }}"
+backup_directory="{{ cloudfall_rabbitmq_service.backup.directory }}"
+bin_directory="{{ cloudfall_rabbitmq_bin_directory }}"
+scratch="{{ cloudfall_rabbitmq_scratch_directory }}"
+node="{{ cloudfall_rabbitmq_scratch_node_name }}"
+user="{{ cloudfall_rabbitmq_user }}"
+amqp_port="{{ cloudfall_rabbitmq_scratch_ports.amqp }}"
+distribution_port="{{ cloudfall_rabbitmq_scratch_ports.distribution }}"
+epmd_port="{{ cloudfall_rabbitmq_scratch_ports.epmd }}"
+watermark_mb="{{ cloudfall_rabbitmq_scratch_watermark_mb }}"
+meminfo="{{ cloudfall_rabbitmq_meminfo_path }}"
+pattern='^definitions-[0-9]{8}T[0-9]{6}Z\.json$'
+made_scratch=0
+launcher=""
+node_pid=""
+
+# Runs a tool of RabbitMQ as its user with the scratch node's environment
+# and nothing of the cluster's: not its cookie (HOME), not its node name or
+# rabbitmq-env.conf, not its configuration or plugins, not its epmd.
+as_scratch() {
+  runuser -u "${user}" -- env -i \
+    PATH="${PATH}" \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    HOME="${scratch}/home" \
+    RABBITMQ_NODENAME="${node}" \
+    RABBITMQ_CONF_ENV_FILE="${scratch}/rabbitmq-env.conf" \
+    RABBITMQ_CONFIG_FILE="${scratch}/rabbitmq.conf" \
+    RABBITMQ_CONFIG_FILES="${scratch}/conf.d" \
+    RABBITMQ_ADVANCED_CONFIG_FILE="${scratch}/advanced.config" \
+    RABBITMQ_ENABLED_PLUGINS_FILE="${scratch}/enabled_plugins" \
+    RABBITMQ_MNESIA_BASE="${scratch}/data" \
+    RABBITMQ_LOG_BASE="${scratch}/log" \
+    RABBITMQ_PID_FILE="${scratch}/rabbitmq.pid" \
+    RABBITMQ_DIST_PORT="${distribution_port}" \
+    RABBITMQ_CTL_ERL_ARGS="-kernel inet_dist_use_interface {127,0,0,1}" \
+    ERL_EPMD_ADDRESS=127.0.0.1 \
+    ERL_EPMD_PORT="${epmd_port}" \
+    "$@"
+}
+
+# The listening sockets on the scratch node's ports, one per line.
+scratch_listeners() {
+  ss -Htlnp | awk -v ports=":${amqp_port} :${distribution_port} :${epmd_port}" '
+    BEGIN { split(ports, wanted, " ") }
+    {
+      for (i in wanted) {
+        port = wanted[i]
+        if (substr($4, length($4) - length(port) + 1) == port) { print; next }
+      }
+    }'
+}
+
+alive() {
+  [ -n "$1" ] && kill -0 "$1" 2>/dev/null
+}
+
+# Stops the scratch node this drill started, then its epmd; whatever of it
+# still listens or runs after that is killed. Only processes of this run are
+# killed: the ports were free when it started.
+stop_scratch() {
+  local listener pid
+  if alive "${launcher}" || alive "${node_pid}"; then
+    as_scratch "${bin_directory}/rabbitmqctl" --quiet stop \
+      "${scratch}/rabbitmq.pid" >/dev/null 2>&1 || true
+    for _ in $(seq 1 60); do
+      if ! alive "${launcher}" && ! alive "${node_pid}"; then break; fi
+      sleep 0.5
+    done
+  fi
+  as_scratch epmd -kill >/dev/null 2>&1 || true
+  for pid in "${node_pid}" "${launcher}"; do
+    if alive "${pid}"; then kill -KILL "${pid}" 2>/dev/null || true; fi
+  done
+  while IFS= read -r listener; do
+    pid="$(grep -o 'pid=[0-9]*' <<<"${listener}" | head -n 1 | cut -d= -f2 || true)"
+    if [ -n "${pid}" ]; then kill -KILL "${pid}" 2>/dev/null || true; fi
+  done < <(scratch_listeners)
+  if [ -n "${launcher}" ]; then wait "${launcher}" 2>/dev/null || true; fi
+}
+
+# Stops and removes the scratch node; fails when a listener, a process or
+# its directory is left.
+remove_scratch() {
+  local left="" pid leftover=0
+  if [ "${made_scratch}" != 1 ]; then return 0; fi
+  made_scratch=0
+  stop_scratch
+  rm -rf -- "${scratch}" || true
+  sleep 0.5
+  left="$(scratch_listeners || true)"
+  if [ -n "${left}" ]; then
+    printf '%s\n' "the scratch node ${node} left a listener:" "${left}" >&2
+    leftover=1
+  fi
+  for pid in "${node_pid}" "${launcher}"; do
+    if alive "${pid}"; then
+      echo "the scratch node ${node} left the process ${pid}" >&2
+      leftover=1
+    fi
+  done
+  if [ -e "${scratch}" ]; then
+    echo "the scratch node's directory ${scratch} could not be removed" >&2
+    leftover=1
+  fi
+  return "${leftover}"
+}
+
+on_exit() {
+  local status=$?
+  if ! remove_scratch; then status=1; fi
+  exit "${status}"
+}
+trap on_exit EXIT
+
+latest=""
+for file in "${backup_directory}/definitions-"*.json; do
+  if [[ "${file##*/}" =~ ${pattern} ]]; then latest="${file}"; fi
+done
+if [ -z "${latest}" ]; then
+  echo "no export found for ${service} in ${backup_directory}:" \
+    "run cloudfall backup run ${service} first" >&2
+  exit 1
+fi
+
+# A scratch node a stopped drill left (the host stopped mid-drill) is
+# stopped through its own cookie and removed first; nothing else is killed.
+if [ -e "${scratch}" ]; then
+  echo "removing the scratch node a stopped restore drill left in ${scratch}"
+  as_scratch "${bin_directory}/rabbitmqctl" --quiet stop >/dev/null 2>&1 || true
+  as_scratch epmd -kill >/dev/null 2>&1 || true
+  rm -rf -- "${scratch}"
+fi
+taken="$(scratch_listeners)"
+if [ -n "${taken}" ]; then
+  printf '%s\n' "restore check refused: the scratch node's ports are taken:" \
+    "${taken}" >&2
+  exit 1
+fi
+free_mb="$(awk '/^MemAvailable:/ { print int($2 / 1024) }' "${meminfo}")"
+if [ -z "${free_mb}" ] || [ "${free_mb}" -lt "${watermark_mb}" ]; then
+  echo "restore check refused: the server has ${free_mb:-no reported} MB of" \
+    "free memory, less than the ${watermark_mb} MB the scratch node takes" >&2
+  exit 1
+fi
+
+made_scratch=1
+mkdir -m 0700 "${scratch}"
+mkdir -m 0700 "${scratch}/home" "${scratch}/conf.d" "${scratch}/data" \
+  "${scratch}/log"
+# A cookie of its own: the cluster's nodes and tools can't reach the scratch
+# node, nor it them.
+cookie="$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')"
+printf '%s' "${cookie:0:40}" > "${scratch}/home/.erlang.cookie"
+unset cookie
+chmod 0400 "${scratch}/home/.erlang.cookie"
+cp "${latest}" "${scratch}/definitions.json"
+: > "${scratch}/rabbitmq-env.conf"
+echo "[]." > "${scratch}/enabled_plugins"
+# No node list and no plugin: a node alone, with no listener off loopback.
+cat > "${scratch}/rabbitmq.conf" <<CONF
+listeners.tcp.default = 127.0.0.1:${amqp_port}
+listeners.ssl = none
+distribution.listener.interface = 127.0.0.1
+vm_memory_high_watermark.absolute = ${watermark_mb}MiB
+disk_free_limit.absolute = 50MB
+definitions.import_backend = local_filesystem
+definitions.local.path = ${scratch}/definitions.json
+CONF
+chown -R "${user}" "${scratch}"
+
+as_scratch "${bin_directory}/rabbitmq-server" > "${scratch}/log/console.log" 2>&1 &
+launcher=$!
+started=0
+for _ in $(seq 1 24); do
+  if ! alive "${launcher}"; then break; fi
+  if as_scratch "${bin_directory}/rabbitmqctl" --quiet await_startup \
+    --timeout 5 >/dev/null 2>&1; then
+    started=1
+    break
+  fi
+  sleep 1
+done
+if [ -f "${scratch}/rabbitmq.pid" ]; then
+  node_pid="$(tr -dc '0-9' < "${scratch}/rabbitmq.pid")"
+fi
+if [ "${started}" != 1 ]; then
+  echo "restore check failed for ${service}: the scratch node ${node} did not" \
+    "start with ${latest}; an export it can't import stops its boot" >&2
+  exit 1
+fi
+
+as_scratch "${bin_directory}/rabbitmqctl" --quiet export_definitions - \
+  --format json > "${scratch}/restored.json"
+
+# The scratch node is no member of the cluster.
+members="$("{{ cloudfall_rabbitmq_ctl }}" --quiet cluster_status --formatter json)"
+if grep -qF -- "${node}" <<<"${members}"; then
+  echo "restore check failed for ${service}: the scratch node ${node} is a" \
+    "member of the cluster" >&2
+  exit 1
+fi
+
+# Names only: no password hash is ever printed.
+IFS= read -r -d '' compare <<'PY' || true
+import json
+import sys
+
+exported_path, restored_path, service = sys.argv[1:]
+
+
+def load(path):
+    with open(path, encoding="utf-8") as handle:
+        try:
+            found = json.load(handle)
+        except ValueError as error:
+            sys.exit(f"restore check failed for {service}: {path} is not JSON: {error.msg}")
+    if not isinstance(found, dict):
+        sys.exit(f"restore check failed for {service}: {path} is not a JSON object")
+    return found
+
+
+def kinds(definitions):
+    def items(key):
+        return definitions.get(key, [])
+
+    return {
+        "virtual hosts": {item["name"] for item in items("vhosts")},
+        "users": {item["name"] for item in items("users")},
+        "queues": {f"{item['vhost']}/{item['name']}" for item in items("queues")},
+        "exchanges": {
+            f"{item['vhost']}/{item['name']}" for item in items("exchanges")
+        },
+        "bindings": {
+            f"{item['vhost']}/{item['source']} -> {item['destination_type']} "
+            f"{item['destination']} ({item['routing_key']}"
+            f"{', ' + json.dumps(item['arguments'], sort_keys=True) if item.get('arguments') else ''})"
+            for item in items("bindings")
+        },
+        "policies": {f"{item['vhost']}/{item['name']}" for item in items("policies")},
+    }
+
+
+def hashes(definitions):
+    return {
+        item["name"]: (item.get("password_hash", ""), item.get("hashing_algorithm", ""))
+        for item in definitions.get("users", [])
+    }
+
+
+exported, restored = load(exported_path), load(restored_path)
+expected, found = kinds(exported), kinds(restored)
+problems = []
+for kind, names in expected.items():
+    missing = sorted(names - found[kind])
+    unexpected = sorted(found[kind] - names)
+    if missing:
+        problems.append(f"{kind} in the export, not in the scratch node: " + ", ".join(missing))
+    if unexpected:
+        problems.append(f"{kind} in the scratch node, not in the export: " + ", ".join(unexpected))
+exported_hashes, restored_hashes = hashes(exported), hashes(restored)
+changed = sorted(
+    name
+    for name in exported_hashes.keys() & restored_hashes.keys()
+    if exported_hashes[name] != restored_hashes[name]
+)
+if changed:
+    problems.append("users whose password hash differs: " + ", ".join(changed))
+if problems:
+    print(f"restore check failed for {service}: {exported_path}", file=sys.stderr)
+    for problem in problems:
+        print(problem, file=sys.stderr)
+    sys.exit(1)
+counts = ", ".join(f"{len(names)} {kind}" for kind, names in expected.items())
+print(f"restore check passed for {service}: {exported_path} ({counts}, as in the export)")
+PY
+result="$(python3 -I -c "${compare}" "${latest}" "${scratch}/restored.json" \
+  "${service}")"
+
+# The verdict is printed once the scratch node is gone, and only then.
+if ! remove_scratch; then
+  exit 1
+fi
+echo "the scratch node ${node} is stopped and ${scratch} removed"
+echo "${result}"

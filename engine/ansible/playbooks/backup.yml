@@ -98,6 +98,8 @@
       become: false
       when: cloudfall_backup_matched | length > 0
 
+    # A RabbitMQ backup holds definitions and no message (S-023), and its
+    # receipt says so in a field of its own
     - name: Write the backup receipt on the controller
       ansible.builtin.copy:
         content: >-
@@ -120,7 +122,12 @@
                   (cloudfall_backup_result.stdout_lines | default([]))[-5:]
                   | join(' | ')
                 )[:2000] or 'completed',
-              },
+              } | combine(
+                {'holdsMessages': false}
+                if cloudfall_backup_result.cloudfall_backup_item.serviceKind
+                == 'rabbitmq'
+                else {}
+              ),
             } | to_nice_json
           }}
         dest: >-

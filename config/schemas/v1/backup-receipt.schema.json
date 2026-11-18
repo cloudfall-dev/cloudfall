@@ -36,6 +36,10 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 2000
+        },
+        "holdsMessages": {
+          "description": "Whether the backup holds the messages of a message broker; false for RabbitMQ, whose backup is its definitions alone (S-023). Absent for the kinds that hold no messages to begin with",
+          "type": "boolean"
         }
       },
       "required": [
