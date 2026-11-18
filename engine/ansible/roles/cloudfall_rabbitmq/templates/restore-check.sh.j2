@@ -28,6 +28,9 @@ watermark_mb="{{ cloudfall_rabbitmq_scratch_watermark_mb }}"
 meminfo="{{ cloudfall_rabbitmq_meminfo_path }}"
 pattern='^definitions-[0-9]{8}T[0-9]{6}Z\.json$'
 made_scratch=0
+# root's own files of the drill: the scratch directory is the rabbitmq
+# user's, so root writes nothing in it once it is chowned
+work=""
 launcher=""
 node_pid=""
 
@@ -104,6 +107,7 @@ remove_scratch() {
   made_scratch=0
   stop_scratch
   rm -rf -- "${scratch}" || true
+  if [ -n "${work}" ]; then rm -rf -- "${work}" || true; fi
   sleep 0.5
   left="$(scratch_listeners || true)"
   if [ -n "${left}" ]; then
@@ -162,6 +166,7 @@ if [ -z "${free_mb}" ] || [ "${free_mb}" -lt "${watermark_mb}" ]; then
 fi
 
 made_scratch=1
+work="$(mktemp -d)"
 mkdir -m 0700 "${scratch}"
 mkdir -m 0700 "${scratch}/home" "${scratch}/conf.d" "${scratch}/data" \
   "${scratch}/log"
@@ -186,7 +191,7 @@ definitions.local.path = ${scratch}/definitions.json
 CONF
 chown -R "${user}" "${scratch}"
 
-as_scratch "${bin_directory}/rabbitmq-server" > "${scratch}/log/console.log" 2>&1 &
+as_scratch "${bin_directory}/rabbitmq-server" > "${work}/console.log" 2>&1 &
 launcher=$!
 started=0
 for _ in $(seq 1 24); do
@@ -208,7 +213,7 @@ if [ "${started}" != 1 ]; then
 fi
 
 as_scratch "${bin_directory}/rabbitmqctl" --quiet export_definitions - \
-  --format json > "${scratch}/restored.json"
+  --format json > "${work}/restored.json"
 
 # The scratch node is no member of the cluster.
 members="$("{{ cloudfall_rabbitmq_ctl }}" --quiet cluster_status --formatter json)"
@@ -291,7 +296,7 @@ if problems:
 counts = ", ".join(f"{len(names)} {kind}" for kind, names in expected.items())
 print(f"restore check passed for {service}: {exported_path} ({counts}, as in the export)")
 PY
-result="$(python3 -I -c "${compare}" "${latest}" "${scratch}/restored.json" \
+result="$(python3 -I -c "${compare}" "${latest}" "${work}/restored.json" \
   "${service}")"
 
 # The verdict is printed once the scratch node is gone, and only then.

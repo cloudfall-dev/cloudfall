@@ -110,6 +110,11 @@ def server():
     if CONTROL.get("rehash"):
         definitions["users"][0]["password_hash"] = "rehashed"
     data().mkdir(exist_ok=True)
+    plant = CONTROL.get("plant")
+    if plant:
+        # The rabbitmq user owns the scratch directory: it can put a link
+        # where root then writes the export the drill reads back
+        (data().parent / "restored.json").symlink_to(plant)
     (data() / "state.json").write_text(json.dumps(definitions), encoding="utf-8")
     pid = os.getpid()
     Path(os.environ["RABBITMQ_PID_FILE"]).write_text(f"{pid}\n", encoding="utf-8")
@@ -783,6 +788,23 @@ def test_s023_16_a_listener_left_by_the_scratch_node_fails_the_drill(
     assert "left a listener" in done.stderr
     assert ":45674" in done.stderr
     assert "restore check passed" not in done.stdout
+
+
+def test_root_writes_nothing_through_a_link_in_the_scratch_directory(
+    tmp_path: Path,
+) -> None:
+    """The scratch directory is the rabbitmq user's; root writes none of it."""
+    host = Host(tmp_path)
+    host.backup()
+    victim = tmp_path / "victim"
+    victim.write_text("untouched", "utf-8")
+    host.control(plant=str(victim))
+
+    done = host.run("restore-check")
+
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert victim.read_text("utf-8") == "untouched"
+    assert not host.scratch.exists()
 
 
 def test_the_drill_refuses_a_server_short_of_memory(tmp_path: Path) -> None:
