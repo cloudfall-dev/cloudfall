@@ -1,0 +1,116 @@
+---
+# The virtual hosts and their owners, converged once for the cluster on the
+# service's home (S-023, Access). The play reads the cluster's definitions,
+# and the cloudfall_rabbitmq_account_plan filter decides on the controller
+# what differs: each owner's salted SHA-256 hash is computed there with the
+# salt the user already has (D-25), so the same password changes nothing.
+# Only a hash that differs reaches the node (D-9), in a definitions file
+# 0600 the node imports and the run removes. No password, hash or cookie is
+# in any output.
+- name: Read the cluster's definitions
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_rabbitmq_ctl }}"
+      - --quiet
+      - export_definitions
+      - "-"
+      - --format
+      - json
+  register: cloudfall_rabbitmq_definitions
+  changed_when: false
+  no_log: true
+
+- name: Count the queues of the default virtual host
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_rabbitmq_ctl }}"
+      - --quiet
+      - list_queues
+      - --vhost
+      - /
+      - --no-table-headers
+      - name
+  register: cloudfall_rabbitmq_default_queues
+  changed_when: false
+  when: >-
+    '/' in (
+      cloudfall_rabbitmq_definitions.stdout | from_json
+    ).get('vhosts', []) | map(attribute='name') | list
+
+- name: Plan the virtual hosts and owners
+  ansible.builtin.set_fact:
+    cloudfall_rabbitmq_plan: >-
+      {{
+        cloudfall_rabbitmq_definitions.stdout
+        | cloudfall_rabbitmq_account_plan({
+            'vhosts': cloudfall_rabbitmq_service.rabbitmq.vhosts,
+            'ownerFiles': cloudfall_rabbitmq_files.owners | default({}),
+            'defaultVhostQueues': (
+              cloudfall_rabbitmq_default_queues.stdout_lines | default([])
+              | length
+            ),
+            'managedTag': cloudfall_rabbitmq_managed_tag,
+            'ownerTagPrefix': cloudfall_rabbitmq_owner_tag_prefix,
+          })
+      }}
+  no_log: true
+
+# Before the commands: RabbitMQ refuses permissions of a user it doesn't
+# have, so a new owner is imported first
+- name: Set the owners' password hashes
+  when: cloudfall_rabbitmq_plan.definitions | length > 0
+  block:
+    - name: Create the state directory
+      ansible.builtin.file:
+        path: "{{ cloudfall_rabbitmq_state_directory }}"
+        state: directory
+        owner: rabbitmq
+        group: rabbitmq
+        mode: "0700"
+
+    - name: Stage the definitions that hold the owners' hashes
+      ansible.builtin.copy:
+        content: "{{ cloudfall_rabbitmq_plan.definitions | to_json }}"
+        dest: "{{ cloudfall_rabbitmq_definitions_path }}"
+        owner: rabbitmq
+        group: rabbitmq
+        mode: "0600"
+      no_log: true
+
+    - name: Import the owners' hashes
+      ansible.builtin.command:
+        argv:
+          - "{{ cloudfall_rabbitmq_ctl }}"
+          - --quiet
+          - import_definitions
+          - "{{ cloudfall_rabbitmq_definitions_path }}"
+      changed_when: true
+      no_log: true
+  always:
+    - name: Remove the staged definitions
+      ansible.builtin.file:
+        path: "{{ cloudfall_rabbitmq_definitions_path }}"
+        state: absent
+
+- name: Create the virtual hosts, set permissions, remove guest and /
+  ansible.builtin.command:
+    argv: "{{ [cloudfall_rabbitmq_ctl, '--quiet'] + item }}"
+  loop: "{{ cloudfall_rabbitmq_plan.commands }}"
+  loop_control:
+    label: "{{ item[:2] | join(' ') }}"
+  changed_when: true
+
+# A virtual host Cloudfall made and no longer declares is kept with its
+# queues and messages, its owner can't log in; neither is deleted (S-023-7)
+- name: Name what the converge left in place
+  ansible.builtin.debug:
+    msg: >-
+      undeclared (made by Cloudfall, kept, owner can't log in):
+      virtual hosts {{ cloudfall_rabbitmq_plan.undeclared.vhosts | join(', ') or 'none' }},
+      users {{ cloudfall_rabbitmq_plan.undeclared.users | join(', ') or 'none' }};
+      unmanaged (left as they are):
+      virtual hosts {{ cloudfall_rabbitmq_plan.unmanaged.vhosts | join(', ') or 'none' }},
+      users {{ cloudfall_rabbitmq_plan.unmanaged.users | join(', ') or 'none' }}
+  when: >-
+    (cloudfall_rabbitmq_plan.undeclared.values() | flatten | length > 0)
+    or (cloudfall_rabbitmq_plan.unmanaged.values() | flatten | length > 0)

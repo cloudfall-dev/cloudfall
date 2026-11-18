@@ -59,6 +59,51 @@
       loop_control:
         loop_var: cloudfall_service_item
         label: "{{ cloudfall_service_item.id }}"
+
+    # The RabbitMQ role refuses such a watermark as well; checked here, before
+    # any service role, the server is left unchanged (S-023-4).
+    - name: Refuse a RabbitMQ memory watermark above six tenths of the server's memory
+      ansible.builtin.assert:
+        that:
+          - >-
+            (cloudfall_service_item.rabbitmq.memoryHighWatermarkMb | int) * 10
+            <= (ansible_facts['memtotal_mb'] | int) * 6
+        fail_msg: >-
+          memoryHighWatermarkMb
+          {{ cloudfall_service_item.rabbitmq.memoryHighWatermarkMb }} of
+          service {{ cloudfall_service_item.id }} is above six tenths of the
+          {{ ansible_facts['memtotal_mb'] }} MB of {{ cloudfall_server_id }}:
+          lower memoryHighWatermarkMb, or move the node to a server with more
+          memory
+      loop: >-
+        {{
+          cloudfall_services | default([])
+          | selectattr('serviceKind', 'equalto', 'rabbitmq')
+          | selectattr('rabbitmq.nodes', 'contains', cloudfall_server_id)
+          | list
+        }}
+      loop_control:
+        loop_var: cloudfall_service_item
+        label: "{{ cloudfall_service_item.id }}"
+
+    # Every declared kind has a role below; a service of a kind with none
+    # would converge as a silent no-op and report success for a service it
+    # never touched.
+    - name: Refuse a service of a kind this playbook does not converge
+      ansible.builtin.assert:
+        that:
+          - >-
+            cloudfall_services | default([]) | map(attribute='serviceKind')
+            | difference(['postgresql', 'redis', 'mariadb', 'elasticsearch', 'rabbitmq'])
+            | length == 0
+        fail_msg: >-
+          {{ cloudfall_server_id }} declares a service of a kind services.yml
+          has no role for:
+          {{
+            cloudfall_services | default([]) | map(attribute='serviceKind')
+            | difference(['postgresql', 'redis', 'mariadb', 'elasticsearch', 'rabbitmq'])
+            | join(', ')
+          }}
   tasks:
     # The declared firewall carries the services' port rules (S-011): a
     # replication, remoteAccess or transport port opened to its sources only.
@@ -158,6 +203,29 @@
         {{
           cloudfall_services | default([])
           | selectattr('serviceKind', 'equalto', 'elasticsearch')
+          | list
+        }}
+      loop_control:
+        loop_var: cloudfall_service_item
+        label: "{{ cloudfall_service_item.id }}"
+
+    - name: Deploy declared RabbitMQ services
+      ansible.builtin.include_role:
+        name: cloudfall_rabbitmq
+      vars:
+        cloudfall_rabbitmq_service: "{{ cloudfall_service_item }}"
+        # Controller paths of the staged Erlang cookie and owner passwords
+        # cloudfall passes as cloudfall_services_rabbitmq_files; never the
+        # values (S-023, D-9).
+        cloudfall_rabbitmq_files: >-
+          {{
+            (cloudfall_services_rabbitmq_files | default({}))
+            [cloudfall_service_item.id] | default({})
+          }}
+      loop: >-
+        {{
+          cloudfall_services | default([])
+          | selectattr('serviceKind', 'equalto', 'rabbitmq')
           | list
         }}
       loop_control:

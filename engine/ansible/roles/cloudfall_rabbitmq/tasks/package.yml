@@ -1,0 +1,118 @@
+---
+# rabbitmq-server comes from Team RabbitMQ's repository, Erlang from the
+# Debian release, and every package is held, so an unattended upgrade never
+# restarts the node (S-023, Supported versions).
+- name: Install RabbitMQ repository prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - python3-debian
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create APT keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Fetched only when missing, so a re-converge needs no network
+- name: Check for the RabbitMQ repository signing key
+  ansible.builtin.stat:
+    path: "{{ cloudfall_rabbitmq_repository_key_path }}"
+  register: cloudfall_rabbitmq_repository_key
+
+- name: Install the RabbitMQ repository signing key
+  ansible.builtin.get_url:
+    url: "{{ cloudfall_rabbitmq_repository_key_url }}"
+    dest: "{{ cloudfall_rabbitmq_repository_key_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: cloudfall_rabbitmq_repository_key_download
+  until: cloudfall_rabbitmq_repository_key_download is succeeded
+  retries: 5
+  delay: 10
+  when: not cloudfall_rabbitmq_repository_key.stat.exists
+
+- name: Configure Team RabbitMQ's repository
+  ansible.builtin.deb822_repository:
+    name: rabbitmq
+    types:
+      - deb
+    uris: "{{ cloudfall_rabbitmq_repository_urls }}"
+    suites:
+      - "{{ ansible_facts['distribution_release'] }}"
+    components:
+      - main
+    signed_by: "{{ cloudfall_rabbitmq_repository_key_path }}"
+    state: present
+  register: cloudfall_rabbitmq_repository
+
+# A new repository is read now, not when the cache next expires
+- name: Read Team RabbitMQ's repository  # noqa: no-handler
+  ansible.builtin.apt:
+    update_cache: true
+  when: cloudfall_rabbitmq_repository is changed
+
+- name: Read the Erlang the Debian release provides
+  ansible.builtin.command:
+    argv:
+      - apt-cache
+      - policy
+      - erlang-base
+  register: cloudfall_rabbitmq_erlang_policy
+  changed_when: false
+  check_mode: false
+
+- name: Refuse an Erlang outside the range the declared series runs on
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudfall_rabbitmq_erlang
+        | cloudfall_rabbitmq_erlang_supported(
+            cloudfall_rabbitmq_erlang_minimum[cloudfall_rabbitmq_series])
+    fail_msg: >-
+      RabbitMQ {{ cloudfall_rabbitmq_service.rabbitmq.version }} needs Erlang
+      {{ cloudfall_rabbitmq_erlang_minimum[cloudfall_rabbitmq_series] }} or
+      later, and {{ cloudfall_server_id }} has
+      {{ cloudfall_rabbitmq_erlang or 'no Erlang package' }}
+  vars:
+    cloudfall_rabbitmq_erlang: >-
+      {{ cloudfall_rabbitmq_erlang_policy.stdout | cloudfall_rabbitmq_erlang_release }}
+
+# Debian enables a socket that would start epmd on every address before the
+# node can start it on loopback
+- name: Mask the distribution's epmd socket
+  ansible.builtin.systemd_service:
+    name: epmd.socket
+    masked: true
+  register: cloudfall_rabbitmq_epmd_socket
+
+- name: Stop an epmd its socket already started  # noqa: no-handler
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - stop
+      - epmd.socket
+      - epmd.service
+  register: cloudfall_rabbitmq_epmd_stop
+  # 5: no such unit was loaded
+  failed_when: cloudfall_rabbitmq_epmd_stop.rc not in [0, 5]
+  changed_when: cloudfall_rabbitmq_epmd_stop.rc == 0
+  when: cloudfall_rabbitmq_epmd_socket is changed
+
+- name: Install the Erlang packages of the Debian release
+  ansible.builtin.apt:
+    name: "{{ cloudfall_rabbitmq_erlang_packages }}"
+    state: present
+    policy_rc_d: 101
+
+- name: Hold the Erlang packages
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: "{{ cloudfall_rabbitmq_erlang_packages }}"

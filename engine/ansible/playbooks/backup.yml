@@ -13,6 +13,8 @@
           - cloudfall_backup_service is defined
         fail_msg: Backup requires the cloudfall_backup_service extra variable
 
+    # A service of several nodes (Elasticsearch, RabbitMQ) renders on each
+    # of them, and backs up on its declared server, its home, alone.
     - name: Back up on the service's server only
       ansible.builtin.add_host:
         name: "{{ cloudfall_backup_server_item }}"
@@ -24,6 +26,9 @@
         hostvars[cloudfall_backup_server_item].cloudfall_services
         | default([])
         | selectattr('id', 'equalto', cloudfall_backup_service)
+        | selectattr(
+            'server', 'equalto',
+            hostvars[cloudfall_backup_server_item].cloudfall_server_id)
         | list | length > 0
 
     - name: Require the service's server in the inventory
@@ -74,6 +79,7 @@
             'redis': 'redis',
             'elasticsearch': 'elasticsearch',
             'mariadb': 'root',
+            'rabbitmq': 'root',
           }[cloudfall_backup_item.serviceKind]
         }}
       loop: "{{ cloudfall_backup_matched }}"

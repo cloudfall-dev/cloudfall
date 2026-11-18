@@ -742,6 +742,24 @@
       }}
   when: cloudfall_inspect_mariadb_services | length > 0
 
+- name: Collect RabbitMQ account evidence
+  ansible.builtin.include_tasks: rabbitmq_accounts.yml
+  loop: "{{ cloudfall_inspect_rabbitmq_services }}"
+  loop_control:
+    loop_var: cloudfall_inspect_rabbitmq_service
+    label: "{{ cloudfall_inspect_rabbitmq_service.id }}"
+
+- name: Attach RabbitMQ account evidence
+  ansible.builtin.set_fact:
+    cloudfall_inspect_snapshot: >-
+      {{
+        cloudfall_inspect_snapshot | combine(
+          {'spec': {'rabbitmqAccounts': cloudfall_inspect_rabbitmq_accounts}},
+          recursive=true
+        )
+      }}
+  when: cloudfall_inspect_rabbitmq_services | length > 0
+
 - name: Create controller observation directory
   ansible.builtin.file:
     path: "{{ cloudfall_inspect_output_directory }}"

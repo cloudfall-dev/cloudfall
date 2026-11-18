@@ -70,6 +70,16 @@
         "maxLength": 512
       }
     },
+    "rabbitmqNameList": {
+      "description": "Names of RabbitMQ users or virtual hosts",
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
     "blockDevice": {
       "type": "object",
       "properties": {
@@ -965,6 +975,40 @@
                   "maxLength": 512,
                   "pattern": "^.*@.+ (NONE|ANY|X509|SPECIFIED)$"
                 }
+              }
+            },
+            "required": [
+              "service",
+              "available"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "rabbitmqAccounts": {
+          "description": "The virtual hosts and users of each RabbitMQ service whose home is the server (S-023), names only; the lists are absent when the cluster could not be read",
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "properties": {
+              "service": {
+                "$ref": "common.schema.json#/$defs/resourceId"
+              },
+              "available": {
+                "type": "boolean"
+              },
+              "users": {
+                "$ref": "#/$defs/rabbitmqNameList"
+              },
+              "usersWithoutPassword": {
+                "$ref": "#/$defs/rabbitmqNameList"
+              },
+              "vhosts": {
+                "$ref": "#/$defs/rabbitmqNameList"
+              },
+              "vhostTags": {
+                "description": "Each virtual host with its tags, as 'jobs|cloudfall-managed,cloudfall-owner:jobs'",
+                "$ref": "#/$defs/rabbitmqNameList"
               }
             },
             "required": [

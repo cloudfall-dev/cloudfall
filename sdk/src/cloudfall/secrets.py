@@ -47,6 +47,7 @@ from cloudfall.mariadb import MariadbReplicationRole, mysql_native_password_hash
 from cloudfall.requirements import (
     elasticsearch_account_reference,
     mariadb_replication_reference,
+    rabbitmq_cookie_reference,
 )
 from cloudfall.validation import SchemaCatalog, validate_config
 
@@ -56,6 +57,7 @@ if TYPE_CHECKING:
     from cloudfall.inventory import ComponentInventory, SecretReference
     from cloudfall.lifecycle import EngineContext
     from cloudfall.mariadb import MariadbAuthentication, MariadbUserName
+    from cloudfall.rabbitmq import RabbitmqUserName, RabbitmqVhostName
 
 ERROR_SOPS_MISSING = "secrets_sops_missing"
 ERROR_KEY_MISSING = "secrets_key_missing"
@@ -919,6 +921,95 @@ def elasticsearch_existing_cluster_logins(
     return tuple(found)
 
 
+@dataclass(frozen=True, slots=True)
+class RabbitmqOwnerPassword:
+    """The decrypted password of one RabbitMQ virtual host's owner, in memory.
+
+    Only the controller reads it: the role computes RabbitMQ's salted SHA-256
+    hash there with the salt the user already has (D-25), and only that hash
+    reaches a node (S-023, D-9).
+    """
+
+    service: ResourceId
+    vhost: RabbitmqVhostName
+    owner: RabbitmqUserName
+    reference: SecretValueReference
+    value: str = field(repr=False)
+
+
+def rabbitmq_owner_passwords(
+    inventory: PlatformInventory, provider: SopsSecretProvider
+) -> tuple[RabbitmqOwnerPassword, ...]:
+    """Decrypt the password of every declared virtual host's owner.
+
+    A missing file or key fails naming the file, the key, the owner and the
+    service, never a value, before any playbook runs.
+    """
+    found: list[RabbitmqOwnerPassword] = []
+    for service in inventory.services:
+        if service.rabbitmq is None:
+            continue
+        for vhost in service.rabbitmq.vhosts:
+            try:
+                value = provider.fetch_value(vhost.password_ref)
+            except SecretsError as error:
+                message = (
+                    f"{error.message}; it is the passwordRef of user "
+                    f"{vhost.owner.value} of virtual host {vhost.name.value} of "
+                    f"RabbitMQ service {service.resource_id.value}"
+                )
+                raise SecretsError(error.code, message) from error
+            found.append(
+                RabbitmqOwnerPassword(
+                    service=service.resource_id,
+                    vhost=vhost.name,
+                    owner=vhost.owner,
+                    reference=vhost.password_ref,
+                    value=value,
+                )
+            )
+    return tuple(found)
+
+
+@dataclass(frozen=True, slots=True)
+class RabbitmqCookie:
+    """A RabbitMQ service's generated Erlang cookie, held only in memory.
+
+    Every node keeps it as ``/var/lib/rabbitmq/.erlang.cookie``; it reaches
+    no output, inventory or receipt (S-023-6).
+    """
+
+    service: ResourceId
+    reference: SecretValueReference
+    value: str = field(repr=False)
+
+
+def rabbitmq_cookies(
+    inventory: PlatformInventory, provider: SopsSecretProvider
+) -> tuple[RabbitmqCookie, ...]:
+    """Decrypt the Erlang cookie of every RabbitMQ service.
+
+    ``cloudfall secrets generate`` makes it; one that is missing fails naming
+    the file and the key, never a value, before any playbook.
+    """
+    found: list[RabbitmqCookie] = []
+    for service in inventory.services:
+        if service.rabbitmq is None:
+            continue
+        reference = rabbitmq_cookie_reference(service.environment, service.resource_id)
+        try:
+            value = provider.fetch_value(reference)
+        except SecretsError as error:
+            message = (
+                f"{error.message}; it is the Erlang cookie of RabbitMQ service "
+                f"{service.resource_id.value}, which cloudfall secrets generate "
+                "makes"
+            )
+            raise SecretsError(error.code, message) from error
+        found.append(RabbitmqCookie(service.resource_id, reference, value))
+    return tuple(found)
+
+
 PASSWORD_FILES_VARIABLE = "cloudfall_services_password_files"  # noqa: S105 - a name
 """The ``services.yml`` variable mapping service, then owner, to a staged file."""
 ELASTICSEARCH_FILES_VARIABLE = "cloudfall_services_elasticsearch_files"
@@ -949,6 +1040,15 @@ the password (S-019, D-9).
 """
 
 
+RABBITMQ_FILES_VARIABLE = "cloudfall_services_rabbitmq_files"
+"""The ``services.yml`` variable mapping a RabbitMQ service to its staged files.
+
+Each service maps ``cookie``, the Erlang cookie every node keeps, and
+``owners``: each owner's name to its password, which only the controller
+reads to compute the hash a node receives (S-023, D-9, D-25).
+"""
+
+
 @contextmanager
 def staged_password_files(  # noqa: PLR0913 - one staging dir for every kind.
     passwords: tuple[OwnedRolePassword, ...],
@@ -960,6 +1060,8 @@ def staged_password_files(  # noqa: PLR0913 - one staging dir for every kind.
     mariadb: tuple[MariadbOwnerPassword, ...] = (),
     replication: tuple[MariadbReplicationPassword, ...] = (),
     sources: tuple[MariadbSourceLogin, ...] = (),
+    rabbitmq: tuple[RabbitmqOwnerPassword, ...] = (),
+    cookies: tuple[RabbitmqCookie, ...] = (),
 ) -> Iterator[dict[str, object]]:
     """Write each password's server form to a 0600 file, then remove it.
 
@@ -976,12 +1078,25 @@ def staged_password_files(  # noqa: PLR0913 - one staging dir for every kind.
     MariaDB primary's replication file holds the hash of its ``cloudfall_repl``
     password, and each of its replicas' that password; a replica of an
     outside source has its source's username, password and CA in three
-    files. Yields the extra vars ``services.yml`` reads: the controller paths
+    files. A RabbitMQ service has its Erlang cookie and each owner's
+    password, which the role reads on the controller to compute its hash.
+    Yields the extra vars ``services.yml`` reads: the controller paths
     only, so neither crosses a command line, the inventory, or the project.
     Nothing to stage yields no variable, leaving the run as it was.
     """
     if not any(
-        (passwords, accounts, s3, users, existing, mariadb, replication, sources)
+        (
+            passwords,
+            accounts,
+            s3,
+            users,
+            existing,
+            mariadb,
+            replication,
+            sources,
+            rabbitmq,
+            cookies,
+        )
     ):
         yield {}
         return
@@ -1016,6 +1131,10 @@ def staged_password_files(  # noqa: PLR0913 - one staging dir for every kind.
             extra_vars[MARIADB_REPLICATION_FILES_VARIABLE] = _stage_replication(
                 root / "mariadb-replication", replication, sources
             )
+        if rabbitmq or cookies:
+            extra_vars[RABBITMQ_FILES_VARIABLE] = _stage_rabbitmq(
+                root / "rabbitmq", rabbitmq, cookies
+            )
         yield extra_vars
 
 
@@ -1048,6 +1167,31 @@ def _stage_replication(
             _write_private(plain, password.value)
             for replica in password.pair.replicas:
                 staged[replica.value] = {"password": str(plain)}
+    return staged
+
+
+def _stage_rabbitmq(
+    root: Path,
+    owners: tuple[RabbitmqOwnerPassword, ...],
+    cookies: tuple[RabbitmqCookie, ...],
+) -> dict[str, dict[str, object]]:
+    root.mkdir(mode=0o700)
+    staged: dict[str, dict[str, object]] = {}
+    for cookie in cookies:
+        path = root / f"{cookie.service.value}.cookie"
+        _write_private(path, cookie.value)
+        staged[cookie.service.value] = {"cookie": str(path), "owners": {}}
+    for owner in owners:
+        if owner.service.value not in staged:
+            message = (
+                f"owner {owner.owner.value} of RabbitMQ service "
+                f"{owner.service.value} has no Erlang cookie staged"
+            )
+            raise ValueError(message)
+        path = root / f"{owner.service.value}-{owner.owner.value}.password"
+        _write_private(path, owner.value)
+        files = cast("dict[str, str]", staged[owner.service.value]["owners"])
+        files[owner.owner.value] = str(path)
     return staged
 
 

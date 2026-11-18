@@ -31,6 +31,9 @@ from cloudfall.mariadb import account_host as mariadb_account_host
 from cloudfall.mariadb import supported_series as mariadb_supported_series
 from cloudfall.mariadb_replication import replication_rules_for_server
 from cloudfall.pki import RENEW_BEFORE, certificate_names
+from cloudfall.rabbitmq import GUEST_USER as RABBITMQ_GUEST_USER
+from cloudfall.rabbitmq import MANAGED_TAG as RABBITMQ_MANAGED_TAG
+from cloudfall.rabbitmq import OWNER_TAG_PREFIX as RABBITMQ_OWNER_TAG_PREFIX
 from cloudfall.requirements import (
     ELASTICSEARCH_PACKAGE,
     MARIADB_CA_PATH,
@@ -333,6 +336,7 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
     for service in services:
         checks.extend(_audit_mariadb_server(service, snapshot))
     checks.extend(_audit_mariadb_accounts(services, snapshot))
+    checks.extend(_audit_rabbitmq_accounts(services, snapshot))
     checks.extend(_audit_alert_rules(alert_rules, snapshot))
     checks.extend(
         _audit_component_environment(
@@ -1484,6 +1488,122 @@ def _audit_mariadb_accounts(
             continue
         checks.append(_mariadb_accounts_check(name, desired, entry))
     return tuple(checks)
+
+
+def _audit_rabbitmq_accounts(
+    services: tuple[ServiceInventory, ...],
+    snapshot: ObservedServerSnapshot,
+) -> tuple[AuditCheck, ...]:
+    """Compare each RabbitMQ service's virtual hosts and owners with the declared.
+
+    Read on the service's home. A virtual host tagged ``cloudfall-managed``
+    was made by Cloudfall, and its ``cloudfall-owner:`` tag names its owner.
+    One no longer declared is listed as undeclared with its owner: the
+    converge kept both and cleared the owner's password, which is the
+    declared outcome, not drift, as long as the owner has none (S-023-7).
+    Anything without the tag is listed as unmanaged and left alone. A
+    declared virtual host or owner that is missing, an owner without a
+    password, and a ``guest`` user are drift.
+    """
+    evidence = {
+        _string(entry, "service"): entry
+        for entry in _mapping_sequence(snapshot.spec, "rabbitmqAccounts")
+    }
+    checks: list[AuditCheck] = []
+    for service in services:
+        rabbitmq = service.rabbitmq
+        if rabbitmq is None:
+            continue
+        name = f"rabbitmq.accounts[{service.resource_id.value}]"
+        desired: dict[str, list[str]] = {
+            "vhosts": sorted(vhost.name.value for vhost in rabbitmq.vhosts),
+            "users": sorted(vhost.owner.value for vhost in rabbitmq.vhosts),
+        }
+        entry = evidence.get(service.resource_id.value)
+        if entry is None or entry.get("available") is not True:
+            checks.append(
+                AuditCheck(
+                    check=name,
+                    status=AuditStatus.UNKNOWN,
+                    desired=desired,
+                    observed=None,
+                    message=(
+                        "the cluster's virtual hosts and users were not read; "
+                        "inspect again once rabbitmqctl answers on the home server"
+                    ),
+                )
+            )
+            continue
+        checks.append(_rabbitmq_accounts_check(name, desired, entry))
+    return tuple(checks)
+
+
+def _rabbitmq_accounts_check(
+    name: str, desired: dict[str, list[str]], entry: Mapping[str, object]
+) -> AuditCheck:
+    users = set(_strings(entry, "users"))
+    without_password = set(_strings(entry, "usersWithoutPassword"))
+    vhosts = set(_strings(entry, "vhosts"))
+    tags = {
+        vhost: {tag for tag in raw.split(",") if tag}
+        for vhost, _, raw in (
+            item.rpartition("|") for item in _strings(entry, "vhostTags")
+        )
+    }
+    declared_vhosts = set(desired["vhosts"])
+    declared_users = set(desired["users"])
+    managed = {vhost for vhost, found in tags.items() if RABBITMQ_MANAGED_TAG in found}
+    undeclared_vhosts = sorted(managed - declared_vhosts)
+    undeclared_users = sorted(
+        {
+            tag.removeprefix(RABBITMQ_OWNER_TAG_PREFIX)
+            for vhost in undeclared_vhosts
+            for tag in tags[vhost]
+            if tag.startswith(RABBITMQ_OWNER_TAG_PREFIX)
+        }
+        & users - declared_users
+    )
+    observed: dict[str, object] = {
+        "vhosts": sorted(vhosts & declared_vhosts),
+        "users": sorted(users & declared_users),
+        "usersWithoutPassword": sorted(without_password & declared_users),
+        "guest": RABBITMQ_GUEST_USER in users,
+        "undeclaredVhosts": undeclared_vhosts,
+        "undeclaredUsers": undeclared_users,
+        "undeclaredUsersWithPassword": sorted(set(undeclared_users) - without_password),
+        "unmanagedVhosts": sorted(vhosts - managed - declared_vhosts),
+        "unmanagedUsers": sorted(
+            users - declared_users - set(undeclared_users) - {RABBITMQ_GUEST_USER}
+        ),
+    }
+    matches = (
+        observed["vhosts"] == desired["vhosts"]
+        and observed["users"] == desired["users"]
+        and not observed["usersWithoutPassword"]
+        and not observed["guest"]
+        and not observed["undeclaredUsersWithPassword"]
+    )
+    message = "desired state matches" if matches else "desired state does not match"
+    if observed["guest"]:
+        message += "; the guest user exists"
+    for label, key in (
+        ("undeclared (made by Cloudfall, kept, owner can't log in)", "undeclared"),
+        ("unmanaged (not made by Cloudfall, left as they are)", "unmanaged"),
+    ):
+        parts = [
+            f"{kind} {', '.join(cast('list[str]', observed[f'{key}{title}']))}"
+            for kind, title in (("virtual hosts", "Vhosts"), ("users", "Users"))
+            if observed[f"{key}{title}"]
+        ]
+        if parts:
+            message += f"; {label}: " + "; ".join(parts)
+    return AuditCheck(
+        check=name,
+        status=AuditStatus.COMPLIANT if matches else AuditStatus.DRIFT,
+        desired=desired,
+        observed=observed,
+        message=message,
+    )
 
 
 def _mariadb_accounts_check(

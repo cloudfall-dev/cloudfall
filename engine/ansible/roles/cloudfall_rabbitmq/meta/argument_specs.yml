@@ -1,0 +1,76 @@
+---
+argument_specs:
+  main:
+    short_description: Converge one node of a declared RabbitMQ service
+    options:
+      cloudfall_rabbitmq_service:
+        type: dict
+        required: true
+        options:
+          id:
+            type: str
+            required: true
+          description:
+            type: str
+          serviceKind:
+            type: str
+            choices:
+              - rabbitmq
+            required: true
+          environment:
+            type: str
+            required: true
+          server:
+            type: str
+            required: true
+          bind:
+            type: dict
+            required: true
+            options:
+              address:
+                type: str
+                choices:
+                  - 127.0.0.1
+                required: true
+              port:
+                type: int
+                required: true
+          rabbitmq:
+            type: dict
+            required: true
+            options:
+              version:
+                type: str
+                required: true
+              memoryHighWatermarkMb:
+                type: int
+                required: true
+              nodes:
+                type: list
+                elements: str
+                required: true
+              vhosts:
+                type: list
+                elements: dict
+                required: true
+                options:
+                  name:
+                    type: str
+                    required: true
+                  owner:
+                    type: str
+                    required: true
+                  passwordRef:
+                    type: dict
+                    required: true
+              clientAccess:
+                type: dict
+          backup:
+            type: dict
+          metrics:
+            type: dict
+      cloudfall_rabbitmq_files:
+        type: dict
+        description: >-
+          Controller paths of the staged Erlang cookie ('cookie') and of each
+          owner's password ('owners'), never the values

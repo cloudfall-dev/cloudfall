@@ -67,6 +67,8 @@ from cloudfall.secrets import (
     mariadb_source_logins,
     owned_databases,
     owned_role_passwords,
+    rabbitmq_cookies,
+    rabbitmq_owner_passwords,
     sops_decrypt,
     staged_password_files,
 )
@@ -98,6 +100,8 @@ if TYPE_CHECKING:
         MariadbReplicationPassword,
         MariadbSourceLogin,
         OwnedRolePassword,
+        RabbitmqCookie,
+        RabbitmqOwnerPassword,
         SopsSecretProvider,
     )
     from cloudfall.service_evidence import DeploymentReceipt
@@ -1135,6 +1139,8 @@ class ServicesSecrets:
     mariadb_owners: tuple[MariadbOwnerPassword, ...] = ()
     mariadb_replication: tuple[MariadbReplicationPassword, ...] = ()
     mariadb_sources: tuple[MariadbSourceLogin, ...] = ()
+    rabbitmq_owners: tuple[RabbitmqOwnerPassword, ...] = ()
+    rabbitmq_cookies: tuple[RabbitmqCookie, ...] = ()
 
 
 def _mariadb_source_cas(
@@ -1164,7 +1170,8 @@ def services_passwords(
     passwords of each Elasticsearch service and each of its declared users',
     the S3 keys of each S3 snapshot repository, the login of each
     ``existingCluster`` that names a ``credentialsRef``, each MariaDB
-    owner's, and each MariaDB primary's replication password. A missing file
+    owner's, each MariaDB primary's replication password, and each RabbitMQ
+    service's Erlang cookie and owners' passwords. A missing file
     or key fails here, naming the expected path and key, so the converge
     stops before any playbook starts.
     """
@@ -1197,6 +1204,8 @@ def services_passwords(
                 provider,
                 _mariadb_source_cas(inventory, context.project_directory),
             ),
+            rabbitmq_owner_passwords(inventory, provider),
+            rabbitmq_cookies(inventory, provider),
         )
     except SecretsError as error:
         raise LifecycleError(ERROR_SERVICES_SECRET, error.message) from error
@@ -1246,6 +1255,8 @@ def run_services_playbook(
             mariadb=secrets.mariadb_owners,
             replication=secrets.mariadb_replication,
             sources=secrets.mariadb_sources,
+            rabbitmq=secrets.rabbitmq_owners,
+            cookies=secrets.rabbitmq_cookies,
         ) as extra,
         tempfile.TemporaryDirectory(prefix="cloudfall-replication-") as reports,
     ):

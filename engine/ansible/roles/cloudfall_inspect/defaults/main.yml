@@ -28,6 +28,8 @@ cloudfall_inspect_elasticsearch_ca_path: /etc/elasticsearch/certs/ca.crt
 # The MariaDB services of this server (S-019): their databases and users are
 # read as root through the socket, never a password or hash
 cloudfall_inspect_mariadb_services: []
+cloudfall_inspect_rabbitmq_services: []
+cloudfall_inspect_rabbitmq_ctl: /usr/sbin/rabbitmqctl
 cloudfall_inspect_mariadb_client: /usr/bin/mariadb
 # The one file the MariaDB role writes its managed settings to
 cloudfall_inspect_mariadb_settings_path: /etc/mysql/mariadb.conf.d/90-cloudfall.cnf

@@ -44,3 +44,11 @@
           | selectattr('server', 'equalto', cloudfall_server_id)
           | list
         }}
+      # A RabbitMQ service's accounts are the cluster's, read on its home
+      cloudfall_inspect_rabbitmq_services: >-
+        {{
+          cloudfall_services | default([])
+          | selectattr('serviceKind', 'equalto', 'rabbitmq')
+          | selectattr('server', 'equalto', cloudfall_server_id)
+          | list
+        }}
