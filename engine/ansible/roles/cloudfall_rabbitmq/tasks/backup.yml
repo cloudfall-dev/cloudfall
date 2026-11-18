@@ -1,0 +1,91 @@
+---
+# The definitions export and the restore drill (S-023, Backups and the
+# restore drill), on the service's home only, run by their timers and by
+# cloudfall backup run / verify through backup.yml. The exports hold password
+# hashes, so the directory is root's alone and every export 0600.
+
+# Every service's backup directory sits in the shared backup root, so the
+# root is created root-owned 0755 first (#342).
+- name: Create the backup root
+  ansible.builtin.file:
+    path: "{{ cloudfall_rabbitmq_backup_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: >-
+    cloudfall_rabbitmq_service.backup.directory
+    .startswith(cloudfall_rabbitmq_backup_root ~ '/')
+
+- name: Create the backup directory
+  ansible.builtin.file:
+    path: "{{ cloudfall_rabbitmq_service.backup.directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install the backup script
+  ansible.builtin.template:
+    src: backup.sh.j2
+    dest: /usr/local/sbin/cloudfall-rabbitmq-backup
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the restore-check script
+  ansible.builtin.template:
+    src: restore-check.sh.j2
+    dest: /usr/local/sbin/cloudfall-rabbitmq-restore-check
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the backup service unit
+  ansible.builtin.template:
+    src: backup.service.j2
+    dest: /etc/systemd/system/cloudfall-rabbitmq-backup.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the backup timer unit
+  ansible.builtin.template:
+    src: backup.timer.j2
+    dest: /etc/systemd/system/cloudfall-rabbitmq-backup.timer
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable the backup timer
+  ansible.builtin.systemd_service:
+    name: cloudfall-rabbitmq-backup.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Install the restore-drill service unit
+  ansible.builtin.template:
+    src: restore-check.service.j2
+    dest: /etc/systemd/system/cloudfall-rabbitmq-restore-check.service
+    owner: root
+    group: root
+    mode: "0644"
+  when: cloudfall_rabbitmq_service.backup.restoreCheckOnCalendar is defined
+
+- name: Install the restore-drill timer unit
+  ansible.builtin.template:
+    src: restore-check.timer.j2
+    dest: /etc/systemd/system/cloudfall-rabbitmq-restore-check.timer
+    owner: root
+    group: root
+    mode: "0644"
+  when: cloudfall_rabbitmq_service.backup.restoreCheckOnCalendar is defined
+
+- name: Enable the restore-drill timer
+  ansible.builtin.systemd_service:
+    name: cloudfall-rabbitmq-restore-check.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: cloudfall_rabbitmq_service.backup.restoreCheckOnCalendar is defined

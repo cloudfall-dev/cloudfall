@@ -133,6 +133,24 @@
         else ''
       }}
 
+# The timers run on the service's home only
+- name: Validate the declared backup and restore-drill calendar expressions
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemd-analyze
+      - calendar
+      - "{{ item }}"
+  loop: >-
+    {{
+      [cloudfall_rabbitmq_service.backup.onCalendar]
+      + ([cloudfall_rabbitmq_service.backup.restoreCheckOnCalendar]
+         if cloudfall_rabbitmq_service.backup.restoreCheckOnCalendar is defined
+         else [])
+    }}
+  changed_when: false
+  check_mode: false
+  when: cloudfall_rabbitmq_home | bool
+
 - name: Install the RabbitMQ repository and the Erlang of the Debian release
   ansible.builtin.import_tasks: package.yml
 
@@ -265,3 +283,7 @@
   when:
     - cloudfall_rabbitmq_home | bool
     - not ansible_check_mode
+
+- name: Install the definitions export and the restore drill on the service's home
+  ansible.builtin.import_tasks: backup.yml
+  when: cloudfall_rabbitmq_home | bool

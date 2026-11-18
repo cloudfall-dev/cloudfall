@@ -1,0 +1,13 @@
+# Managed by Cloudfall. Local changes will be overwritten.
+[Unit]
+Description=Cloudfall RabbitMQ definitions export for {{ cloudfall_rabbitmq_service.id }}
+After=rabbitmq-server.service
+Requires=rabbitmq-server.service
+
+[Service]
+Type=oneshot
+# root: the command-line tools, which the Erlang cookie authorises (S-023)
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/local/sbin/cloudfall-rabbitmq-backup

@@ -1,0 +1,14 @@
+# Managed by Cloudfall. Local changes will be overwritten.
+[Unit]
+Description=Cloudfall RabbitMQ restore drill for {{ cloudfall_rabbitmq_service.id }}
+After=rabbitmq-server.service
+Requires=rabbitmq-server.service
+
+[Service]
+Type=oneshot
+# root: it starts the scratch node as the rabbitmq user, and asks the
+# cluster through the command-line tools that it is no member (S-023)
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/local/sbin/cloudfall-rabbitmq-restore-check

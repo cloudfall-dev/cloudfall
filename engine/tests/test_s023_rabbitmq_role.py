@@ -67,6 +67,7 @@ REFUSALS = (
     "Require the staged Erlang cookie and every owner's password",
     "Read the installed RabbitMQ server package",
     "Refuse a version other than the installed one",
+    "Validate the declared backup and restore-drill calendar expressions",
 )
 
 
