@@ -1,7 +1,22 @@
 # Managed by Cloudfall: replaced on every converge (S-023)
+{% if cloudfall_rabbitmq_client_tls | bool %}
+# Clients on loopback in plain text, and over TLS alone on the node's IPv4,
+# which the firewall admits from the clientAccess sources only; a client
+# verifies the node against the project CA and logs in with its password
+listeners.tcp.default = {{ cloudfall_rabbitmq_service.bind.address }}:{{ cloudfall_rabbitmq_service.bind.port }}
+listeners.ssl.default = {{ cloudfall_rabbitmq_tls.address }}:{{ cloudfall_rabbitmq_tls.port }}
+ssl_options.cacertfile = {{ cloudfall_rabbitmq_tls.caPath }}
+ssl_options.certfile = {{ cloudfall_rabbitmq_tls.certificatePath }}
+ssl_options.keyfile = {{ cloudfall_rabbitmq_tls.keyPath }}
+ssl_options.verify = verify_none
+ssl_options.fail_if_no_peer_cert = false
+ssl_options.versions.1 = tlsv1.3
+ssl_options.versions.2 = tlsv1.2
+{% else %}
 # Clients on loopback only, in plain text
 listeners.tcp.default = {{ cloudfall_rabbitmq_service.bind.address }}:{{ cloudfall_rabbitmq_service.bind.port }}
 listeners.ssl = none
+{% endif %}
 # One node: the inter-node port stays on loopback too
 distribution.listener.interface = 127.0.0.1
 distribution.listener.port_range.min = {{ cloudfall_rabbitmq_distribution_port }}

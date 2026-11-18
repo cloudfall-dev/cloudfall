@@ -41,6 +41,8 @@ from cloudfall.logging_deploy import (
     REQUESTS_VARIABLE as CERTIFICATE_REQUESTS_VARIABLE,
 )
 from cloudfall.pki import PkiError, load_or_create_ca
+from cloudfall.rabbitmq_access import CA_PATH as RABBITMQ_CA_PATH
+from cloudfall.rabbitmq_access import CERTIFICATE_PATH as RABBITMQ_CERTIFICATE_PATH
 from cloudfall.requirements import (
     MARIADB_CA_PATH,
     MARIADB_CERTIFICATE_PATH,
@@ -82,6 +84,9 @@ DELIVERED_VARIABLE = "cloudfall_services_delivered_files"
 MARIADB_DELIVERED_VARIABLE = "cloudfall_services_mariadb_delivered_files"
 """The same for the MariaDB role: the server certificate and the project CA."""
 _MARIADB_PATHS = frozenset({MARIADB_CERTIFICATE_PATH.value, MARIADB_CA_PATH.value})
+RABBITMQ_DELIVERED_VARIABLE = "cloudfall_services_rabbitmq_delivered_files"
+"""The same for the RabbitMQ role: a node's certificate and the project CA."""
+_RABBITMQ_PATHS = frozenset({RABBITMQ_CERTIFICATE_PATH.value, RABBITMQ_CA_PATH.value})
 ERROR_PROVIDER = "services_requirement_unmet"
 """A node requirement the controller could not meet; no host changed."""
 
@@ -131,7 +136,7 @@ def rabbitmq_volume_requirements(
     """Return the data volume each RabbitMQ service places on its nodes (S-023).
 
     Only the volume: the Erlang cookie is staged with the owners' passwords,
-    and one node without ``clientAccess`` needs no certificate or port.
+    and a node's certificate comes with ``rabbitmq_certificate_requirements``.
     """
     services = {
         service.resource_id
@@ -139,6 +144,22 @@ def rabbitmq_volume_requirements(
         if service.rabbitmq is not None
     }
     return _owned(inventory, services, VolumeRequirement)
+
+
+def rabbitmq_certificate_requirements(
+    inventory: PlatformInventory,
+) -> tuple[ServerRequirements, ...]:
+    """Return the certificate of each node of a RabbitMQ service that needs one.
+
+    A node with ``clientAccess`` serves TLS to clients, which verify it
+    against the project CA (S-023); one node without it needs none.
+    """
+    services = {
+        service.resource_id
+        for service in inventory.services
+        if service.rabbitmq is not None
+    }
+    return _owned(inventory, services, CertificateRequirement)
 
 
 def mariadb_certificate_requirements(
@@ -318,9 +339,10 @@ def prepared_nodes(
     with ``remoteAccess`` is requested and signed with the nodes'; it is
     handed to the MariaDB role apart from the nodes' files, so neither role
     copies the other's. A RabbitMQ node's data volume is decided in the same
-    read (S-023). Nothing to meet yields no variable, leaving the run
-    as it was. ``server`` meets that one server's alone, for a run limited to
-    it.
+    read, and the certificate of a node with ``clientAccess`` is requested
+    and signed with the others and handed to the RabbitMQ role alone
+    (S-023). Nothing to meet yields no variable, leaving the run as it was.
+    ``server`` meets that one server's alone, for a run limited to it.
     """
     servers = tuple(
         found
@@ -337,7 +359,10 @@ def prepared_nodes(
     )
     database_certificates = tuple(
         found
-        for found in mariadb_certificate_requirements(inventory)
+        for found in _merged(
+            mariadb_certificate_requirements(inventory),
+            rabbitmq_certificate_requirements(inventory),
+        )
         if server is None or found.server_id == server
     )
     if not servers and not databases:
@@ -349,7 +374,11 @@ def prepared_nodes(
             run, _merged(servers, database_certificates), inventory, store
         )
         files = [
-            *(item for item in signed if item.path not in _MARIADB_PATHS),
+            *(
+                item
+                for item in signed
+                if item.path not in _MARIADB_PATHS | _RABBITMQ_PATHS
+            ),
             *(
                 staged
                 for staged in existing_cluster_ca_files(inventory, project_directory)
@@ -357,6 +386,7 @@ def prepared_nodes(
             ),
         ]
         database_files = [item for item in signed if item.path in _MARIADB_PATHS]
+        broker_files = [item for item in signed if item.path in _RABBITMQ_PATHS]
     except VolumeRefusedError as error:
         raise LifecycleError(
             error.code,
@@ -368,12 +398,17 @@ def prepared_nodes(
     with (
         staged_files(files) as (staged, _),
         staged_files(database_files) as (database_staged, _),
+        staged_files(broker_files) as (broker_staged, _),
     ):
         extra: dict[str, object] = {ACTIONS_VARIABLE: actions}
         if files:
             extra[DELIVERED_VARIABLE] = staged[DELIVERED_FILES_VARIABLE]
         if database_files:
             extra[MARIADB_DELIVERED_VARIABLE] = database_staged[
+                DELIVERED_FILES_VARIABLE
+            ]
+        if broker_files:
+            extra[RABBITMQ_DELIVERED_VARIABLE] = broker_staged[
                 DELIVERED_FILES_VARIABLE
             ]
         yield extra
