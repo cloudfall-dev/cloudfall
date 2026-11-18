@@ -49,7 +49,6 @@ from treaty import (
     Arg,
     CliExit,
     Ctx,
-    Dependency,
     Deprecated,
     Excludes,
     Exit,
@@ -433,6 +432,7 @@ from cloudfall.service_evidence import (
     load_deployment_receipts,
     load_domain_observations,
 )
+from cloudfall.tool_checks import ANSIBLE_PLAYBOOK
 from cloudfall.upgrade import UpgradeError, upgradable_format, upgrade_project
 from cloudfall.validation import (
     UPGRADE_COMMAND,
@@ -492,20 +492,6 @@ def _serve_setup(args: McpServeArgs, _ctx: Ctx) -> None:
 def _serve_tools(args: McpServeArgs, ctx: Ctx) -> list[McpTool]:
     """Return the tools ``mcp serve`` provides beside the commands."""
     return _provided_tools(args, ctx)
-
-
-ANSIBLE_MINIMUM_VERSION = "2.21.0"
-ANSIBLE_PLAYBOOK = Dependency(
-    "ansible-playbook",
-    check_command=("ansible-playbook", "--version"),
-    min_version=ANSIBLE_MINIMUM_VERSION,
-    fix_command=f"install ansible-playbook {ANSIBLE_MINIMUM_VERSION} or newer",
-    # Only ansible's own first line counts: a traceback from an ansible that
-    # fails at start names the Python version, which is no ansible version.
-    version_regex=r"(?m)^ansible-playbook \[core (\d+(?:\.\d+)+)[^\]]*\]",
-)
-"""``doctor``'s check of ``ansible-playbook``, which the generic check of a
-``required_tools`` entry would read from the first dotted number printed."""
 
 
 app = App(
