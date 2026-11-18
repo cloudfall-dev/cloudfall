@@ -29,10 +29,26 @@ meminfo="{{ cloudfall_rabbitmq_meminfo_path }}"
 pattern='^definitions-[0-9]{8}T[0-9]{6}Z\.json$'
 made_scratch=0
 # root's own files of the drill: the scratch directory is the rabbitmq
-# user's, so root writes nothing in it once it is chowned
+# user's, so root writes nothing in it
 work=""
 launcher=""
 node_pid=""
+
+# Runs a command as the rabbitmq user. Root writes, reads and removes nothing
+# below the scratch directory by path: its parent is that user's, who can
+# swap the directory for a link to anywhere root can write (#544). So the
+# tree, its files and its removal are all that user's, and a link it puts
+# there only leads that user's own writes.
+as_user() {
+  runuser -u "${user}" -- "$@"
+}
+
+# Writes stdin, as the rabbitmq user, to a file of the scratch tree with the
+# given mode.
+put() {
+  as_user tee -- "$1" >/dev/null
+  as_user chmod "$2" "$1"
+}
 
 # Runs a tool of RabbitMQ as its user with the scratch node's environment
 # and nothing of the cluster's: not its cookie (HOME), not its node name or
@@ -106,7 +122,7 @@ remove_scratch() {
   if [ "${made_scratch}" != 1 ]; then return 0; fi
   made_scratch=0
   stop_scratch
-  rm -rf -- "${scratch}" || true
+  as_user rm -rf -- "${scratch}" || true
   if [ -n "${work}" ]; then rm -rf -- "${work}" || true; fi
   sleep 0.5
   left="$(scratch_listeners || true)"
@@ -120,7 +136,7 @@ remove_scratch() {
       leftover=1
     fi
   done
-  if [ -e "${scratch}" ]; then
+  if [ -e "${scratch}" ] || [ -L "${scratch}" ]; then
     echo "the scratch node's directory ${scratch} could not be removed" >&2
     leftover=1
   fi
@@ -146,11 +162,15 @@ fi
 
 # A scratch node a stopped drill left (the host stopped mid-drill) is
 # stopped through its own cookie and removed first; nothing else is killed.
-if [ -e "${scratch}" ]; then
+# A link there is removed, not what it points at.
+if [ -e "${scratch}" ] || [ -L "${scratch}" ]; then
   echo "removing the scratch node a stopped restore drill left in ${scratch}"
   as_scratch "${bin_directory}/rabbitmqctl" --quiet stop >/dev/null 2>&1 || true
   as_scratch epmd -kill >/dev/null 2>&1 || true
-  rm -rf -- "${scratch}"
+  if ! as_user rm -rf -- "${scratch}"; then
+    echo "restore check refused: ${scratch} could not be removed as ${user}" >&2
+    exit 1
+  fi
 fi
 taken="$(scratch_listeners)"
 if [ -n "${taken}" ]; then
@@ -167,20 +187,21 @@ fi
 
 made_scratch=1
 work="$(mktemp -d)"
-mkdir -m 0700 "${scratch}"
-mkdir -m 0700 "${scratch}/home" "${scratch}/conf.d" "${scratch}/data" \
-  "${scratch}/log"
+as_user mkdir -m 0700 -- "${scratch}"
+as_user mkdir -m 0700 -- "${scratch}/home" "${scratch}/conf.d" \
+  "${scratch}/data" "${scratch}/log"
 # A cookie of its own: the cluster's nodes and tools can't reach the scratch
 # node, nor it them.
 cookie="$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')"
-printf '%s' "${cookie:0:40}" > "${scratch}/home/.erlang.cookie"
+printf '%s' "${cookie:0:40}" | put "${scratch}/home/.erlang.cookie" 0400
 unset cookie
-chmod 0400 "${scratch}/home/.erlang.cookie"
-cp "${latest}" "${scratch}/definitions.json"
-: > "${scratch}/rabbitmq-env.conf"
-echo "[]." > "${scratch}/enabled_plugins"
+# The export is read by root, from root's backup directory, and written by
+# the rabbitmq user.
+put "${scratch}/definitions.json" 0600 < "${latest}"
+put "${scratch}/rabbitmq-env.conf" 0600 < /dev/null
+echo "[]." | put "${scratch}/enabled_plugins" 0600
 # No node list and no plugin: a node alone, with no listener off loopback.
-cat > "${scratch}/rabbitmq.conf" <<CONF
+put "${scratch}/rabbitmq.conf" 0600 <<CONF
 listeners.tcp.default = 127.0.0.1:${amqp_port}
 listeners.ssl = none
 distribution.listener.interface = 127.0.0.1
@@ -189,7 +210,6 @@ disk_free_limit.absolute = 50MB
 definitions.import_backend = local_filesystem
 definitions.local.path = ${scratch}/definitions.json
 CONF
-chown -R "${user}" "${scratch}"
 
 as_scratch "${bin_directory}/rabbitmq-server" > "${work}/console.log" 2>&1 &
 launcher=$!
@@ -204,7 +224,7 @@ for _ in $(seq 1 24); do
   sleep 1
 done
 if [ -f "${scratch}/rabbitmq.pid" ]; then
-  node_pid="$(tr -dc '0-9' < "${scratch}/rabbitmq.pid")"
+  node_pid="$(as_user cat -- "${scratch}/rabbitmq.pid" | tr -dc '0-9')"
 fi
 if [ "${started}" != 1 ]; then
   echo "restore check failed for ${service}: the scratch node ${node} did not" \
