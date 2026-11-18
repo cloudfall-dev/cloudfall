@@ -1,6 +1,6 @@
 # S-006: Standalone PostgreSQL
 
-status: approved
+status: built
 serves: G-3
 
 ## Problem
@@ -149,8 +149,20 @@ Touches `config/schemas/v1/service.schema.json`, `sdk/src/cloudfall/validation.p
 
 ## Verification
 
-`remoteAccess` has not run against a live Debian host yet: the files were rendered from a validated project with the role templates, the role's decisions were evaluated with Ansible's templating, and the `pg_hba.conf` tasks ran under `ansible-playbook` on the controller against a copy of Debian's file with a stand-in for `psql`. PostgreSQL's real parse of the file, the restart onto the new listener, TLS with the snakeoil pair, and `nft` loading the rules are unexercised.
+S-006-8 and S-006-10 rest on tests: the files were rendered from a validated project with the role templates, the role's decisions were evaluated with Ansible's templating, and the `pg_hba.conf` tasks ran under `ansible-playbook` on the controller against a copy of Debian's file with a stand-in for `psql`. The live run of 2026-11-17 (`docs/proving-runs/2026-11-17-hetzner-postgresql-remote-access.md`, #145) then converged `remoteAccess` on stock Debian 13: PostgreSQL parsed the block, restarted onto the new listener, served TLS with the snakeoil pair, and `nft` loaded the rule. Removing `remoteAccess` live (S-006-10) was not run.
 
+S-006-9 is proved by that live run, not by a test, so `specs.py coverage` reads it as unproven; the maintainer chose to mark the spec built with that one known exception (#81).
+
+- S-006-1: `test_s006_1_owner_database_validates_without_application` and `test_s006_1_owner_database_renders_reference_without_application` (`sdk/tests/test_owned_postgresql.py`)
+- S-006-2: `test_s006_2_database_names_exactly_one_of_application_or_owner` (`sdk/tests/test_owned_postgresql.py`)
+- S-006-3: `test_s006_3_password_ref_goes_with_owner_only` (`sdk/tests/test_owned_postgresql.py`)
+- S-006-4: `test_s006_4_owner_refuses_cloudfall_roles` and `test_s006_4_owner_refuses_an_application_user_on_the_service` (`sdk/tests/test_owned_postgresql.py`)
+- S-006-5: `test_s006_5_the_owner_gets_a_login_role_and_its_password`, `test_s006_5_the_owned_database_is_created_and_kept_owned_by_its_role` and `test_s006_5_the_password_is_stored_as_scram_from_the_staged_file` (`engine/tests/test_postgresql_owner_role.py`); the live run of 2026-11-17 logged in as `billing` with its password
+- S-006-6: the `test_s006_6_*` tests in `engine/tests/test_postgresql_owner_role.py`, `engine/tests/test_services_passwords.py` and `sdk/tests/test_owned_postgresql_converge.py` (no-log tasks, the reference-only inventory, and the hash-only answers and receipts of converge, operator approve, operator run and migrate)
+- S-006-7: the `test_s006_7_*` tests in `engine/tests/test_services_passwords.py` and `sdk/tests/test_owned_postgresql_converge.py` (a missing file or key stops converge, the operator and migrate before any playbook, with `PRECONDITION` naming the path and key)
 - S-006-8: `test_s006_8_remote_access_renders_listener_tls_hba_and_firewall` and `test_s006_8_the_firewall_entry_carries_its_sources` (`engine/tests/test_postgresql_remote_access.py`) rendered `listen_addresses = '127.0.0.1,10.0.0.2'`, `ssl = on`, the block line `hostssl billing billing 10.0.0.0/24 scram-sha-256` (none for the application database `crm`), and `ip saddr 10.0.0.0/24 tcp dport 5432 accept` as the only rule for port 5432; `test_s006_8_s006_10_the_hba_block_opens_then_closes_leaving_the_rest` wrote exactly that line between the Cloudfall markers, reloaded once, and left Debian's lines unchanged
-- S-006-9: not run; it needs the live proving run on two hosts
+- S-006-9: held live on 2026-11-17 (`docs/proving-runs/2026-11-17-hetzner-postgresql-remote-access.md`, #145, recorded in #490): three Hetzner cx23 on Debian 13 and one private network, `remoteAccess` with `allowedSources: [10.0.0.3/32]`; from `10.0.0.3` with `sslmode=require` `select 1` returned `1` over TLSv1.3, from `10.0.0.3` with `sslmode=disable` the server answered `no pg_hba.conf entry for host "10.0.0.3", user "billing", database "billing", no encryption`, and from `10.0.0.4` the connection timed out at the firewall
 - S-006-10: `test_s006_10_without_remote_access_the_service_renders_closed` rendered `listen_addresses = '127.0.0.1'`, no rule for port 5432, and the block state `absent`; `test_s006_8_s006_10_the_hba_block_opens_then_closes_leaving_the_rest` then removed the block and the file read byte-identical to Debian's
+- S-006-11: `test_s006_11_remote_access_needs_an_owner_database`, `test_s006_11_remote_access_needs_a_firewall`, `test_s006_11_remote_access_refuses_a_port_already_open` and `test_s006_11_remote_access_refuses_every_address` (`sdk/tests/test_owned_postgresql.py`)
+- S-006-12: `test_s006_12_examples_render_byte_identical` (`engine/tests/test_examples_render_unchanged.py`)
+- S-006-13: `test_s006_13_the_backup_and_the_drill_cover_the_owned_database` and `test_s006_13_data_copy_restores_as_the_owner_and_receipts_it` (`engine/tests/test_postgresql_owner_role.py`)
