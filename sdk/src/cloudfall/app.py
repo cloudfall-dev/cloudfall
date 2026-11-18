@@ -49,6 +49,7 @@ from treaty import (
     Arg,
     CliExit,
     Ctx,
+    Dependency,
     Deprecated,
     Excludes,
     Exit,
@@ -493,6 +494,20 @@ def _serve_tools(args: McpServeArgs, ctx: Ctx) -> list[McpTool]:
     return _provided_tools(args, ctx)
 
 
+ANSIBLE_MINIMUM_VERSION = "2.21.0"
+ANSIBLE_PLAYBOOK = Dependency(
+    "ansible-playbook",
+    check_command=("ansible-playbook", "--version"),
+    min_version=ANSIBLE_MINIMUM_VERSION,
+    fix_command=f"install ansible-playbook {ANSIBLE_MINIMUM_VERSION} or newer",
+    # Only ansible's own first line counts: a traceback from an ansible that
+    # fails at start names the Python version, which is no ansible version.
+    version_regex=r"(?m)^ansible-playbook \[core (\d+(?:\.\d+)+)[^\]]*\]",
+)
+"""``doctor``'s check of ``ansible-playbook``, which the generic check of a
+``required_tools`` entry would read from the first dotted number printed."""
+
+
 app = App(
     "cloudfall",
     version=version("cloudfall"),
@@ -503,6 +518,7 @@ app = App(
     # `treaty changelog-add cloudfall.app:app` records each release's
     # interface changes here, beside the manifest snapshot it diffs against.
     schema_changelog=Path(__file__).with_name("schema-changelog.json"),
+    dependencies=[ANSIBLE_PLAYBOOK],
     mcp=McpServe(
         args=McpServeArgs,
         setup=_serve_setup,
