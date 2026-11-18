@@ -203,11 +203,41 @@ if tool == "ss":
 sys.exit(64)
 """
 
-RUNUSER = """#!/bin/sh
-# runuser -u <user> -- <command>...
-echo "$2" >> "__WORLD__/runuser.log"
-shift 3
-exec "$@"
+RUNUSER = r"""#!__PYTHON__
+# runuser -u <user> -- <command>...: the rabbitmq user, who can't write in a
+# directory the world's "protected" file lists, as the kernel would refuse it.
+# The entry a path argument names is the parent's, so a link the command
+# would follow at its parent is resolved and a link it names is not.
+import os
+import sys
+from pathlib import Path
+
+WORLD = Path(__WORLD__)
+user, command = sys.argv[2], sys.argv[4:]
+with (WORLD / "runuser.log").open("a", encoding="utf-8") as log:
+    log.write(user + "\n")
+protected = WORLD / "protected"
+roots = protected.read_text(encoding="utf-8").split() if protected.exists() else []
+for argument in command[1:]:
+    if not argument.startswith("/"):
+        continue
+    parent = os.path.realpath(os.path.dirname(argument))
+    if any(parent == root or parent.startswith(root + os.sep) for root in roots):
+        print(f"{command[0]}: {argument}: Permission denied", file=sys.stderr)
+        sys.exit(1)
+os.execvp(command[0], command)
+"""
+
+# head, with the rabbitmq user's move in the window after the scratch tree is
+# made: the directory is renamed and a link to "target" put in its place.
+SWAP_HEAD = """#!/bin/sh
+if [ -f "__WORLD__/swap" ] && [ -d "__SCRATCH__" ] && [ ! -L "__SCRATCH__" ]; then
+  target="$(cat "__WORLD__/swap")"
+  rm "__WORLD__/swap"
+  mv "__SCRATCH__" "__WORLD__/moved"
+  ln -s "${target}" "__SCRATCH__"
+fi
+exec /usr/bin/head "$@"
 """
 
 
@@ -400,7 +430,12 @@ class Host:
             path.write_text(stand_in, encoding="utf-8")
             path.chmod(0o700)
         runuser = self.tools / "runuser"
-        runuser.write_text(RUNUSER.replace("__WORLD__", str(self.world)), "utf-8")
+        runuser.write_text(
+            RUNUSER.replace("__PYTHON__", sys.executable).replace(
+                "__WORLD__", repr(str(self.world))
+            ),
+            "utf-8",
+        )
         runuser.chmod(0o700)
         (self.tools / "python3").symlink_to(sys.executable)
         self.meminfo = tmp_path / "meminfo"
@@ -421,6 +456,22 @@ class Host:
             script = self.scripts / f"cloudfall-rabbitmq-{name}"
             script.write_text(_render(f"{name}.sh.j2", **variables), "utf-8")
             script.chmod(0o700)
+
+    def swap_scratch_for_link(self, target: Path) -> None:
+        """Have the rabbitmq user swap the fresh scratch tree for a link.
+
+        ``target`` is a directory root can write and that user can't.
+        """
+        (self.world / "swap").write_text(str(target), "utf-8")
+        (self.world / "protected").write_text(os.path.realpath(target), "utf-8")
+        head = self.tools / "head"
+        head.write_text(
+            SWAP_HEAD.replace("__WORLD__", str(self.world)).replace(
+                "__SCRATCH__", str(self.scratch)
+            ),
+            "utf-8",
+        )
+        head.chmod(0o700)
 
     def control(self, **values: object) -> None:
         """Set how the stand-ins behave."""
@@ -805,6 +856,54 @@ def test_root_writes_nothing_through_a_link_in_the_scratch_directory(
     assert done.returncode == 0, done.stdout + done.stderr
     assert victim.read_text("utf-8") == "untouched"
     assert not host.scratch.exists()
+
+
+def _tree(root: Path) -> list[str]:
+    return sorted(str(path.relative_to(root)) for path in root.rglob("*"))
+
+
+def test_root_writes_nothing_through_a_scratch_directory_swapped_for_a_link(
+    tmp_path: Path,
+) -> None:
+    """The rabbitmq user owns the scratch directory's parent (#544).
+
+    It renames the fresh tree and links its name to a directory only root can
+    write, which holds the tree's subdirectories so a write by path lands.
+    """
+    host = Host(tmp_path)
+    host.backup()
+    elsewhere = tmp_path / "elsewhere"
+    for name in ("home", "conf.d", "data", "log"):
+        (elsewhere / name).mkdir(parents=True)
+    before = _tree(elsewhere)
+    host.swap_scratch_for_link(elsewhere)
+
+    done = host.run("restore-check")
+
+    assert done.returncode != 0, done.stdout
+    assert "Permission denied" in done.stderr, done.stderr
+    assert "restore check passed" not in done.stdout
+    assert _tree(elsewhere) == before
+    # The link is removed, not what it points at
+    assert not host.scratch.exists()
+    assert not host.scratch.is_symlink()
+    assert not (host.world / "scratch-start.json").exists()
+    _secrets_absent(done.stdout, done.stderr)
+
+
+def test_a_dangling_link_left_at_the_scratch_path_is_removed_first(
+    tmp_path: Path,
+) -> None:
+    host = Host(tmp_path)
+    host.backup()
+    host.scratch.symlink_to(tmp_path / "gone")
+
+    done = host.run("restore-check")
+
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert not host.scratch.is_symlink()
+    assert not host.scratch.exists()
+    assert not (tmp_path / "gone").exists()
 
 
 def test_the_drill_refuses_a_server_short_of_memory(tmp_path: Path) -> None:

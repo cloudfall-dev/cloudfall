@@ -1,0 +1,3 @@
+### Fixed
+
+- The RabbitMQ restore drill no longer writes into its scratch directory by path as root: the `rabbitmq` user owns that directory's parent and could swap the fresh directory for a link in the window before the copy, so root's copy of the export (which holds password hashes) and the scratch node's configuration could land wherever the link pointed. The scratch tree is now made, written (the export `0600`, the cookie `0400`), read and removed as the `rabbitmq` user, root only reads the export from its backup directory and streams it in, and a link left at the scratch path is removed, not followed (#544)
