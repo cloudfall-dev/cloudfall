@@ -85,3 +85,24 @@ cloudfall_rabbitmq_home: >-
   {{ cloudfall_rabbitmq_service.server == cloudfall_server_id }}
 cloudfall_rabbitmq_definitions_path: >-
   {{ cloudfall_rabbitmq_state_directory }}/{{ cloudfall_rabbitmq_service.id }}-owners.json
+# clientAccess (S-023): the node also takes clients over TLS alone on its
+# IPv4, with its certificate from the project CA. The inventory renders, by
+# service id, that address and port and the certificate's paths
+# (cloudfall_rabbitmq_client_access); a service without it has none.
+cloudfall_rabbitmq_client_tls: >-
+  {{ cloudfall_rabbitmq_service.rabbitmq.clientAccess is defined }}
+cloudfall_rabbitmq_tls: >-
+  {{ (cloudfall_rabbitmq_client_access | default({}))
+     .get(cloudfall_rabbitmq_service.id, {}) }}
+# What the services converge signed and staged for this node: its
+# certificate and the CA, only when they are missing or due.
+cloudfall_rabbitmq_delivered_files: >-
+  {{ (cloudfall_services_rabbitmq_delivered_files | default({}))
+     .get(cloudfall_server_id, []) }}
+# The listener a node with clientAccess opens outside loopback by design:
+# TLS on its own IPv4.
+cloudfall_rabbitmq_allowed_listeners: >-
+  {{
+    [cloudfall_rabbitmq_tls.address ~ ':' ~ cloudfall_rabbitmq_tls.port]
+    if cloudfall_rabbitmq_client_tls | bool else []
+  }}

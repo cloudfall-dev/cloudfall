@@ -34,6 +34,9 @@ from cloudfall.pki import RENEW_BEFORE, certificate_names
 from cloudfall.rabbitmq import GUEST_USER as RABBITMQ_GUEST_USER
 from cloudfall.rabbitmq import MANAGED_TAG as RABBITMQ_MANAGED_TAG
 from cloudfall.rabbitmq import OWNER_TAG_PREFIX as RABBITMQ_OWNER_TAG_PREFIX
+from cloudfall.rabbitmq_access import (
+    client_access_rules_for_server as rabbitmq_client_access_rules_for_server,
+)
 from cloudfall.requirements import (
     ELASTICSEARCH_PACKAGE,
     MARIADB_CA_PATH,
@@ -648,8 +651,9 @@ def _gateway_rules(
 ) -> tuple[SourceRestrictedFirewallRule, ...]:
     """Return the source-restricted rules the engine renders for ``server``.
 
-    Those are the logging gateway's (S-011) and a MariaDB primary's port,
-    opened to its replicas' servers (S-019).
+    Those are the logging gateway's (S-011), a MariaDB primary's port,
+    opened to its replicas' servers (S-019), and a RabbitMQ node's TLS
+    client port, opened to its ``clientAccess`` sources (S-023).
     """
     baseline = inventory.baseline(server.baseline_id)
     if baseline.firewall is None:
@@ -663,6 +667,7 @@ def _gateway_rules(
             server, inventory.servers, inventory.logging_stacks, open_ports
         ),
         *replication_rules_for_server(server, inventory.servers, inventory.services),
+        *rabbitmq_client_access_rules_for_server(server, inventory.services),
     )
 
 

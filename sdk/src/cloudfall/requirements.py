@@ -46,6 +46,9 @@ from cloudfall.elasticsearch_cluster import (
 )
 from cloudfall.inventory import SecretValueReference, StoragePool
 from cloudfall.mariadb import MariadbReplicationRole
+from cloudfall.rabbitmq_access import CA_PATH as RABBITMQ_CA_PATH
+from cloudfall.rabbitmq_access import CERTIFICATE_PATH as RABBITMQ_CERTIFICATE_PATH
+from cloudfall.rabbitmq_access import KEY_PATH as RABBITMQ_KEY_PATH
 
 if TYPE_CHECKING:
     from cloudfall.inventory import (
@@ -735,10 +738,12 @@ def _rabbitmq_requirements(
     Every node needs its data volume, mirrored when it is the only node and
     expendable with three (the copies are on the other nodes), the package at
     the declared version, and the Erlang cookie Cloudfall generates, which
-    the nodes and their command-line tools share. The ports and certificates
-    of a cluster of three and of ``clientAccess`` come with those (#507,
-    #508); one node without ``clientAccess`` listens on loopback only and
-    needs neither.
+    the nodes and their command-line tools share. With ``clientAccess`` each
+    node also needs its one certificate from the project CA, usage server
+    and client as a node of three uses it too; the TLS client port is opened
+    to ``allowedSources``, networks rather than servers, by the firewall
+    alone. The ports of a cluster of three come with #508; one node without
+    ``clientAccess`` listens on loopback only and needs neither.
     """
     rabbitmq = service.rabbitmq
     if rabbitmq is None:
@@ -775,6 +780,27 @@ def _rabbitmq_requirements(
         placed.extend(
             (node_id, Requirement(owner, spec)) for spec in (volume, cookie, package)
         )
+    if rabbitmq.client_access is None:
+        return placed
+    # With clientAccess each node serves TLS on its IPv4 with its one
+    # certificate from the project CA, which a client verifies there
+    placed.extend(
+        (
+            node_id,
+            Requirement(
+                owner,
+                CertificateRequirement(
+                    RABBITMQ_REQUIREMENT_NAME,
+                    CertificateUsage.SERVER_AND_CLIENT,
+                    elasticsearch_node_names(servers[node_id]),
+                    RABBITMQ_CERTIFICATE_PATH,
+                    RABBITMQ_KEY_PATH,
+                    RABBITMQ_CA_PATH,
+                ),
+            ),
+        )
+        for node_id in rabbitmq.nodes
+    )
     return placed
 
 

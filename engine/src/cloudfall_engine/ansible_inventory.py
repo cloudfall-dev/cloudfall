@@ -23,6 +23,15 @@ from cloudfall.mariadb_replication import (
     replication_links_for_server,
     replication_rules_for_server,
 )
+from cloudfall.rabbitmq_access import (
+    CLIENT_ACCESS_VARIABLE as RABBITMQ_CLIENT_ACCESS_VARIABLE,
+)
+from cloudfall.rabbitmq_access import (
+    client_access_for_server as rabbitmq_client_access_for_server,
+)
+from cloudfall.rabbitmq_access import (
+    client_access_rules_for_server as rabbitmq_client_access_rules_for_server,
+)
 from cloudfall.requirements import (
     CertificateRequirement,
     VolumeRequirement,
@@ -224,6 +233,17 @@ def _host_variables(inventory: PlatformInventory) -> dict[str, object]:
                 )
                 else {}
             ),
+            # A RabbitMQ node with clientAccess: the IPv4 and port it takes
+            # clients at over TLS, and its certificate (S-023)
+            **(
+                {RABBITMQ_CLIENT_ACCESS_VARIABLE: access}
+                if (
+                    access := rabbitmq_client_access_for_server(
+                        server, inventory.services
+                    )
+                )
+                else {}
+            ),
             "cloudfall_domains": [
                 _host_domain(domain, components_by_id)
                 for domain in inventory.domains
@@ -350,7 +370,14 @@ def _host_firewall(
     replication = replication_rules_for_server(
         server, inventory.servers, inventory.services
     )
+    clients = rabbitmq_client_access_rules_for_server(server, inventory.services)
     if baseline.firewall is None:
+        if clients:
+            message = (
+                "a RabbitMQ node with clientAccess needs a firewall on its "
+                f"server: {server.resource_id.value}"
+            )
+            raise ValueError(message)
         if replication:
             message = (
                 "a MariaDB primary with replicas needs a firewall on its server: "
@@ -386,6 +413,7 @@ def _host_firewall(
                 *(rule.as_dict() for rule in gateway),
                 *(rule.as_dict() for rule in transport),
                 *(rule.as_dict() for rule in replication),
+                *(rule.as_dict() for rule in clients),
             ],
         }
     }

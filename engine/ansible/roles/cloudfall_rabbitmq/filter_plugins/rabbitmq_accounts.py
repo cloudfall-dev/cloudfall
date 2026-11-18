@@ -319,11 +319,13 @@ def erlang_supported(release: str, minimum: str) -> bool:
     return have >= need
 
 
-def public_listeners(sockets: str) -> list[str]:
+def public_listeners(sockets: str, allowed: list[str] | None = None) -> list[str]:
     """Return each listener of RabbitMQ or epmd on an address that is not loopback.
 
     ``sockets`` is ``ss -Htlnp``'s output; each answer is its local address
-    and process, as ``0.0.0.0:4369 epmd``.
+    and process, as ``0.0.0.0:4369 epmd``. ``allowed`` names the local
+    addresses a node listens on by design, as ``203.0.113.11:5671``: the
+    TLS client listener of ``clientAccess`` on its own IPv4.
     """
     found: list[str] = []
     for line in sockets.splitlines():
@@ -332,7 +334,7 @@ def public_listeners(sockets: str) -> list[str]:
         if len(fields) < 4 or not processes:  # noqa: PLR2004 - ss's local address
             continue
         local = fields[3]
-        if not _LOOPBACK.match(local):
+        if not _LOOPBACK.match(local) and local not in (allowed or []):
             found.append(f"{local} {processes[0].strip(chr(34))}")
     return found
 

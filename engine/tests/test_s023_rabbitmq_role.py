@@ -59,7 +59,8 @@ JOBS: dict[str, object] = {
 # task that changes the host
 REFUSALS = (
     "Validate RabbitMQ service target and declaration",
-    "Refuse a cluster or client access this release does not converge",
+    "Refuse a cluster this release does not converge",
+    "Require the node's rendered client access",
     "Refuse a memory watermark above six tenths of the server's memory",
     "Refuse a series Cloudfall does not install",
     "Refuse a host whose hostname is not the declared one",
@@ -376,16 +377,15 @@ def test_s023_4_every_refusal_comes_before_any_task_that_changes_the_host() -> N
     assert deploy["ansible.builtin.include_role"]["name"] == "cloudfall_rabbitmq"
 
 
-def test_a_cluster_and_client_access_are_refused_until_built() -> None:
+def test_a_cluster_is_refused_until_built() -> None:
     refuse = _task(
-        "Refuse a cluster or client access this release does not converge",
-        _tasks("main.yml"),
+        "Refuse a cluster this release does not converge", _tasks("main.yml")
     )
     assert _holds(refuse, _variables())
     three = _service(JOBS, nodes=["h1", "h2", "h3"])
     assert not _holds(refuse, _variables(cloudfall_rabbitmq_service=three))
     access = _service(JOBS, clientAccess={"allowedSources": ["10.0.0.0/24"]})
-    assert not _holds(refuse, _variables(cloudfall_rabbitmq_service=access))
+    assert _holds(refuse, _variables(cloudfall_rabbitmq_service=access))
 
 
 def test_a_version_change_and_a_renamed_host_are_refused() -> None:

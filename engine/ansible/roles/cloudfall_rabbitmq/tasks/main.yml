@@ -1,8 +1,9 @@
 ---
 # One node of a RabbitMQ service (S-023). Every refusal comes before the
 # first task that changes the host (S-023-4). The node is configured as a
-# cluster that waits for two more; the clusters of three (#508) and client
-# access over TLS (#507) are refused here until they are built.
+# cluster that waits for two more, and with clientAccess takes clients over
+# TLS on its IPv4 too; the clusters of three (#508) are refused here until
+# they are built.
 - name: Validate RabbitMQ service target and declaration
   ansible.builtin.assert:
     that:
@@ -17,17 +18,32 @@
       RabbitMQ service {{ cloudfall_rabbitmq_service.id }} needs a Debian 13
       node that it declares, and a loopback-only bind address
 
-- name: Refuse a cluster or client access this release does not converge
+- name: Refuse a cluster this release does not converge
   ansible.builtin.assert:
     that:
       - cloudfall_rabbitmq_service.rabbitmq.nodes | length == 1
-      - cloudfall_rabbitmq_service.rabbitmq.clientAccess is not defined
     fail_msg: >-
       RabbitMQ service {{ cloudfall_rabbitmq_service.id }} declares
-      {{ cloudfall_rabbitmq_service.rabbitmq.nodes | length }} nodes
-      {{- ' and clientAccess' if cloudfall_rabbitmq_service.rabbitmq.clientAccess
-          is defined else '' }}; this release converges one node on loopback
-      only (S-023). Nothing on {{ cloudfall_server_id }} changed
+      {{ cloudfall_rabbitmq_service.rabbitmq.nodes | length }} nodes; this
+      release converges one node (S-023). Nothing on
+      {{ cloudfall_server_id }} changed
+
+# A node with clientAccess takes clients where the inventory says: its IPv4,
+# the TLS port, and its certificate's paths
+- name: Require the node's rendered client access
+  ansible.builtin.assert:
+    that:
+      - >-
+        not cloudfall_rabbitmq_client_tls | bool
+        or (
+          cloudfall_rabbitmq_tls.address is defined
+          and cloudfall_rabbitmq_tls.port == 5671
+        )
+    fail_msg: >-
+      RabbitMQ service {{ cloudfall_rabbitmq_service.id }} declares
+      clientAccess, but the inventory carries no client access for
+      {{ cloudfall_server_id }}; render the inventory with this Cloudfall
+      release. Nothing changed
 
 # services.yml refuses it before any service role too; checked again here,
 # the role is safe to include on its own
@@ -144,6 +160,10 @@
     - "{{ cloudfall_rabbitmq_config_directory }}"
     - "{{ cloudfall_rabbitmq_config_directory }}/conf.d"
 
+- name: Prepare the node certificate for clients over TLS
+  ansible.builtin.import_tasks: tls.yml
+  when: cloudfall_rabbitmq_client_tls | bool
+
 - name: Install the managed settings
   ansible.builtin.template:
     src: "{{ item }}.j2"
@@ -223,7 +243,8 @@
   changed_when: false
   when: not ansible_check_mode
 
-# Nothing of RabbitMQ or epmd listens outside loopback (S-023-3)
+# Nothing of RabbitMQ or epmd listens outside loopback (S-023-3), but the
+# TLS client listener of a node with clientAccess on its IPv4 (S-023-19)
 - name: Refuse a listener of RabbitMQ or epmd outside loopback
   ansible.builtin.assert:
     that:
@@ -233,7 +254,10 @@
       loopback: {{ cloudfall_rabbitmq_public | join(', ') }}
   vars:
     cloudfall_rabbitmq_public: >-
-      {{ cloudfall_rabbitmq_sockets.stdout | cloudfall_rabbitmq_public_listeners }}
+      {{
+        cloudfall_rabbitmq_sockets.stdout
+        | cloudfall_rabbitmq_public_listeners(cloudfall_rabbitmq_allowed_listeners)
+      }}
   when: not ansible_check_mode
 
 - name: Converge the virtual hosts and their owners on the service's home
