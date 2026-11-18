@@ -88,6 +88,13 @@ def main(argv):
     elif command == "set_permissions":
         vhost = flag(argv, "--vhost")
         user, configure, write, read = args
+        # RabbitMQ refuses permissions of a user or on a vhost it does not have
+        if user not in [item["name"] for item in state["users"]]:
+            print(f"Error: no_such_user: {user}", file=sys.stderr)
+            return 1
+        if vhost not in [item["name"] for item in state["vhosts"]]:
+            print(f"Error: no_such_vhost: {vhost}", file=sys.stderr)
+            return 1
         state["permissions"] = [
             item
             for item in state["permissions"]

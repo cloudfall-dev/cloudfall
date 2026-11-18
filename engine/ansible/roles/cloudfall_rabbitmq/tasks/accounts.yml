@@ -55,14 +55,8 @@
       }}
   no_log: true
 
-- name: Create the virtual hosts, set permissions, remove guest and /
-  ansible.builtin.command:
-    argv: "{{ [cloudfall_rabbitmq_ctl, '--quiet'] + item }}"
-  loop: "{{ cloudfall_rabbitmq_plan.commands }}"
-  loop_control:
-    label: "{{ item[:2] | join(' ') }}"
-  changed_when: true
-
+# Before the commands: RabbitMQ refuses permissions of a user it doesn't
+# have, so a new owner is imported first
 - name: Set the owners' password hashes
   when: cloudfall_rabbitmq_plan.definitions | length > 0
   block:
@@ -97,6 +91,14 @@
       ansible.builtin.file:
         path: "{{ cloudfall_rabbitmq_definitions_path }}"
         state: absent
+
+- name: Create the virtual hosts, set permissions, remove guest and /
+  ansible.builtin.command:
+    argv: "{{ [cloudfall_rabbitmq_ctl, '--quiet'] + item }}"
+  loop: "{{ cloudfall_rabbitmq_plan.commands }}"
+  loop_control:
+    label: "{{ item[:2] | join(' ') }}"
+  changed_when: true
 
 # A virtual host Cloudfall made and no longer declares is kept with its
 # queues and messages, its owner can't log in; neither is deleted (S-023-7)
