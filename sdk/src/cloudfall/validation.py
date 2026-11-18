@@ -60,6 +60,22 @@ from cloudfall.mariadb import (
 from cloudfall.mariadb import account_host as mariadb_account_host
 from cloudfall.mariadb import supported_series as mariadb_series
 from cloudfall.mariadb import supported_series_text as mariadb_series_text
+from cloudfall.rabbitmq import DEFAULT_VHOST as RABBITMQ_DEFAULT_VHOST
+from cloudfall.rabbitmq import NODE_COUNTS as RABBITMQ_NODE_COUNTS
+from cloudfall.rabbitmq import PRODUCTION_ENVIRONMENT as RABBITMQ_PRODUCTION
+from cloudfall.rabbitmq import SUPPORTED_SERIES as RABBITMQ_SUPPORTED_SERIES
+from cloudfall.rabbitmq import WARNING_SINGLE_NODE as RABBITMQ_WARNING_SINGLE_NODE
+from cloudfall.rabbitmq import (
+    WARNING_VERSION_ENDING as RABBITMQ_WARNING_VERSION_ENDING,
+)
+from cloudfall.rabbitmq import (
+    RabbitmqSeries,
+    RabbitmqUserName,
+    RabbitmqVersion,
+    RabbitmqVhostName,
+)
+from cloudfall.rabbitmq import supported_series as rabbitmq_series
+from cloudfall.rabbitmq import supported_series_text as rabbitmq_series_text
 
 _SCHEMA_FILES: Mapping[ResourceKind, str] = {
     ResourceKind.SERVER: "server.schema.json",
@@ -999,6 +1015,8 @@ def _validate_service_references(
         _validate_elasticsearch_service(document, spec, index)
     elif spec.get("serviceKind") == ServiceKind.MARIADB.value:
         _validate_mariadb_service(document, spec, server, index)
+    elif spec.get("serviceKind") == ServiceKind.RABBITMQ.value:
+        _validate_rabbitmq_service(document, spec, index)
 
 
 def _validate_postgresql_service(
@@ -1740,6 +1758,7 @@ def _validate_service_uniqueness(documents: Sequence[ResourceDocument]) -> None:
     placements: dict[tuple[ResourceId, str], ResourceDocument] = {}
     ports: dict[tuple[ResourceId, int], ResourceDocument] = {}
     nodes_taken: dict[ResourceId, ResourceDocument] = {}
+    rabbitmq_nodes: dict[ResourceId, ResourceDocument] = {}
     for document in documents:
         if document.key.kind is not ResourceKind.SERVICE:
             continue
@@ -1758,6 +1777,9 @@ def _validate_service_uniqueness(documents: Sequence[ResourceDocument]) -> None:
             raise ConfigValidationError(issue)
         if raw_kind == "elasticsearch":
             _claim_elasticsearch_nodes(document, spec, raw_port, nodes_taken, ports)
+            continue
+        if raw_kind == ServiceKind.RABBITMQ.value:
+            _claim_rabbitmq_nodes(document, spec, raw_port, rabbitmq_nodes, ports)
             continue
         placement = (server_id, raw_kind)
         if placement in placements and raw_kind == ServiceKind.MARIADB.value:
@@ -2611,6 +2633,579 @@ def mariadb_unencrypted_sources(config: ValidatedConfig) -> tuple[ResourceId, ..
         if isinstance(source, dict) and "caCertificateFile" not in source:
             found.append(document.key.resource_id)
     return tuple(found)
+
+
+ERROR_RABBITMQ_VERSION = "service_rabbitmq_version"
+ERROR_RABBITMQ_NODES = "service_rabbitmq_nodes"
+ERROR_RABBITMQ_SERVER_SHARED = "service_rabbitmq_server_shared"
+ERROR_RABBITMQ_ENVIRONMENT = "service_rabbitmq_environment"
+ERROR_RABBITMQ_HOSTNAME = "service_rabbitmq_hostname"
+ERROR_RABBITMQ_REMOTE_ACCESS = "service_rabbitmq_remote_access"
+ERROR_RABBITMQ_VHOST = "service_rabbitmq_vhost"
+ERROR_RABBITMQ_RESERVED = "service_rabbitmq_reserved"
+ERROR_RABBITMQ_UNFIREWALLED = "service_rabbitmq_unfirewalled"
+ERROR_RABBITMQ_SERVER_UNADDRESSED = "service_rabbitmq_server_unaddressed"
+_RABBITMQ_PATH = ("spec", "rabbitmq")
+
+
+def _rabbitmq_refusal(
+    document: ResourceDocument,
+    code: str,
+    message: str,
+    *field: str | int,
+) -> ConfigValidationError:
+    return ConfigValidationError(
+        ValidationIssue(
+            code=code,
+            message=message,
+            source=document.source,
+            field_path=(*_RABBITMQ_PATH, *field),
+        )
+    )
+
+
+def _is_rabbitmq_service(document: ResourceDocument) -> bool:
+    if document.key.kind is not ResourceKind.SERVICE:
+        return False
+    spec = _required_mapping(document.content, "spec", document.source)
+    return spec.get("serviceKind") == ServiceKind.RABBITMQ.value
+
+
+def _rabbitmq_nodes(
+    document: ResourceDocument, spec: Mapping[str, object]
+) -> tuple[ResourceId, ...]:
+    """Return the declared nodes, or the service's server when none are."""
+    rabbitmq = _required_mapping(spec, "rabbitmq", document.source)
+    if "nodes" not in rabbitmq:
+        return (_resource_id_value(spec, "server", document.source),)
+    raw_nodes = rabbitmq.get("nodes")
+    if not isinstance(raw_nodes, list):
+        raise _rabbitmq_refusal(
+            document,
+            "internal_state_shape_invalid",
+            "validated RabbitMQ nodes are not a list",
+            "nodes",
+        )
+    return tuple(ResourceId.from_boundary(node) for node in raw_nodes)
+
+
+def _validate_rabbitmq_service(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> None:
+    """Apply the S-023 refusals that read one service and the servers it names."""
+    rabbitmq = _required_mapping(spec, "rabbitmq", document.source)
+    if "remoteAccess" in rabbitmq:
+        raise _rabbitmq_refusal(
+            document,
+            ERROR_RABBITMQ_REMOTE_ACCESS,
+            "remoteAccess names one listen address, and every RabbitMQ node "
+            "listens on its own; declare clientAccess with its allowedSources",
+            "remoteAccess",
+        )
+    _validate_rabbitmq_version(document, rabbitmq)
+    nodes = _validate_rabbitmq_node_list(document, spec, index)
+    _validate_rabbitmq_node_servers(document, spec, nodes, index)
+    _validate_rabbitmq_vhosts(document, rabbitmq)
+    if "clientAccess" in rabbitmq:
+        _validate_rabbitmq_client_sources(
+            document, _required_mapping(rabbitmq, "clientAccess", document.source)
+        )
+    _validate_rabbitmq_node_hosts(
+        document,
+        nodes,
+        index,
+        reachable=len(nodes) > 1 or "clientAccess" in rabbitmq,
+    )
+
+
+def _validate_rabbitmq_version(
+    document: ResourceDocument, rabbitmq: Mapping[str, object]
+) -> None:
+    try:
+        version = RabbitmqVersion.from_boundary(rabbitmq.get("version"))
+    except (TypeError, ValueError) as error:
+        raise _rabbitmq_refusal(
+            document,
+            ERROR_RABBITMQ_VERSION,
+            f"{error}; Cloudfall installs an exact release of a supported "
+            f"series: {rabbitmq_series_text()}",
+            "version",
+        ) from error
+    if rabbitmq_series(version) is None:
+        raise _rabbitmq_refusal(
+            document,
+            ERROR_RABBITMQ_VERSION,
+            f"RabbitMQ {version.value} is not of a series Team RabbitMQ still "
+            "supports for the open-source edition; the supported series are "
+            f"{rabbitmq_series_text()}",
+            "version",
+        )
+
+
+def _validate_rabbitmq_node_list(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> tuple[ResourceId, ...]:
+    nodes = _rabbitmq_nodes(document, spec)
+    server_id = _resource_id_value(spec, "server", document.source)
+    seen: set[ResourceId] = set()
+    for position, node in enumerate(nodes):
+        if node in seen:
+            raise _rabbitmq_refusal(
+                document,
+                ERROR_RABBITMQ_NODES,
+                f"Server/{node} is listed twice in nodes",
+                "nodes",
+                position,
+            )
+        seen.add(node)
+        if ResourceKey(kind=ResourceKind.SERVER, resource_id=node) not in index:
+            raise _rabbitmq_refusal(
+                document,
+                ERROR_RABBITMQ_NODES,
+                f"node Server/{node} is not declared",
+                "nodes",
+                position,
+            )
+    if server_id not in seen:
+        raise _rabbitmq_refusal(
+            document,
+            ERROR_RABBITMQ_NODES,
+            f"nodes must contain the service's server, Server/{server_id}",
+            "nodes",
+        )
+    if len(nodes) not in RABBITMQ_NODE_COUNTS:
+        raise _rabbitmq_refusal(
+            document,
+            ERROR_RABBITMQ_NODES,
+            f"nodes names {len(nodes)} servers; a RabbitMQ service has one node "
+            "or three, since with two the loss of either stops the cluster",
+            "nodes",
+        )
+    return nodes
+
+
+def _validate_rabbitmq_node_servers(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    nodes: tuple[ResourceId, ...],
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> None:
+    """Refuse a node of another environment, or two nodes of one hostname."""
+    environment = _resource_id_value(spec, "environment", document.source)
+    hostnames: dict[str, ResourceId] = {}
+    for position, node in enumerate(nodes):
+        server = index[ResourceKey(kind=ResourceKind.SERVER, resource_id=node)]
+        server_spec = _required_mapping(server.content, "spec", server.source)
+        server_environment = _resource_id_value(
+            server_spec, "environment", server.source
+        )
+        if server_environment != environment:
+            raise _rabbitmq_refusal(
+                document,
+                ERROR_RABBITMQ_ENVIRONMENT,
+                f"node Server/{node} belongs to {server_environment}, not "
+                f"{environment}",
+                "nodes",
+                position,
+            )
+        hostname = server_spec.get("hostname")
+        if not isinstance(hostname, str):
+            raise _rabbitmq_refusal(
+                document,
+                "internal_state_shape_invalid",
+                f"validated hostname of Server/{node} is not a string",
+                "nodes",
+                position,
+            )
+        key = hostname.lower().removesuffix(".")
+        if key in hostnames:
+            raise _rabbitmq_refusal(
+                document,
+                ERROR_RABBITMQ_HOSTNAME,
+                f"nodes Server/{hostnames[key]} and Server/{node} have the same "
+                f"hostname {hostname}; a node is named rabbit@ and its hostname, "
+                "so each node needs its own",
+                "nodes",
+                position,
+            )
+        hostnames[key] = node
+
+
+def _validate_rabbitmq_vhosts(
+    document: ResourceDocument, rabbitmq: Mapping[str, object]
+) -> None:
+    """Refuse a virtual host without an owner, or a name RabbitMQ or Cloudfall holds."""
+    raw_vhosts = rabbitmq.get("vhosts", [])
+    if not isinstance(raw_vhosts, list):
+        raise _rabbitmq_refusal(
+            document,
+            "internal_state_shape_invalid",
+            "validated RabbitMQ virtual hosts are not a list",
+            "vhosts",
+        )
+    names: dict[str, int] = {}
+    owners: dict[str, str] = {}
+    for position, raw_vhost in enumerate(raw_vhosts):
+        vhost = cast("Mapping[str, object]", raw_vhost)
+        field = ("vhosts", position)
+        name = _rabbitmq_vhost_name(document, vhost, field)
+        if "application" in vhost:
+            raise _rabbitmq_refusal(
+                document,
+                ERROR_RABBITMQ_VHOST,
+                f"virtual host {name.value!r} names an application: RabbitMQ has "
+                "no login by unix socket, so every account has a password; "
+                "declare an owner and its passwordRef",
+                *field,
+                "application",
+            )
+        for required in ("owner", "passwordRef"):
+            if required not in vhost:
+                raise _rabbitmq_refusal(
+                    document,
+                    ERROR_RABBITMQ_VHOST,
+                    f"virtual host {name.value!r} needs {required}: it belongs "
+                    "to a user whose password comes from passwordRef",
+                    *field,
+                )
+        if name.value in names:
+            raise _rabbitmq_refusal(
+                document,
+                ERROR_RABBITMQ_VHOST,
+                f"virtual host {name.value!r} is declared twice",
+                *field,
+                "name",
+            )
+        names[name.value] = position
+        owner = _rabbitmq_owner(document, vhost, field)
+        if owner.value in owners:
+            raise _rabbitmq_refusal(
+                document,
+                ERROR_RABBITMQ_VHOST,
+                f"owner {owner.value!r} already owns virtual host "
+                f"{owners[owner.value]!r}; an owner has permissions on its own "
+                "virtual host only",
+                *field,
+                "owner",
+            )
+        owners[owner.value] = name.value
+
+
+def _rabbitmq_vhost_name(
+    document: ResourceDocument,
+    vhost: Mapping[str, object],
+    field: tuple[str | int, ...],
+) -> RabbitmqVhostName:
+    raw_name = vhost.get("name")
+    if raw_name == RABBITMQ_DEFAULT_VHOST:
+        raise _rabbitmq_refusal(
+            document,
+            ERROR_RABBITMQ_RESERVED,
+            "virtual host '/' is RabbitMQ's default, which Cloudfall removes "
+            "with guest; name the application's own",
+            *field,
+            "name",
+        )
+    try:
+        name = RabbitmqVhostName.from_boundary(raw_name)
+    except (TypeError, ValueError) as error:
+        raise _rabbitmq_refusal(
+            document, ERROR_RABBITMQ_VHOST, str(error), *field, "name"
+        ) from error
+    if name.is_reserved:
+        raise _rabbitmq_refusal(
+            document,
+            ERROR_RABBITMQ_RESERVED,
+            f"virtual host {name.value!r} starts with cloudfall_, the prefix of "
+            "the names the restore drill uses",
+            *field,
+            "name",
+        )
+    return name
+
+
+def _rabbitmq_owner(
+    document: ResourceDocument,
+    vhost: Mapping[str, object],
+    field: tuple[str | int, ...],
+) -> RabbitmqUserName:
+    try:
+        owner = RabbitmqUserName.from_boundary(vhost.get("owner"))
+    except (TypeError, ValueError) as error:
+        raise _rabbitmq_refusal(
+            document, ERROR_RABBITMQ_VHOST, str(error), *field, "owner"
+        ) from error
+    if owner.is_reserved:
+        raise _rabbitmq_refusal(
+            document,
+            ERROR_RABBITMQ_RESERVED,
+            f"owner {owner.value!r} is RabbitMQ's guest account, which Cloudfall "
+            "removes, or starts with cloudfall_, the prefix of the names the "
+            "restore drill uses",
+            *field,
+            "owner",
+        )
+    return owner
+
+
+def _validate_rabbitmq_client_sources(
+    document: ResourceDocument, client_access: Mapping[str, object]
+) -> None:
+    """Refuse a client source that is no canonical network, or every address (S-006)."""
+    raw_sources = client_access.get("allowedSources")
+    sources = raw_sources if isinstance(raw_sources, list) else []
+    for position, raw_source in enumerate(sources):
+        field = ("clientAccess", "allowedSources", position)
+        try:
+            source = IpNetworkCidr.from_boundary(raw_source)
+        except (TypeError, ValueError) as error:
+            raise _rabbitmq_refusal(
+                document,
+                "service_remote_access_source_invalid",
+                f"allowed source is not a canonical CIDR: {error}",
+                *field,
+            ) from error
+        if source.is_unrestricted:
+            raise _rabbitmq_refusal(
+                document,
+                "service_remote_access_open",
+                f"allowed source {source.value} matches every address; name the "
+                "networks the clients connect from",
+                *field,
+            )
+
+
+def _validate_rabbitmq_node_hosts(
+    document: ResourceDocument,
+    nodes: tuple[ResourceId, ...],
+    index: Mapping[ResourceKey, ResourceDocument],
+    *,
+    reachable: bool,
+) -> None:
+    """Refuse a node whose server can't hold what the node needs (S-023).
+
+    Each node's ``rabbitmq`` volume goes into the only storage pool of its
+    server's baseline, on two disks for a service of one node, the only copy
+    of its messages. A node that others reach, a node of three or one with
+    ``clientAccess``, needs a firewall to admit them alone and an IPv4 to be
+    reached and admitted at.
+    """
+    single = len(nodes) == 1
+    for position, node in enumerate(nodes):
+        server = index[ResourceKey(kind=ResourceKind.SERVER, resource_id=node)]
+        server_spec = _required_mapping(server.content, "spec", server.source)
+        baseline_id, baseline_spec = _baseline_of(server, index)
+        storage = _required_mapping(baseline_spec, "storage", server.source)
+        raw_pools = storage.get("pools")
+        pools = [
+            pool
+            for pool in (raw_pools if isinstance(raw_pools, list) else [])
+            if isinstance(pool, dict)
+        ]
+        if len(pools) != 1:
+            code = (
+                "volume_requirement_pool_missing"
+                if not pools
+                else "volume_requirement_pool_ambiguous"
+            )
+            reason = (
+                f"Baseline/{baseline_id} declares no storage pool"
+                if not pools
+                else f"Baseline/{baseline_id} declares {len(pools)} pools, and the "
+                "node's volume goes into the only one"
+            )
+            raise _rabbitmq_refusal(
+                document,
+                code,
+                f"the rabbitmq volume of node Server/{node} has nowhere to live: "
+                f"{reason}",
+                "nodes",
+                position,
+            )
+        if single and "secondary" not in pools[0]:
+            raise _rabbitmq_refusal(
+                document,
+                "volume_requirement_pool_unmirrored",
+                f"the rabbitmq volume of Server/{node} is mirrored, the only copy "
+                f"of a service of one node, but pool {pools[0].get('id')} of "
+                f"Baseline/{baseline_id} has no secondary physical volume; add one",
+                "nodes",
+                position,
+            )
+        if reachable and "firewall" not in baseline_spec:
+            raise _rabbitmq_refusal(
+                document,
+                ERROR_RABBITMQ_UNFIREWALLED,
+                f"node Server/{node} opens its RabbitMQ ports to the other nodes "
+                f"or the clientAccess sources only, but Baseline/{baseline_id} "
+                "declares no firewall to keep every other address out",
+                "nodes",
+                position,
+            )
+        if reachable and not (
+            "network" in server_spec or _is_ipv4(server_spec.get("address"))
+        ):
+            raise _rabbitmq_refusal(
+                document,
+                ERROR_RABBITMQ_SERVER_UNADDRESSED,
+                f"node Server/{node} has a name for its address and declares no "
+                "network, so the other nodes and the clients have no IPv4 to "
+                "reach it at and the firewalls none to admit; give it an IPv4 "
+                "address or a network block",
+                "nodes",
+                position,
+            )
+
+
+def _claim_rabbitmq_nodes(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    port: int,
+    nodes_taken: dict[ResourceId, ResourceDocument],
+    ports: dict[tuple[ResourceId, int], ResourceDocument],
+) -> None:
+    """Refuse a node already in another RabbitMQ service, or whose port is taken.
+
+    The Debian package runs one RabbitMQ node per host, and every node
+    listens on the service's port.
+    """
+    for position, node in enumerate(_rabbitmq_nodes(document, spec)):
+        if node in nodes_taken:
+            raise _rabbitmq_refusal(
+                document,
+                ERROR_RABBITMQ_SERVER_SHARED,
+                f"Server/{node} is already a node of the RabbitMQ service "
+                f"declared at {nodes_taken[node].source.display()}; a server "
+                "holds at most one RabbitMQ node",
+                "nodes",
+                position,
+            )
+        nodes_taken[node] = document
+        listener = (node, port)
+        if listener in ports:
+            issue = ValidationIssue(
+                code="service_port_conflict",
+                message=(
+                    f"Server/{node} port {port} already used by the "
+                    f"service declared at {ports[listener].source.display()}"
+                ),
+                source=document.source,
+                field_path=("spec", "bind", "port"),
+            )
+            raise ConfigValidationError(issue)
+        ports[listener] = document
+
+
+@dataclass(frozen=True, slots=True)
+class RabbitmqVersionEnding:
+    """A service whose RabbitMQ series ends within the window, or has ended."""
+
+    service: ResourceId
+    version: RabbitmqVersion
+    series: RabbitmqSeries
+
+    def message(self, today: date) -> str:
+        """Say when community support of the series ends, or that it has ended."""
+        tense = "ended" if today > self.series.end_of_support else "ends"
+        return (
+            f"Service/{self.service} runs RabbitMQ {self.version.value}, whose "
+            f"series {self.series.label} {tense} community support on "
+            f"{self.series.end_of_support.isoformat()}; move it to the next "
+            "supported series"
+        )
+
+
+def rabbitmq_versions_ending(
+    config: ValidatedConfig,
+    today: date,
+    table: tuple[RabbitmqSeries, ...] = RABBITMQ_SUPPORTED_SERIES,
+) -> tuple[RabbitmqVersionEnding, ...]:
+    """Return each RabbitMQ service whose series is within its window on ``today``.
+
+    ``today`` is passed in, so the answer depends on the caller's clock only.
+    """
+    endings: list[RabbitmqVersionEnding] = []
+    for document in config.resources(ResourceKind.SERVICE):
+        if not _is_rabbitmq_service(document):
+            continue
+        spec = _required_mapping(document.content, "spec", document.source)
+        rabbitmq = _required_mapping(spec, "rabbitmq", document.source)
+        version = RabbitmqVersion.from_boundary(rabbitmq.get("version"))
+        series = rabbitmq_series(version, table)
+        if series is not None and series.is_ending(today):
+            endings.append(
+                RabbitmqVersionEnding(document.key.resource_id, version, series)
+            )
+    return tuple(endings)
+
+
+def rabbitmq_single_nodes(config: ValidatedConfig) -> tuple[ResourceId, ...]:
+    """Return each RabbitMQ service of the production environment with one node."""
+    found: list[ResourceId] = []
+    for document in config.resources(ResourceKind.SERVICE):
+        if not _is_rabbitmq_service(document):
+            continue
+        spec = _required_mapping(document.content, "spec", document.source)
+        environment = _resource_id_value(spec, "environment", document.source)
+        if (
+            environment.value == RABBITMQ_PRODUCTION
+            and len(_rabbitmq_nodes(document, spec)) == 1
+        ):
+            found.append(document.key.resource_id)
+    return tuple(found)
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceWarning:
+    """A warning ``config validate`` gives about one service, with its context."""
+
+    code: str
+    message: str
+    context: Mapping[str, str]
+
+
+def rabbitmq_warnings(
+    config: ValidatedConfig,
+    today: date,
+    table: tuple[RabbitmqSeries, ...] = RABBITMQ_SUPPORTED_SERIES,
+) -> tuple[ServiceWarning, ...]:
+    """Return the S-023 warnings of ``config`` on ``today``.
+
+    ``RABBITMQ_VERSION_ENDING`` per service whose series ends within the
+    window, or has ended, naming the date; ``RABBITMQ_SINGLE_NODE`` per
+    production service of one node. ``today`` and ``table`` are passed in,
+    so the answer depends on the caller's clock only.
+    """
+    endings = tuple(
+        ServiceWarning(
+            code=RABBITMQ_WARNING_VERSION_ENDING,
+            message=ending.message(today),
+            context={
+                "service": ending.service.value,
+                "version": ending.version.value,
+                "series": ending.series.label,
+                "endOfLife": ending.series.end_of_support.isoformat(),
+            },
+        )
+        for ending in rabbitmq_versions_ending(config, today, table)
+    )
+    single_nodes = tuple(
+        ServiceWarning(
+            code=RABBITMQ_WARNING_SINGLE_NODE,
+            message=(
+                f"Service/{service} is one RabbitMQ node in production: every "
+                "message has one copy, and every restart stops the service; "
+                "add two nodes"
+            ),
+            context={"service": service.value},
+        )
+        for service in rabbitmq_single_nodes(config)
+    )
+    return endings + single_nodes
 
 
 def _validate_logging_references(

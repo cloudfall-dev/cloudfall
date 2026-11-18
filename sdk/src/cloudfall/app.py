@@ -442,6 +442,7 @@ from cloudfall.validation import (
     elasticsearch_versions_ending,
     mariadb_unencrypted_sources,
     mariadb_versions_ending,
+    rabbitmq_warnings,
     validate_config,
 )
 from cloudfall.volumes import ACTIONS_VARIABLE as VOLUME_ACTIONS_VARIABLE
@@ -915,13 +916,22 @@ def config_validate(
     within 90 days, or has ended, gets one ``ELASTICSEARCH_VERSION_ENDING``
     warning naming the date; a MariaDB service the same, as
     ``MARIADB_VERSION_ENDING``. A MariaDB replica of an outside source
-    declared without a CA file gets ``MARIADB_REPLICATION_UNENCRYPTED``.
+    declared without a CA file gets ``MARIADB_REPLICATION_UNENCRYPTED``. A
+    RabbitMQ service gets ``RABBITMQ_VERSION_ENDING`` the same way, and
+    ``RABBITMQ_SINGLE_NODE`` when it is one node in production.
     """
     today = datetime.now(UTC).date()
     _warn_deprecated_names(ctx, fleet)
     _warn_elasticsearch_versions_ending(ctx, fleet.state, today)
     _warn_mariadb(ctx, fleet.state, today)
+    _warn_rabbitmq(ctx, fleet.state, today)
     return ValidatedPayload(fleet.state.as_dict())
+
+
+def _warn_rabbitmq(ctx: Ctx, state: ValidatedConfig, today: date) -> None:
+    """Warn per RabbitMQ service whose series is ending, or that is one node."""
+    for warning in rabbitmq_warnings(state, today):
+        ctx.warn(warning.code, warning.message, **warning.context)
 
 
 def _warn_mariadb(ctx: Ctx, state: ValidatedConfig, today: date) -> None:

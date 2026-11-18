@@ -392,6 +392,85 @@
         "innodbBufferPoolMb"
       ],
       "additionalProperties": false
+    },
+    "rabbitmq": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "memoryHighWatermarkMb": {
+          "type": "integer",
+          "minimum": 512,
+          "maximum": 4194304
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/resourceId"
+          }
+        },
+        "vhosts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 63,
+                "pattern": "^(/|[a-z][a-z0-9_.-]*)$"
+              },
+              "owner": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 63,
+                "pattern": "^[a-z][a-z0-9_.-]*$"
+              },
+              "passwordRef": {
+                "$ref": "#/$defs/secretValueReference"
+              },
+              "application": {
+                "$ref": "common.schema.json#/$defs/resourceId"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "clientAccess": {
+          "type": "object",
+          "properties": {
+            "allowedSources": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 49
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "allowedSources"
+          ],
+          "additionalProperties": false
+        },
+        "remoteAccess": {
+          "$ref": "#/$defs/remoteAccess"
+        }
+      },
+      "required": [
+        "version",
+        "memoryHighWatermarkMb"
+      ],
+      "additionalProperties": false
     }
   },
   "type": "object",
@@ -413,7 +492,8 @@
             "postgresql",
             "redis",
             "elasticsearch",
-            "mariadb"
+            "mariadb",
+            "rabbitmq"
           ]
         },
         "environment": {
@@ -568,6 +648,9 @@
         "mariadb": {
           "$ref": "#/$defs/mariadb"
         },
+        "rabbitmq": {
+          "$ref": "#/$defs/rabbitmq"
+        },
         "metrics": {
           "type": "object",
           "properties": {
@@ -699,6 +782,51 @@
             "not": {
               "required": [
                 "mariadb"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "serviceKind": {
+                "const": "rabbitmq"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "rabbitmq"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "postgresql"
+                  ]
+                },
+                {
+                  "required": [
+                    "redis"
+                  ]
+                },
+                {
+                  "required": [
+                    "elasticsearch"
+                  ]
+                },
+                {
+                  "required": [
+                    "mariadb"
+                  ]
+                }
+              ]
+            }
+          },
+          "else": {
+            "not": {
+              "required": [
+                "rabbitmq"
               ]
             }
           }
