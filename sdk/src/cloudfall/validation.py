@@ -2821,14 +2821,16 @@ def _validate_rabbitmq_node_servers(
                 "nodes",
                 position,
             )
-        key = hostname.lower().removesuffix(".")
+        # RabbitMQ names a node rabbit@ and the short hostname, its first
+        # label, so h2.a and h2.b would be one node name
+        key = hostname.lower().removesuffix(".").split(".")[0]
         if key in hostnames:
             raise _rabbitmq_refusal(
                 document,
                 ERROR_RABBITMQ_HOSTNAME,
                 f"nodes Server/{hostnames[key]} and Server/{node} have the same "
-                f"hostname {hostname}; a node is named rabbit@ and its hostname, "
-                "so each node needs its own",
+                f"short hostname {key}; a node is named rabbit@ and its short "
+                "hostname, so each node needs its own",
                 "nodes",
                 position,
             )

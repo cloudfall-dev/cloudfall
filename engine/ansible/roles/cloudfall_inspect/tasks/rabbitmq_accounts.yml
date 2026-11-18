@@ -1,0 +1,70 @@
+---
+# The virtual hosts and users of one RabbitMQ service (S-023), read on its
+# home through the command-line tools, which the Erlang cookie authorises:
+# their names, each virtual host's tags (Cloudfall's name the owner), and
+# which users have no password. The export holds password hashes, so it is
+# never shown; no hash leaves the host.
+- name: Read the cluster's definitions
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_inspect_rabbitmq_ctl }}"
+      - --quiet
+      - export_definitions
+      - "-"
+      - --format
+      - json
+  register: cloudfall_inspect_rabbitmq_read
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Attach the RabbitMQ service's virtual hosts and users
+  ansible.builtin.set_fact:
+    cloudfall_inspect_rabbitmq_accounts: >-
+      {{
+        cloudfall_inspect_rabbitmq_accounts | default([])
+        + [cloudfall_inspect_rabbitmq_evidence]
+      }}
+  vars:
+    cloudfall_inspect_rabbitmq_available: >-
+      {{
+        cloudfall_inspect_rabbitmq_read.rc == 0
+        and (cloudfall_inspect_rabbitmq_read.stdout | default('')).startswith('{')
+      }}
+    cloudfall_inspect_rabbitmq_definitions: >-
+      {{
+        cloudfall_inspect_rabbitmq_read.stdout | from_json
+        if cloudfall_inspect_rabbitmq_available else {}
+      }}
+    cloudfall_inspect_rabbitmq_vhosts: >-
+      {{ cloudfall_inspect_rabbitmq_definitions.vhosts | default([]) }}
+    cloudfall_inspect_rabbitmq_users: >-
+      {{ cloudfall_inspect_rabbitmq_definitions.users | default([]) }}
+    cloudfall_inspect_rabbitmq_evidence: >-
+      {{
+        {
+          'service': cloudfall_inspect_rabbitmq_service.id,
+          'available': cloudfall_inspect_rabbitmq_available,
+        }
+        | combine(
+          {
+            'users': cloudfall_inspect_rabbitmq_users | map(attribute='name') | list,
+            'usersWithoutPassword': cloudfall_inspect_rabbitmq_users
+              | selectattr('password_hash', 'equalto', '')
+              | map(attribute='name') | list,
+            'vhosts': cloudfall_inspect_rabbitmq_vhosts
+              | map(attribute='name') | list,
+            'vhostTags': cloudfall_inspect_rabbitmq_vhosts
+              | map(attribute='name')
+              | zip(
+                  cloudfall_inspect_rabbitmq_vhosts
+                  | map(attribute='metadata', default={})
+                  | map(attribute='tags', default=[])
+                  | map('join', ',')
+                )
+              | map('join', '|') | list,
+          }
+          if cloudfall_inspect_rabbitmq_available else {}
+        )
+      }}

@@ -420,6 +420,8 @@ def requirements_of(inventory: PlatformInventory) -> tuple[ServerRequirements, .
             by_server.setdefault(server_id.value, []).append(requirement)
         for server_id, requirement in _mariadb_requirements(service, inventory):
             by_server.setdefault(server_id.value, []).append(requirement)
+        for server_id, requirement in _rabbitmq_requirements(service, inventory):
+            by_server.setdefault(server_id.value, []).append(requirement)
     return tuple(
         ServerRequirements(
             server.resource_id,
@@ -701,6 +703,79 @@ def _mariadb_requirements(
             )
         )
     return [(service.server_id, Requirement(owner, spec)) for spec in specs]
+
+
+RABBITMQ_PACKAGE = PackageName("rabbitmq-server")
+RABBITMQ_REQUIREMENT_NAME = RequirementName("rabbitmq")
+RABBITMQ_VOLUME_PATH = AbsolutePath("/var/lib/rabbitmq")
+RABBITMQ_VOLUME_SIZE = ByteSize(20 * GIBIBYTE)
+"""The starting size of each node's data volume; it grows, never shrinks."""
+RABBITMQ_COOKIE_NAME = RequirementName("rabbitmq-erlang-cookie")
+RABBITMQ_COOKIE_PATH = AbsolutePath("/var/lib/rabbitmq/.erlang.cookie")
+"""Where each node and its command-line tools read the shared Erlang cookie."""
+RABBITMQ_COOKIE_KEY = SecretKeyName("ERLANG_COOKIE")
+
+
+def rabbitmq_cookie_reference(
+    environment: ResourceId, service_id: ResourceId
+) -> SecretValueReference:
+    """Return where the store keeps a service's Erlang cookie: ``/services/<id>``."""
+    return SecretValueReference(
+        environment=environment,
+        path=AbsolutePath(f"/services/{service_id.value}"),
+        key=RABBITMQ_COOKIE_KEY,
+    )
+
+
+def _rabbitmq_requirements(
+    service: ServiceInventory, inventory: PlatformInventory
+) -> list[tuple[ResourceId, Requirement]]:
+    """Place what each node of a RabbitMQ service needs (S-023).
+
+    Every node needs its data volume, mirrored when it is the only node and
+    expendable with three (the copies are on the other nodes), the package at
+    the declared version, and the Erlang cookie Cloudfall generates, which
+    the nodes and their command-line tools share. The ports and certificates
+    of a cluster of three and of ``clientAccess`` come with those (#507,
+    #508); one node without ``clientAccess`` listens on loopback only and
+    needs neither.
+    """
+    rabbitmq = service.rabbitmq
+    if rabbitmq is None:
+        return []
+    owner = RequirementOwner(ResourceKind.SERVICE, service.resource_id)
+    servers = {server.resource_id: server for server in inventory.servers}
+    placement = (
+        VolumePlacement.EXPENDABLE
+        if len(rabbitmq.nodes) > 1
+        else VolumePlacement.MIRRORED
+    )
+    cookie = SecretRequirement(
+        RABBITMQ_COOKIE_NAME,
+        SecretSource.GENERATE,
+        RABBITMQ_COOKIE_PATH,
+        rabbitmq_cookie_reference(service.environment, service.resource_id),
+    )
+    package = PackageRequirement(
+        RABBITMQ_REQUIREMENT_NAME,
+        RABBITMQ_PACKAGE,
+        PackageVersion(rabbitmq.version.value),
+    )
+    placed: list[tuple[ResourceId, Requirement]] = []
+    for node_id in rabbitmq.nodes:
+        baseline = inventory.baseline(servers[node_id].baseline_id)
+        volume = VolumeRequirement(
+            RABBITMQ_REQUIREMENT_NAME,
+            RABBITMQ_VOLUME_PATH,
+            RABBITMQ_VOLUME_SIZE,
+            placement,
+            (SystemdUnitName("rabbitmq-server.service"),),
+            _pool(baseline, None, RABBITMQ_REQUIREMENT_NAME.value),
+        )
+        placed.extend(
+            (node_id, Requirement(owner, spec)) for spec in (volume, cookie, package)
+        )
+    return placed
 
 
 def mariadb_server_names(

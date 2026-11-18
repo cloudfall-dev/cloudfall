@@ -125,6 +125,22 @@ def mariadb_volume_requirements(
     return _owned(inventory, services, VolumeRequirement)
 
 
+def rabbitmq_volume_requirements(
+    inventory: PlatformInventory,
+) -> tuple[ServerRequirements, ...]:
+    """Return the data volume each RabbitMQ service places on its nodes (S-023).
+
+    Only the volume: the Erlang cookie is staged with the owners' passwords,
+    and one node without ``clientAccess`` needs no certificate or port.
+    """
+    services = {
+        service.resource_id
+        for service in inventory.services
+        if service.rabbitmq is not None
+    }
+    return _owned(inventory, services, VolumeRequirement)
+
+
 def mariadb_certificate_requirements(
     inventory: PlatformInventory,
 ) -> tuple[ServerRequirements, ...]:
@@ -301,7 +317,8 @@ def prepared_nodes(
     same read before any host changes, and the server certificate of one
     with ``remoteAccess`` is requested and signed with the nodes'; it is
     handed to the MariaDB role apart from the nodes' files, so neither role
-    copies the other's. Nothing to meet yields no variable, leaving the run
+    copies the other's. A RabbitMQ node's data volume is decided in the same
+    read (S-023). Nothing to meet yields no variable, leaving the run
     as it was. ``server`` meets that one server's alone, for a run limited to
     it.
     """
@@ -312,7 +329,10 @@ def prepared_nodes(
     )
     databases = tuple(
         found
-        for found in mariadb_volume_requirements(inventory)
+        for found in _merged(
+            mariadb_volume_requirements(inventory),
+            rabbitmq_volume_requirements(inventory),
+        )
         if server is None or found.server_id == server
     )
     database_certificates = tuple(

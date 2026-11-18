@@ -11,6 +11,8 @@ of Cloudfall.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -36,6 +38,10 @@ GUEST_USER = "guest"
 """The account RabbitMQ ships with a known password; Cloudfall removes it."""
 DEFAULT_VHOST = "/"
 """The virtual host RabbitMQ ships with; Cloudfall removes it with ``guest``."""
+MANAGED_TAG = "cloudfall-managed"
+"""The tag of every virtual host Cloudfall created; a converge and audit read it."""
+OWNER_TAG_PREFIX = "cloudfall-owner:"
+"""The prefix of the tag that names the owner of a virtual host Cloudfall created."""
 SCRATCH_PREFIX = "cloudfall_"
 """The prefix of the names the restore drill's scratch node uses."""
 
@@ -217,6 +223,25 @@ class RabbitmqUserName:
     def from_boundary(cls, value: object) -> RabbitmqUserName:
         """Coerce a boundary value into a user name."""
         return cls(_string(value, "RabbitMQ user name"))
+
+
+PASSWORD_SALT_BYTES = 4
+"""The salt RabbitMQ's ``rabbit_password_hashing_sha256`` puts before the digest."""
+
+
+def password_hash(password: str, salt: bytes) -> str:
+    """Return RabbitMQ's stored SHA-256 form of ``password`` (D-9).
+
+    Base64 of the four-byte salt followed by SHA-256 of the salt and the
+    password's UTF-8 bytes, as ``rabbit_password_hashing_sha256`` stores it.
+    The role computes the same on the controller, reusing the salt a user
+    already has (D-25).
+    """
+    if len(salt) != PASSWORD_SALT_BYTES:
+        message = f"a RabbitMQ salt is {PASSWORD_SALT_BYTES} bytes"
+        raise ValueError(message)
+    digest = hashlib.sha256(salt + password.encode("utf-8")).digest()
+    return base64.b64encode(salt + digest).decode("ascii")
 
 
 def _string(value: object, description: str) -> str:

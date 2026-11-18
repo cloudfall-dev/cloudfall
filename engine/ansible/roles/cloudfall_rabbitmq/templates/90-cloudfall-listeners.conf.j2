@@ -1,0 +1,8 @@
+# Managed by Cloudfall: replaced on every converge (S-023)
+# Clients on loopback only, in plain text
+listeners.tcp.default = {{ cloudfall_rabbitmq_service.bind.address }}:{{ cloudfall_rabbitmq_service.bind.port }}
+listeners.ssl = none
+# One node: the inter-node port stays on loopback too
+distribution.listener.interface = 127.0.0.1
+distribution.listener.port_range.min = {{ cloudfall_rabbitmq_distribution_port }}
+distribution.listener.port_range.max = {{ cloudfall_rabbitmq_distribution_port }}

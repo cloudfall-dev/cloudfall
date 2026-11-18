@@ -1,0 +1,87 @@
+---
+cloudfall_rabbitmq_service: {}
+# Controller paths of the service's staged Erlang cookie ('cookie') and of
+# each owner's password ('owners'); services.yml passes the service's entry
+# of cloudfall_services_rabbitmq_files, never a value (S-023, D-9).
+cloudfall_rabbitmq_files: {}
+# What the services converge decided for this server's data volume (S-014).
+cloudfall_rabbitmq_volume_actions: >-
+  {{ (cloudfall_volume_actions | default({})).get(cloudfall_server_id, [])
+     | selectattr('name', 'equalto', 'rabbitmq') | list }}
+cloudfall_rabbitmq_series: >-
+  {{ cloudfall_rabbitmq_service.rabbitmq.version.split('.')[:2] | join('.') }}
+# rabbitmq-server has no epoch: 4.4.1-1
+cloudfall_rabbitmq_package_version: "{{ cloudfall_rabbitmq_service.rabbitmq.version }}-1"
+# The series Cloudfall installs and the oldest Erlang each runs on, the same
+# table as cloudfall.rabbitmq.SUPPORTED_SERIES (a test compares them).
+cloudfall_rabbitmq_erlang_minimum:
+  "4.3": "27.0"
+  "4.4": "27.0"
+# Team RabbitMQ's repository for the Debian release; Erlang comes from Debian.
+cloudfall_rabbitmq_repository_key_url: >-
+  https://keys.openpgp.org/vks/v1/by-fingerprint/0A9AF2115F4687BD29803A206B73A36E6026DFCA
+# Armored: APT reads a .asc keyring as it is.
+cloudfall_rabbitmq_repository_key_path: /etc/apt/keyrings/rabbitmq-team.asc
+cloudfall_rabbitmq_repository_urls:
+  - https://deb1.rabbitmq.com/rabbitmq-server/debian/{{ ansible_facts['distribution_release'] }}
+  - https://deb2.rabbitmq.com/rabbitmq-server/debian/{{ ansible_facts['distribution_release'] }}
+# The Erlang packages RabbitMQ's Debian guide installs, from the Debian release.
+cloudfall_rabbitmq_erlang_packages:
+  - erlang-base
+  - erlang-asn1
+  - erlang-crypto
+  - erlang-eldap
+  - erlang-ftp
+  - erlang-inets
+  - erlang-mnesia
+  - erlang-os-mon
+  - erlang-parsetools
+  - erlang-public-key
+  - erlang-runtime-tools
+  - erlang-snmp
+  - erlang-ssl
+  - erlang-syntax-tools
+  - erlang-tftp
+  - erlang-tools
+  - erlang-xmerl
+cloudfall_rabbitmq_data_path: /var/lib/rabbitmq
+cloudfall_rabbitmq_cookie_path: /var/lib/rabbitmq/.erlang.cookie
+cloudfall_rabbitmq_config_directory: /etc/rabbitmq
+# The managed settings, each in a file of its own that sorts after the
+# operator's (S-023, What each server needs); audit compares only these.
+cloudfall_rabbitmq_managed_files:
+  - 90-cloudfall-listeners.conf
+  - 91-cloudfall-limits.conf
+  - 92-cloudfall-cluster.conf
+  - 93-cloudfall-metrics.conf
+# Below it a node stops taking messages while there is room to drain.
+cloudfall_rabbitmq_disk_free_limit: 2GB
+# A node is rabbit@ and its short hostname, which RabbitMQ takes by default.
+cloudfall_rabbitmq_node_name: rabbit@{{ cloudfall_hostname.split('.')[0] }}
+cloudfall_rabbitmq_node_names: >-
+  {{
+    cloudfall_rabbitmq_service.rabbitmq.nodes
+    | map('extract', hostvars, 'cloudfall_hostname')
+    | map('regex_replace', '^([^.]+).*$', 'rabbit@\1')
+    | list
+  }}
+cloudfall_rabbitmq_distribution_port: 25672
+cloudfall_rabbitmq_metrics_port: 15692
+# The quorum queue size continuous membership reconciliation grows toward.
+cloudfall_rabbitmq_target_group_size: 3
+# Tags Cloudfall puts on every virtual host it creates; the owner's name
+# follows the prefix, so audit and a later converge know what is Cloudfall's
+# with no state outside the cluster.
+cloudfall_rabbitmq_managed_tag: cloudfall-managed
+cloudfall_rabbitmq_owner_tag_prefix: "cloudfall-owner:"
+# The host directory the definitions file that sets the owners' hashes is
+# staged in, 0700 root; the file is removed after the run.
+cloudfall_rabbitmq_state_directory: /var/lib/cloudfall/rabbitmq
+cloudfall_rabbitmq_ctl: /usr/sbin/rabbitmqctl
+cloudfall_rabbitmq_diagnostics: /usr/sbin/rabbitmq-diagnostics
+# Whether this server is the service's home, where the virtual hosts and
+# users converge once for the whole cluster (S-023).
+cloudfall_rabbitmq_home: >-
+  {{ cloudfall_rabbitmq_service.server == cloudfall_server_id }}
+cloudfall_rabbitmq_definitions_path: >-
+  {{ cloudfall_rabbitmq_state_directory }}/{{ cloudfall_rabbitmq_service.id }}-owners.json

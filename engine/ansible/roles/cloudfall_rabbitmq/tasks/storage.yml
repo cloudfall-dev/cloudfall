@@ -1,0 +1,63 @@
+---
+# S-023's volume requirement: the data directory lives on the rabbitmq
+# volume, mounted before the package makes its first node there. The
+# services converge decided its action before any host changed (S-014); a
+# run that brings no decision (cloudfall-engine playbook run) needs the
+# volume already mounted.
+- name: Create, grow and mount the data volume
+  ansible.builtin.include_role:
+    name: cloudfall_volumes
+  vars:
+    cloudfall_volumes_actions: "{{ cloudfall_rabbitmq_volume_actions }}"
+  when: cloudfall_rabbitmq_volume_actions | length > 0
+
+- name: Read what is mounted at the data directory
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --noheadings
+      - --output
+      - SOURCE
+      - --mountpoint
+      - "{{ cloudfall_rabbitmq_data_path }}"
+  register: cloudfall_rabbitmq_data_mount
+  # rc 1: nothing is mounted there
+  failed_when: cloudfall_rabbitmq_data_mount.rc not in [0, 1]
+  changed_when: false
+  check_mode: false
+
+# A dry run creates no volume, so only a real run can tell
+- name: Refuse a data directory that is not its volume
+  ansible.builtin.assert:
+    that:
+      - cloudfall_rabbitmq_data_mount.rc == 0
+    fail_msg: >-
+      {{ cloudfall_rabbitmq_data_path }} on {{ cloudfall_server_id }} is not a
+      mounted volume; converge the service through cloudfall
+      (converge_services or operator approve), which creates the rabbitmq
+      volume in its baseline's storage pool
+  when: not ansible_check_mode
+
+# The package's postinst creates them too; made first, the volume's root is
+# the node's before the package writes to it, and the cookie has its owner
+- name: Create the rabbitmq group
+  ansible.builtin.group:
+    name: rabbitmq
+    system: true
+
+- name: Create the rabbitmq user
+  ansible.builtin.user:
+    name: rabbitmq
+    group: rabbitmq
+    system: true
+    home: "{{ cloudfall_rabbitmq_data_path }}"
+    create_home: false
+    shell: /bin/false
+
+- name: Give the data directory to the node
+  ansible.builtin.file:
+    path: "{{ cloudfall_rabbitmq_data_path }}"
+    state: directory
+    owner: rabbitmq
+    group: rabbitmq
+    mode: "0755"

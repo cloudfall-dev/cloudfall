@@ -1,0 +1,8 @@
+# Managed by Cloudfall: replaced on every converge (S-023)
+# One node is a cluster that waits for two more
+cluster_formation.peer_discovery_backend = classic_config
+{% for node in cloudfall_rabbitmq_node_names %}
+cluster_formation.classic_config.nodes.{{ loop.index }} = {{ node }}
+{% endfor %}
+quorum_queue.continuous_membership_reconciliation.enabled = true
+quorum_queue.continuous_membership_reconciliation.target_group_size = {{ cloudfall_rabbitmq_target_group_size }}
