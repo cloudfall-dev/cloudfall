@@ -4,3 +4,8 @@ cloudfall_nginx_site_acme_webroot: /var/lib/letsencrypt
 cloudfall_nginx_site_receipt_directory: ""
 # Debian's Nginx runs its workers as www-data.
 cloudfall_nginx_site_worker_user: www-data
+# HTTP/2 on the TLS server block. Off while nginx's HTTP/2 flow control is
+# exploitable (NGINX2Root, CVE-2026-123007, fixed in nginx 1.31.9); turn it on
+# with `--extra-vars cloudfall_nginx_site_http2=true` or the inventory once the
+# installed nginx has the fix.
+cloudfall_nginx_site_http2: false

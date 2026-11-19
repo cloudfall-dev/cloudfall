@@ -182,6 +182,8 @@ def _render_all(
                             "cloudfall_nginx_site_acme_webroot": "/var/lib/letsencrypt",
                             "cloudfall_nginx_site_tls_active": tls_active,
                             "cloudfall_nginx_site_version": version,
+                            # The golden files predate the switch; HTTP/2 was always on.
+                            "cloudfall_nginx_site_http2": True,
                         },
                     }
                 )

@@ -38,10 +38,10 @@
   ansible.builtin.include_tasks: static_access.yml
   when: cloudfall_nginx_site_traverse_directories | length > 0
 
-# The TLS server block spells HTTP/2 the way the installed Nginx parses it:
-# `http2 on;` exists only from 1.25.1, and Debian 12 ships 1.22.1. Nginx
-# prints its version on stderr. The probe also runs in check mode, since the
-# template needs the version there too.
+# With cloudfall_nginx_site_http2 on, the TLS server block spells HTTP/2 the
+# way the installed Nginx parses it: `http2 on;` exists only from 1.25.1, and
+# Debian 12 ships 1.22.1. Nginx prints its version on stderr. The probe also
+# runs in check mode, since the template needs the version there too.
 - name: Read the installed Nginx version
   ansible.builtin.command:
     argv:
