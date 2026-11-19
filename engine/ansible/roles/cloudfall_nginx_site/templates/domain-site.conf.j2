@@ -90,7 +90,14 @@ server {
 {% if cloudfall_nginx_site_tls_active %}
 
 server {
-{% if cloudfall_nginx_site_version is version('1.25.1', '>=') %}
+{#
+  `| bool` because a key=value `--extra-vars` hands the role the string
+  "false", which is truthy.
+#}
+{% if not cloudfall_nginx_site_http2 | bool %}
+    listen 443 ssl;
+    listen [::]:443 ssl;
+{% elif cloudfall_nginx_site_version is version('1.25.1', '>=') %}
     listen 443 ssl;
     listen [::]:443 ssl;
     http2 on;

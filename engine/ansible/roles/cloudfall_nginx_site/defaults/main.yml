@@ -2,5 +2,7 @@
 cloudfall_nginx_site_issue_certificate: false
 cloudfall_nginx_site_acme_webroot: /var/lib/letsencrypt
 cloudfall_nginx_site_receipt_directory: ""
+# false renders the TLS server without HTTP/2 on every Nginx version.
+cloudfall_nginx_site_http2: true
 # Debian's Nginx runs its workers as www-data.
 cloudfall_nginx_site_worker_user: www-data
