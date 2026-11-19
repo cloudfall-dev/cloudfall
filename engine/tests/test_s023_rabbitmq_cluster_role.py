@@ -241,6 +241,11 @@ def test_s023_9_both_directions_verify_the_project_ca() -> None:
     # A peer without a certificate of the project CA is refused
     assert "{fail_if_no_peer_cert, true}" in server
     assert "verify_none" not in terms
+    # The connecting side checks the peer's name: Erlang's default
+    # server_name_indication, the host part of the node name, stays in force
+    assert "server_name_indication" not in terms
+    assert "verify_fun" not in terms
+    assert "customize_hostname_check" not in terms
     assert terms.rstrip().endswith("].")
 
 

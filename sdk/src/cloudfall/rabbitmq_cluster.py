@@ -5,14 +5,16 @@ node discovery (epmd, 4369) and the inter-node port (25672) on each node's
 IPv4, from its ``network`` or an IP ``address``: its firewall admits both
 from the other nodes' addresses only, every node resolves the others'
 hostnames to those addresses, and every connection between nodes runs TLS
-with the node's certificate from the project CA, verified in both directions.
+with the node's certificate from the project CA, verified in both directions;
+the connecting side also checks the peer's short hostname, the host part of
+its node name, which the certificate names.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from cloudfall.domain import IpNetworkCidr, NetworkProtocol, TcpPort
+from cloudfall.domain import Hostname, IpNetworkCidr, NetworkProtocol, TcpPort
 from cloudfall.elasticsearch_cluster import transport_address
 from cloudfall.inventory import SourceRestrictedFirewallRule, server_source_networks
 from cloudfall.rabbitmq_access import CA_PATH, CERTIFICATE_PATH, KEY_PATH
@@ -20,6 +22,7 @@ from cloudfall.rabbitmq_access import CA_PATH, CERTIFICATE_PATH, KEY_PATH
 if TYPE_CHECKING:
     from ipaddress import IPv4Address
 
+    from cloudfall.domain import IpAddress
     from cloudfall.inventory import ServerInventory, ServiceInventory
 
 EPMD_PORT = TcpPort(4369)
@@ -35,9 +38,30 @@ def is_cluster(service: ServiceInventory) -> bool:
     return service.rabbitmq is not None and len(service.rabbitmq.nodes) > 1
 
 
+def short_hostname(server: ServerInventory) -> Hostname:
+    """Return the server's hostname up to its first dot: ``h2`` of ``h2.example``."""
+    return Hostname(server.hostname.value.removesuffix(".").split(".")[0])
+
+
 def node_name(server: ServerInventory) -> str:
     """Return ``rabbit@`` and the server's short hostname, the node's name."""
-    return f"rabbit@{server.hostname.value.removesuffix('.').split('.')[0]}"
+    return f"rabbit@{short_hostname(server).value}"
+
+
+def node_certificate_names(
+    names: tuple[Hostname | IpAddress, ...], server: ServerInventory
+) -> tuple[Hostname | IpAddress, ...]:
+    """Return a node of three's certificate names: ``names``, then its short hostname.
+
+    A node connecting to another checks the host part of its node name, the
+    short hostname, against the peer's certificate, so the certificate names
+    it beside the hostname and addresses a client reaches it at.
+    """
+    short = short_hostname(server)
+    known = {name.value.removesuffix(".").lower() for name in names}
+    if short.value.lower() in known:
+        return names
+    return (*names, short)
 
 
 def _address(service: ServiceInventory, server: ServerInventory) -> IPv4Address:

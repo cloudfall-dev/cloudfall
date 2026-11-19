@@ -55,6 +55,9 @@ from cloudfall.rabbitmq_cluster import (
 from cloudfall.rabbitmq_cluster import (
     EPMD_PORT as RABBITMQ_EPMD_PORT,
 )
+from cloudfall.rabbitmq_cluster import (
+    node_certificate_names as rabbitmq_node_certificate_names,
+)
 
 if TYPE_CHECKING:
     from cloudfall.inventory import (
@@ -750,8 +753,9 @@ def _rabbitmq_requirements(
     node discovery and the inter-node port open to the other nodes only. A
     node of three, or one with ``clientAccess``, needs its one certificate
     from the project CA, usage server and client: the nodes verify each other
-    with it in both directions, and the clients of ``clientAccess`` verify
-    the node; the TLS client port is opened to ``allowedSources``, networks
+    with it in both directions, a node of three's naming its short hostname
+    too, which a connecting node checks, and the clients of ``clientAccess``
+    verify the node; the TLS client port is opened to ``allowedSources``, networks
     rather than servers, by the firewall alone. One node without
     ``clientAccess`` listens on loopback only and needs neither.
     """
@@ -808,7 +812,9 @@ def _rabbitmq_requirements(
     if len(rabbitmq.nodes) == 1 and rabbitmq.client_access is None:
         return placed
     # One certificate per node from the project CA serves the nodes of three
-    # between them and the clients of clientAccess, which verify it at its IPv4
+    # between them and the clients of clientAccess, which verify it at its IPv4;
+    # a node of three's also names its short hostname, the host part of its
+    # node name, which the connecting node checks
     placed.extend(
         (
             node_id,
@@ -817,7 +823,11 @@ def _rabbitmq_requirements(
                 CertificateRequirement(
                     RABBITMQ_REQUIREMENT_NAME,
                     CertificateUsage.SERVER_AND_CLIENT,
-                    elasticsearch_node_names(servers[node_id]),
+                    rabbitmq_node_certificate_names(
+                        elasticsearch_node_names(servers[node_id]), servers[node_id]
+                    )
+                    if len(rabbitmq.nodes) > 1
+                    else elasticsearch_node_names(servers[node_id]),
                     RABBITMQ_CERTIFICATE_PATH,
                     RABBITMQ_KEY_PATH,
                     RABBITMQ_CA_PATH,

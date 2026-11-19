@@ -106,9 +106,12 @@ def test_s023_9_each_node_needs_its_ports_from_the_other_two_and_a_certificate(
             spec for spec in placed[node] if isinstance(spec, CertificateRequirement)
         )
         assert certificate.usage is CertificateUsage.SERVER_AND_CLIENT
+        # The short hostname is the host part of the node's name, which the
+        # connecting node checks against the certificate
         assert [name.value for name in certificate.subject_names] == [
             f"{node}.example.internal",
             ADDRESSES[node],
+            node,
         ]
         assert (
             certificate.certificate_path,
@@ -365,10 +368,15 @@ def test_s023_9_the_project_ca_signs_each_node_for_both_directions(
             ExtendedKeyUsageOID.SERVER_AUTH,
             ExtendedKeyUsageOID.CLIENT_AUTH,
         }
+        # The short hostname is what a connecting node checks: rabbit@h2's host
         assert certificate_names(signed) == {
             f"{node}.example.internal",
             ADDRESSES[node],
+            node,
         }
+        assert signed.extensions.get_extension_for_class(
+            x509.SubjectAlternativeName
+        ).value.get_values_for_type(x509.DNSName) == [f"{node}.example.internal", node]
         # The key the node made never left it
         assert (node, "rabbitmq") in recorder.nodes.keys
     assert "PRIVATE KEY" not in json.dumps(recorder.services)

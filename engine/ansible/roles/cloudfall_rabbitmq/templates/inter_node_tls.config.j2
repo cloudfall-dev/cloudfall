@@ -1,9 +1,10 @@
 %% Managed by Cloudfall: replaced on every converge (S-023)
 %% Every connection between nodes, and of the command-line tools, runs TLS
 %% with the node's certificate from the project CA, verified both ways: a
-%% peer without a certificate of that CA is refused. The CA, not a name,
-%% is what is checked: a node is reached at the address its hostname
-%% resolves to.
+%% peer without a certificate of that CA is refused. The connecting side
+%% also checks the peer's name: Erlang sends the host part of the node name
+%% (the short hostname of rabbit@h2) as server_name_indication and verifies
+%% it against the certificate, which names the node's short hostname.
 [
   {server, [
     {cacertfile, "{{ cloudfall_rabbitmq_node.caPath }}"},
@@ -18,7 +19,6 @@
     {certfile, "{{ cloudfall_rabbitmq_node.certificatePath }}"},
     {keyfile, "{{ cloudfall_rabbitmq_node.keyPath }}"},
     {secure_renegotiate, true},
-    {verify, verify_peer},
-    {server_name_indication, disable}
+    {verify, verify_peer}
   ]}
 ].
