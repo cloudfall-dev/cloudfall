@@ -1,3 +1,3 @@
-### Added
+### Changed
 
-- The `cloudfall_nginx_site` role takes `cloudfall_nginx_site_http2` (bool, default `true`): set it to `false` in the inventory or with `--extra-vars cloudfall_nginx_site_http2=false` and the managed vhost's HTTPS server renders `listen 443 ssl;` and `listen [::]:443 ssl;` with no `http2` on any Nginx version, so turning HTTP/2 off survives the next `domains` run. The default renders a byte-identical vhost (#551)
+- The managed vhost's HTTPS server no longer serves HTTP/2 by default: the `cloudfall_nginx_site` role takes `cloudfall_nginx_site_http2` (bool, default `false`), and the next `domains` run renders `listen 443 ssl;` and `listen [::]:443 ssl;` with no `http2` on any Nginx version. Once the installed Nginx carries the HTTP/2 fix, set it to `true` in the inventory or with `--extra-vars cloudfall_nginx_site_http2=true` to render HTTP/2 as before (#551)

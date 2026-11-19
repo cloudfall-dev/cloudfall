@@ -107,7 +107,7 @@ argument_specs:
         default: ""
       cloudfall_nginx_site_http2:
         type: bool
-        default: true
+        default: false
       cloudfall_nginx_site_worker_user:
         type: str
         default: www-data

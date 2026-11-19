@@ -167,8 +167,8 @@ def _render_all(
 ) -> dict[str, str]:
     """Render each Domain with TLS on and off on both Nginx versions.
 
-    Role variables come from the role's defaults unless ``overrides`` names
-    the Domain's label.
+    HTTP/2 is on, the shape the golden files hold, unless ``overrides``
+    names the Domain's label.
     """
     output = tmp_path / "rendered"
     output.mkdir()
@@ -193,9 +193,7 @@ def _render_all(
                             "cloudfall_nginx_site_acme_webroot": "/var/lib/letsencrypt",
                             "cloudfall_nginx_site_tls_active": tls_active,
                             "cloudfall_nginx_site_version": version,
-                            "cloudfall_nginx_site_http2": _role_default(
-                                "cloudfall_nginx_site_http2"
-                            ),
+                            "cloudfall_nginx_site_http2": True,
                         }
                         | overrides.get(label, {}),
                     }
@@ -215,10 +213,16 @@ def rendered(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
             "nested": _routed_domain(tmp_path, _NESTED_ROUTES),
             "reversed": _routed_domain(tmp_path, _NESTED_ROUTES_REVERSED),
             "no-root": _routed_domain(tmp_path, _NO_ROOT_ROUTES),
+            "role-default": _upstream_only_domain(),
             "no-http2": _upstream_only_domain(),
             "no-http2-extra-var": _upstream_only_domain(),
         },
         {
+            "role-default": {
+                "cloudfall_nginx_site_http2": _role_default(
+                    "cloudfall_nginx_site_http2"
+                )
+            },
             "no-http2": {"cloudfall_nginx_site_http2": False},
             # What `--extra-vars cloudfall_nginx_site_http2=false` hands the role.
             "no-http2-extra-var": {"cloudfall_nginx_site_http2": "false"},
@@ -341,7 +345,7 @@ def test_s003_7_an_upstream_only_domain_renders_byte_identical(
 
 
 @pytest.mark.parametrize("nginx_version", NGINX_VERSIONS)
-@pytest.mark.parametrize("label", ["no-http2", "no-http2-extra-var"])
+@pytest.mark.parametrize("label", ["role-default", "no-http2", "no-http2-extra-var"])
 def test_http2_off_drops_it_from_the_tls_server_on_every_version(
     rendered: dict[str, str], label: str, nginx_version: str
 ) -> None:
