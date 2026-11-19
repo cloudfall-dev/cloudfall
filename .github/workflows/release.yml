@@ -56,7 +56,8 @@ jobs:
       contents: read
 
   # The roles converged on a real Debian, on the same release commit: no
-  # candidate or release is cut unless this passed (D-23)
+  # candidate or release is cut unless this passed (D-23); on a tree without
+  # the converge harness it passes with a notice and converges nothing (D-28)
   converge:
     needs: prepare
     if: needs.prepare.outputs.sha != ''
