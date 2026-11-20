@@ -345,7 +345,20 @@ def test_s003_7_an_upstream_only_domain_renders_byte_identical(
 
 
 @pytest.mark.parametrize("nginx_version", NGINX_VERSIONS)
-@pytest.mark.parametrize("label", ["role-default", "no-http2", "no-http2-extra-var"])
+@pytest.mark.parametrize("tls", ["tls", "http"])
+def test_the_role_default_serves_http2_as_the_golden_files_do(
+    rendered: dict[str, str], tls: str, nginx_version: str
+) -> None:
+    """HTTP/2 is on by default again (#555): no override, no listen change."""
+    name = f"{tls}-{nginx_version}.conf"
+
+    assert rendered[f"role-default/{name}"] == (GOLDEN / name).read_text(
+        encoding="utf-8"
+    )
+
+
+@pytest.mark.parametrize("nginx_version", NGINX_VERSIONS)
+@pytest.mark.parametrize("label", ["no-http2", "no-http2-extra-var"])
 def test_http2_off_drops_it_from_the_tls_server_on_every_version(
     rendered: dict[str, str], label: str, nginx_version: str
 ) -> None:
