@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
 import yaml
 from cloudfall.cli import main
-from cloudfall.domain import ResourceKind
+from cloudfall.domain import ResourceId, ResourceKind
 from cloudfall.inventory import PlatformInventory
+from cloudfall.lifecycle import (
+    EngineContext,
+    ExecutionStep,
+    LifecycleError,
+    backup_service,
+    verify_backup,
+)
 from cloudfall.validation import SchemaCatalog, kibana_warnings, validate_config
 from elasticsearch_project import SNAPSHOT_REPOSITORY
 from jsonschema.exceptions import ValidationError
@@ -24,7 +32,9 @@ from kibana_project import (
 )
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Callable
+
+ROOT = Path(__file__).parents[2]
 
 
 def _validate(
@@ -490,3 +500,30 @@ def test_every_other_kind_still_requires_backup(kind: str) -> None:
 
 def test_kibana_alone_needs_no_backup() -> None:
     SchemaCatalog(SCHEMAS).validate(ResourceKind.SERVICE, kibana_service())
+
+
+@pytest.mark.parametrize("operation", [backup_service, verify_backup])
+def test_backup_of_a_kibana_service_is_refused_before_any_step(
+    tmp_path: Path, operation: Callable[..., object]
+) -> None:
+    """Kibana has no backup of its own: no playbook runs, the cluster is named."""
+    project = write_project(tmp_path / "project", search_main(), kibana_service())
+    steps: list[ExecutionStep] = []
+
+    def run(step: ExecutionStep) -> object:
+        steps.append(step)
+        raise AssertionError(step.argv)
+
+    context = EngineContext(
+        project_directory=project,
+        schema_directory=SCHEMAS,
+        engine_directory=ROOT / "engine",
+        inventory_file=project / "tmp" / "ansible-inventory.json",
+        run=run,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(LifecycleError, match="Service/search-main") as error:
+        operation(context, ResourceId("search-kibana"), tmp_path / "receipts")
+
+    assert error.value.code == "lifecycle_service_no_backup"
+    assert steps == []
