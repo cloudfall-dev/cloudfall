@@ -1,0 +1,3 @@
+### Changed
+
+- The managed vhost's HTTPS server serves HTTP/2 by default again: `cloudfall_nginx_site_http2` defaults to `true`, so the next `domains` run renders HTTP/2 in the form the installed Nginx parses. It was off while Nginx's HTTP/2 flow control was exploitable (CVE-2026-123007); Debian has shipped the fix for both targets, bookworm `1.22.1-9+deb12u11` (DLA-4918-1) and trixie `1.26.3-3+deb13u11` (DSA-6642-1), from the security suite only. Install that Nginx on a host before its next `domains` run, or keep HTTP/1.1 only with `cloudfall_nginx_site_http2: false` in the inventory or `--extra-vars cloudfall_nginx_site_http2=false` (#555)
