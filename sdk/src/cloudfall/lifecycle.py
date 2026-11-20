@@ -126,6 +126,7 @@ _ANSIBLE_IMPLICIT_GROUPS = frozenset({"all", "ungrouped"})
 ERROR_EXECUTION_FAILED = "lifecycle_execution_failed"
 _ERROR_RECEIPT_MISSING = "lifecycle_receipt_missing"
 _ERROR_SERVICE_MISSING = "lifecycle_service_missing"
+_ERROR_SERVICE_NO_BACKUP = "lifecycle_service_no_backup"
 _ERROR_DATABASE_MISSING = "lifecycle_database_missing"
 _ERROR_SOURCE_URL_MISSING = "lifecycle_source_url_missing"
 ERROR_DATA_COPY_SCHEMA_INVALID = "data_copy_schema_invalid"
@@ -1850,6 +1851,13 @@ def _backup_operation(
     if declared is None:
         detail = f"declared service does not exist: {service_id}"
         raise LifecycleError(_ERROR_SERVICE_MISSING, detail)
+    if declared.kibana is not None:
+        # Kibana's saved objects are in the snapshots of the cluster it reads
+        detail = (
+            f"Service/{service_id} has no backup of its own; back up "
+            f"Service/{declared.kibana.elasticsearch}, whose snapshots hold it"
+        )
+        raise LifecycleError(_ERROR_SERVICE_NO_BACKUP, detail)
     run_engine_playbook(
         context,
         "backup.yml",
