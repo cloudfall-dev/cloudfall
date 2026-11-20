@@ -227,3 +227,11 @@ Status on 2026-11-15: partly built. component.service.j2 sets only User, Group, 
 - Applies to: sdk/src/cloudfall/app.py, sdk/src/cloudfall/agent_gate.py, sdk/src/cloudfall/commands.py, deploy, cloudfall mcp serve
 - Enforced by: review; sdk/tests/test_s018_granted_run.py
 - Zone: contract-change (notify, veto until 2026-11-18T10:48:00Z)
+
+## D-28: Gate sessions run ansible-playbook only as the syntax check on the example inventory
+
+- Decided: 2026-11-20, in cloudfall-dev/cloudfall#548
+- Rule: A gate session's `uv run` may start ansible-playbook ([hooks] uv_run in .github/shipmill.toml) only as `uv run ansible-playbook --syntax-check` against the example inventory, as .github/workflows/ci.yml does; it never runs a playbook without --syntax-check, nor against any other inventory or host
+- Why: the hook passes ansible-playbook with any arguments and the gate host's ssh config reaches the fleet as root, so this rule is the limit until gate sessions lose that access; decided by `@romamo` on #548 (own answer)
+- Applies to: .github/shipmill.toml ([hooks] uv_run), gate sessions, implementer briefs
+- Enforced by: review
