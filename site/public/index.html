@@ -107,6 +107,7 @@ a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px }
 @keyframes rot-out { to { transform: translateY(-110%); opacity: 0 } }
 @keyframes rot-in { from { transform: translateY(110%); opacity: 0 } }
 .b-door { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 16px; padding: 20px; text-decoration: none; transition: transform .15s }
+.b-door svg { display: block; width: 64px; height: 64px }
 .b-door:hover { transform: translate(-2px, -2px) }
 .b-door p { color: var(--b-dim); margin: 0 }
 .b-door .go { display: inline-block; margin-top: 10px; font-weight: 700; color: var(--b-blue) }
@@ -276,11 +277,11 @@ footer .b-brand { color: var(--b-ink); text-decoration: none; font-size: 1.1rem 
     </div>
     <div class="b-doors">
       <a class="b-card b-door" href="https://github.com/cloudfall-dev/cloudfall/blob/main/docs/render-migration-guide.md">
-        <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M14 30 C6 30 6 20 13 19 C13 11 22 8 27 13 C30 5 42 6 43 15 C50 14 52 30 44 30 Z" fill="#ffffff" stroke="#1a2940" stroke-width="2.5" stroke-linejoin="round"/><path d="M22 36 l2 5 M30 36 l2 5 M38 36 l2 5" stroke="#2f5bd3" stroke-width="2.5" stroke-linecap="round"/><rect x="20" y="46" width="24" height="14" rx="3" fill="#ffd04d" stroke="#1a2940" stroke-width="2.5"/></svg>
+        <svg width="64" height="64" viewBox="0 0 64 64" aria-hidden="true"><path d="M14 30 C6 30 6 20 13 19 C13 11 22 8 27 13 C30 5 42 6 43 15 C50 14 52 30 44 30 Z" fill="#ffffff" stroke="#1a2940" stroke-width="2.5" stroke-linejoin="round"/><path d="M22 36 l2 5 M30 36 l2 5 M38 36 l2 5" stroke="#2f5bd3" stroke-width="2.5" stroke-linecap="round"/><rect x="20" y="46" width="24" height="14" rx="3" fill="#ffd04d" stroke="#1a2940" stroke-width="2.5"/></svg>
         <div><h4>In a cloud or on a PaaS</h4><p>Render import is built in; from anywhere else, describe your apps in config. Migrate apps and data, cut DNS, keep the difference as runway.</p><span class="go">Read the migration guide →</span></div>
       </a>
       <a class="b-card b-door" href="#msp">
-        <svg viewBox="0 0 64 64" aria-hidden="true"><rect x="4" y="22" width="16" height="22" rx="3" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/><rect x="24" y="14" width="16" height="30" rx="3" fill="#ffd04d" stroke="#1a2940" stroke-width="2.5"/><rect x="44" y="22" width="16" height="22" rx="3" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/><path d="M4 52 h56" stroke="#1a2940" stroke-width="2.5" stroke-linecap="round"/><circle cx="32" cy="22" r="2.5" fill="#2b9a66"/></svg>
+        <svg width="64" height="64" viewBox="0 0 64 64" aria-hidden="true"><rect x="4" y="22" width="16" height="22" rx="3" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/><rect x="24" y="14" width="16" height="30" rx="3" fill="#ffd04d" stroke="#1a2940" stroke-width="2.5"/><rect x="44" y="22" width="16" height="22" rx="3" fill="#ffffff" stroke="#1a2940" stroke-width="2.5"/><path d="M4 52 h56" stroke="#1a2940" stroke-width="2.5" stroke-linecap="round"/><circle cx="32" cy="22" r="2.5" fill="#2b9a66"/></svg>
         <div><h4>Already on servers, yours or your clients'</h4><p>Managed by hand, with scripts or with Ansible. Start from Cloudfall's baseline operations, or point it at the Ansible repo you already run.</p><span class="go">See how it fits →</span></div>
       </a>
     </div>
