@@ -136,6 +136,21 @@ STEP_TIMEOUT_SECONDS = 3600
 """How long one step (an inventory render or a playbook run) may take."""
 
 
+def restart_playbook_timeout(component: ComponentInventory, restarts: int) -> int:
+    """Return the limit on a playbook that restarts ``component`` that many times.
+
+    ``systemctl restart`` waits for the stop, which a declared
+    ``service.stop.timeoutSeconds`` lets run that long, then the start; the
+    servers restart one at a time, so each restart adds its stop timeout to
+    ``STEP_TIMEOUT_SECONDS``, which covers the starts and everything else. A
+    component without one keeps ``STEP_TIMEOUT_SECONDS``.
+    """
+    stop = component.service.stop_timeout
+    if stop is None:
+        return STEP_TIMEOUT_SECONDS
+    return STEP_TIMEOUT_SECONDS + restarts * stop.value
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionStep:
     """One subprocess invocation with explicit environment additions."""
@@ -562,12 +577,13 @@ def verify_artifact(
 
 def plan_deploy(
     context: EngineContext,
-    component_id: ResourceId,
+    component: ComponentInventory,
     release: ReleaseId,
     artifact: VerifiedArtifact,
     options: DeployOptions,
 ) -> ExecutionPlan:
     """Compose the subprocess steps for one deployment."""
+    component_id = component.resource_id
     extra_vars: dict[str, object] = {
         "cloudfall_deploy_component_id": component_id.value,
         "cloudfall_deploy_release": release.value,
@@ -599,17 +615,28 @@ def plan_deploy(
         release=release,
         steps=(
             _render_inventory_step(context),
-            _playbook_step(context, "deploy.yml", extra_vars),
+            _playbook_step(
+                context,
+                "deploy.yml",
+                extra_vars,
+                # Each server restarts once; a failed gate restarts the failed
+                # server and every server switched before it once more, back
+                # on the previous release.
+                timeout_seconds=restart_playbook_timeout(
+                    component, 2 * len(component.server_ids)
+                ),
+            ),
         ),
     )
 
 
 def plan_rollback(
     context: EngineContext,
-    component_id: ResourceId,
+    component: ComponentInventory,
     release: ReleaseId,
 ) -> ExecutionPlan:
     """Compose the subprocess steps for one explicit rollback."""
+    component_id = component.resource_id
     extra_vars: dict[str, object] = {
         "cloudfall_deploy_component_id": component_id.value,
         "cloudfall_deploy_release": release.value,
@@ -620,15 +647,23 @@ def plan_rollback(
         release=release,
         steps=(
             _render_inventory_step(context),
-            _playbook_step(context, "rollback.yml", extra_vars),
+            _playbook_step(
+                context,
+                "rollback.yml",
+                extra_vars,
+                timeout_seconds=restart_playbook_timeout(
+                    component, len(component.server_ids)
+                ),
+            ),
         ),
     )
 
 
 def plan_restart(
-    context: EngineContext, component_id: ResourceId
+    context: EngineContext, component: ComponentInventory
 ) -> ExecutionPlan:
     """Compose the subprocess steps for one health-gated restart."""
+    component_id = component.resource_id
     extra_vars: dict[str, object] = {
         "cloudfall_deploy_component_id": component_id.value,
     }
@@ -638,7 +673,14 @@ def plan_restart(
         release=None,
         steps=(
             _render_inventory_step(context),
-            _playbook_step(context, "restart.yml", extra_vars),
+            _playbook_step(
+                context,
+                "restart.yml",
+                extra_vars,
+                timeout_seconds=restart_playbook_timeout(
+                    component, len(component.server_ids)
+                ),
+            ),
         ),
     )
 
@@ -1415,7 +1457,7 @@ def deploy(
             raise LifecycleError(_ERROR_ARTIFACT_DIGEST, detail)
         plan = plan_deploy(
             context,
-            component_id,
+            component,
             release,
             artifact,
             resolved_options,
@@ -1548,7 +1590,7 @@ def rollback(
     """Switch one component back to an existing release, health gated."""
     component = _component(context, component_id)
     with component_lock(context.project_directory, component_id, "rollback"):
-        execute_plan(plan_rollback(context, component_id, release), context.run)
+        execute_plan(plan_rollback(context, component, release), context.run)
     return LifecycleResult(
         action="rollback",
         component_id=component_id,
@@ -1566,7 +1608,7 @@ def restart(
     """Restart one component and require its declared health check."""
     component = _component(context, component_id)
     with component_lock(context.project_directory, component_id, "restart"):
-        execute_plan(plan_restart(context, component_id), context.run)
+        execute_plan(plan_restart(context, component), context.run)
     return LifecycleResult(
         action="restart",
         component_id=component_id,
@@ -1926,6 +1968,8 @@ def _playbook_step(
     playbook_name: str,
     extra_vars: Mapping[str, object],
     limit: ResourceId | None = None,
+    *,
+    timeout_seconds: int = STEP_TIMEOUT_SECONDS,
 ) -> ExecutionStep:
     if limit is not None and limit.value in _ANSIBLE_IMPLICIT_GROUPS:
         # ``--limit`` reads a host pattern and matches a group before a host,
@@ -1954,4 +1998,5 @@ def _playbook_step(
             str(playbook),
         ),
         environment=context.ansible_environment(),
+        timeout_seconds=timeout_seconds,
     )

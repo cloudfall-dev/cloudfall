@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from cloudfall.cli import main
-from cloudfall.domain import ResourceId, ResourceKind
+from cloudfall.domain import ResourceId, ResourceKind, ServiceStopTimeout
 from cloudfall.validation import ConfigValidationError, validate_config
 from examples_project import copy_examples
 
@@ -498,6 +498,56 @@ def test_s005_11_config_validate_accepts_a_declared_release(
     state = validate_config(_project_with_release(tmp_path, release), SCHEMAS)
 
     assert state.counts_by_kind()["Component"] == 1
+
+
+def _project_with_service_stop(tmp_path: Path, stop: object) -> Path:
+    project_directory = tmp_path / "config"
+    copy_examples(project_directory)
+    component_path = project_directory / "components" / "crm-backend.yaml"
+    original = component_path.read_text(encoding="utf-8")
+    declared = '      - "8100"\n'
+    assert declared in original
+    component_path.write_text(
+        original.replace(declared, f"{declared}    stop: {json.dumps(stop)}\n"),
+        encoding="utf-8",
+    )
+    return project_directory
+
+
+@pytest.mark.parametrize(
+    ("stop", "accepted"),
+    [
+        ({"timeoutSeconds": 1}, True),
+        ({"timeoutSeconds": 900}, True),
+        ({"timeoutSeconds": 1800}, True),
+        ({"timeoutSeconds": 0}, False),
+        ({"timeoutSeconds": 1801}, False),
+        ({"timeoutSeconds": "900"}, False),
+        ({"timeoutSeconds": 900, "killMode": "mixed"}, False),
+        ({}, False),
+    ],
+)
+def test_config_validate_bounds_service_stop_timeout_as_the_sdk_does(
+    tmp_path: Path,
+    stop: dict[str, object],
+    accepted: bool,  # noqa: FBT001 - a pytest parameter.
+) -> None:
+    """The schema and ``ServiceStopTimeout`` agree on what a stop timeout is."""
+    project_directory = _project_with_service_stop(tmp_path, stop)
+    sdk_checks_it = set(stop) == {"timeoutSeconds"}
+
+    if accepted:
+        state = validate_config(project_directory, SCHEMAS)
+        assert state.counts_by_kind()["Component"] == 1
+        timeout = stop["timeoutSeconds"]
+        assert ServiceStopTimeout.from_boundary(timeout).value == timeout
+        return
+    with pytest.raises(ConfigValidationError) as error:
+        validate_config(project_directory, SCHEMAS)
+    assert error.value.issue.code == "schema_validation_failed"
+    if sdk_checks_it:
+        with pytest.raises((TypeError, ValueError)):
+            ServiceStopTimeout.from_boundary(stop["timeoutSeconds"])
 
 
 def _logging_migration_project(tmp_path: Path, migration: str) -> Path:

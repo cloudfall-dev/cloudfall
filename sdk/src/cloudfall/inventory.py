@@ -77,6 +77,7 @@ from cloudfall.domain import (
     ServiceKind,
     ServiceManager,
     ServiceName,
+    ServiceStopTimeout,
     Sha256Digest,
     SmtpSmarthost,
     SmtpUsername,
@@ -524,14 +525,19 @@ class ComponentService:
     manager: ServiceManager
     name: ResourceId
     command: ServiceCommand
+    stop_timeout: ServiceStopTimeout | None = None
+    """``stop.timeoutSeconds``; ``None`` leaves systemd's own default."""
 
     def as_dict(self) -> dict[str, object]:
-        """Serialize the service contract."""
-        return {
+        """Serialize the service contract, ``stop`` only when declared."""
+        result: dict[str, object] = {
             "manager": self.manager.value,
             "name": self.name.value,
             "command": list(self.command.value),
         }
+        if self.stop_timeout is not None:
+            result["stop"] = {"timeoutSeconds": self.stop_timeout.value}
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -2190,6 +2196,7 @@ def _component_inventory(document: ResourceDocument) -> ComponentInventory:
             manager=ServiceManager.from_boundary(service.get("manager")),
             name=ResourceId.from_boundary(service.get("name")),
             command=ServiceCommand.from_boundary(service.get("command")),
+            stop_timeout=_service_stop_timeout(service.get("stop")),
         ),
         health_check=_component_health_check(health),
         secret_refs=_secret_references(spec.get("secretRefs")),
@@ -2236,6 +2243,15 @@ def _component_build(spec: Mapping[str, object]) -> ComponentBuild | None:
         ),
         include=include,
     )
+
+
+def _service_stop_timeout(value: object) -> ServiceStopTimeout | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        message = "validated component service stop is not a mapping"
+        raise TypeError(message)
+    return ServiceStopTimeout.from_boundary(value.get("timeoutSeconds"))
 
 
 def _component_release(value: object) -> ComponentRelease | None:

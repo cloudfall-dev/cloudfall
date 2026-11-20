@@ -14,6 +14,7 @@ from cloudfall.domain import (
     RelativeDirectory,
     ReleaseCommandTimeout,
     ResourceId,
+    ServiceStopTimeout,
     TcpPort,
 )
 from cloudfall.inventory import (
@@ -116,6 +117,55 @@ def test_s005_6_the_release_server_is_the_first_deployment_server(
         "command": [".venv/bin/alembic", "upgrade", "head"],
         "timeoutSeconds": 300,
     }
+
+
+def test_a_service_stop_timeout_is_refused_outside_1_to_1800() -> None:
+    assert ServiceStopTimeout.from_boundary(1).value == 1
+    assert ServiceStopTimeout.from_boundary(1800).value == 1800
+    for timeout in (0, 1801):
+        with pytest.raises(ValueError, match="invalid service stop timeout"):
+            ServiceStopTimeout.from_boundary(timeout)
+    for not_an_integer in (None, True, "900"):
+        with pytest.raises(TypeError, match="must be an integer"):
+            ServiceStopTimeout.from_boundary(not_an_integer)
+
+
+def test_a_component_without_service_stop_serializes_as_before() -> None:
+    component = _inventory().components[0]
+
+    assert component.service.stop_timeout is None
+    assert component.as_dict()["service"] == {
+        "manager": "systemd",
+        "name": "crm-backend",
+        "command": [
+            ".venv/bin/uvicorn",
+            "crm.asgi:application",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8100",
+        ],
+    }
+
+
+def test_a_declared_service_stop_reaches_the_inventory(tmp_path: Path) -> None:
+    project = tmp_path / "config"
+    copy_examples(project)
+    path = project / "components" / "crm-backend.yaml"
+    text = path.read_text(encoding="utf-8")
+    text = text.replace(
+        '      - "8100"\n', '      - "8100"\n    stop:\n      timeoutSeconds: 900\n'
+    )
+    path.write_text(text, encoding="utf-8")
+
+    component = PlatformInventory.from_state(
+        validate_config(project, SCHEMAS)
+    ).components[0]
+
+    assert component.service.stop_timeout == ServiceStopTimeout(900)
+    service = component.as_dict()["service"]
+    assert isinstance(service, dict)
+    assert service["stop"] == {"timeoutSeconds": 900}
 
 
 def test_s005_10_a_component_without_release_serializes_as_before() -> None:

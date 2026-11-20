@@ -13,7 +13,9 @@ from typing import Any
 import pytest
 from cloudfall.cli import main
 from cloudfall.domain import ReleaseId, ResourceId
+from cloudfall.inventory import ComponentInventory, PlatformInventory
 from cloudfall.lifecycle import (
+    STEP_TIMEOUT_SECONDS,
     DeployOptions,
     EngineContext,
     ExecutionStep,
@@ -21,12 +23,16 @@ from cloudfall.lifecycle import (
     StepRun,
     build_release_artifact,
     deploy,
+    find_component,
     plan_deploy,
     plan_health,
+    plan_restart,
+    plan_rollback,
+    restart_playbook_timeout,
     subprocess_step,
     verify_artifact,
 )
-from cloudfall.validation import SchemaCatalog
+from cloudfall.validation import SchemaCatalog, validate_config
 from examples_project import copy_examples
 
 ROOT = Path(__file__).parents[2]
@@ -161,13 +167,14 @@ def test_deploy_plan_composes_engine_contract_steps(tmp_path: Path) -> None:
 
     plan = plan_deploy(
         context,
-        ResourceId("crm-backend"),
+        _crm_backend(EXAMPLES),
         ReleaseId(RELEASE),
         verified,
         DeployOptions(receipt_directory=tmp_path / "releases"),
     )
 
     render, playbook = plan.steps
+    assert playbook.timeout_seconds == STEP_TIMEOUT_SECONDS
     assert "cloudfall_engine" in render.argv
     assert str(context.inventory_file) in render.argv
     assert playbook.argv[-1].endswith("deploy.yml")
@@ -186,6 +193,71 @@ def test_deploy_plan_composes_engine_contract_steps(tmp_path: Path) -> None:
     assert extra_vars["cloudfall_deploy_output_reference_directory"] == (
         "tmp/output/releases"
     )
+
+
+def _crm_backend(project: Path) -> ComponentInventory:
+    inventory = PlatformInventory.from_state(validate_config(project, SCHEMAS))
+    return find_component(inventory, ResourceId("crm-backend"))
+
+
+def _project_with_stop_timeout(tmp_path: Path, seconds: int) -> Path:
+    project = tmp_path / "project"
+    copy_examples(project)
+    path = project / "components" / "crm-backend.yaml"
+    text = path.read_text(encoding="utf-8")
+    declared = '      - "8100"\n'
+    assert declared in text
+    path.write_text(
+        text.replace(
+            declared, f"{declared}    stop:\n      timeoutSeconds: {seconds}\n"
+        ),
+        encoding="utf-8",
+    )
+    return project
+
+
+def test_restart_rollback_and_deploy_keep_the_step_limit_without_a_stop_timeout(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    component = _crm_backend(EXAMPLES)
+
+    for plan in (
+        plan_restart(context, component),
+        plan_rollback(context, component, ReleaseId(RELEASE)),
+    ):
+        assert plan.steps[-1].timeout_seconds == STEP_TIMEOUT_SECONDS
+
+
+def test_the_playbook_limit_covers_the_stop_timeout_of_every_restart(
+    tmp_path: Path,
+) -> None:
+    """A slow stop is waited for, not reported as a failed run (#497)."""
+    project = _project_with_stop_timeout(tmp_path, 1800)
+    context = EngineContext(
+        project_directory=project,
+        schema_directory=SCHEMAS,
+        engine_directory=ENGINE,
+        inventory_file=tmp_path / "inventory.json",
+    )
+    component = _crm_backend(project)
+    assert len(component.server_ids) == 2
+    artifact = verify_artifact(
+        _write_artifact(tmp_path), component.resource_id, ReleaseId(RELEASE), SCHEMAS
+    )
+
+    restart = plan_restart(context, component).steps[-1]
+    rollback = plan_rollback(context, component, ReleaseId(RELEASE)).steps[-1]
+    deployment = plan_deploy(
+        context, component, ReleaseId(RELEASE), artifact, DeployOptions()
+    ).steps[-1]
+
+    # One restart per server, one at a time.
+    assert restart.timeout_seconds == STEP_TIMEOUT_SECONDS + 2 * 1800
+    assert rollback.timeout_seconds == STEP_TIMEOUT_SECONDS + 2 * 1800
+    # A failed gate restarts every server switched so far once more.
+    assert deployment.timeout_seconds == STEP_TIMEOUT_SECONDS + 4 * 1800
+    assert restart_playbook_timeout(component, 1) == STEP_TIMEOUT_SECONDS + 1800
 
 
 def test_health_plan_targets_the_health_playbook(tmp_path: Path) -> None:
