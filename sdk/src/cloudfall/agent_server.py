@@ -419,6 +419,8 @@ def bound_arguments(args: McpServeArgs) -> dict[str, object]:
             "decisions": str(args.decisions),
             # why reads the agent's turns where agent investigate writes them.
             "investigations": INVESTIGATION_DIRECTORY,
+            # and the agent records in the server's store, never another one.
+            "proposals": str(args.proposals),
         }
     return {
         **shared,

@@ -37,6 +37,19 @@ WRITER_VERSION_FIELD = "writerVersion"
 """The ``spec`` field naming the Cloudfall version that last wrote a record."""
 
 
+def printable(text: str) -> str:
+    """Escape each character a terminal would not print as itself.
+
+    A record keeps an agent's free text as the agent sent it. Shown to a
+    person raw, an escape code or a direction override could hide or reorder
+    what follows it, so each such character is written as its escape.
+    """
+    return "".join(
+        char if char.isprintable() else char.encode("unicode_escape").decode("ascii")
+        for char in text
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class UnreadableRecord:
     """One record file a listing could not read, and why."""
