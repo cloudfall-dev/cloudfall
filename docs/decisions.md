@@ -194,6 +194,7 @@ Status on 2026-11-15: partly built. component.service.j2 sets only User, Group, 
 - Why: converge is the only check that runs the roles on a real Debian; a candidate cut from a commit whose converge failed ships broken roles, and the extra ~10 minutes per release is accepted
 - Applies to: .github/workflows/release.yml, .github/workflows/publish.yml, .github/workflows/converge.yml
 - Enforced by: review
+- Superseded by: D-28
 
 ## D-24: Raw diffs and run logs of declared operations stay out of git
 
@@ -227,3 +228,12 @@ Status on 2026-11-15: partly built. component.service.j2 sets only User, Group, 
 - Applies to: sdk/src/cloudfall/app.py, sdk/src/cloudfall/agent_gate.py, sdk/src/cloudfall/commands.py, deploy, cloudfall mcp serve
 - Enforced by: review; sdk/tests/test_s018_granted_run.py
 - Zone: contract-change (notify, veto until 2026-11-18T10:48:00Z)
+
+## D-28: Converge passes with a notice on a tree without the converge harness
+
+- Decided: 2026-11-19, in cloudfall-dev/cloudfall#516
+- Rule: converge.yml checks the commit it runs on for engine/tests/converge/project; when it is missing (a release line that predates the harness, such as 0.7.x) the job passes with a notice and converges nothing, and D-23's wait for converge holds only for trees that carry the harness
+- Why: a hotfix on 0.7.x could never pass D-23, since main's converge.yml ran against a tree with no fixture project; backporting a harness written for 0.8's roles costs more than a patch whose only change is a requires-python cap, so such a release ships with CI green but no Debian converge
+- Applies to: .github/workflows/converge.yml, .github/workflows/release.yml, .github/workflows/publish.yml
+- Enforced by: review
+- Supersedes: D-23

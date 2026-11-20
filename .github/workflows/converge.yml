@@ -51,14 +51,31 @@ jobs:
           ref: ${{ inputs.ref }}
           persist-credentials: false
 
+      # A release from a line that predates the converge harness (0.7.x) has
+      # no fixture project to run: the job passes with a notice, and every
+      # step below runs only on a tree that carries it (D-28, #516)
+      - name: Check the tree carries the converge harness
+        id: harness
+        working-directory: .
+        run: |
+          if [ -d engine/tests/converge/project ]; then
+            echo "present=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "::notice::no engine/tests/converge/project in this tree, so nothing is converged (D-28)"
+            echo "present=false" >> "${GITHUB_OUTPUT}"
+          fi
+
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        if: steps.harness.outputs.present == 'true'
         with:
           python-version: "3.14"
 
       - name: Install dependencies
+        if: steps.harness.outputs.present == 'true'
         run: uv sync --locked
 
       - name: Start the Debian 13 host with systemd as PID 1
+        if: steps.harness.outputs.present == 'true'
         run: |
           docker build --tag cloudfall-converge ..
           docker run --detach --name converge \
@@ -69,6 +86,7 @@ jobs:
             cloudfall-converge
 
       - name: Reach the host over SSH with a throwaway key
+        if: steps.harness.outputs.present == 'true'
         run: |
           install --directory --mode=0700 ~/.ssh
           ssh-keygen -q -t ed25519 -N '' -C converge -f ~/.ssh/converge
@@ -94,20 +112,24 @@ jobs:
           ssh 127.0.0.1 'systemctl is-system-running --wait; systemctl --no-pager --failed'
 
       - name: Declare the key and render the inventory
+        if: steps.harness.outputs.present == 'true'
         run: |
           uv run cloudfall add ssh-key ~/.ssh/converge.pub --owner ci --project .
           uv run cloudfall config validate --project .
           uv run cloudfall-engine inventory render --project . --output tmp/ansible-inventory.json
 
       - name: Bootstrap
+        if: steps.harness.outputs.present == 'true'
         run: uv run cloudfall-engine playbook run bootstrap
 
       - name: Baseline
+        if: steps.harness.outputs.present == 'true'
         run: uv run cloudfall baseline converge --project . --yes
 
       # A key that goes from active to revoked is gone after the next
       # baseline run, and the declared active key still logs in (#354, D-22)
       - name: Revoke a key, which the baseline removes
+        if: steps.harness.outputs.present == 'true'
         run: |
           ssh-keygen -q -t ed25519 -N '' -C spare -f ~/.ssh/spare
           spare="$(cut -d ' ' -f 2 ~/.ssh/spare.pub)"
@@ -129,6 +151,7 @@ jobs:
       # The ledger owner's password, sops-encrypted to a throwaway age key in
       # sops' default key file, as an operator's secrets directory holds it
       - name: Create the owner role password the services read
+        if: steps.harness.outputs.present == 'true'
         env:
           SOPS_VERSION: v3.13.3
           SOPS_SHA256: e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b
@@ -148,16 +171,19 @@ jobs:
             tmp/env/ledger.env > secrets/production/postgresql-main/ledger.env
 
       - name: Services
+        if: steps.harness.outputs.present == 'true'
         run: uv run cloudfall-engine playbook run services
 
       # The verifier the controller computed is one PostgreSQL accepts
       - name: Log in as the owner role with its password
+        if: steps.harness.outputs.present == 'true'
         run: |
           cut --delimiter='=' --fields=2- tmp/env/ledger.env \
             | ssh 127.0.0.1 'PGPASSWORD="$(cat)" psql --host=127.0.0.1 --username=ledger --dbname=ledger --no-psqlrc --tuples-only --command="SELECT current_user"' \
             | grep --quiet --word-regexp ledger
 
       - name: Build a healthy and a failing release
+        if: steps.harness.outputs.present == 'true'
         run: |
           app=/tmp/cloudfall-converge-app
           cp -R ../app "${app}"
@@ -186,6 +212,7 @@ jobs:
           printf 'PROBE_START=refuse\n' > tmp/env/bad.env
 
       - name: Deploy the healthy release
+        if: steps.harness.outputs.present == 'true'
         run: |
           uv run cloudfall deploy probe-web --project . --release "${healthy}" \
             --env-file tmp/env/good.env --yes
@@ -194,6 +221,7 @@ jobs:
             = "/srv/apps/probe/web/releases/${healthy}"
 
       - name: Deploy the failing release, which rolls back
+        if: steps.harness.outputs.present == 'true'
         run: |
           if uv run cloudfall deploy probe-web --project . --release "${failing}" --yes; then
             echo "::error::the failing release passed its health gate"
@@ -211,6 +239,7 @@ jobs:
       # redeploy of the current one, leaves the previous release running on
       # its previous environment, through the rollback and the next restart
       - name: Deploy healthy code with a bad environment, which rolls back
+        if: steps.harness.outputs.present == 'true'
         run: |
           expected=/srv/apps/probe/web/shared/env/probe-web.${healthy}.env
           for release in "${second}" "${healthy}"; do
@@ -241,6 +270,7 @@ jobs:
       # cloudfall restart starts a new process of the same release behind
       # the health check
       - name: Restart the component
+        if: steps.harness.outputs.present == 'true'
         run: |
           before="$(ssh 127.0.0.1 systemctl show --property=MainPID --value probe-web)"
           uv run cloudfall restart probe-web --project . --yes
@@ -258,6 +288,7 @@ jobs:
       # virtual host without --issue-certificate; the host then serves the
       # probe over HTTPS with that certificate and redirects HTTP to it
       - name: Serve the probe through an nginx Domain with a self-signed certificate
+        if: steps.harness.outputs.present == 'true'
         run: |
           name=probe.converge.test
           install --directory --mode=0700 tmp/tls
@@ -297,6 +328,7 @@ jobs:
           PY
 
       - name: Roll back to a release and get its environment back
+        if: steps.harness.outputs.present == 'true'
         run: |
           uv run cloudfall deploy probe-web --project . --release "${second}" \
             --env-file tmp/env/good.env --yes
@@ -310,6 +342,7 @@ jobs:
       # The drill fails on a dump that holds no table (#225), so each database
       # gets one first
       - name: Back up and run the restore drill
+        if: steps.harness.outputs.present == 'true'
         run: |
           for database in probe ledger; do
             ssh 127.0.0.1 runuser -u postgres -- psql --dbname="${database}" --set=ON_ERROR_STOP=1 <<'SQL'
@@ -324,6 +357,7 @@ jobs:
 
       # Every playbook runs, so one run names each that is not idempotent
       - name: Converge again, changing nothing
+        if: steps.harness.outputs.present == 'true'
         run: |
           changed=()
           for playbook in bootstrap baseline services; do
@@ -344,7 +378,7 @@ jobs:
           test "${#changed[@]}" -eq 0
 
       - name: Show the host's state after a failure
-        if: failure()
+        if: failure() && steps.harness.outputs.present == 'true'
         run: |
           docker exec converge systemctl --no-pager --failed
           docker exec converge journalctl --no-pager --lines=300
