@@ -5,6 +5,10 @@
 # had before the next server's turn. Replicas move again even when the
 # restart, the rejoin or the version check fails: a failed run never leaves
 # the cluster's allocation held.
+#
+# A handler includes this file (restart.yml), and Ansible refuses a block
+# below a handler file's top level (#495), so the rejoin steps each carry the
+# conditions instead of sharing a nested block.
 - name: Start the node and let replicas move again whatever happens
   block:
     - name: Start Elasticsearch on its new package or configuration
@@ -13,56 +17,60 @@
         state: restarted
         daemon_reload: true
 
-    - name: Wait for the node to rejoin on the declared version
+    - name: Wait for the node to rejoin its cluster
+      ansible.builtin.uri:
+        url: >-
+          {{ cloudfall_elasticsearch_api_url }}/_cluster/health?wait_for_nodes=%3E%3D{{
+            cloudfall_elasticsearch_rolling.nodes
+          }}&timeout=10s
+        ca_path: "{{ cloudfall_elasticsearch_api_ca or omit }}"
+        url_username: cloudfall
+        url_password: >-
+          {{ lookup('ansible.builtin.file',
+                    cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+        force_basic_auth: true
+        status_code: 200
+      register: cloudfall_elasticsearch_rejoined
+      retries: "{{ cloudfall_elasticsearch_rejoin_retries }}"
+      delay: 10
+      until: cloudfall_elasticsearch_rejoined.status == 200
+      no_log: true
       when:
         - cloudfall_elasticsearch_rolling | default({}) | length > 0
         - not ansible_check_mode
-      block:
-        - name: Wait for the node to rejoin its cluster
-          ansible.builtin.uri:
-            url: >-
-              {{ cloudfall_elasticsearch_api_url }}/_cluster/health?wait_for_nodes=%3E%3D{{
-                cloudfall_elasticsearch_rolling.nodes
-              }}&timeout=10s
-            ca_path: "{{ cloudfall_elasticsearch_api_ca or omit }}"
-            url_username: cloudfall
-            url_password: >-
-              {{ lookup('ansible.builtin.file',
-                        cloudfall_elasticsearch_account_files.cloudfallPassword) }}
-            force_basic_auth: true
-            status_code: 200
-          register: cloudfall_elasticsearch_rejoined
-          retries: "{{ cloudfall_elasticsearch_rejoin_retries }}"
-          delay: 10
-          until: cloudfall_elasticsearch_rejoined.status == 200
-          no_log: true
 
-        - name: Read the version the node reports
-          ansible.builtin.uri:
-            url: >-
-              {{ cloudfall_elasticsearch_api_url }}/_nodes/_local?filter_path=nodes.*.version
-            ca_path: "{{ cloudfall_elasticsearch_api_ca or omit }}"
-            url_username: cloudfall
-            url_password: >-
-              {{ lookup('ansible.builtin.file',
-                        cloudfall_elasticsearch_account_files.cloudfallPassword) }}
-            force_basic_auth: true
-            status_code: 200
-          register: cloudfall_elasticsearch_node_version
-          no_log: true
+    - name: Read the version the node reports
+      ansible.builtin.uri:
+        url: >-
+          {{ cloudfall_elasticsearch_api_url }}/_nodes/_local?filter_path=nodes.*.version
+        ca_path: "{{ cloudfall_elasticsearch_api_ca or omit }}"
+        url_username: cloudfall
+        url_password: >-
+          {{ lookup('ansible.builtin.file',
+                    cloudfall_elasticsearch_account_files.cloudfallPassword) }}
+        force_basic_auth: true
+        status_code: 200
+      register: cloudfall_elasticsearch_node_version
+      no_log: true
+      when:
+        - cloudfall_elasticsearch_rolling | default({}) | length > 0
+        - not ansible_check_mode
 
-        - name: Refuse a node that came back on another version
-          ansible.builtin.assert:
-            that:
-              - >-
-                cloudfall_elasticsearch_node_version.json.nodes.values()
-                | map(attribute='version') | list
-                == [cloudfall_elasticsearch_service.elasticsearch.version]
-            fail_msg: >-
-              {{ cloudfall_server_id }} rejoined on
-              {{ cloudfall_elasticsearch_node_version.json.nodes.values()
-                 | map(attribute='version') | join(', ') }}, not the declared
-              {{ cloudfall_elasticsearch_service.elasticsearch.version }}
+    - name: Refuse a node that came back on another version
+      ansible.builtin.assert:
+        that:
+          - >-
+            cloudfall_elasticsearch_node_version.json.nodes.values()
+            | map(attribute='version') | list
+            == [cloudfall_elasticsearch_service.elasticsearch.version]
+        fail_msg: >-
+          {{ cloudfall_server_id }} rejoined on
+          {{ cloudfall_elasticsearch_node_version.json.nodes.values()
+             | map(attribute='version') | join(', ') }}, not the declared
+          {{ cloudfall_elasticsearch_service.elasticsearch.version }}
+      when:
+        - cloudfall_elasticsearch_rolling | default({}) | length > 0
+        - not ansible_check_mode
   always:
     - name: Let replicas move again
       ansible.builtin.uri:

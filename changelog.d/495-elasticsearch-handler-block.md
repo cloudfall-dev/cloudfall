@@ -1,0 +1,3 @@
+### Fixed
+
+- A converge that restarts an Elasticsearch node no longer fails in the handler "Start the node and wait for its cluster" with `Using a block as a handler is not supported.`: the rejoin steps of `node-start.yml`, which the restart handler includes, were a block nested in a block, which ansible-core refuses in a file a handler runs. They now each carry the same conditions, in the same order, so a first converge starts the node, records that its cluster formed and removes `cluster.initial_master_nodes` in one run, and a rolling restart rejoins each node again. A test loads every role's handlers, and the task files they include, with Ansible's handler loader (#495)
