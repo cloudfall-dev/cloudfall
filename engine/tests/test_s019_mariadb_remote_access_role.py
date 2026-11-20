@@ -387,6 +387,58 @@ def test_s019_11_the_certificate_is_installed_before_the_settings_name_it() -> N
     )
 
 
+REPLICA_OF_SOURCE: dict[str, object] = {
+    "role": "replica",
+    "serverId": 12,
+    "source": {"host": "10.0.0.11", "port": 3306},
+}
+
+
+@pytest.mark.parametrize(
+    ("mariadb", "named"),
+    [
+        pytest.param({"remoteAccess": REMOTE_ACCESS}, "remoteAccess", id="remote"),
+        pytest.param(
+            {"replication": REPLICA_OF_SOURCE}, "replication", id="outside source"
+        ),
+        pytest.param(
+            {"remoteAccess": REMOTE_ACCESS, "replication": REPLICA_OF_SOURCE},
+            "remoteAccess and replication",
+            id="both",
+        ),
+    ],
+)
+def test_a_missing_certificate_names_what_the_service_declares(
+    mariadb: dict[str, object], named: str
+) -> None:
+    require = _task(
+        "Require the server certificate before the server uses TLS",
+        _tasks("tasks/tls.yml"),
+    )
+    templar = Templar(
+        loader=DataLoader(),
+        variables={
+            "item": {"item": MARIADB_CERTIFICATE_PATH.value},
+            "cloudfall_server_id": "h1",
+            "cloudfall_mariadb_service": _role_service(**mariadb),
+        },
+    )
+
+    message = str(
+        templar.template(
+            trust_as_template(require["ansible.builtin.assert"]["fail_msg"])
+        )
+    )
+
+    # A replica of an outside source declares no remoteAccess (#494)
+    assert message.startswith(
+        f"{MARIADB_CERTIFICATE_PATH.value} is missing on h1: {named} of service"
+        " mariadb-main serves TLS"
+    )
+    if "remoteAccess" not in mariadb:
+        assert "remoteAccess" not in message
+
+
 def test_a_renewed_certificate_is_loaded_without_a_restart() -> None:
     tls = _tasks("tasks/tls.yml")
     handlers = _tasks("handlers/main.yml")

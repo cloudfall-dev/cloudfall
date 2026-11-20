@@ -1,7 +1,8 @@
 ---
 # TLS for remoteAccess (S-019, Access): the server's one certificate from the
 # project CA, its key and that CA, at the paths of the server's S-011
-# requirement mariadb, which replication uses too. The server made its key
+# requirement mariadb, which replication uses too, a replica of a source
+# Cloudfall does not manage included (#494). The server made its key
 # and never let it leave; the services converge had the project CA sign the
 # certificate, and stages it with the CA only when it is missing or due. A
 # renewed certificate is loaded with FLUSH LOCAL SSL, without a restart.
@@ -35,8 +36,14 @@
       - item.stat.exists
       - item.stat.isreg
     fail_msg: >-
-      {{ item.item }} is missing on {{ cloudfall_server_id }}: remoteAccess of
-      service {{ cloudfall_mariadb_service.id }} serves TLS with the server's
+      {{ item.item }} is missing on {{ cloudfall_server_id }}:
+      {{
+        ((['remoteAccess']
+          if cloudfall_mariadb_service.mariadb.remoteAccess is defined else [])
+         + (['replication']
+            if cloudfall_mariadb_service.mariadb.replication is defined else []))
+        | join(' and ')
+      }} of service {{ cloudfall_mariadb_service.id }} serves TLS with the server's
       certificate from the project CA (requirement mariadb). Converge the
       service through cloudfall, which has the server make its key and the
       project CA sign its certificate; this converge stops here, before any
