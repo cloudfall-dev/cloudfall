@@ -138,11 +138,12 @@ def test_http2_off_renders_no_http2_on_either_side_of_1_25_1(
     assert "http2" not in rendered
 
 
-def test_http2_defaults_off_in_the_role_and_its_argument_spec() -> None:
+def test_http2_defaults_on_in_the_role_and_its_argument_spec() -> None:
+    """On again once Debian shipped the HTTP/2 fix for both targets (#555)."""
     role = TEMPLATES.parent
     defaults = yaml.safe_load((role / "defaults" / "main.yml").read_text("utf-8"))
     specs = yaml.safe_load((role / "meta" / "argument_specs.yml").read_text("utf-8"))
     option = specs["argument_specs"]["main"]["options"]["cloudfall_nginx_site_http2"]
 
-    assert defaults["cloudfall_nginx_site_http2"] is False
-    assert option == {"type": "bool", "default": False}
+    assert defaults["cloudfall_nginx_site_http2"] is True
+    assert option == {"type": "bool", "default": True}
