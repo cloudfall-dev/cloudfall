@@ -105,6 +105,9 @@ argument_specs:
       cloudfall_nginx_site_receipt_directory:
         type: str
         default: ""
+      cloudfall_nginx_site_http2:
+        type: bool
+        default: false
       cloudfall_nginx_site_worker_user:
         type: str
         default: www-data

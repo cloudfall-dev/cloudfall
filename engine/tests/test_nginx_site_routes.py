@@ -155,10 +155,21 @@ def _play(tmp_path: Path, name: str, play: dict[str, object]) -> str:
     return done.stdout
 
 
+def _role_default(name: str) -> object:
+    defaults = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text("utf-8"))
+    return cast("dict[str, object]", defaults)[name]
+
+
 def _render_all(
-    tmp_path: Path, domains: dict[str, dict[str, object]]
+    tmp_path: Path,
+    domains: dict[str, dict[str, object]],
+    overrides: dict[str, dict[str, object]],
 ) -> dict[str, str]:
-    """Render each Domain with TLS on and off on both Nginx versions."""
+    """Render each Domain with TLS on and off on both Nginx versions.
+
+    HTTP/2 is on, the shape the golden files hold, unless ``overrides``
+    names the Domain's label.
+    """
     output = tmp_path / "rendered"
     output.mkdir()
     tasks: list[dict[str, object]] = []
@@ -182,7 +193,9 @@ def _render_all(
                             "cloudfall_nginx_site_acme_webroot": "/var/lib/letsencrypt",
                             "cloudfall_nginx_site_tls_active": tls_active,
                             "cloudfall_nginx_site_version": version,
-                        },
+                            "cloudfall_nginx_site_http2": True,
+                        }
+                        | overrides.get(label, {}),
                     }
                 )
     _play(tmp_path, "render", {"tasks": tasks})
@@ -200,6 +213,19 @@ def rendered(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
             "nested": _routed_domain(tmp_path, _NESTED_ROUTES),
             "reversed": _routed_domain(tmp_path, _NESTED_ROUTES_REVERSED),
             "no-root": _routed_domain(tmp_path, _NO_ROOT_ROUTES),
+            "role-default": _upstream_only_domain(),
+            "no-http2": _upstream_only_domain(),
+            "no-http2-extra-var": _upstream_only_domain(),
+        },
+        {
+            "role-default": {
+                "cloudfall_nginx_site_http2": _role_default(
+                    "cloudfall_nginx_site_http2"
+                )
+            },
+            "no-http2": {"cloudfall_nginx_site_http2": False},
+            # What `--extra-vars cloudfall_nginx_site_http2=false` hands the role.
+            "no-http2-extra-var": {"cloudfall_nginx_site_http2": "false"},
         },
     )
 
@@ -316,6 +342,29 @@ def test_s003_7_an_upstream_only_domain_renders_byte_identical(
     golden = (GOLDEN / name).read_text(encoding="utf-8")
 
     assert rendered[f"upstream/{name}"] == golden
+
+
+@pytest.mark.parametrize("nginx_version", NGINX_VERSIONS)
+@pytest.mark.parametrize("label", ["role-default", "no-http2", "no-http2-extra-var"])
+def test_http2_off_drops_it_from_the_tls_server_on_every_version(
+    rendered: dict[str, str], label: str, nginx_version: str
+) -> None:
+    """Only the listen lines differ from the default render (#551)."""
+    vhost = rendered[f"{label}/tls-{nginx_version}.conf"]
+    golden = (GOLDEN / f"tls-{nginx_version}.conf").read_text(encoding="utf-8")
+    tls = _servers(vhost)[1]
+
+    assert tls.startswith(
+        "server {\n"
+        "    listen 443 ssl;\n"
+        "    listen [::]:443 ssl;\n"
+        "    server_name crm.example.test www.crm.example.test;\n"
+    )
+    assert "http2" not in vhost
+    assert vhost == golden.replace("ssl http2;", "ssl;").replace("    http2 on;\n", "")
+    assert rendered[f"{label}/http-{nginx_version}.conf"] == (
+        GOLDEN / f"http-{nginx_version}.conf"
+    ).read_text(encoding="utf-8")
 
 
 # proves: S-003-2

@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
+from ansible.plugins.filter.core import FilterModule as AnsibleFilters
 
 # Aliased so pytest does not collect Ansible's plugin class as a test class.
 from ansible.plugins.test.core import TestModule as AnsibleTests
@@ -35,7 +37,9 @@ def _domain() -> dict[str, object]:
     }
 
 
-def _render(*, tls_active: bool, nginx_version: str = "1.26.3") -> str:
+def _render(
+    *, tls_active: bool, nginx_version: str = "1.26.3", http2: object = True
+) -> str:
     # trim_blocks matches the template module's default.
     environment = Environment(
         loader=FileSystemLoader(TEMPLATES),
@@ -46,11 +50,13 @@ def _render(*, tls_active: bool, nginx_version: str = "1.26.3") -> str:
     )
     # Ansible's own tests, so `is version(...)` compares as on the host.
     environment.tests.update(AnsibleTests().tests())
+    environment.filters.update(AnsibleFilters().filters())
     return environment.get_template("domain-site.conf.j2").render(
         cloudfall_nginx_site_domain=_domain(),
         cloudfall_nginx_site_acme_webroot="/var/lib/letsencrypt",
         cloudfall_nginx_site_tls_active=tls_active,
         cloudfall_nginx_site_version=nginx_version,
+        cloudfall_nginx_site_http2=http2,
     )
 
 
@@ -113,3 +119,30 @@ def test_nginx_from_1_25_1_gets_the_http2_directive(nginx_version: str) -> None:
         "    server_name crm.example.test www.crm.example.test;\n"
     ) in rendered
     assert "ssl http2;" not in rendered
+
+
+@pytest.mark.parametrize("http2", [False, "false"])
+@pytest.mark.parametrize("nginx_version", [DEBIAN_12_NGINX, "1.26.3"])
+def test_http2_off_renders_no_http2_on_either_side_of_1_25_1(
+    nginx_version: str, http2: object
+) -> None:
+    """`"false"` is what a key=value `--extra-vars` hands the role (#551)."""
+    rendered = _render(tls_active=True, nginx_version=nginx_version, http2=http2)
+
+    assert (
+        "server {\n"
+        "    listen 443 ssl;\n"
+        "    listen [::]:443 ssl;\n"
+        "    server_name crm.example.test www.crm.example.test;\n"
+    ) in rendered
+    assert "http2" not in rendered
+
+
+def test_http2_defaults_off_in_the_role_and_its_argument_spec() -> None:
+    role = TEMPLATES.parent
+    defaults = yaml.safe_load((role / "defaults" / "main.yml").read_text("utf-8"))
+    specs = yaml.safe_load((role / "meta" / "argument_specs.yml").read_text("utf-8"))
+    option = specs["argument_specs"]["main"]["options"]["cloudfall_nginx_site_http2"]
+
+    assert defaults["cloudfall_nginx_site_http2"] is False
+    assert option == {"type": "bool", "default": False}

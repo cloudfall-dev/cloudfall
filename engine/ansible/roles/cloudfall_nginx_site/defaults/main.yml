@@ -2,5 +2,8 @@
 cloudfall_nginx_site_issue_certificate: false
 cloudfall_nginx_site_acme_webroot: /var/lib/letsencrypt
 cloudfall_nginx_site_receipt_directory: ""
+# Off by default until the installed Nginx carries the HTTP/2 fix (#551);
+# true renders HTTP/2 in the form the installed Nginx parses.
+cloudfall_nginx_site_http2: false
 # Debian's Nginx runs its workers as www-data.
 cloudfall_nginx_site_worker_user: www-data
