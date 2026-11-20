@@ -79,6 +79,57 @@ cloudfall_rabbitmq_owner_tag_prefix: "cloudfall-owner:"
 cloudfall_rabbitmq_state_directory: /var/lib/cloudfall/rabbitmq
 cloudfall_rabbitmq_ctl: /usr/sbin/rabbitmqctl
 cloudfall_rabbitmq_diagnostics: /usr/sbin/rabbitmq-diagnostics
+cloudfall_rabbitmq_upgrade: /usr/sbin/rabbitmq-upgrade
+# The version of the package this node has installed, X.Y.Z-1, or '' for none.
+cloudfall_rabbitmq_installed_version: >-
+  {{
+    cloudfall_rabbitmq_installed.stdout.split('|')[1]
+    if cloudfall_rabbitmq_installed.rc == 0
+    and cloudfall_rabbitmq_installed.stdout.startswith('installed|')
+    else ''
+  }}
+# The version each running member of a cluster reports, by node name, as the
+# majority check read it; a node of one, or one that does not run, has none.
+cloudfall_rabbitmq_running_versions: >-
+  {{
+    cloudfall_rabbitmq_membership_read.stdout | cloudfall_rabbitmq_node_versions
+    if cloudfall_rabbitmq_membership_read is defined
+    and cloudfall_rabbitmq_membership_read.rc | default(1) == 0
+    else {}
+  }}
+# A change of version is rolling (S-023, Supported versions): on the
+# service's home, which services.yml runs first, every other node in declared
+# order changes, and the home last. It is due when the home's package or a
+# running member's version is not the declared one.
+cloudfall_rabbitmq_version_change: >-
+  {{
+    cloudfall_rabbitmq_home | bool
+    and (
+      cloudfall_rabbitmq_installed_version
+        not in ['', cloudfall_rabbitmq_package_version]
+      or cloudfall_rabbitmq_running_versions.values() | list | unique
+        | difference([cloudfall_rabbitmq_service.rabbitmq.version]) | length > 0
+    )
+  }}
+cloudfall_rabbitmq_version_order: >-
+  {{
+    cloudfall_rabbitmq_service.rabbitmq.nodes
+    | reject('equalto', cloudfall_rabbitmq_service.server) | list
+    + [cloudfall_rabbitmq_service.server]
+  }}
+# The members a version change found, which it waits for and checks: a node
+# declared and not yet joined joins with the declared version on its own
+# turn. A node of one, or one whose cluster has no other member yet, is alone.
+cloudfall_rabbitmq_version_members: >-
+  {{
+    cloudfall_rabbitmq_membership.members
+    if cloudfall_rabbitmq_membership is defined
+    and cloudfall_rabbitmq_membership.members | length > 0
+    else [cloudfall_rabbitmq_node_name]
+  }}
+# Before a node of a cluster stops, every quorum queue must keep its majority
+# without it; the wait gives up after this and the converge stops.
+cloudfall_rabbitmq_quorum_timeout: 3600
 # Whether this server is the service's home, where the virtual hosts and
 # users converge once for the whole cluster (S-023).
 cloudfall_rabbitmq_home: >-

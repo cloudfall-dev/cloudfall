@@ -1,0 +1,150 @@
+---
+# One node's turn in a rolling change of version (S-023, Supported versions),
+# run from the service's home and delegated to the node. A node that already
+# has the declared package, or has none yet, is left alone: it joins with the
+# declared version on its own turn of services.yml.
+- name: Read the RabbitMQ server package of {{ cloudfall_rabbitmq_version_node }}
+  ansible.builtin.command:
+    argv:
+      - dpkg-query
+      - --showformat
+      - "${db:Status-Status}|${Version}"
+      - --show
+      - rabbitmq-server
+  register: cloudfall_rabbitmq_node_package
+  failed_when: cloudfall_rabbitmq_node_package.rc not in [0, 1]
+  changed_when: false
+  check_mode: false
+  delegate_to: "{{ cloudfall_rabbitmq_version_node }}"
+
+- name: Change the version of {{ cloudfall_rabbitmq_version_node }}
+  delegate_to: "{{ cloudfall_rabbitmq_version_node }}"
+  vars:
+    cloudfall_rabbitmq_node_version: >-
+      {{
+        cloudfall_rabbitmq_node_package.stdout.split('|')[1]
+        if cloudfall_rabbitmq_node_package.rc == 0
+        and cloudfall_rabbitmq_node_package.stdout.startswith('installed|')
+        else ''
+      }}
+    # Drain and the quorum check are for a node with others to take over;
+    # a node alone has none, and its change is a short stop of the service
+    cloudfall_rabbitmq_has_peers: >-
+      {{ cloudfall_rabbitmq_version_members | length > 1 }}
+  when:
+    - cloudfall_rabbitmq_node_version | length > 0
+    - cloudfall_rabbitmq_node_version != cloudfall_rabbitmq_package_version
+  block:
+    # No alarm, every member running, every quorum queue with a leader and
+    # its members online: the node before this one caught up
+    - name: Wait until the cluster is healthy before the node stops
+      cloudfall_rabbitmq_health:
+        ctl: "{{ cloudfall_rabbitmq_ctl }}"
+        diagnostics: "{{ cloudfall_rabbitmq_diagnostics }}"
+        nodes: "{{ cloudfall_rabbitmq_version_members }}"
+        timeout: "{{ cloudfall_rabbitmq_healthy_timeout | int }}"
+        interval: "{{ cloudfall_rabbitmq_healthy_interval | int }}"
+      when: not ansible_check_mode
+
+    # RabbitMQ requires every stable feature flag of a cluster that is about
+    # to run two versions (S-023-13)
+    - name: Enable every stable feature flag before the first node stops
+      ansible.builtin.command:
+        argv:
+          - "{{ cloudfall_rabbitmq_ctl }}"
+          - --quiet
+          - enable_feature_flag
+          - all
+      changed_when: true
+      when: cloudfall_rabbitmq_flags_before is not defined
+
+    - name: Remember that the flags were enabled before the first stop
+      ansible.builtin.set_fact:
+        cloudfall_rabbitmq_flags_before: true
+
+    # Stopping the node must leave every quorum queue its majority
+    - name: Wait until every quorum queue keeps its majority without the node
+      ansible.builtin.command:
+        argv:
+          - "{{ cloudfall_rabbitmq_upgrade }}"
+          - --quiet
+          - await_online_quorum_plus_one
+          - --timeout
+          - "{{ cloudfall_rabbitmq_quorum_timeout | string }}"
+      changed_when: false
+      when: cloudfall_rabbitmq_has_peers | bool
+
+    # Its clients are disconnected and reconnect to another node, and its
+    # queue leaders move there
+    - name: Move the clients and queue leaders of the node to the others
+      ansible.builtin.command:
+        argv:
+          - "{{ cloudfall_rabbitmq_upgrade }}"
+          - --quiet
+          - drain
+      changed_when: true
+      when: cloudfall_rabbitmq_has_peers | bool
+
+    - name: Stop the node
+      ansible.builtin.systemd_service:
+        name: rabbitmq-server.service
+        state: stopped
+
+    # The package is held so an unattended upgrade never restarts a node; the
+    # change releases the hold and holds the new version again
+    - name: Release the hold of the RabbitMQ server package
+      ansible.builtin.dpkg_selections:
+        name: rabbitmq-server
+        selection: install
+
+    - name: Install the declared RabbitMQ server
+      ansible.builtin.apt:
+        name: rabbitmq-server={{ cloudfall_rabbitmq_package_version }}
+        state: present
+        update_cache: true
+        # A dry run, which releases no hold, previews it too
+        allow_change_held_packages: true
+        policy_rc_d: 101
+
+    - name: Hold the RabbitMQ server package again
+      ansible.builtin.dpkg_selections:
+        name: rabbitmq-server
+        selection: hold
+
+    - name: Start the node with the declared version
+      ansible.builtin.systemd_service:
+        name: rabbitmq-server.service
+        state: started
+
+    - name: Wait until the node runs again
+      ansible.builtin.command:
+        argv:
+          - "{{ cloudfall_rabbitmq_diagnostics }}"
+          - --quiet
+          - check_running
+      register: cloudfall_rabbitmq_node_running
+      changed_when: false
+      retries: 24
+      delay: 5
+      until: cloudfall_rabbitmq_node_running.rc == 0
+      when: not ansible_check_mode
+
+    - name: Take the node out of maintenance
+      ansible.builtin.command:
+        argv:
+          - "{{ cloudfall_rabbitmq_upgrade }}"
+          - --quiet
+          - revive
+      changed_when: true
+      when: cloudfall_rabbitmq_has_peers | bool
+
+    # The next node stops only once this one is a running member again and
+    # every quorum queue has its members online
+    - name: Wait until the cluster is healthy before the next node
+      cloudfall_rabbitmq_health:
+        ctl: "{{ cloudfall_rabbitmq_ctl }}"
+        diagnostics: "{{ cloudfall_rabbitmq_diagnostics }}"
+        nodes: "{{ cloudfall_rabbitmq_version_members }}"
+        timeout: "{{ cloudfall_rabbitmq_healthy_timeout | int }}"
+        interval: "{{ cloudfall_rabbitmq_healthy_interval | int }}"
+      when: not ansible_check_mode
