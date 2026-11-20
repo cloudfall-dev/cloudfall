@@ -10,10 +10,15 @@ version_files = "pyproject"
 
 # Commands run after the version is written, before the commit; a failure stops the release.
 # changelog-add records the interface changes `cloudfall changelog` serves (S-017-15): it
-# writes sdk/src/cloudfall/schema-changelog.json and its snapshot, which the release commit
-# takes with the stamp; an unchanged interface adds no entry
+# diffs the manifest against the snapshot beside sdk/src/cloudfall/schema-changelog.json
+# and writes both files, which the release commit takes with the stamp. Release commits are
+# not on main, so restore_interface_snapshot.py first writes both files as the previous
+# release's tag holds them: the newest release tag HEAD builds on (its commit, or the one it
+# was cut from, is in HEAD's history). With that snapshot an unchanged interface adds no
+# entry; with no such tag nothing is restored and changelog-add seeds the files (#457)
 after_stamp = [
     "uv lock --check",
+    "uv run --frozen --no-dev python scripts/restore_interface_snapshot.py",
     "uv run --frozen --no-dev treaty changelog-add cloudfall.app:app",
 ]
 

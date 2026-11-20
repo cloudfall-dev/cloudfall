@@ -32,9 +32,19 @@ def test_s017_15_the_release_stamp_records_the_interface_changes() -> None:
     )
     commands = [shlex.split(command) for command in policy["after_stamp"]]
 
-    # the lock is checked first, so the changelog is written by the stamped version
+    # the lock is checked first, so the changelog is written by the stamped version;
+    # then the previous release's snapshot is put back for changelog-add to diff
+    # against, since release commits are not on main (#457)
     assert commands[0] == ["uv", "lock", "--check"]
     assert commands[1:] == [
+        [
+            "uv",
+            "run",
+            "--frozen",
+            "--no-dev",
+            "python",
+            "scripts/restore_interface_snapshot.py",
+        ],
         [
             "uv",
             "run",
@@ -43,7 +53,7 @@ def test_s017_15_the_release_stamp_records_the_interface_changes() -> None:
             "treaty",
             "changelog-add",
             "cloudfall.app:app",
-        ]
+        ],
     ]
 
 
@@ -72,4 +82,6 @@ def test_s017_15_the_releases_section_names_no_manual_changelog_step() -> None:
 
     assert "treaty changelog-add cloudfall.app:app" in section
     assert "after_stamp" in section
+    assert "scripts/restore_interface_snapshot.py" in section
+    assert "did not change adds no entry" in section
     assert "```" not in section

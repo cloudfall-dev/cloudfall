@@ -111,13 +111,15 @@ extend-immutable-calls = ["treaty.Arg", "treaty.Flag", "treaty.Out"]
 "**/tests/**" = ["D103", "INP001", "PLR2004", "S101"]
 # Evaluation scripts run standalone, never imported as a package.
 "evaluations/**" = ["INP001"]
+# Release scripts run standalone from the repository root (after_stamp).
+"scripts/**" = ["INP001"]
 # Ansible loads a role's plugins by path, never as a package.
 "engine/ansible/**" = ["INP001"]
 
 [tool.mypy]
 python_version = "3.14"
 strict = true
-files = ["sdk/src", "sdk/tests", "engine/src", "engine/tests"]
+files = ["sdk/src", "sdk/tests", "engine/src", "engine/tests", "scripts"]
 
 # ansible-core ships no type information. Only cloudfall.ansible_api imports
 # it, and it converts what it reads into typed value objects at that edge.
