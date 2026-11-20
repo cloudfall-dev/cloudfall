@@ -87,6 +87,9 @@ def main(argv):
             return 69
         print(json.dumps(state["cluster"]))
         return 0
+    if command == "list_feature_flags":
+        print(json.dumps(state.get("featureFlags", [])))
+        return 0
     if command == "list_vhosts":
         print(json.dumps([{"name": item["name"]} for item in state["vhosts"]]))
         return 0
@@ -156,6 +159,14 @@ def main(argv):
             item for item in state["permissions"] if item["vhost"] != vhost
         ]
         state.get("queues", {}).pop(vhost, None)
+    elif command == "enable_feature_flag":
+        # all: every stable flag, as RabbitMQ enables them
+        (name,) = args
+        for item in state.get("featureFlags", []):
+            if (name == "all" and item["stability"] == "stable") or (
+                item["name"] == name
+            ):
+                item["state"] = "enabled"
     elif command == "import_definitions":
         (path,) = args
         content = Path(path).read_text(encoding="utf-8")
