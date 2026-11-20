@@ -356,6 +356,14 @@ Touches `config/schemas/v1/service.schema.json`, `config/examples/services/`,
 
 ## Issues
 
+- cloudfall-dev/cloudfall#567: S-024-1, S-024-2, S-024-12
+- cloudfall-dev/cloudfall#569: S-024-3, S-024-4, S-024-5
+- cloudfall-dev/cloudfall#572: S-024-6, S-024-7
+- cloudfall-dev/cloudfall#573: S-024-8
+- cloudfall-dev/cloudfall#579: S-024-9
+- cloudfall-dev/cloudfall#580: S-024-10, S-024-11
+- cloudfall-dev/cloudfall#582: S-024-13
+
 ## Verification
 
 No criterion is verified yet.
