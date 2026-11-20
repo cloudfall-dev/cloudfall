@@ -442,6 +442,7 @@ from cloudfall.validation import (
     SchemaCatalog,
     ValidatedConfig,
     elasticsearch_versions_ending,
+    kibana_warnings,
     mariadb_unencrypted_sources,
     mariadb_versions_ending,
     rabbitmq_warnings,
@@ -921,13 +922,16 @@ def config_validate(
     ``MARIADB_VERSION_ENDING``. A MariaDB replica of an outside source
     declared without a CA file gets ``MARIADB_REPLICATION_UNENCRYPTED``. A
     RabbitMQ service gets ``RABBITMQ_VERSION_ENDING`` the same way, and
-    ``RABBITMQ_SINGLE_NODE`` when it is one node in production.
+    ``RABBITMQ_SINGLE_NODE`` when it is one node in production. A Kibana
+    service a Domain publishes gets ``KIBANA_PUBLISHED``.
     """
     today = datetime.now(UTC).date()
     _warn_deprecated_names(ctx, fleet)
     _warn_elasticsearch_versions_ending(ctx, fleet.state, today)
     _warn_mariadb(ctx, fleet.state, today)
     _warn_rabbitmq(ctx, fleet.state, today)
+    for warning in kibana_warnings(fleet.state):
+        ctx.warn(warning.code, warning.message, **warning.context)
     return ValidatedPayload(fleet.state.as_dict())
 
 
