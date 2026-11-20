@@ -15,6 +15,8 @@ from datetime import date, timedelta
 from enum import StrEnum
 from ipaddress import IPv6Address, ip_address
 
+from cloudfall.kibana import ROLE_NAMES as KIBANA_ROLE_NAMES
+
 _VERSION_PART = r"(0|[1-9][0-9]{0,3})"
 _VERSION_PATTERN = re.compile(rf"{_VERSION_PART}\.{_VERSION_PART}\.{_VERSION_PART}")
 _MAX_TCP_PORT = 65535
@@ -340,9 +342,10 @@ class S3BasePath:
         return cls(_string(value, "S3 base path"))
 
 
-# Users and roles Elasticsearch ships with; a declared user is also a role of
-# the same name, so it may be named after neither.
-RESERVED_USER_NAMES = frozenset(
+# Users and roles Elasticsearch ships with, and the two roles the Kibana role
+# keeps (S-024); a declared user is also a role of the same name, so it may be
+# named after none of them.
+RESERVED_USER_NAMES = KIBANA_ROLE_NAMES | frozenset(
     {
         "cloudfall",
         "elastic",

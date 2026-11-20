@@ -444,6 +444,7 @@ from cloudfall.validation import (
     ValidatedConfig,
     clickhouse_warnings,
     elasticsearch_versions_ending,
+    kibana_warnings,
     mariadb_unencrypted_sources,
     mariadb_versions_ending,
     rabbitmq_warnings,
@@ -925,7 +926,8 @@ def config_validate(
     RabbitMQ service gets ``RABBITMQ_VERSION_ENDING`` the same way, and
     ``RABBITMQ_SINGLE_NODE`` when it is one node in production. A ClickHouse
     service gets ``CLICKHOUSE_VERSION_ENDING`` the same way, and
-    ``CLICKHOUSE_SINGLE_REPLICA`` when it is one replica in production.
+    ``CLICKHOUSE_SINGLE_REPLICA`` when it is one replica in production. A
+    Kibana service a Domain publishes gets ``KIBANA_PUBLISHED``.
     """
     today = datetime.now(UTC).date()
     _warn_deprecated_names(ctx, fleet)
@@ -933,6 +935,8 @@ def config_validate(
     _warn_mariadb(ctx, fleet.state, today)
     _warn_services(ctx, rabbitmq_warnings(fleet.state, today))
     _warn_services(ctx, clickhouse_warnings(fleet.state, today))
+    for warning in kibana_warnings(fleet.state):
+        ctx.warn(warning.code, warning.message, **warning.context)
     return ValidatedPayload(fleet.state.as_dict())
 
 

@@ -107,6 +107,7 @@ from cloudfall.elasticsearch import (
     S3Bucket,
     S3Endpoint,
 )
+from cloudfall.kibana import KibanaAccess, KibanaHeapMb
 from cloudfall.mariadb import (
     DEFAULT_SOURCE_PORT,
     MariadbAuthentication,
@@ -1351,6 +1352,43 @@ class ClickhouseService:
 
 
 @dataclass(frozen=True, slots=True)
+class KibanaUser:
+    """A user of the Elasticsearch service and what it may do in Kibana (S-024)."""
+
+    name: ElasticsearchUserName
+    access: KibanaAccess
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the user's name and access."""
+        return {"name": self.name.value, "access": self.access.value}
+
+
+@dataclass(frozen=True, slots=True)
+class KibanaService:
+    """Kibana-specific service contract: the Elasticsearch service it reads.
+
+    Kibana runs at that service's version and keeps its saved objects in that
+    cluster, so it carries no version and no backup of its own.
+    """
+
+    elasticsearch: ResourceId
+    heap_mb: KibanaHeapMb
+    users: tuple[KibanaUser, ...]
+    domain: ResourceId | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the Kibana contract."""
+        result: dict[str, object] = {
+            "elasticsearch": self.elasticsearch.value,
+            "heapMb": self.heap_mb.value,
+            "users": [user.as_dict() for user in self.users],
+        }
+        if self.domain is not None:
+            result["domain"] = self.domain.value
+        return result
+
+
+@dataclass(frozen=True, slots=True)
 class ServiceBackup:
     """Scheduled dump-and-prune backup contract."""
 
@@ -1358,6 +1396,17 @@ class ServiceBackup:
     on_calendar: SystemdCalendar
     retention_days: PositiveCount
     restore_check_on_calendar: SystemdCalendar | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the backup schedule and retention."""
+        result: dict[str, object] = {
+            "directory": self.directory.value,
+            "onCalendar": self.on_calendar.value,
+            "retentionDays": self.retention_days.value,
+        }
+        if self.restore_check_on_calendar is not None:
+            result["restoreCheckOnCalendar"] = self.restore_check_on_calendar.value
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -1371,12 +1420,14 @@ class ServiceInventory:
     bind: ServiceBind
     postgresql: PostgresqlService | None
     redis: RedisService | None
-    backup: ServiceBackup
+    # None only for a Kibana service, which has no backup of its own (S-024).
+    backup: ServiceBackup | None
     metrics_enabled: bool
     elasticsearch: ElasticsearchService | None = None
     mariadb: MariadbService | None = None
     rabbitmq: RabbitmqService | None = None
     clickhouse: ClickhouseService | None = None
+    kibana: KibanaService | None = None
 
     def __post_init__(self) -> None:
         """Reject services whose payload contradicts the declared kind."""
@@ -1387,7 +1438,14 @@ class ServiceInventory:
             (self.mariadb, ServiceKind.MARIADB),
             (self.rabbitmq, ServiceKind.RABBITMQ),
             (self.clickhouse, ServiceKind.CLICKHOUSE),
+            (self.kibana, ServiceKind.KIBANA),
         )
+        if (self.backup is None) is not (self.service_kind is ServiceKind.KIBANA):
+            message = (
+                "service backup does not match its declared kind: "
+                f"{self.resource_id.value}"
+            )
+            raise ValueError(message)
         if any(
             (payload is not None) is not (self.service_kind is kind)
             for payload, kind in payloads
@@ -1400,15 +1458,6 @@ class ServiceInventory:
 
     def as_dict(self) -> dict[str, object]:
         """Serialize the service without secret material."""
-        backup: dict[str, object] = {
-            "directory": self.backup.directory.value,
-            "onCalendar": self.backup.on_calendar.value,
-            "retentionDays": self.backup.retention_days.value,
-        }
-        if self.backup.restore_check_on_calendar is not None:
-            backup["restoreCheckOnCalendar"] = (
-                self.backup.restore_check_on_calendar.value
-            )
         result: dict[str, object] = {
             "id": self.resource_id.value,
             "serviceKind": self.service_kind.value,
@@ -1418,8 +1467,9 @@ class ServiceInventory:
                 "address": self.bind.address.value,
                 "port": self.bind.port.value,
             },
-            "backup": backup,
         }
+        if self.backup is not None:
+            result["backup"] = self.backup.as_dict()
         if self.postgresql is not None:
             postgresql: dict[str, object] = {
                 "majorVersion": self.postgresql.major_version.value,
@@ -1452,6 +1502,7 @@ class ServiceInventory:
                 | MariadbService
                 | RabbitmqService
                 | ClickhouseService
+                | KibanaService
                 | None,
             ],
             ...,
@@ -1460,6 +1511,7 @@ class ServiceInventory:
             ("mariadb", self.mariadb),
             ("rabbitmq", self.rabbitmq),
             ("clickhouse", self.clickhouse),
+            ("kibana", self.kibana),
         )
         for name, payload in payloads:
             if payload is not None:
@@ -2508,7 +2560,6 @@ def _service_inventory(
 ) -> ServiceInventory:
     spec = _mapping(document.content, "spec")
     bind = _mapping(spec, "bind")
-    backup = _mapping(spec, "backup")
     service_kind = ServiceKind.from_boundary(spec.get("serviceKind"))
     postgresql = None
     if service_kind is ServiceKind.POSTGRESQL:
@@ -2572,19 +2623,10 @@ def _service_inventory(
         ),
         postgresql=postgresql,
         redis=redis,
-        backup=ServiceBackup(
-            directory=AbsolutePath.from_boundary(backup.get("directory")),
-            on_calendar=SystemdCalendar.from_boundary(backup.get("onCalendar")),
-            retention_days=PositiveCount.from_boundary(
-                backup.get("retentionDays")
-            ),
-            restore_check_on_calendar=(
-                SystemdCalendar.from_boundary(
-                    backup["restoreCheckOnCalendar"]
-                )
-                if "restoreCheckOnCalendar" in backup
-                else None
-            ),
+        backup=(
+            None
+            if service_kind is ServiceKind.KIBANA
+            else _service_backup(_mapping(spec, "backup"))
         ),
         metrics_enabled=_service_metrics_enabled(spec, document),
         elasticsearch=elasticsearch,
@@ -2607,6 +2649,11 @@ def _service_inventory(
                 server_id=ResourceId.from_boundary(spec.get("server")),
             )
             if service_kind is ServiceKind.CLICKHOUSE
+            else None
+        ),
+        kibana=(
+            _kibana_service(_mapping(spec, "kibana"))
+            if service_kind is ServiceKind.KIBANA
             else None
         ),
     )
@@ -2663,6 +2710,35 @@ def _clickhouse_service(
             )
         ),
         client_access=client_access,
+    )
+
+
+def _service_backup(backup: Mapping[str, object]) -> ServiceBackup:
+    return ServiceBackup(
+        directory=AbsolutePath.from_boundary(backup.get("directory")),
+        on_calendar=SystemdCalendar.from_boundary(backup.get("onCalendar")),
+        retention_days=PositiveCount.from_boundary(backup.get("retentionDays")),
+        restore_check_on_calendar=(
+            SystemdCalendar.from_boundary(backup["restoreCheckOnCalendar"])
+            if "restoreCheckOnCalendar" in backup
+            else None
+        ),
+    )
+
+
+def _kibana_service(content: Mapping[str, object]) -> KibanaService:
+    raw_domain = content.get("domain")
+    return KibanaService(
+        elasticsearch=ResourceId.from_boundary(content.get("elasticsearch")),
+        heap_mb=KibanaHeapMb.from_boundary(content.get("heapMb")),
+        users=tuple(
+            KibanaUser(
+                name=ElasticsearchUserName.from_boundary(user.get("name")),
+                access=KibanaAccess.from_boundary(user.get("access")),
+            )
+            for user in _mapping_list(content.get("users", []), "Kibana users")
+        ),
+        domain=None if raw_domain is None else ResourceId.from_boundary(raw_domain),
     )
 
 

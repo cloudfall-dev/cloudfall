@@ -67,6 +67,10 @@ from cloudfall.elasticsearch import (
     supported_line,
     supported_lines_text,
 )
+from cloudfall.kibana import HEAP_MB_MAXIMUM as KIBANA_HEAP_MB_MAXIMUM
+from cloudfall.kibana import HEAP_MB_MINIMUM as KIBANA_HEAP_MB_MINIMUM
+from cloudfall.kibana import WARNING_PUBLISHED as KIBANA_WARNING_PUBLISHED
+from cloudfall.kibana import KibanaHeapMb
 from cloudfall.mariadb import RESERVED_USER_NAMES as RESERVED_MARIADB_USERS
 from cloudfall.mariadb import SUPPORTED_SERIES as MARIADB_SUPPORTED_SERIES
 from cloudfall.mariadb import SYSTEM_DATABASES as MARIADB_SYSTEM_DATABASES
@@ -1037,6 +1041,8 @@ def _validate_service_references(
         _validate_rabbitmq_service(document, spec, index)
     elif spec.get("serviceKind") == ServiceKind.CLICKHOUSE.value:
         _validate_clickhouse_service(document, spec, index)
+    elif spec.get("serviceKind") == ServiceKind.KIBANA.value:
+        _validate_kibana_service(document, spec, index)
 
 
 def _validate_postgresql_service(
@@ -1361,6 +1367,294 @@ def _validate_remote_access_listen_address(
             field_path=listen_path,
         )
         raise ConfigValidationError(issue)
+
+
+ERROR_KIBANA_FIELD_REFUSED = "service_kibana_field_refused"
+ERROR_KIBANA_ENVIRONMENT = "service_kibana_environment"
+ERROR_KIBANA_SERVER_NOT_NODE = "service_kibana_server_not_node"
+ERROR_KIBANA_EXISTING_CLUSTER = "service_kibana_existing_cluster"
+ERROR_KIBANA_DUPLICATE = "service_kibana_duplicate"
+ERROR_KIBANA_HEAP = "service_kibana_heap"
+ERROR_KIBANA_USER_UNKNOWN = "service_kibana_user_unknown"
+ERROR_KIBANA_DOMAIN = "service_kibana_domain"
+_KIBANA_PATH = ("spec", "kibana")
+_KIBANA_REFUSED_SPEC_FIELDS = ("backup", "metrics")
+
+
+def _kibana_refusal(
+    document: ResourceDocument,
+    code: str,
+    message: str,
+    field_path: tuple[str | int, ...],
+) -> ConfigValidationError:
+    return ConfigValidationError(
+        ValidationIssue(
+            code=code,
+            message=message,
+            source=document.source,
+            field_path=field_path,
+        )
+    )
+
+
+def _validate_kibana_service(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> None:
+    """Apply the S-024 refusals that read one Kibana service and what it names."""
+    kibana = _required_mapping(spec, "kibana", document.source)
+    for field_name in _KIBANA_REFUSED_SPEC_FIELDS:
+        if field_name in spec:
+            raise _kibana_refusal(
+                document,
+                ERROR_KIBANA_FIELD_REFUSED,
+                f"{field_name} is refused for a Kibana service: its saved objects "
+                "are in the snapshots of the Elasticsearch service it reads, and "
+                "it has no metrics in this version",
+                ("spec", field_name),
+            )
+    if "remoteAccess" in kibana:
+        raise _kibana_refusal(
+            document,
+            ERROR_KIBANA_FIELD_REFUSED,
+            "remoteAccess is refused for a Kibana service: it listens on loopback "
+            "only; publish it with a Domain",
+            (*_KIBANA_PATH, "remoteAccess"),
+        )
+    try:
+        KibanaHeapMb.from_boundary(kibana.get("heapMb"))
+    except (TypeError, ValueError) as error:
+        raise _kibana_refusal(
+            document,
+            ERROR_KIBANA_HEAP,
+            f"heapMb must be {KIBANA_HEAP_MB_MINIMUM} to {KIBANA_HEAP_MB_MAXIMUM}",
+            (*_KIBANA_PATH, "heapMb"),
+        ) from error
+    elasticsearch = _kibana_elasticsearch(document, kibana, index)
+    elasticsearch_spec = _required_mapping(
+        elasticsearch.content, "spec", elasticsearch.source
+    )
+    _validate_kibana_cluster(document, spec, elasticsearch, elasticsearch_spec)
+    _validate_kibana_users(document, kibana, elasticsearch, elasticsearch_spec)
+    if "domain" in kibana:
+        _validate_kibana_domain(document, spec, kibana, index)
+
+
+def _kibana_elasticsearch(
+    document: ResourceDocument,
+    kibana: Mapping[str, object],
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> ResourceDocument:
+    """Return the Elasticsearch service ``kibana.elasticsearch`` names."""
+    field_path = (*_KIBANA_PATH, "elasticsearch")
+    service_id = _resource_id_value(kibana, "elasticsearch", document.source)
+    service = _require_resource(
+        index, ResourceKind.SERVICE, service_id, document.source, field_path
+    )
+    service_spec = _required_mapping(service.content, "spec", service.source)
+    if service_spec.get("serviceKind") != ServiceKind.ELASTICSEARCH.value:
+        raise _kibana_refusal(
+            document,
+            "resource_reference_missing",
+            "referenced resource is not an Elasticsearch service: "
+            f"Service/{service_id}",
+            field_path,
+        )
+    return service
+
+
+def _validate_kibana_cluster(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    elasticsearch: ResourceDocument,
+    elasticsearch_spec: Mapping[str, object],
+) -> None:
+    """Refuse another environment, a server off the cluster, an existing cluster."""
+    service_id = elasticsearch.key.resource_id
+    environment = _resource_id_value(spec, "environment", document.source)
+    cluster_environment = _resource_id_value(
+        elasticsearch_spec, "environment", elasticsearch.source
+    )
+    if cluster_environment != environment:
+        raise _kibana_refusal(
+            document,
+            ERROR_KIBANA_ENVIRONMENT,
+            f"Service/{service_id} belongs to {cluster_environment}, "
+            f"not {environment}",
+            (*_KIBANA_PATH, "elasticsearch"),
+        )
+    server_id = _resource_id_value(spec, "server", document.source)
+    if server_id not in _elasticsearch_nodes(elasticsearch, elasticsearch_spec):
+        raise _kibana_refusal(
+            document,
+            ERROR_KIBANA_SERVER_NOT_NODE,
+            f"Server/{server_id} is not a node of Service/{service_id}; Kibana "
+            "runs on a node of the cluster it reads",
+            ("spec", "server"),
+        )
+    cluster = _required_mapping(
+        elasticsearch_spec, "elasticsearch", elasticsearch.source
+    )
+    if "existingCluster" in cluster:
+        raise _kibana_refusal(
+            document,
+            ERROR_KIBANA_EXISTING_CLUSTER,
+            f"Service/{service_id} declares existingCluster: the cluster's own "
+            "Kibana still writes its indices; declare Kibana once the old nodes "
+            "are gone and existingCluster is removed",
+            (*_KIBANA_PATH, "elasticsearch"),
+        )
+
+
+def _validate_kibana_users(
+    document: ResourceDocument,
+    kibana: Mapping[str, object],
+    elasticsearch: ResourceDocument,
+    elasticsearch_spec: Mapping[str, object],
+) -> None:
+    """Refuse a user the Elasticsearch service does not declare, or one named twice."""
+    cluster = _required_mapping(
+        elasticsearch_spec, "elasticsearch", elasticsearch.source
+    )
+    raw_declared = cluster.get("users", [])
+    declared = {
+        cast("Mapping[str, object]", user).get("name")
+        for user in (raw_declared if isinstance(raw_declared, list) else [])
+    }
+    raw_users = kibana.get("users", [])
+    users = raw_users if isinstance(raw_users, list) else []
+    seen: set[object] = set()
+    for position, raw_user in enumerate(users):
+        name = cast("Mapping[str, object]", raw_user).get("name")
+        field_path = (*_KIBANA_PATH, "users", position, "name")
+        if name in seen:
+            raise _kibana_refusal(
+                document,
+                ERROR_KIBANA_USER_UNKNOWN,
+                f"user {name!r} is named twice",
+                field_path,
+            )
+        seen.add(name)
+        if name not in declared:
+            raise _kibana_refusal(
+                document,
+                ERROR_KIBANA_USER_UNKNOWN,
+                f"user {name!r} is not a user of "
+                f"Service/{elasticsearch.key.resource_id}",
+                field_path,
+            )
+
+
+def _validate_kibana_domain(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    kibana: Mapping[str, object],
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> None:
+    """Refuse a Domain that does not publish this Kibana, and only it, over TLS."""
+    field_path = (*_KIBANA_PATH, "domain")
+    domain_id = _resource_id_value(kibana, "domain", document.source)
+    domain = _require_resource(
+        index, ResourceKind.DOMAIN, domain_id, document.source, field_path
+    )
+    domain_spec = _required_mapping(domain.content, "spec", domain.source)
+    proxy = _required_mapping(domain_spec, "proxy", domain.source)
+    tls = _required_mapping(domain_spec, "tls", domain.source)
+    bind = _required_mapping(spec, "bind", document.source)
+    server_id = _resource_id_value(spec, "server", document.source)
+    problem = None
+    if _resource_id_value(proxy, "server", domain.source) != server_id:
+        problem = f"its proxy.server is not the Kibana server, Server/{server_id}"
+    elif "routes" in domain_spec:
+        problem = "it declares routes; Kibana takes the whole hostname"
+    elif not _upstream_is_bind(proxy.get("upstream"), bind):
+        problem = (
+            f"its proxy.upstream is not the service's bind, "
+            f"{bind.get('address')}:{bind.get('port')}"
+        )
+    elif tls.get("mode") != "required":
+        problem = "its tls.mode is not required"
+    if problem is not None:
+        raise _kibana_refusal(
+            document,
+            ERROR_KIBANA_DOMAIN,
+            f"Domain/{domain_id} cannot publish this Kibana: {problem}",
+            field_path,
+        )
+
+
+def _upstream_is_bind(upstream: object, bind: Mapping[str, object]) -> bool:
+    if not isinstance(upstream, dict):
+        return False
+    content = cast("Mapping[str, object]", upstream)
+    address, bound = content.get("address"), bind.get("address")
+    if not isinstance(address, str) or not isinstance(bound, str):
+        return False
+    return (
+        ip_address(address) == ip_address(bound)
+        and content.get("port") == bind.get("port")
+    )
+
+
+def _claim_kibana(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    claims: dict[tuple[str, ResourceId], ResourceDocument],
+) -> None:
+    """Refuse a second Kibana for one Elasticsearch service, or on one server."""
+    kibana = _required_mapping(spec, "kibana", document.source)
+    elasticsearch = _resource_id_value(kibana, "elasticsearch", document.source)
+    wanted = (
+        (
+            ("elasticsearch", elasticsearch),
+            (*_KIBANA_PATH, "elasticsearch"),
+            "Service",
+        ),
+        (
+            ("server", _resource_id_value(spec, "server", document.source)),
+            ("spec", "server"),
+            "Server",
+        ),
+    )
+    for claim, field_path, kind in wanted:
+        if claim in claims:
+            raise _kibana_refusal(
+                document,
+                ERROR_KIBANA_DUPLICATE,
+                f"{kind}/{claim[1]} already has the Kibana service declared at "
+                f"{claims[claim].source.display()}; it has at most one",
+                field_path,
+            )
+    for claim, _, _ in wanted:
+        claims[claim] = document
+
+
+def kibana_warnings(config: ValidatedConfig) -> tuple[ServiceWarning, ...]:
+    """Return ``KIBANA_PUBLISHED`` per Kibana service a Domain publishes (S-024)."""
+    warnings: list[ServiceWarning] = []
+    for document in config.resources(ResourceKind.SERVICE):
+        spec = _required_mapping(document.content, "spec", document.source)
+        if spec.get("serviceKind") != ServiceKind.KIBANA.value:
+            continue
+        kibana = _required_mapping(spec, "kibana", document.source)
+        if "domain" not in kibana:
+            continue
+        domain = _resource_id_value(kibana, "domain", document.source)
+        service = document.key.resource_id
+        warnings.append(
+            ServiceWarning(
+                code=KIBANA_WARNING_PUBLISHED,
+                message=(
+                    f"Service/{service} is published by Domain/{domain}: Kibana's "
+                    "login form faces the internet with nothing in front of it, so "
+                    "every password of the Elasticsearch service is open to "
+                    "guessing from anywhere and has to be long"
+                ),
+                context={"service": service.value, "domain": domain.value},
+            )
+        )
+    return tuple(warnings)
 
 
 ERROR_ELASTICSEARCH_VERSION = "service_elasticsearch_version"
@@ -1780,6 +2074,7 @@ def _validate_service_uniqueness(documents: Sequence[ResourceDocument]) -> None:
     nodes_taken: dict[ResourceId, ResourceDocument] = {}
     rabbitmq_nodes: dict[ResourceId, ResourceDocument] = {}
     clickhouse_servers: dict[ResourceId, ResourceDocument] = {}
+    kibana_claims: dict[tuple[str, ResourceId], ResourceDocument] = {}
     for document in documents:
         if document.key.kind is not ResourceKind.SERVICE:
             continue
@@ -1807,6 +2102,8 @@ def _validate_service_uniqueness(documents: Sequence[ResourceDocument]) -> None:
                 document, spec, raw_port, clickhouse_servers, ports
             )
             continue
+        if raw_kind == ServiceKind.KIBANA.value:
+            _claim_kibana(document, spec, kibana_claims)
         placement = (server_id, raw_kind)
         if placement in placements and raw_kind == ServiceKind.MARIADB.value:
             issue = ValidationIssue(
