@@ -1018,6 +1018,33 @@
             "additionalProperties": false
           }
         },
+        "rabbitmqCluster": {
+          "description": "The members and the running members of each RabbitMQ cluster of three whose home is the server (S-023), as node names; the lists are absent when the cluster could not be read",
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "properties": {
+              "service": {
+                "$ref": "common.schema.json#/$defs/resourceId"
+              },
+              "available": {
+                "type": "boolean"
+              },
+              "members": {
+                "$ref": "#/$defs/rabbitmqNameList"
+              },
+              "running": {
+                "$ref": "#/$defs/rabbitmqNameList"
+              }
+            },
+            "required": [
+              "service",
+              "available"
+            ],
+            "additionalProperties": false
+          }
+        },
         "alerting": {
           "type": "object",
           "properties": {

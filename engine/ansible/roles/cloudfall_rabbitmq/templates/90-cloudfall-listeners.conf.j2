@@ -17,7 +17,13 @@ ssl_options.versions.2 = tlsv1.2
 listeners.tcp.default = {{ cloudfall_rabbitmq_service.bind.address }}:{{ cloudfall_rabbitmq_service.bind.port }}
 listeners.ssl = none
 {% endif %}
+{% if cloudfall_rabbitmq_clustered | bool %}
+# A node of three: the inter-node port on the node's IPv4, over TLS, open to
+# the other nodes only
+distribution.listener.interface = {{ cloudfall_rabbitmq_node.address }}
+{% else %}
 # One node: the inter-node port stays on loopback too
 distribution.listener.interface = 127.0.0.1
+{% endif %}
 distribution.listener.port_range.min = {{ cloudfall_rabbitmq_distribution_port }}
 distribution.listener.port_range.max = {{ cloudfall_rabbitmq_distribution_port }}

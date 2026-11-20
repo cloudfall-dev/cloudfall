@@ -47,7 +47,14 @@ def positional(argv):
         if skip:
             skip = False
             continue
-        if item in ("--vhost", "-p", "--default-queue-type", "--tags", "--format"):
+        if item in (
+            "--vhost",
+            "-p",
+            "--default-queue-type",
+            "--tags",
+            "--format",
+            "--formatter",
+        ):
             skip = True
             continue
         if item.startswith("--"):
@@ -60,14 +67,28 @@ def main(argv):
     with LOG.open("a", encoding="utf-8") as log:
         log.write(json.dumps(argv) + "\n")
     state = load()
-    command, args = argv[0], positional(argv[1:])
+    # The first word that is no option, as in --formatter json cluster_status
+    command, *args = positional(argv)
     if command == "export_definitions":
         print(json.dumps(state))
         return 0
     if command == "list_queues":
         vhost = flag(argv, "--vhost") or "/"
+        if flag(argv, "--formatter") == "json":
+            print(json.dumps(state.get("queueDetails", {}).get(vhost, [])))
+            return 0
         for queue in state.get("queues", {}).get(vhost, []):
             print(queue)
+        return 0
+    # rabbitmq-diagnostics: a node that does not run answers 69
+    if command == "cluster_status":
+        if "cluster" not in state:
+            print("Error: unable to perform an operation on node", file=sys.stderr)
+            return 69
+        print(json.dumps(state["cluster"]))
+        return 0
+    if command == "list_vhosts":
+        print(json.dumps([{"name": item["name"]} for item in state["vhosts"]]))
         return 0
     if command in ("add_vhost", "update_vhost_metadata"):
         name = args[0]

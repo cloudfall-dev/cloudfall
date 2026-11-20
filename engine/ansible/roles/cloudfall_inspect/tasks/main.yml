@@ -760,6 +760,30 @@
       }}
   when: cloudfall_inspect_rabbitmq_services | length > 0
 
+- name: Collect RabbitMQ cluster evidence
+  ansible.builtin.include_tasks: rabbitmq_cluster.yml
+  loop: >-
+    {{
+      cloudfall_inspect_rabbitmq_services
+      | selectattr('rabbitmq.nodes', 'defined')
+      | selectattr('rabbitmq.nodes', 'length', '>', 1)
+      | list
+    }}
+  loop_control:
+    loop_var: cloudfall_inspect_rabbitmq_service
+    label: "{{ cloudfall_inspect_rabbitmq_service.id }}"
+
+- name: Attach RabbitMQ cluster evidence
+  ansible.builtin.set_fact:
+    cloudfall_inspect_snapshot: >-
+      {{
+        cloudfall_inspect_snapshot | combine(
+          {'spec': {'rabbitmqCluster': cloudfall_inspect_rabbitmq_cluster}},
+          recursive=true
+        )
+      }}
+  when: cloudfall_inspect_rabbitmq_cluster is defined
+
 - name: Create controller observation directory
   ansible.builtin.file:
     path: "{{ cloudfall_inspect_output_directory }}"

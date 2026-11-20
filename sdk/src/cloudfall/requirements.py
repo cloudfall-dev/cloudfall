@@ -49,6 +49,15 @@ from cloudfall.mariadb import MariadbReplicationRole
 from cloudfall.rabbitmq_access import CA_PATH as RABBITMQ_CA_PATH
 from cloudfall.rabbitmq_access import CERTIFICATE_PATH as RABBITMQ_CERTIFICATE_PATH
 from cloudfall.rabbitmq_access import KEY_PATH as RABBITMQ_KEY_PATH
+from cloudfall.rabbitmq_cluster import (
+    DISTRIBUTION_PORT as RABBITMQ_DISTRIBUTION_PORT,
+)
+from cloudfall.rabbitmq_cluster import (
+    EPMD_PORT as RABBITMQ_EPMD_PORT,
+)
+from cloudfall.rabbitmq_cluster import (
+    node_certificate_names as rabbitmq_node_certificate_names,
+)
 
 if TYPE_CHECKING:
     from cloudfall.inventory import (
@@ -717,6 +726,8 @@ RABBITMQ_COOKIE_NAME = RequirementName("rabbitmq-erlang-cookie")
 RABBITMQ_COOKIE_PATH = AbsolutePath("/var/lib/rabbitmq/.erlang.cookie")
 """Where each node and its command-line tools read the shared Erlang cookie."""
 RABBITMQ_COOKIE_KEY = SecretKeyName("ERLANG_COOKIE")
+RABBITMQ_EPMD_NAME = RequirementName("rabbitmq-epmd")
+RABBITMQ_DISTRIBUTION_NAME = RequirementName("rabbitmq-distribution")
 
 
 def rabbitmq_cookie_reference(
@@ -738,11 +749,14 @@ def _rabbitmq_requirements(
     Every node needs its data volume, mirrored when it is the only node and
     expendable with three (the copies are on the other nodes), the package at
     the declared version, and the Erlang cookie Cloudfall generates, which
-    the nodes and their command-line tools share. With ``clientAccess`` each
-    node also needs its one certificate from the project CA, usage server
-    and client as a node of three uses it too; the TLS client port is opened
-    to ``allowedSources``, networks rather than servers, by the firewall
-    alone. The ports of a cluster of three come with #508; one node without
+    the nodes and their command-line tools share. A node of three also needs
+    node discovery and the inter-node port open to the other nodes only. A
+    node of three, or one with ``clientAccess``, needs its one certificate
+    from the project CA, usage server and client: the nodes verify each other
+    with it in both directions, a node of three's naming its short hostname
+    too, which a connecting node checks, and the clients of ``clientAccess``
+    verify the node; the TLS client port is opened to ``allowedSources``, networks
+    rather than servers, by the firewall alone. One node without
     ``clientAccess`` listens on loopback only and needs neither.
     """
     rabbitmq = service.rabbitmq
@@ -780,10 +794,27 @@ def _rabbitmq_requirements(
         placed.extend(
             (node_id, Requirement(owner, spec)) for spec in (volume, cookie, package)
         )
-    if rabbitmq.client_access is None:
+    if len(rabbitmq.nodes) > 1:
+        for node_id in rabbitmq.nodes:
+            others = tuple(item for item in rabbitmq.nodes if item != node_id)
+            placed.extend(
+                (
+                    node_id,
+                    Requirement(
+                        owner, PortRequirement(name, port, NetworkProtocol.TCP, others)
+                    ),
+                )
+                for name, port in (
+                    (RABBITMQ_EPMD_NAME, RABBITMQ_EPMD_PORT),
+                    (RABBITMQ_DISTRIBUTION_NAME, RABBITMQ_DISTRIBUTION_PORT),
+                )
+            )
+    if len(rabbitmq.nodes) == 1 and rabbitmq.client_access is None:
         return placed
-    # With clientAccess each node serves TLS on its IPv4 with its one
-    # certificate from the project CA, which a client verifies there
+    # One certificate per node from the project CA serves the nodes of three
+    # between them and the clients of clientAccess, which verify it at its IPv4;
+    # a node of three's also names its short hostname, the host part of its
+    # node name, which the connecting node checks
     placed.extend(
         (
             node_id,
@@ -792,7 +823,11 @@ def _rabbitmq_requirements(
                 CertificateRequirement(
                     RABBITMQ_REQUIREMENT_NAME,
                     CertificateUsage.SERVER_AND_CLIENT,
-                    elasticsearch_node_names(servers[node_id]),
+                    rabbitmq_node_certificate_names(
+                        elasticsearch_node_names(servers[node_id]), servers[node_id]
+                    )
+                    if len(rabbitmq.nodes) > 1
+                    else elasticsearch_node_names(servers[node_id]),
                     RABBITMQ_CERTIFICATE_PATH,
                     RABBITMQ_KEY_PATH,
                     RABBITMQ_CA_PATH,

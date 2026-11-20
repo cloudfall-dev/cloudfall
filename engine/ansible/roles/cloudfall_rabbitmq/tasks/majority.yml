@@ -1,0 +1,54 @@
+---
+# A cluster without its majority accepts no change and a quorum queue
+# stops; restarting the node that is left would drop what only the others
+# held. So a node that runs as a member of such a cluster stops the converge
+# here, before any task that could change or restart it, and the services
+# converge answers it with PRECONDITION (S-023-11). Nothing forces it to go
+# on alone: once a node returns, the cluster serves again with no converge.
+- name: Read the cluster this node is a member of
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_rabbitmq_diagnostics }}"
+      - --quiet
+      - --formatter
+      - json
+      - cluster_status
+  register: cloudfall_rabbitmq_membership_read
+  # A node that does not run can't say; the converge starts it, and it
+  # rejoins the members it knows
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Plan the cluster's majority from what the node said
+  ansible.builtin.set_fact:
+    cloudfall_rabbitmq_membership: >-
+      {{
+        cloudfall_rabbitmq_membership_read.stdout | cloudfall_rabbitmq_membership
+        if cloudfall_rabbitmq_membership_read.rc == 0
+        else {'members': [], 'running': [], 'majority': true}
+      }}
+
+- name: Report the converge refused while the cluster has no majority
+  ansible.builtin.copy:
+    content: >-
+      {{ {'service': cloudfall_rabbitmq_service.id,
+          'server': cloudfall_server_id,
+          'outcome': 'refused',
+          'code': cloudfall_rabbitmq_no_majority_code,
+          'message': cloudfall_rabbitmq_no_majority_message} | to_json }}
+    dest: >-
+      {{ cloudfall_rabbitmq_report_directory }}/{{ cloudfall_rabbitmq_service.id }}.json
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when:
+    - not cloudfall_rabbitmq_membership.majority
+    - cloudfall_rabbitmq_report_directory | length > 0
+
+- name: Refuse a converge while the cluster has no majority
+  ansible.builtin.fail:
+    msg: >-
+      PRECONDITION {{ cloudfall_rabbitmq_no_majority_code }}:
+      {{ cloudfall_rabbitmq_no_majority_message }}
+  when: not cloudfall_rabbitmq_membership.majority

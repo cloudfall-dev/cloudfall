@@ -1,0 +1,40 @@
+---
+# A node of three (S-023): it meets the others on its IPv4 over TLS, with the
+# certificate tls.yml prepared, and reaches them by name.
+
+# inet_tls_dist lives in the ssl application of the Erlang the Debian release
+# installed; the node and the tools load it from there
+- name: Read where Erlang keeps its TLS distribution
+  ansible.builtin.command:
+    argv:
+      - erl
+      - -noshell
+      - -noinput
+      - -eval
+      - io:format("~s~n", [filename:dirname(code:which(inet_tls_dist))]), halt().
+  register: cloudfall_rabbitmq_erl_ssl
+  changed_when: false
+  # A dry run reads it too, so it previews rabbitmq-env.conf as a real run
+  # writes it; only a dry run of a new node, before Erlang is installed, goes
+  # on without it
+  check_mode: false
+  failed_when: >-
+    cloudfall_rabbitmq_erl_ssl.rc | default(1) != 0 and not ansible_check_mode
+
+- name: Install the inter-node TLS options
+  ansible.builtin.template:
+    src: inter_node_tls.config.j2
+    dest: "{{ cloudfall_rabbitmq_tls_options_path }}"
+    owner: root
+    group: rabbitmq
+    mode: "0644"
+  notify: Restart RabbitMQ
+
+# Before the host's own lines, so a node's hostname is its IPv4 here too and
+# not the 127.0.1.1 Debian gives it: the tools reach the node there
+- name: Resolve every node's hostname to its address
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} CLOUDFALL RABBITMQ {{ cloudfall_rabbitmq_service.id }}"
+    insertbefore: BOF
+    block: "{{ cloudfall_rabbitmq_hosts_block }}"

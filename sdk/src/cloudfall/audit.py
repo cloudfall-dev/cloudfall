@@ -37,6 +37,11 @@ from cloudfall.rabbitmq import OWNER_TAG_PREFIX as RABBITMQ_OWNER_TAG_PREFIX
 from cloudfall.rabbitmq_access import (
     client_access_rules_for_server as rabbitmq_client_access_rules_for_server,
 )
+from cloudfall.rabbitmq_cluster import (
+    cluster_rules_for_server as rabbitmq_cluster_rules_for_server,
+)
+from cloudfall.rabbitmq_cluster import is_cluster as is_rabbitmq_cluster
+from cloudfall.rabbitmq_cluster import node_name as rabbitmq_node_name
 from cloudfall.requirements import (
     ELASTICSEARCH_PACKAGE,
     MARIADB_CA_PATH,
@@ -225,6 +230,14 @@ def audit_inventory(
     stacks_by_backend = {
         stack.backend.server_id: stack for stack in inventory.logging_stacks
     }
+    servers_by_id = {server.resource_id: server for server in inventory.servers}
+    rabbitmq_nodes = {
+        service.resource_id: tuple(
+            rabbitmq_node_name(servers_by_id[node]) for node in service.rabbitmq.nodes
+        )
+        for service in inventory.services
+        if service.rabbitmq is not None and is_rabbitmq_cluster(service)
+    }
     audits = tuple(
         _audit_server(
             server,
@@ -253,6 +266,7 @@ def audit_inventory(
                 if service.elasticsearch is not None
                 and server.resource_id in service.elasticsearch.nodes
             ),
+            rabbitmq_nodes=rabbitmq_nodes,
         )
         for server in inventory.servers
     )
@@ -286,6 +300,7 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
     logging_packages: tuple[PackageRequirement, ...] = (),
     dashboards: Mapping[str, str] | None = None,
     elasticsearch_nodes: tuple[ServiceInventory, ...] = (),
+    rabbitmq_nodes: Mapping[ResourceId, tuple[str, ...]] | None = None,
 ) -> ServerAudit:
     if snapshot is None:
         check = AuditCheck(
@@ -340,6 +355,7 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
         checks.extend(_audit_mariadb_server(service, snapshot))
     checks.extend(_audit_mariadb_accounts(services, snapshot))
     checks.extend(_audit_rabbitmq_accounts(services, snapshot))
+    checks.extend(_audit_rabbitmq_cluster(services, rabbitmq_nodes, snapshot))
     checks.extend(_audit_alert_rules(alert_rules, snapshot))
     checks.extend(
         _audit_component_environment(
@@ -668,6 +684,9 @@ def _gateway_rules(
         ),
         *replication_rules_for_server(server, inventory.servers, inventory.services),
         *rabbitmq_client_access_rules_for_server(server, inventory.services),
+        *rabbitmq_cluster_rules_for_server(
+            server, inventory.servers, inventory.services
+        ),
     )
 
 
@@ -1540,6 +1559,77 @@ def _audit_rabbitmq_accounts(
             )
             continue
         checks.append(_rabbitmq_accounts_check(name, desired, entry))
+    return tuple(checks)
+
+
+def _audit_rabbitmq_cluster(
+    services: tuple[ServiceInventory, ...],
+    nodes: Mapping[ResourceId, tuple[str, ...]] | None,
+    snapshot: ObservedServerSnapshot,
+) -> tuple[AuditCheck, ...]:
+    """Compare each RabbitMQ cluster of three's members with its declared nodes.
+
+    Read on the service's home. A declared node that is not a running member
+    is missing; a cluster in which no more than half of the members run has
+    no majority, and takes no publish to a quorum queue and no change of a
+    definition (S-023-11). A service of one node has no such check.
+    """
+    evidence = {
+        _string(entry, "service"): entry
+        for entry in _mapping_sequence(snapshot.spec, "rabbitmqCluster")
+    }
+    checks: list[AuditCheck] = []
+    for service in services:
+        declared = (nodes or {}).get(service.resource_id)
+        if declared is None:
+            continue
+        name = f"rabbitmq.cluster[{service.resource_id.value}]"
+        desired = {"members": sorted(declared), "running": sorted(declared)}
+        entry = evidence.get(service.resource_id.value)
+        if entry is None or entry.get("available") is not True:
+            checks.append(
+                AuditCheck(
+                    check=name,
+                    status=AuditStatus.UNKNOWN,
+                    desired=desired,
+                    observed=None,
+                    message=(
+                        "the cluster's members were not read; inspect again "
+                        "once rabbitmq-diagnostics answers on the home server"
+                    ),
+                )
+            )
+            continue
+        members = sorted(set(_strings(entry, "members")))
+        running = sorted(set(_strings(entry, "running")) & set(members))
+        missing = [node for node in sorted(declared) if node not in running]
+        undeclared = [node for node in members if node not in declared]
+        majority = len(members) <= 1 or 2 * len(running) > len(members)
+        problems = []
+        if not majority:
+            problems.append(
+                f"the cluster has no majority: {len(running)} of {len(members)} "
+                "members run, so it takes no publish to a quorum queue and no "
+                "change of a definition"
+            )
+        if missing:
+            problems.append(f"missing nodes: {', '.join(missing)}")
+        if undeclared:
+            problems.append(f"undeclared members: {', '.join(undeclared)}")
+        checks.append(
+            AuditCheck(
+                check=name,
+                status=AuditStatus.DRIFT if problems else AuditStatus.COMPLIANT,
+                desired=desired,
+                observed={
+                    "members": members,
+                    "running": running,
+                    "missing": missing,
+                    "majority": majority,
+                },
+                message="; ".join(problems) or "desired state matches",
+            )
+        )
     return tuple(checks)
 
 

@@ -1,9 +1,9 @@
 ---
-# One node of a RabbitMQ service (S-023). Every refusal comes before the
-# first task that changes the host (S-023-4). The node is configured as a
-# cluster that waits for two more, and with clientAccess takes clients over
-# TLS on its IPv4 too; the clusters of three (#508) are refused here until
-# they are built.
+# One node of a RabbitMQ service of one or three (S-023). Every refusal comes
+# before the first task that changes the host (S-023-4), and so does the
+# majority check of a cluster (S-023-11). One node is configured as a cluster
+# that waits for two more, and with clientAccess takes clients over TLS on its
+# IPv4 too, with the same certificate the nodes of three meet with.
 - name: Validate RabbitMQ service target and declaration
   ansible.builtin.assert:
     that:
@@ -17,16 +17,6 @@
     fail_msg: >-
       RabbitMQ service {{ cloudfall_rabbitmq_service.id }} needs a Debian 13
       node that it declares, and a loopback-only bind address
-
-- name: Refuse a cluster this release does not converge
-  ansible.builtin.assert:
-    that:
-      - cloudfall_rabbitmq_service.rabbitmq.nodes | length == 1
-    fail_msg: >-
-      RabbitMQ service {{ cloudfall_rabbitmq_service.id }} declares
-      {{ cloudfall_rabbitmq_service.rabbitmq.nodes | length }} nodes; this
-      release converges one node (S-023). Nothing on
-      {{ cloudfall_server_id }} changed
 
 # A node with clientAccess takes clients where the inventory says: its IPv4,
 # the TLS port, and its certificate's paths
@@ -44,6 +34,26 @@
       clientAccess, but the inventory carries no client access for
       {{ cloudfall_server_id }}; render the inventory with this Cloudfall
       release. Nothing changed
+
+# A node of three meets the others where the inventory says: its address,
+# every node's name and address, and its certificate's paths
+- name: Require the node's rendered cluster
+  ansible.builtin.assert:
+    that:
+      - cloudfall_rabbitmq_service.rabbitmq.nodes | length in [1, 3]
+      - >-
+        not cloudfall_rabbitmq_clustered | bool
+        or (
+          cloudfall_rabbitmq_node.address is defined
+          and cloudfall_rabbitmq_node.nodes | map(attribute='server') | list
+          == cloudfall_rabbitmq_service.rabbitmq.nodes
+        )
+    fail_msg: >-
+      {{ cloudfall_server_id }} is a node of RabbitMQ service
+      {{ cloudfall_rabbitmq_service.id }} of
+      {{ cloudfall_rabbitmq_service.rabbitmq.nodes | length }} nodes, but the
+      inventory carries no cluster for it, or another node list; render the
+      inventory with this Cloudfall release. Nothing changed
 
 # services.yml refuses it before any service role too; checked again here,
 # the role is safe to include on its own
@@ -151,6 +161,14 @@
   check_mode: false
   when: cloudfall_rabbitmq_home | bool
 
+# Before any task that could change or restart the node (S-023-11)
+- name: Refuse a converge while the cluster has no majority
+  ansible.builtin.import_tasks: majority.yml
+  when:
+    - cloudfall_rabbitmq_clustered | bool
+    - cloudfall_rabbitmq_installed.rc == 0
+    - cloudfall_rabbitmq_installed.stdout.startswith('installed|')
+
 - name: Install the RabbitMQ repository and the Erlang of the Debian release
   ansible.builtin.import_tasks: package.yml
 
@@ -178,9 +196,15 @@
     - "{{ cloudfall_rabbitmq_config_directory }}"
     - "{{ cloudfall_rabbitmq_config_directory }}/conf.d"
 
-- name: Prepare the node certificate for clients over TLS
+# One certificate from the project CA serves the nodes of three between them
+# and the clients of clientAccess
+- name: Prepare the node certificate for TLS
   ansible.builtin.import_tasks: tls.yml
-  when: cloudfall_rabbitmq_client_tls | bool
+  when: cloudfall_rabbitmq_needs_certificate | bool
+
+- name: Prepare the node to meet the others over TLS
+  ansible.builtin.import_tasks: cluster.yml
+  when: cloudfall_rabbitmq_clustered | bool
 
 - name: Install the managed settings
   ansible.builtin.template:
@@ -202,7 +226,9 @@
     mode: "0644"
   notify: Restart RabbitMQ
 
-# epmd, which the node starts, listens where ERL_EPMD_ADDRESS says
+# epmd, which the node starts, listens where ERL_EPMD_ADDRESS says: loopback,
+# and on a node of three its IPv4 too, where the node and the tools also
+# speak TLS between nodes
 - name: Keep the node's name and epmd on loopback
   ansible.builtin.blockinfile:
     path: "{{ cloudfall_rabbitmq_config_directory }}/rabbitmq-env.conf"
@@ -211,9 +237,7 @@
     group: rabbitmq
     mode: "0644"
     marker: "# {mark} CLOUDFALL MANAGED"
-    block: |
-      NODENAME={{ cloudfall_rabbitmq_node_name }}
-      ERL_EPMD_ADDRESS=127.0.0.1
+    block: "{{ cloudfall_rabbitmq_env_lines | join('\n') }}"
   notify: Restart RabbitMQ
 
 - name: Install the pinned RabbitMQ server
@@ -252,6 +276,50 @@
   until: cloudfall_rabbitmq_running.rc == 0
   when: not ansible_check_mode
 
+# A new node finds the running home in its node list and joins it on its
+# first start; the home runs first, and the nodes join one at a time
+# (services.yml is serial). A node that started a cluster of its own never
+# lists the home as running, and stops the converge here.
+- name: Wait until the node runs in the home's cluster
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_rabbitmq_diagnostics }}"
+      - --quiet
+      - --formatter
+      - json
+      - cluster_status
+  register: cloudfall_rabbitmq_joined
+  changed_when: false
+  retries: "{{ cloudfall_rabbitmq_join_retries }}"
+  delay: 5
+  until: >-
+    cloudfall_rabbitmq_joined.rc == 0
+    and cloudfall_rabbitmq_node_name
+      in (cloudfall_rabbitmq_joined.stdout | cloudfall_rabbitmq_membership).running
+    and cloudfall_rabbitmq_home_node
+      in (cloudfall_rabbitmq_joined.stdout | cloudfall_rabbitmq_membership).running
+  when:
+    - cloudfall_rabbitmq_clustered | bool
+    - not ansible_check_mode
+
+# Once every declared node is a member: on the last node to join, and on
+# every node of a later converge. It only reads.
+- name: Wait until the service is healthy
+  cloudfall_rabbitmq_health:
+    ctl: "{{ cloudfall_rabbitmq_ctl }}"
+    diagnostics: "{{ cloudfall_rabbitmq_diagnostics }}"
+    nodes: "{{ cloudfall_rabbitmq_node_names }}"
+    timeout: "{{ cloudfall_rabbitmq_healthy_timeout | int }}"
+    interval: "{{ cloudfall_rabbitmq_healthy_interval | int }}"
+  when:
+    - cloudfall_rabbitmq_clustered | bool
+    - not ansible_check_mode
+    - >-
+      cloudfall_rabbitmq_node_names
+      | difference((cloudfall_rabbitmq_joined.stdout
+                    | cloudfall_rabbitmq_membership).members)
+      | length == 0
+
 - name: Read the listening sockets
   ansible.builtin.command:
     argv:
@@ -261,8 +329,9 @@
   changed_when: false
   when: not ansible_check_mode
 
-# Nothing of RabbitMQ or epmd listens outside loopback (S-023-3), but the
-# TLS client listener of a node with clientAccess on its IPv4 (S-023-19)
+# Nothing of RabbitMQ or epmd listens outside loopback (S-023-3), but node
+# discovery and the inter-node port of a node of three, and the TLS client
+# listener of a node with clientAccess (S-023-19), on its own IPv4
 - name: Refuse a listener of RabbitMQ or epmd outside loopback
   ansible.builtin.assert:
     that:

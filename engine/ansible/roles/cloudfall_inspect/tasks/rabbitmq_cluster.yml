@@ -1,0 +1,54 @@
+---
+# The members of a RabbitMQ cluster of three and those that run (S-023),
+# read on the service's home with the command-line tools: audit reports a
+# declared node that is not a running member, and a cluster without its
+# majority.
+- name: Read the cluster's members
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_inspect_rabbitmq_diagnostics }}"
+      - --quiet
+      - --formatter
+      - json
+      - cluster_status
+  register: cloudfall_inspect_rabbitmq_status
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Attach the RabbitMQ cluster's members
+  ansible.builtin.set_fact:
+    cloudfall_inspect_rabbitmq_cluster: >-
+      {{
+        cloudfall_inspect_rabbitmq_cluster | default([])
+        + [cloudfall_inspect_rabbitmq_cluster_evidence]
+      }}
+  vars:
+    cloudfall_inspect_rabbitmq_cluster_available: >-
+      {{
+        cloudfall_inspect_rabbitmq_status.rc == 0
+        and (cloudfall_inspect_rabbitmq_status.stdout | default('')).startswith('{')
+      }}
+    cloudfall_inspect_rabbitmq_cluster_status: >-
+      {{
+        cloudfall_inspect_rabbitmq_status.stdout | from_json
+        if cloudfall_inspect_rabbitmq_cluster_available else {}
+      }}
+    cloudfall_inspect_rabbitmq_cluster_evidence: >-
+      {{
+        {
+          'service': cloudfall_inspect_rabbitmq_service.id,
+          'available': cloudfall_inspect_rabbitmq_cluster_available,
+        }
+        | combine(
+          {
+            'members': (
+              cloudfall_inspect_rabbitmq_cluster_status.disk_nodes | default([])
+              + cloudfall_inspect_rabbitmq_cluster_status.ram_nodes | default([])
+            ) | unique | sort,
+            'running': cloudfall_inspect_rabbitmq_cluster_status.running_nodes
+              | default([]) | sort,
+          }
+          if cloudfall_inspect_rabbitmq_cluster_available else {}
+        )
+      }}

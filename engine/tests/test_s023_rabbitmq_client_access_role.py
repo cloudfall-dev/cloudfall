@@ -60,10 +60,11 @@ def test_s023_3_without_client_access_the_node_renders_as_it_did() -> None:
         "distribution.listener.port_range.max = 25672",
     ]
     assert _template("{{ cloudfall_rabbitmq_allowed_listeners }}", _variables()) == []
-    prepare = _task(
-        "Prepare the node certificate for clients over TLS", _tasks("main.yml")
+    prepare = _task("Prepare the node certificate for TLS", _tasks("main.yml"))
+    assert prepare["when"] == "cloudfall_rabbitmq_needs_certificate | bool"
+    assert _template("{{ cloudfall_rabbitmq_needs_certificate }}", _variables()) is (
+        False
     )
-    assert prepare["when"] == "cloudfall_rabbitmq_client_tls | bool"
 
 
 # proves: S-023-19
@@ -117,15 +118,19 @@ def test_s023_19_the_key_is_the_nodes_alone_and_the_certificate_required() -> No
     assert key["ansible.builtin.file"]["owner"] == "rabbitmq"
     assert key["ansible.builtin.file"]["group"] == "rabbitmq"
     assert key["ansible.builtin.file"]["mode"] == "0600"
-    require = _task("Require the node certificate before clients use TLS", tls)
+    require = _task("Require the node certificate before it serves TLS", tls)
     assert require["ansible.builtin.assert"]["that"] == [
         "item.stat.exists",
         "item.stat.isreg",
     ]
     # Checked before the settings that name the files are written
     names = [task["name"] for task in _tasks("main.yml")]
-    assert names.index("Prepare the node certificate for clients over TLS") < (
+    assert names.index("Prepare the node certificate for TLS") < (
         names.index("Install the managed settings")
+    )
+    assert (
+        _template("{{ cloudfall_rabbitmq_certificate }}", _with_access())
+        == (RENDERED["rabbitmq-main"])
     )
     # Only what the services converge staged for this node is copied
     staged = _template(
