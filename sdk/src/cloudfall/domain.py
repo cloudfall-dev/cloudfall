@@ -617,6 +617,7 @@ class ServiceKind(StrEnum):
     ELASTICSEARCH = "elasticsearch"
     MARIADB = "mariadb"
     RABBITMQ = "rabbitmq"
+    CLICKHOUSE = "clickhouse"
 
     @classmethod
     def from_boundary(cls, value: object) -> ServiceKind:

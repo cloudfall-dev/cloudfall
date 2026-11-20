@@ -440,7 +440,9 @@ from cloudfall.validation import (
     ConfigValidationError,
     DeprecatedName,
     SchemaCatalog,
+    ServiceWarning,
     ValidatedConfig,
+    clickhouse_warnings,
     elasticsearch_versions_ending,
     mariadb_unencrypted_sources,
     mariadb_versions_ending,
@@ -921,19 +923,22 @@ def config_validate(
     ``MARIADB_VERSION_ENDING``. A MariaDB replica of an outside source
     declared without a CA file gets ``MARIADB_REPLICATION_UNENCRYPTED``. A
     RabbitMQ service gets ``RABBITMQ_VERSION_ENDING`` the same way, and
-    ``RABBITMQ_SINGLE_NODE`` when it is one node in production.
+    ``RABBITMQ_SINGLE_NODE`` when it is one node in production. A ClickHouse
+    service gets ``CLICKHOUSE_VERSION_ENDING`` the same way, and
+    ``CLICKHOUSE_SINGLE_REPLICA`` when it is one replica in production.
     """
     today = datetime.now(UTC).date()
     _warn_deprecated_names(ctx, fleet)
     _warn_elasticsearch_versions_ending(ctx, fleet.state, today)
     _warn_mariadb(ctx, fleet.state, today)
-    _warn_rabbitmq(ctx, fleet.state, today)
+    _warn_services(ctx, rabbitmq_warnings(fleet.state, today))
+    _warn_services(ctx, clickhouse_warnings(fleet.state, today))
     return ValidatedPayload(fleet.state.as_dict())
 
 
-def _warn_rabbitmq(ctx: Ctx, state: ValidatedConfig, today: date) -> None:
-    """Warn per RabbitMQ service whose series is ending, or that is one node."""
-    for warning in rabbitmq_warnings(state, today):
+def _warn_services(ctx: Ctx, warnings: tuple[ServiceWarning, ...]) -> None:
+    """Give each service warning with its context."""
+    for warning in warnings:
         ctx.warn(warning.code, warning.message, **warning.context)
 
 
