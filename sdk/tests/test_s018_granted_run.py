@@ -49,6 +49,7 @@ from cloudfall.app import (
     _granted,
 )
 from cloudfall.audit import AuditStatus
+from cloudfall.component_lock import lock_path
 from cloudfall.domain import AbsolutePath, ResourceId, Sha256Digest
 from cloudfall.inventory import PlatformInventory
 from cloudfall.lifecycle import (
@@ -77,7 +78,7 @@ from test_agent_server import _serve, _talk
 from test_deploy_approval import _write_artifact
 from test_operator import _audit_report, _Finished
 from test_s018_agent_gate import _agent_record
-from treaty import CliExit
+from treaty import CliExit, Exit
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -119,7 +120,7 @@ _DEPLOY_PLAY = """\
         src: {proposals}/
         dest: {seen}/
         mode: '0600'
-{outcome}
+{extra}{outcome}
 """
 
 _HEALTHY = """\
@@ -211,7 +212,8 @@ def _committed(project: Path) -> str:
     return _git(project, "rev-parse", "HEAD")
 
 
-def _engine(tmp_path: Path, project: Path, *, healthy: bool) -> Path:
+def _engine(tmp_path: Path, project: Path, *, healthy: bool, extra: str = "") -> Path:
+    """Stand in for the engine; ``extra`` tasks run before the outcome's."""
     engine = tmp_path / ("engine" if healthy else "failing-engine")
     playbooks = engine / "ansible" / "playbooks"
     playbooks.mkdir(parents=True)
@@ -220,6 +222,7 @@ def _engine(tmp_path: Path, project: Path, *, healthy: bool) -> Path:
         _DEPLOY_PLAY.format(
             proposals=project / PROPOSALS,
             seen=tmp_path / "seen",
+            extra=extra,
             outcome=_HEALTHY if healthy else _FAIL_HEALTH_GATE,
         ),
         encoding="utf-8",
@@ -237,19 +240,32 @@ def _new_records(project: Path) -> list[Path]:
 
 
 def _deploy(
-    tmp_path: Path, *, healthy: bool = True
+    tmp_path: Path,
+    *,
+    healthy: bool = True,
+    extra: Callable[[Path], str] | None = None,
 ) -> tuple[Path, str, dict[str, Any], dict[str, Any]]:
-    """Deploy over MCP with a staging grant: the plan, then the confirmed call."""
+    """Deploy over MCP with a staging grant: the plan, then the confirmed call.
+
+    ``extra`` returns the playbook's tasks to run before its outcome's, from
+    the project's path.
+    """
     project = _staging_project(tmp_path, "deploy")
     _write_artifact(project)
     head = _committed(project)
     call = {"component": "crm-backend", "release": RELEASE, "reason": REASON}
+    engine = _engine(
+        tmp_path,
+        project,
+        healthy=healthy,
+        extra="" if extra is None else extra(project),
+    )
     _, (planned, confirmed) = _talk(
         _serve(
             "--project",
             str(project),
             "--engine",
-            str(_engine(tmp_path, project, healthy=healthy)),
+            str(engine),
             cwd=tmp_path,
         ),
         ("deploy", call),
@@ -346,6 +362,83 @@ def test_s018_7_a_failed_health_gate_ends_the_record_failed(
     assert "run failed" in spec["outcome"]["detail"]
     seen = json.loads((tmp_path / "seen" / path.name).read_text(encoding="utf-8"))
     assert seen["spec"]["status"] == "running"
+
+
+_LOSE_THE_STORE = """\
+    - name: Remove the proposal store mid-run
+      ansible.builtin.file:
+        path: {proposals}
+        state: absent
+    - name: Put a file where the proposal store was
+      ansible.builtin.copy:
+        dest: {proposals}
+        content: "not a folder\\n"
+        mode: '0600'
+"""
+
+_BREAK_THE_LOCK = """\
+    - name: Remove the component lock
+      ansible.builtin.file:
+        path: {lock}
+        state: absent
+    - name: Put a folder where the component lock was
+      ansible.builtin.file:
+        path: {lock}
+        state: directory
+        mode: '0700'
+"""
+
+
+def _lose_the_store(project: Path) -> str:
+    return _LOSE_THE_STORE.format(proposals=project / PROPOSALS)
+
+
+def _lose_the_store_and_the_lock(project: Path) -> str:
+    """Lose the store, then make the lock's release raise ``IsADirectoryError``."""
+    lock = lock_path(project, ResourceId("crm-backend"))
+    return _lose_the_store(project) + _BREAK_THE_LOCK.format(lock=lock)
+
+
+def _record_lost(project: Path, error: dict[str, Any]) -> dict[str, Any]:
+    """Check the envelope's ``record_lost`` names the store and the record."""
+    lost: dict[str, Any] = error["context"]["record_lost"]
+    store = str(project / PROPOSALS)
+    assert lost["code"] == ERROR_AGENT_RECORD_UNWRITABLE
+    assert lost["store"] == store
+    assert lost["record"].startswith(store + "/op-")
+    assert lost["last_saved"] == "running"
+    assert store in lost["error"]
+    return lost
+
+
+def test_a_failed_run_whose_record_is_lost_tells_the_agent_over_mcp(
+    tmp_path: Path,
+) -> None:
+    project, _, _, confirmed = _deploy(tmp_path, healthy=False, extra=_lose_the_store)
+
+    # The run's own exit and message, and the record it could not settle.
+    assert confirmed["ok"] is False
+    error = confirmed["error"]
+    assert error["code"] == "ENGINE_STEP_FAILED", confirmed
+    assert "health check failed" in error["message"]
+    assert error["context"]["code"] == "lifecycle_execution_failed"
+    lost = _record_lost(project, error)
+    seen = tmp_path / "seen" / Path(lost["record"]).name
+    spec = json.loads(seen.read_text(encoding="utf-8"))["spec"]
+    assert spec["status"] == "running"
+
+
+def test_a_crashed_run_whose_record_is_lost_tells_the_agent_over_mcp(
+    tmp_path: Path,
+) -> None:
+    project, _, _, confirmed = _deploy(tmp_path, extra=_lose_the_store_and_the_lock)
+
+    assert confirmed["ok"] is False
+    error = confirmed["error"]
+    assert error["code"] == "HANDLER_CRASHED", confirmed
+    assert error["message"].startswith("The run raised IsADirectoryError: ")
+    assert error["context"]["exception"] == "IsADirectoryError"
+    _record_lost(project, error)
 
 
 def test_a_record_leaves_out_every_argument_the_server_binds() -> None:
@@ -693,13 +786,52 @@ def test_a_failed_save_after_the_run_started_keeps_the_runs_own_error(
         message = "the receipt directory went away"
         raise OSError(message)
 
-    with pytest.raises(OSError, match="receipt directory went away") as raised:
+    with pytest.raises(CliExit) as raised:
         _granted_domains(gate, check, run)
 
+    # treaty drops exception notes: the lost record is in the context (#496).
     assert steps.started
-    assert any(
-        str(project / PROPOSALS) in note for note in raised.value.__notes__
+    assert raised.value.name.value == "GENERAL_ERROR"
+    assert raised.value.code == "HANDLER_CRASHED"
+    assert raised.value.message == (
+        "the run raised OSError: the receipt directory went away"
     )
+    assert raised.value.context["exception"] == "OSError"
+    assert isinstance(raised.value.__cause__, OSError)
+    lost = raised.value.context["record_lost"]
+    assert isinstance(lost, dict)
+    assert lost["code"] == ERROR_AGENT_RECORD_UNWRITABLE
+    assert lost["store"] == str(project / PROPOSALS)
+    assert lost["last_saved"] == "running"
+    assert str(project / PROPOSALS) in str(lost["error"])
+    assert str(lost["record"]).startswith(str(project / PROPOSALS))
+
+
+def test_a_failed_save_after_a_failed_run_keeps_its_exit_and_names_the_record(
+    tmp_path: Path,
+) -> None:
+    project = _staging_project(tmp_path, "domains-apply")
+    gate, check = _domains_gate(project)
+    steps = _Steps()
+
+    def run(watch: Callable[[StepRunner], StepRunner]) -> str:
+        _render_with(steps)(watch)
+        _store_folder_replaced_by_a_file(project)
+        message = "the render failed"
+        raise Exit.ENGINE_STEP_FAILED(
+            message, context={"code": "lifecycle_execution_failed"}
+        )
+
+    with pytest.raises(CliExit) as raised:
+        _granted_domains(gate, check, run)
+
+    assert raised.value.code == "ENGINE_STEP_FAILED"
+    assert raised.value.message == "the render failed"
+    assert raised.value.context["code"] == "lifecycle_execution_failed"
+    lost = raised.value.context["record_lost"]
+    assert isinstance(lost, dict)
+    assert lost["store"] == str(project / PROPOSALS)
+    assert lost["last_saved"] == "running"
 
 
 def test_a_settle_that_cannot_save_says_the_run_completed(tmp_path: Path) -> None:

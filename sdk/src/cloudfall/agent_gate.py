@@ -430,6 +430,7 @@ class GrantedRun:
         self._store = store
         self._record = record
         self._path: Path | None = None
+        self._saved: ProposalStatus | None = None
 
     @classmethod
     def prepare(  # noqa: PLR0913 - the record's every source.
@@ -500,6 +501,7 @@ class GrantedRun:
                 raise RecordNotSavedError(ERROR_AGENT_RECORD_EXISTS, message) from error
             except OSError as error:
                 raise self._unwritable(error) from error
+            self._saved = self._record.status
         return self._path
 
     def _update(self) -> None:
@@ -508,6 +510,24 @@ class GrantedRun:
             self._store.update(self._record)
         except OSError as error:
             raise self._unwritable(error) from error
+        self._saved = self._record.status
+
+    def lost(self, error: RecordNotSavedError) -> dict[str, object]:
+        """Name the started record a later write missed, for an error's context.
+
+        ``last_saved`` is the status this run last wrote; the store error
+        says why the next write did not land.
+        """
+        if self._path is None or self._saved is None:
+            message = "a record never written is not lost; nothing ran"
+            raise ValueError(message)
+        return {
+            "code": error.code,
+            "store": str(self._store.directory),
+            "record": str(self._path),
+            "last_saved": self._saved.value,
+            "error": error.message,
+        }
 
     def _unwritable(self, error: OSError) -> RecordNotSavedError:
         reason = error.strerror or str(error)
@@ -615,6 +635,7 @@ class ApprovedRun(GrantedRun):
                 self._path = self._store.start(self._record)
             except OSError as error:
                 raise self._unwritable(error) from error
+            self._saved = self._record.status
         return self._path
 
     def approval(self) -> dict[str, object]:

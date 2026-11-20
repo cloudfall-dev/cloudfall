@@ -2778,7 +2778,9 @@ def _record_failure(run: GrantedRun, stage: str, executed_at: datetime) -> None:
     """Record the raised error as the run's failure, never masking that error.
 
     A store that cannot take the failure leaves the run's own error to
-    propagate, with a note naming the record that was not written.
+    propagate, its ``context.record_lost`` naming the store folder, the
+    record and the store error (#496): the agent reads the envelope, which
+    keeps no exception note.
     """
     raised = sys.exception()
     try:
@@ -2786,7 +2788,22 @@ def _record_failure(run: GrantedRun, stage: str, executed_at: datetime) -> None:
     except RecordNotSavedError as error:
         if raised is None:
             raise
-        raised.add_note(error.message)
+        lost = run.lost(error)
+        if isinstance(raised, (CliExit, ParseError)):
+            # The run's own exit code, message and context, and the lost record.
+            raised.context["record_lost"] = lost
+            return
+        if not isinstance(raised, Exception):
+            # A cancellation or an interrupt keeps the exit treaty gives it.
+            raised.add_note(error.message)
+            return
+        # A crash keeps treaty's exit 1 and HANDLER_CRASHED, now with a context.
+        crashed = Exit.GENERAL_ERROR(
+            f"the run raised {type(raised).__name__}: {raised}",
+            code="HANDLER_CRASHED",
+            context={"exception": type(raised).__qualname__, "record_lost": lost},
+        )
+        raise crashed from raised
 
 
 def _raised_detail(stage: str, raised: BaseException | None) -> str:
