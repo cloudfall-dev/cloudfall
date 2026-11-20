@@ -213,8 +213,47 @@
     owner: root
     group: rabbitmq
     mode: "0644"
-  loop: "{{ cloudfall_rabbitmq_managed_files }}"
+  loop: >-
+    {{
+      cloudfall_rabbitmq_managed_files
+      | reject('equalto', cloudfall_rabbitmq_cluster_file) | list
+    }}
   notify: Restart RabbitMQ
+
+# The node list serves a node's first start only: a running member rejoins
+# the members it knows. So a change of the node list alone, as when a lost
+# server is replaced by another (S-023-14), restarts no running node, and the
+# nodes that are left keep their majority and take publishes throughout.
+- name: Read the cluster settings the node runs with
+  ansible.builtin.slurp:
+    src: "{{ cloudfall_rabbitmq_config_directory }}/conf.d/{{ cloudfall_rabbitmq_cluster_file }}"
+  register: cloudfall_rabbitmq_cluster_settings_read
+  # A new node has none yet
+  failed_when: false
+
+- name: Install the cluster settings
+  ansible.builtin.template:
+    src: "{{ cloudfall_rabbitmq_cluster_file }}.j2"
+    dest: "{{ cloudfall_rabbitmq_config_directory }}/conf.d/{{ cloudfall_rabbitmq_cluster_file }}"
+    owner: root
+    group: rabbitmq
+    mode: "0644"
+  register: cloudfall_rabbitmq_cluster_settings
+
+- name: Restart the node for its changed cluster settings  # noqa: no-handler
+  ansible.builtin.debug:
+    msg: >-
+      The cluster settings of {{ cloudfall_rabbitmq_node_name }} changed
+      beyond the node list
+  changed_when: true
+  notify: Restart RabbitMQ
+  when:
+    - cloudfall_rabbitmq_cluster_settings is changed
+    - >-
+      (cloudfall_rabbitmq_cluster_settings_read.content | default('') | b64decode)
+      | cloudfall_rabbitmq_without_node_list
+      != lookup('ansible.builtin.template', cloudfall_rabbitmq_cluster_file ~ '.j2')
+      | cloudfall_rabbitmq_without_node_list
 
 # The Prometheus plugin and no other: no management interface, no HTTP API
 - name: Install the managed plugin list
@@ -253,6 +292,12 @@
   ansible.builtin.dpkg_selections:
     name: rabbitmq-server
     selection: hold
+
+# Before the node starts: an empty node whose membership the cluster still
+# holds is forgotten there, so it joins as a new one (S-023-15)
+- name: Let a node that came back empty join again
+  ansible.builtin.import_tasks: rejoin.yml
+  when: cloudfall_rabbitmq_clustered | bool
 
 - name: Start the node with its settings
   ansible.builtin.meta: flush_handlers
@@ -300,6 +345,15 @@
       in (cloudfall_rabbitmq_joined.stdout | cloudfall_rabbitmq_membership).running
   when:
     - cloudfall_rabbitmq_clustered | bool
+    - not ansible_check_mode
+
+# A server no longer declared and not running is a lost one an operator
+# replaced: its membership goes, once the home runs (S-023-14)
+- name: Remove the membership of a lost server on the service's home
+  ansible.builtin.import_tasks: membership.yml
+  when:
+    - cloudfall_rabbitmq_clustered | bool
+    - cloudfall_rabbitmq_home | bool
     - not ansible_check_mode
 
 # Once every declared node is a member: on the last node to join, and on

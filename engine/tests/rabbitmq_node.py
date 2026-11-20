@@ -156,6 +156,18 @@ def main(argv):
             item for item in state["permissions"] if item["vhost"] != vhost
         ]
         state.get("queues", {}).pop(vhost, None)
+    elif command == "forget_cluster_node":
+        # RabbitMQ refuses to forget a node it sees running
+        (node,) = args
+        cluster = state["cluster"]
+        if node in cluster["running_nodes"]:
+            print(f"Error: {node} is running", file=sys.stderr)
+            return 70
+        if node not in cluster["disk_nodes"] + cluster["ram_nodes"]:
+            print(f"Error: {node} is not a member", file=sys.stderr)
+            return 69
+        for key in ("disk_nodes", "ram_nodes"):
+            cluster[key] = [item for item in cluster[key] if item != node]
     elif command == "import_definitions":
         (path,) = args
         content = Path(path).read_text(encoding="utf-8")
