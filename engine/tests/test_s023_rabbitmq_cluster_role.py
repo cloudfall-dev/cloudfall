@@ -486,6 +486,25 @@ def test_s023_10_every_cluster_read_changes_nothing() -> None:
         assert _render(name, _three()) == _render(name, _three())
 
 
+def test_a_dry_run_reads_erlang_so_it_previews_no_restart() -> None:
+    # rabbitmq-env.conf names the ssl directory the read finds; a dry run
+    # that skipped the read would preview a changed file, and a restart, on
+    # every converged node
+    read = _task("Read where Erlang keeps its TLS distribution", _tasks("cluster.yml"))
+
+    assert read["check_mode"] is False
+    assert "when" not in read
+    failed = {"ansible.builtin.assert": {"that": [str(read["failed_when"])]}}
+    missing = {"rc": 2, "stdout": ""}
+    # Only a dry run of a new node, before Erlang is installed, goes on
+    assert not _holds(
+        failed, _three(cloudfall_rabbitmq_erl_ssl=missing, ansible_check_mode=True)
+    )
+    assert _holds(
+        failed, _three(cloudfall_rabbitmq_erl_ssl=missing, ansible_check_mode=False)
+    )
+
+
 def _play(
     tmp_path: Path,
     tasks: list[dict[str, Any]],

@@ -14,8 +14,12 @@
       - io:format("~s~n", [filename:dirname(code:which(inet_tls_dist))]), halt().
   register: cloudfall_rabbitmq_erl_ssl
   changed_when: false
-  # Erlang is not installed in a dry run of a new node
-  when: not ansible_check_mode
+  # A dry run reads it too, so it previews rabbitmq-env.conf as a real run
+  # writes it; only a dry run of a new node, before Erlang is installed, goes
+  # on without it
+  check_mode: false
+  failed_when: >-
+    cloudfall_rabbitmq_erl_ssl.rc | default(1) != 0 and not ansible_check_mode
 
 - name: Install the inter-node TLS options
   ansible.builtin.template:
