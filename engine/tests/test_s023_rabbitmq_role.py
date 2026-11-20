@@ -70,6 +70,8 @@ REFUSALS = (
     "Validate the declared backup and restore-drill calendar expressions",
     # A cluster's majority is read, and its loss refused, before any change
     "Refuse a converge while the cluster has no majority",
+    # A version no running member can move to, as well (S-023-13)
+    "Refuse a version change a running member can't make",
 )
 
 
@@ -386,21 +388,11 @@ def test_three_nodes_and_client_access_are_no_longer_refused() -> None:
     assert "Refuse client access this release does not converge" not in names
 
 
-def test_a_version_change_and_a_renamed_host_are_refused() -> None:
+def test_a_renamed_host_is_refused() -> None:
+    # A version change is a rolling change now (#509), and its refusals are
+    # proven in test_s023_rabbitmq_version_role.py
     main = _tasks("main.yml")
-    version = _task("Refuse a version other than the installed one", main)
     variables = _variables()
-
-    def installed(stdout: str, rc: int = 0) -> dict[str, object]:
-        return {
-            **variables,
-            **{key: _trusted(value) for key, value in version.get("vars", {}).items()},
-            "cloudfall_rabbitmq_installed": {"rc": rc, "stdout": stdout},
-        }
-
-    assert _holds(version, installed("", 1))
-    assert _holds(version, installed("installed|4.4.1-1"))
-    assert not _holds(version, installed("installed|4.3.2-1"))
     hostname = _task("Refuse a host whose hostname is not the declared one", main)
     assert _holds(hostname, variables)
     renamed = {

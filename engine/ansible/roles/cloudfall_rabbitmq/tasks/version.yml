@@ -1,0 +1,82 @@
+---
+# A rolling change of version (S-023, Supported versions), run on the
+# service's home, which services.yml converges first: every other node in
+# declared order, then the home, each through delegation and one at a time
+# (version_node.yml). main.yml refused a downgrade and a skipped series on
+# every running member before any task changed a host.
+- name: Change the version of each node, the service's home last
+  ansible.builtin.include_tasks: version_node.yml
+  loop: "{{ cloudfall_rabbitmq_version_order }}"
+  loop_control:
+    loop_var: cloudfall_rabbitmq_version_node
+
+# The flags the new version brings, once every node runs it (S-023-13)
+- name: Enable every stable feature flag after the last node
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_rabbitmq_ctl }}"
+      - --quiet
+      - enable_feature_flag
+      - all
+  changed_when: true
+
+- name: Read the feature flags of the cluster
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_rabbitmq_ctl }}"
+      - --quiet
+      - --formatter
+      - json
+      - list_feature_flags
+      - name
+      - state
+      - stability
+  register: cloudfall_rabbitmq_feature_flags
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Require every stable feature flag enabled
+  ansible.builtin.assert:
+    that:
+      - cloudfall_rabbitmq_disabled_flags | length == 0
+    fail_msg: >-
+      RabbitMQ service {{ cloudfall_rabbitmq_service.id }} runs
+      {{ cloudfall_rabbitmq_service.rabbitmq.version }} with the stable
+      feature flags {{ cloudfall_rabbitmq_disabled_flags | join(', ') }}
+      disabled
+  vars:
+    cloudfall_rabbitmq_disabled_flags: >-
+      {{ cloudfall_rabbitmq_feature_flags.stdout | cloudfall_rabbitmq_disabled_stable_flags }}
+  when: not ansible_check_mode
+
+- name: Read the version every member reports
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_rabbitmq_diagnostics }}"
+      - --quiet
+      - --formatter
+      - json
+      - cluster_status
+  register: cloudfall_rabbitmq_versions_read
+  changed_when: false
+  when: not ansible_check_mode
+
+# Every node of the service reports the new version (S-023-12)
+- name: Require the declared version on every node
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudfall_rabbitmq_reported.keys() | list | sort
+        == cloudfall_rabbitmq_version_members | sort
+      - >-
+        cloudfall_rabbitmq_reported.values() | list | unique
+        == [cloudfall_rabbitmq_service.rabbitmq.version]
+    fail_msg: >-
+      RabbitMQ service {{ cloudfall_rabbitmq_service.id }} declares
+      {{ cloudfall_rabbitmq_service.rabbitmq.version }} on
+      {{ cloudfall_rabbitmq_version_members | join(', ') }}, and its running
+      members report {{ cloudfall_rabbitmq_reported | to_json }}
+  vars:
+    cloudfall_rabbitmq_reported: >-
+      {{ cloudfall_rabbitmq_versions_read.stdout | cloudfall_rabbitmq_node_versions }}
+  when: not ansible_check_mode
