@@ -1,0 +1,75 @@
+---
+# A declared node that comes back empty (same hostname, new volume) joins
+# again by one converge (S-023-15): its node data directory is empty while
+# the cluster still holds its membership, so that membership is removed on a
+# node that runs, before this node starts and joins as a new one; then
+# reconciliation gives it a member of every quorum queue. A node that holds
+# data is never forgotten nor emptied: it starts and rejoins the members it
+# knows, or stops the converge at the join wait with nothing removed.
+- name: Read whether the node holds data
+  ansible.builtin.find:
+    paths:
+      - "{{ cloudfall_rabbitmq_node_data_path }}"
+    file_type: any
+    hidden: true
+  register: cloudfall_rabbitmq_node_data
+
+- name: Ask the other nodes for the cluster
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_rabbitmq_diagnostics }}"
+      - --quiet
+      - --formatter
+      - json
+      - cluster_status
+  delegate_to: "{{ item }}"
+  loop: "{{ cloudfall_rabbitmq_peers }}"
+  register: cloudfall_rabbitmq_peer_status
+  # A peer that does not run, or can't be reached, does not answer; the next
+  # one is asked
+  failed_when: false
+  ignore_unreachable: true
+  changed_when: false
+  check_mode: false
+  when: cloudfall_rabbitmq_node_data.matched == 0
+
+- name: Plan the rejoin from what the other nodes said
+  ansible.builtin.set_fact:
+    cloudfall_rabbitmq_rejoin: >-
+      {{
+        cloudfall_rabbitmq_peer_status.results
+        | cloudfall_rabbitmq_rejoin_plan(cloudfall_rabbitmq_node_name)
+      }}
+  when: cloudfall_rabbitmq_node_data.matched == 0
+
+# Started with no node to join, an empty node would form a cluster of its own
+# that no later converge could merge; only the home starts a new cluster
+- name: Refuse to start an empty node no other node answers for
+  ansible.builtin.assert:
+    that:
+      - cloudfall_rabbitmq_rejoin.peer | length > 0
+    fail_msg: >-
+      {{ cloudfall_rabbitmq_node_name }} holds no data and none of
+      {{ cloudfall_rabbitmq_peers | join(', ') }} answers for the cluster of
+      service {{ cloudfall_rabbitmq_service.id }}, so it is not started: it
+      would form a cluster of its own. Start a node of the cluster, then
+      converge again
+  when:
+    - cloudfall_rabbitmq_node_data.matched == 0
+    - not (cloudfall_rabbitmq_home | bool)
+
+- name: Remove the membership the node left on its old volume
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_rabbitmq_ctl }}"
+      - --quiet
+      - forget_cluster_node
+      - "{{ cloudfall_rabbitmq_node_name }}"
+  # Ansible resolves the delegate before the condition; with no plan, or no
+  # peer, the task is skipped where it stands
+  delegate_to: >-
+    {{ (cloudfall_rabbitmq_rejoin | default({})).peer | default('') or inventory_hostname }}
+  changed_when: true
+  when:
+    - cloudfall_rabbitmq_node_data.matched == 0
+    - cloudfall_rabbitmq_rejoin.forget | bool
