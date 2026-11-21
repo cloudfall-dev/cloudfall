@@ -111,6 +111,21 @@ cloudfall_rabbitmq_version_change: >-
         | difference([cloudfall_rabbitmq_service.rabbitmq.version]) | length > 0
     )
   }}
+# In a dry run the home only previews the turn of each other node, which
+# still holds the package the change would move: it is left as it is there,
+# unless the change could not move it (a downgrade, a skipped series)
+cloudfall_rabbitmq_version_previewed: >-
+  {{
+    ansible_check_mode
+    and not cloudfall_rabbitmq_home | bool
+    and cloudfall_rabbitmq_installed_version
+      not in ['', cloudfall_rabbitmq_package_version]
+    and [cloudfall_rabbitmq_installed_version]
+      | cloudfall_rabbitmq_version_refusal(
+          cloudfall_rabbitmq_service.rabbitmq.version,
+          cloudfall_rabbitmq_erlang_minimum | list)
+      | length == 0
+  }}
 cloudfall_rabbitmq_version_order: >-
   {{
     cloudfall_rabbitmq_service.rabbitmq.nodes

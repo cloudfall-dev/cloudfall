@@ -407,6 +407,61 @@ def test_s023_13_the_role_refuses_before_any_package_changes(  # noqa: PLR0913, 
         assert "Change a package" not in output
 
 
+# proves: S-023-12
+# proves: S-023-13
+@pytest.mark.parametrize(
+    ("installed", "declared", "refused"),
+    [
+        pytest.param("4.3.2", "4.4.1", "", id="the next series"),
+        pytest.param("4.4.1", "4.4.2", "", id="a later patch"),
+        pytest.param("4.4.2", "4.4.1", "does not support downgrades", id="a downgrade"),
+        pytest.param(
+            "4.3.2", "4.5.0", "nor of the next accepted series", id="a skipped series"
+        ),
+    ],
+)
+@requires_ansible
+def test_s023_12_a_dry_run_previews_the_change_on_a_node_other_than_the_home(
+    tmp_path: Path, installed: str, declared: str, refused: str
+) -> None:
+    # The home only previewed h2's turn, so h2 still holds the old package
+    main = yaml.safe_load((ROLE / "tasks" / "main.yml").read_text("utf-8"))
+    service = _service(JOBS, nodes=THREE, version=declared)
+    tasks = [
+        _task("Refuse a version other than the installed one", main),
+        _task("Refuse a version change a running member can't make", main),
+        _task("Install the pinned RabbitMQ server", main),
+    ]
+    done, _ = _play(
+        tmp_path,
+        tasks,
+        _node_vars(
+            "h2",
+            cloudfall_rabbitmq_service=service,
+            cloudfall_rabbitmq_installed=_installed(installed),
+            cloudfall_rabbitmq_erlang_minimum={
+                "4.3": "27.0",
+                "4.4": "27.0",
+                "4.5": "27.0",
+            },
+        ),
+        hostvars=HOSTVARS,
+        check=True,
+    )
+    output = done.stdout + done.stderr
+
+    if refused:
+        assert done.returncode != 0, output
+        assert refused in output
+        assert "Nothing changed" in output
+        assert "Install the pinned RabbitMQ server" not in output
+    else:
+        assert done.returncode == 0, output
+        # Still held at the old version: the home's preview stands for it
+        install = output.split("Install the pinned RabbitMQ server", 1)[1]
+        assert "skipping: [h2]" in install.splitlines()[1], output
+
+
 # proves: S-023-13
 def test_s023_13_both_refusals_come_before_any_task_that_changes_a_host() -> None:
     names = [task["name"] for task in _tasks("main.yml")]
@@ -571,9 +626,8 @@ def test_s023_13_the_version_filters_read_rabbitmqs_output() -> None:
 
 def test_the_check_mode_install_waits_for_the_previewed_change() -> None:
     install = _task("Install the pinned RabbitMQ server", _tasks("main.yml"))
-    assert install["when"] == (
-        "not (ansible_check_mode and cloudfall_rabbitmq_version_change | bool)"
-    )
+    assert "cloudfall_rabbitmq_version_change | bool" in install["when"]
+    assert "cloudfall_rabbitmq_version_previewed | bool" in install["when"]
     flags: dict[str, Any] = _task(
         "Enable every stable feature flag after the last node", _tasks("version.yml")
     )

@@ -129,6 +129,7 @@
       - >-
         cloudfall_rabbitmq_installed_version in
         ['', cloudfall_rabbitmq_package_version]
+        or cloudfall_rabbitmq_version_previewed | bool
         or (
           cloudfall_rabbitmq_home | bool
           and [cloudfall_rabbitmq_installed_version]
@@ -283,9 +284,15 @@
     # the managed settings and the cookie in place
     policy_rc_d: 101
   notify: Restart RabbitMQ
-  # A dry run of a version change previewed it in version.yml; the package
-  # is still held at the version it replaces
-  when: not (ansible_check_mode and cloudfall_rabbitmq_version_change | bool)
+  # A dry run of a version change previewed it in version.yml, for the home
+  # and every other node; the package is still held at the version it
+  # replaces
+  when: >-
+    not (
+      ansible_check_mode
+      and (cloudfall_rabbitmq_version_change | bool
+           or cloudfall_rabbitmq_version_previewed | bool)
+    )
 
 - name: Hold the RabbitMQ server package
   ansible.builtin.dpkg_selections:
