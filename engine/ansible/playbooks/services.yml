@@ -86,22 +86,62 @@
         loop_var: cloudfall_service_item
         label: "{{ cloudfall_service_item.id }}"
 
-    # Every declared kind has a role below; a service of a kind with none
-    # would converge as a silent no-op and report success for a service it
-    # never touched.
+    # The Kibana role refuses such a heap as well; checked here, before any
+    # service role, the server is left unchanged (S-024-4). Kibana runs on a
+    # node of its cluster, whose service is on this server too.
+    - name: Refuse a Kibana heap that with the node's is above three quarters of the server's memory
+      ansible.builtin.assert:
+        that:
+          - >-
+            (
+              (cloudfall_service_item.kibana.heapMb | int)
+              + (cloudfall_kibana_node_heap | int)
+            ) * 4
+            <= (ansible_facts['memtotal_mb'] | int) * 3
+        fail_msg: >-
+          heapMb {{ cloudfall_service_item.kibana.heapMb }} of Kibana service
+          {{ cloudfall_service_item.id }} and heapMb
+          {{ cloudfall_kibana_node_heap }} of Elasticsearch service
+          {{ cloudfall_service_item.kibana.elasticsearch }} are above three
+          quarters of the {{ ansible_facts['memtotal_mb'] }} MB of
+          {{ cloudfall_server_id }}: lower a heapMb, or move the services to a
+          server with more memory
+      vars:
+        cloudfall_kibana_node_heap: >-
+          {{
+            cloudfall_services | default([])
+            | selectattr('serviceKind', 'equalto', 'elasticsearch')
+            | selectattr('id', 'equalto', cloudfall_service_item.kibana.elasticsearch)
+            | map(attribute='elasticsearch.heapMb')
+            | first | default(0)
+          }}
+      loop: >-
+        {{
+          cloudfall_services | default([])
+          | selectattr('serviceKind', 'equalto', 'kibana')
+          | selectattr('server', 'equalto', cloudfall_server_id)
+          | list
+        }}
+      loop_control:
+        loop_var: cloudfall_service_item
+        label: "{{ cloudfall_service_item.id }}"
+
+    # Every declared kind has a role below, or in the Kibana play after it; a
+    # service of a kind with none would converge as a silent no-op and
+    # report success for a service it never touched.
     - name: Refuse a service of a kind this playbook does not converge
       ansible.builtin.assert:
         that:
           - >-
             cloudfall_services | default([]) | map(attribute='serviceKind')
-            | difference(['postgresql', 'redis', 'mariadb', 'elasticsearch', 'rabbitmq'])
+            | difference(['postgresql', 'redis', 'mariadb', 'elasticsearch', 'rabbitmq', 'kibana'])
             | length == 0
         fail_msg: >-
           {{ cloudfall_server_id }} declares a service of a kind services.yml
           has no role for:
           {{
             cloudfall_services | default([]) | map(attribute='serviceKind')
-            | difference(['postgresql', 'redis', 'mariadb', 'elasticsearch', 'rabbitmq'])
+            | difference(['postgresql', 'redis', 'mariadb', 'elasticsearch', 'rabbitmq', 'kibana'])
             | join(', ')
           }}
   tasks:
@@ -248,3 +288,89 @@
       vars:
         cloudfall_logging_collector_stack: "{{ cloudfall_logging_collector }}"
       when: cloudfall_logging_collector is defined
+  post_tasks:
+    # The Kibana play below checks the nodes of a cluster through this mark.
+    - name: Record that the server finished its services
+      ansible.builtin.set_fact:
+        cloudfall_services_finished: true
+
+# Kibana follows every node of its cluster (S-024): Elastic supports no Kibana
+# newer than a node, so it runs in a play of its own, once each node of the
+# cluster that this run converges finished the play above. A node the run
+# could not reach is unfinished, and stops Kibana before its server changes.
+- name: Deploy declared Kibana services after every node of their cluster
+  hosts: cloudfall_servers
+  become: true
+  # Facts were gathered for each server by the play above.
+  gather_facts: false
+  any_errors_fatal: true
+  serial: 1
+  tasks:
+    - name: Converge the Kibana services of the server
+      when: cloudfall_kibana_here | length > 0
+      vars:
+        cloudfall_kibana_here: >-
+          {{
+            cloudfall_services | default([])
+            | selectattr('serviceKind', 'equalto', 'kibana')
+            | selectattr('server', 'equalto', cloudfall_server_id)
+            | list
+          }}
+      block:
+        - name: Stop before Kibana while a node of its cluster did not finish
+          ansible.builtin.assert:
+            that:
+              - cloudfall_kibana_unfinished | length == 0
+            fail_msg: >-
+              Stopped before Kibana on {{ cloudfall_server_id }}: the run did
+              not finish the services of
+              {{ cloudfall_kibana_unfinished | join(', ') }}, a node of its
+              cluster (unreachable or failed); fix that server and run the
+              command again
+          vars:
+            cloudfall_kibana_unfinished: >-
+              {{
+                cloudfall_services | default([])
+                | selectattr('serviceKind', 'equalto', 'elasticsearch')
+                | selectattr('id', 'in',
+                             cloudfall_kibana_here
+                             | map(attribute='kibana.elasticsearch') | list)
+                | map(attribute='elasticsearch.nodes') | flatten | unique
+                | select('in', ansible_play_hosts_all)
+                | map('extract', hostvars)
+                | rejectattr('cloudfall_services_finished', 'defined')
+                | map(attribute='inventory_hostname')
+                | list
+              }}
+
+        - name: Deploy declared Kibana services
+          ansible.builtin.include_role:
+            name: cloudfall_kibana
+          vars:
+            cloudfall_kibana_service: "{{ cloudfall_service_item }}"
+            cloudfall_kibana_elasticsearch_service: >-
+              {{
+                cloudfall_services | default([])
+                | selectattr('serviceKind', 'equalto', 'elasticsearch')
+                | selectattr('id', 'equalto',
+                             cloudfall_service_item.kibana.elasticsearch)
+                | first | default({})
+              }}
+            # Controller paths of the staged encryption keys cloudfall passes
+            # as cloudfall_services_kibana_files; never the values (S-024-5).
+            cloudfall_kibana_files: >-
+              {{
+                (cloudfall_services_kibana_files | default({}))
+                [cloudfall_service_item.id] | default({})
+              }}
+            # The cloudfall password of the cluster, which the role reads
+            # Kibana's status and the node's tokens with.
+            cloudfall_kibana_elasticsearch_files: >-
+              {{
+                (cloudfall_services_elasticsearch_files | default({}))
+                [cloudfall_service_item.kibana.elasticsearch] | default({})
+              }}
+          loop: "{{ cloudfall_kibana_here }}"
+          loop_control:
+            loop_var: cloudfall_service_item
+            label: "{{ cloudfall_service_item.id }}"

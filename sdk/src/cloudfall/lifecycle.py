@@ -60,6 +60,7 @@ from cloudfall.secrets import (
     elasticsearch_snapshot_credentials,
     elasticsearch_user_passwords,
     elasticsearch_users,
+    kibana_keys,
     mariadb_owned_databases,
     mariadb_owner_passwords,
     mariadb_replication_pairs,
@@ -97,6 +98,7 @@ if TYPE_CHECKING:
         ElasticsearchExistingClusterLogin,
         ElasticsearchS3Credentials,
         ElasticsearchUserPassword,
+        KibanaKey,
         MariadbOwnerPassword,
         MariadbReplicationPassword,
         MariadbSourceLogin,
@@ -1185,6 +1187,7 @@ class ServicesSecrets:
     mariadb_sources: tuple[MariadbSourceLogin, ...] = ()
     rabbitmq_owners: tuple[RabbitmqOwnerPassword, ...] = ()
     rabbitmq_cookies: tuple[RabbitmqCookie, ...] = ()
+    kibana_keys: tuple[KibanaKey, ...] = ()
 
 
 def _mariadb_source_cas(
@@ -1214,8 +1217,9 @@ def services_passwords(
     passwords of each Elasticsearch service and each of its declared users',
     the S3 keys of each S3 snapshot repository, the login of each
     ``existingCluster`` that names a ``credentialsRef``, each MariaDB
-    owner's, each MariaDB primary's replication password, and each RabbitMQ
-    service's Erlang cookie and owners' passwords. A missing file
+    owner's, each MariaDB primary's replication password, each RabbitMQ
+    service's Erlang cookie and owners' passwords, and the three encryption
+    keys of each Kibana service. A missing file
     or key fails here, naming the expected path and key, so the converge
     stops before any playbook starts.
     """
@@ -1250,6 +1254,7 @@ def services_passwords(
             ),
             rabbitmq_owner_passwords(inventory, provider),
             rabbitmq_cookies(inventory, provider),
+            kibana_keys(inventory, provider),
         )
     except SecretsError as error:
         raise LifecycleError(ERROR_SERVICES_SECRET, error.message) from error
@@ -1302,6 +1307,7 @@ def run_services_playbook(
             sources=secrets.mariadb_sources,
             rabbitmq=secrets.rabbitmq_owners,
             cookies=secrets.rabbitmq_cookies,
+            kibana=secrets.kibana_keys,
         ) as extra,
         tempfile.TemporaryDirectory(prefix="cloudfall-replication-") as reports,
     ):

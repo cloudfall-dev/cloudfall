@@ -258,7 +258,7 @@ def test_s012_4_the_heap_guard_stops_a_real_run_before_any_other_task(
 # proves: S-012-4
 def test_s012_4_services_checks_the_heap_before_any_role_changes_the_host() -> None:
     """A server with PostgreSQL and Elasticsearch: the heap stops it unchanged."""
-    (play,) = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))
+    play = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))[0]
     tasks = [*play["pre_tasks"], *play["tasks"]]
     names = [task["name"] for task in tasks]
     check = next(
@@ -832,7 +832,7 @@ def test_the_engine_stops_before_ansible_without_the_account_passwords(
 
 
 def test_services_runs_the_role_for_each_elasticsearch_service() -> None:
-    (play,) = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))
+    play = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))[0]
     task = next(
         task
         for task in play["tasks"]

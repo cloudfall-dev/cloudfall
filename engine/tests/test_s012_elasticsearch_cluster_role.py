@@ -297,7 +297,7 @@ def test_s012_5_the_home_node_converges_before_the_node_that_joins_it(
     """
     rendered = _rendered(tmp_path, server="h2")
     inventory = _inventory_file(rendered, tmp_path / "ansible-inventory.json")
-    (play,) = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))
+    play = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))[0]
 
     manager = InventoryManager(loader=DataLoader(), sources=[str(inventory)])
 

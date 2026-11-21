@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: cloudfall_kibana
+  author: cloudfall
+  description: Converge one declared Kibana on a node of its Elasticsearch cluster, loopback-only
+  license: AGPL-3.0-or-later
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies: []
