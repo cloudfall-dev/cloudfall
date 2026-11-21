@@ -380,10 +380,12 @@ The site role installs Nginx and Certbot, serves the ACME challenge webroot,
 and converges in two phases: until a certificate exists the route serves
 plain HTTP so the site stays reachable during cutover; once TLS material is
 present (or issuance is explicitly requested via `ISSUE_CERTIFICATES=true`)
-HTTP redirects to HTTPS with TLS 1.2+. The HTTPS server serves HTTP/1.1
-only by default; once the installed Nginx carries the HTTP/2 fix, turn
-HTTP/2 on with `cloudfall_nginx_site_http2: true` in the inventory's host
-or group vars, or pass `--extra-vars cloudfall_nginx_site_http2=true` to
+HTTP redirects to HTTPS with TLS 1.2+. The HTTPS server serves HTTP/2 by
+default, so install the fixed Nginx from Debian's security suite first
+(CVE-2026-123007: bookworm `1.22.1-9+deb12u11`, trixie
+`1.26.3-3+deb13u11`). To serve HTTP/1.1 only, set
+`cloudfall_nginx_site_http2: false` in the inventory's host or group vars,
+or pass `--extra-vars cloudfall_nginx_site_http2=false` to
 `ansible-playbook`. The proxy discards any
 client-supplied forwarding chain and sends only the canonical
 `$remote_addr` as `X-Forwarded-For` and `X-Real-IP`, so upstream
