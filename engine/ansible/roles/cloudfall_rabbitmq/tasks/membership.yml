@@ -1,0 +1,33 @@
+---
+# A lost server is replaced by naming another in nodes (S-023-14): on the
+# service's home, once it runs, the membership of a server that is no longer
+# declared and that the cluster does not see running is removed, and the new
+# node joins on its own turn; reconciliation gives it a member of every
+# quorum queue. A declared node, or one the cluster sees running, keeps its
+# membership.
+- name: Read the members of the cluster
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_rabbitmq_diagnostics }}"
+      - --quiet
+      - --formatter
+      - json
+      - cluster_status
+  register: cloudfall_rabbitmq_members_read
+  changed_when: false
+
+- name: Remove the membership of a server no longer declared
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_rabbitmq_ctl }}"
+      - --quiet
+      - forget_cluster_node
+      - "{{ cloudfall_rabbitmq_forgotten_node }}"
+  loop: >-
+    {{
+      cloudfall_rabbitmq_members_read.stdout
+      | cloudfall_rabbitmq_forgettable(cloudfall_rabbitmq_node_names)
+    }}
+  loop_control:
+    loop_var: cloudfall_rabbitmq_forgotten_node
+  changed_when: true

@@ -54,6 +54,10 @@ cloudfall_rabbitmq_managed_files:
   - 91-cloudfall-limits.conf
   - 92-cloudfall-cluster.conf
   - 93-cloudfall-metrics.conf
+# The managed file of the node list and the queue defaults: a change of the
+# node list alone restarts no running node, which only reads it on its first
+# start (#510).
+cloudfall_rabbitmq_cluster_file: 92-cloudfall-cluster.conf
 # Below it a node stops taking messages while there is room to drain.
 cloudfall_rabbitmq_disk_free_limit: 2GB
 # A node is rabbit@ and its short hostname, which RabbitMQ takes by default.
@@ -125,6 +129,16 @@ cloudfall_rabbitmq_delivered_files: >-
 # command-line tools both read.
 cloudfall_rabbitmq_tls_options_path: /etc/rabbitmq/cloudfall/inter_node_tls.config
 cloudfall_rabbitmq_epmd_port: 4369
+# Where the node keeps its database and messages; empty, or absent, on a node
+# that never started or came back on a new volume (S-023-15).
+cloudfall_rabbitmq_node_data_path: >-
+  {{ cloudfall_rabbitmq_data_path }}/mnesia/{{ cloudfall_rabbitmq_node_name }}
+# The other declared nodes an empty node asks for the cluster, the home first.
+cloudfall_rabbitmq_peers: >-
+  {{
+    ([cloudfall_rabbitmq_service.server] + cloudfall_rabbitmq_service.rabbitmq.nodes)
+    | unique | reject('equalto', cloudfall_server_id) | list
+  }}
 # A node and the tools give up joining after these; a later converge resumes.
 cloudfall_rabbitmq_join_retries: 60
 # Healthy: every declared node a running member, no alarm, no partition, every
