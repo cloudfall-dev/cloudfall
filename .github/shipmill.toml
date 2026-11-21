@@ -120,3 +120,4 @@ upgrade = "act"                   # shipmill config migrations land without a qu
 # veto_hours. scope, rule-departure, security and protected stay ask
 [decisions]
 contract-change = "notify"
+accepted-spec = "notify"            # the spec of work the maintainer already accepted goes with notice and a veto; its build waits for the veto window (2026-11-21)
