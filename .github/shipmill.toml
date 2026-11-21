@@ -15,11 +15,14 @@ version_files = "pyproject"
 # not on main, so restore_interface_snapshot.py first writes both files as the previous
 # release's tag holds them: the newest release tag HEAD builds on (its commit, or the one it
 # was cut from, is in HEAD's history). With that snapshot an unchanged interface adds no
-# entry; with no such tag nothing is restored and changelog-add seeds the files (#457)
+# entry; with no such tag nothing is restored and changelog-add seeds the files (#457).
+# A hotfix from a line that predates the interface changelog (0.7.x) has no restore script:
+# both steps pass with a notice there and record nothing (D-29, #516). shipmill runs each
+# entry as an argv list, not through a shell, so the check is an explicit `sh -c`
 after_stamp = [
     "uv lock --check",
-    "uv run --frozen --no-dev python scripts/restore_interface_snapshot.py",
-    "uv run --frozen --no-dev treaty changelog-add cloudfall.app:app",
+    "sh -c 'if [ -f scripts/restore_interface_snapshot.py ]; then exec uv run --frozen --no-dev python scripts/restore_interface_snapshot.py; else echo \"notice: no scripts/restore_interface_snapshot.py in this tree, so no snapshot is restored (D-29)\" >&2; fi'",
+    "sh -c 'if [ -f scripts/restore_interface_snapshot.py ]; then exec uv run --frozen --no-dev treaty changelog-add cloudfall.app:app; else echo \"notice: no scripts/restore_interface_snapshot.py in this tree, so no interface changelog is recorded (D-29)\" >&2; fi'",
 ]
 
 [changelog]
