@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from ipaddress import ip_address
 from typing import TYPE_CHECKING, cast
 
+from cloudfall.clickhouse import (
+    ClickhouseDatabaseName,
+    ClickhouseUserName,
+    ClickhouseVersion,
+)
 from cloudfall.domain import (
     ARTIFACT_CLONE_TIMEOUT_SECONDS,
     AbsolutePath,
@@ -1294,6 +1299,58 @@ class RabbitmqService:
 
 
 @dataclass(frozen=True, slots=True)
+class ClickhouseDatabase:
+    """A database and the user that owns it (S-022).
+
+    The password stays behind ``passwordRef``; only its hash, computed on the
+    controller, ever reaches a replica (D-9).
+    """
+
+    name: ClickhouseDatabaseName
+    owner: ClickhouseUserName
+    password_ref: SecretValueReference
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the database with its owner and password reference."""
+        return {
+            "name": self.name.value,
+            "owner": self.owner.value,
+            "passwordRef": self.password_ref.as_dict(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ClickhouseService:
+    """ClickHouse-specific service contract: one replica or two, and Keeper.
+
+    ``replicas`` and ``keeper_servers`` hold their resolved values: absent
+    replicas are the service's server, absent voters are the replicas.
+    """
+
+    version: ClickhouseVersion
+    max_server_memory_mb: PositiveCount
+    replicas: tuple[ResourceId, ...]
+    keeper_servers: tuple[ResourceId, ...]
+    databases: tuple[ClickhouseDatabase, ...]
+    client_access: tuple[IpNetworkCidr, ...] | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the service contract without secret material."""
+        result: dict[str, object] = {
+            "version": self.version.value,
+            "maxServerMemoryMb": self.max_server_memory_mb.value,
+            "replicas": [replica.value for replica in self.replicas],
+            "keeper": {"servers": [voter.value for voter in self.keeper_servers]},
+            "databases": [database.as_dict() for database in self.databases],
+        }
+        if self.client_access is not None:
+            result["clientAccess"] = {
+                "allowedSources": [source.value for source in self.client_access]
+            }
+        return result
+
+
+@dataclass(frozen=True, slots=True)
 class ServiceBackup:
     """Scheduled dump-and-prune backup contract."""
 
@@ -1319,6 +1376,7 @@ class ServiceInventory:
     elasticsearch: ElasticsearchService | None = None
     mariadb: MariadbService | None = None
     rabbitmq: RabbitmqService | None = None
+    clickhouse: ClickhouseService | None = None
 
     def __post_init__(self) -> None:
         """Reject services whose payload contradicts the declared kind."""
@@ -1328,6 +1386,7 @@ class ServiceInventory:
             (self.elasticsearch, ServiceKind.ELASTICSEARCH),
             (self.mariadb, ServiceKind.MARIADB),
             (self.rabbitmq, ServiceKind.RABBITMQ),
+            (self.clickhouse, ServiceKind.CLICKHOUSE),
         )
         if any(
             (payload is not None) is not (self.service_kind is kind)
@@ -1387,12 +1446,20 @@ class ServiceInventory:
                 redis["packageVersion"] = self.redis.package_version.value
             result["redis"] = redis
         payloads: tuple[
-            tuple[str, ElasticsearchService | MariadbService | RabbitmqService | None],
+            tuple[
+                str,
+                ElasticsearchService
+                | MariadbService
+                | RabbitmqService
+                | ClickhouseService
+                | None,
+            ],
             ...,
         ] = (
             ("elasticsearch", self.elasticsearch),
             ("mariadb", self.mariadb),
             ("rabbitmq", self.rabbitmq),
+            ("clickhouse", self.clickhouse),
         )
         for name, payload in payloads:
             if payload is not None:
@@ -2534,6 +2601,68 @@ def _service_inventory(
             if service_kind is ServiceKind.RABBITMQ
             else None
         ),
+        clickhouse=(
+            _clickhouse_service(
+                _mapping(spec, "clickhouse"),
+                server_id=ResourceId.from_boundary(spec.get("server")),
+            )
+            if service_kind is ServiceKind.CLICKHOUSE
+            else None
+        ),
+    )
+
+
+def _resource_id_list(raw: object, description: str) -> tuple[ResourceId, ...]:
+    if not isinstance(raw, list):
+        message = f"validated {description} are not a list"
+        raise TypeError(message)
+    return tuple(ResourceId.from_boundary(item) for item in raw)
+
+
+def _clickhouse_service(
+    content: Mapping[str, object], *, server_id: ResourceId
+) -> ClickhouseService:
+    replicas = (
+        _resource_id_list(content["replicas"], "ClickHouse replicas")
+        if "replicas" in content
+        else (server_id,)
+    )
+    keeper_servers = (
+        _resource_id_list(
+            _mapping(content, "keeper").get("servers"), "ClickHouse Keeper servers"
+        )
+        if "keeper" in content
+        else replicas
+    )
+    client_access = None
+    if "clientAccess" in content:
+        raw_sources = _mapping(content, "clientAccess").get("allowedSources")
+        if not isinstance(raw_sources, list):
+            message = "validated ClickHouse client sources are not a list"
+            raise TypeError(message)
+        client_access = tuple(
+            IpNetworkCidr.from_boundary(source) for source in raw_sources
+        )
+    return ClickhouseService(
+        version=ClickhouseVersion.from_boundary(content.get("version")),
+        max_server_memory_mb=PositiveCount.from_boundary(
+            content.get("maxServerMemoryMb")
+        ),
+        replicas=replicas,
+        keeper_servers=keeper_servers,
+        databases=tuple(
+            ClickhouseDatabase(
+                name=ClickhouseDatabaseName.from_boundary(database.get("name")),
+                owner=ClickhouseUserName.from_boundary(database.get("owner")),
+                password_ref=_secret_value_reference(
+                    _mapping(database, "passwordRef")
+                ),
+            )
+            for database in _mapping_list(
+                content.get("databases", []), "ClickHouse databases"
+            )
+        ),
+        client_access=client_access,
     )
 
 

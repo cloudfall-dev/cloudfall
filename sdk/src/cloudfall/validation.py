@@ -20,6 +20,24 @@ from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import SchemaError, ValidationError
 from referencing import Registry, Resource
 
+from cloudfall.clickhouse import MAX_REPLICAS as CLICKHOUSE_MAX_REPLICAS
+from cloudfall.clickhouse import PRODUCTION_ENVIRONMENT as CLICKHOUSE_PRODUCTION
+from cloudfall.clickhouse import SUPPORTED_SERIES as CLICKHOUSE_SUPPORTED_SERIES
+from cloudfall.clickhouse import VOTERS_PER_REPLICAS as CLICKHOUSE_VOTERS
+from cloudfall.clickhouse import (
+    WARNING_SINGLE_REPLICA as CLICKHOUSE_WARNING_SINGLE_REPLICA,
+)
+from cloudfall.clickhouse import (
+    WARNING_VERSION_ENDING as CLICKHOUSE_WARNING_VERSION_ENDING,
+)
+from cloudfall.clickhouse import (
+    ClickhouseDatabaseName,
+    ClickhouseSeries,
+    ClickhouseUserName,
+    ClickhouseVersion,
+)
+from cloudfall.clickhouse import supported_series as clickhouse_series
+from cloudfall.clickhouse import supported_series_text as clickhouse_series_text
 from cloudfall.domain import (
     ConnectionAddress,
     DomainRoutePath,
@@ -1017,6 +1035,8 @@ def _validate_service_references(
         _validate_mariadb_service(document, spec, server, index)
     elif spec.get("serviceKind") == ServiceKind.RABBITMQ.value:
         _validate_rabbitmq_service(document, spec, index)
+    elif spec.get("serviceKind") == ServiceKind.CLICKHOUSE.value:
+        _validate_clickhouse_service(document, spec, index)
 
 
 def _validate_postgresql_service(
@@ -1759,6 +1779,7 @@ def _validate_service_uniqueness(documents: Sequence[ResourceDocument]) -> None:
     ports: dict[tuple[ResourceId, int], ResourceDocument] = {}
     nodes_taken: dict[ResourceId, ResourceDocument] = {}
     rabbitmq_nodes: dict[ResourceId, ResourceDocument] = {}
+    clickhouse_servers: dict[ResourceId, ResourceDocument] = {}
     for document in documents:
         if document.key.kind is not ResourceKind.SERVICE:
             continue
@@ -1780,6 +1801,11 @@ def _validate_service_uniqueness(documents: Sequence[ResourceDocument]) -> None:
             continue
         if raw_kind == ServiceKind.RABBITMQ.value:
             _claim_rabbitmq_nodes(document, spec, raw_port, rabbitmq_nodes, ports)
+            continue
+        if raw_kind == ServiceKind.CLICKHOUSE.value:
+            _claim_clickhouse_servers(
+                document, spec, raw_port, clickhouse_servers, ports
+            )
             continue
         placement = (server_id, raw_kind)
         if placement in placements and raw_kind == ServiceKind.MARIADB.value:
@@ -3208,6 +3234,621 @@ def rabbitmq_warnings(
         for service in rabbitmq_single_nodes(config)
     )
     return endings + single_nodes
+
+
+ERROR_CLICKHOUSE_VERSION = "service_clickhouse_version"
+ERROR_CLICKHOUSE_REPLICAS = "service_clickhouse_replicas"
+ERROR_CLICKHOUSE_KEEPER_SERVERS = "service_clickhouse_keeper_servers"
+ERROR_CLICKHOUSE_SERVER_SHARED = "service_clickhouse_server_shared"
+ERROR_CLICKHOUSE_ENVIRONMENT = "service_clickhouse_environment"
+ERROR_CLICKHOUSE_REMOTE_ACCESS = "service_clickhouse_remote_access"
+ERROR_CLICKHOUSE_DATABASE = "service_clickhouse_database"
+ERROR_CLICKHOUSE_UNFIREWALLED = "service_clickhouse_unfirewalled"
+ERROR_CLICKHOUSE_SERVER_UNADDRESSED = "service_clickhouse_server_unaddressed"
+_CLICKHOUSE_PATH = ("spec", "clickhouse")
+_KEEPER_SERVERS_FIELD = ("keeper", "servers")
+
+
+@dataclass(frozen=True, slots=True)
+class _ClickhouseMember:
+    """A server of a ClickHouse service and the field that names it."""
+
+    server: ResourceId
+    field: tuple[str | int, ...]
+    replica: bool
+
+
+def _clickhouse_refusal(
+    document: ResourceDocument,
+    code: str,
+    message: str,
+    *field: str | int,
+) -> ConfigValidationError:
+    return ConfigValidationError(
+        ValidationIssue(
+            code=code,
+            message=message,
+            source=document.source,
+            field_path=(*_CLICKHOUSE_PATH, *field),
+        )
+    )
+
+
+def _is_clickhouse_service(document: ResourceDocument) -> bool:
+    if document.key.kind is not ResourceKind.SERVICE:
+        return False
+    spec = _required_mapping(document.content, "spec", document.source)
+    return spec.get("serviceKind") == ServiceKind.CLICKHOUSE.value
+
+
+def _clickhouse_id_list(
+    document: ResourceDocument,
+    container: Mapping[str, object],
+    key: str,
+    field: tuple[str, ...],
+) -> tuple[ResourceId, ...]:
+    raw = container.get(key)
+    if not isinstance(raw, list):
+        raise _clickhouse_refusal(
+            document,
+            "internal_state_shape_invalid",
+            f"validated ClickHouse {'.'.join(field)} is not a list",
+            *field,
+        )
+    return tuple(ResourceId.from_boundary(item) for item in raw)
+
+
+def _clickhouse_replicas(
+    document: ResourceDocument, spec: Mapping[str, object]
+) -> tuple[ResourceId, ...]:
+    """Return the declared replicas, or the service's server when none are."""
+    clickhouse = _required_mapping(spec, "clickhouse", document.source)
+    if "replicas" not in clickhouse:
+        return (_resource_id_value(spec, "server", document.source),)
+    return _clickhouse_id_list(document, clickhouse, "replicas", ("replicas",))
+
+
+def _clickhouse_keeper_servers(
+    document: ResourceDocument, spec: Mapping[str, object]
+) -> tuple[ResourceId, ...]:
+    """Return the declared Keeper voters, or the replicas when none are."""
+    clickhouse = _required_mapping(spec, "clickhouse", document.source)
+    if "keeper" not in clickhouse:
+        return _clickhouse_replicas(document, spec)
+    keeper = _required_mapping(clickhouse, "keeper", document.source)
+    return _clickhouse_id_list(document, keeper, "servers", _KEEPER_SERVERS_FIELD)
+
+
+def _clickhouse_members(
+    document: ResourceDocument, spec: Mapping[str, object]
+) -> tuple[_ClickhouseMember, ...]:
+    """Return each server of the service once: the replicas, then the voters."""
+    clickhouse = _required_mapping(spec, "clickhouse", document.source)
+    replicas = _clickhouse_replicas(document, spec)
+    members: dict[ResourceId, _ClickhouseMember] = {}
+    for position, replica in enumerate(replicas):
+        field: tuple[str | int, ...] = (
+            ("replicas", position) if "replicas" in clickhouse else ()
+        )
+        members.setdefault(replica, _ClickhouseMember(replica, field, replica=True))
+    if "keeper" in clickhouse:
+        for position, voter in enumerate(_clickhouse_keeper_servers(document, spec)):
+            members.setdefault(
+                voter,
+                _ClickhouseMember(
+                    voter, (*_KEEPER_SERVERS_FIELD, position), replica=False
+                ),
+            )
+    return tuple(members.values())
+
+
+def _validate_clickhouse_service(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> None:
+    """Apply the S-022 refusals that read one service and the servers it names."""
+    clickhouse = _required_mapping(spec, "clickhouse", document.source)
+    if "remoteAccess" in clickhouse:
+        raise _clickhouse_refusal(
+            document,
+            ERROR_CLICKHOUSE_REMOTE_ACCESS,
+            "remoteAccess names one listen address, and every ClickHouse replica "
+            "listens on its own; declare clientAccess with its allowedSources",
+            "remoteAccess",
+        )
+    _validate_clickhouse_version(document, clickhouse)
+    replicas = _validate_clickhouse_replica_list(document, spec, index)
+    _validate_clickhouse_keeper_list(document, spec, replicas, index)
+    members = _clickhouse_members(document, spec)
+    _validate_clickhouse_environments(document, spec, members, index)
+    _validate_clickhouse_databases(document, clickhouse)
+    if "clientAccess" in clickhouse:
+        _validate_clickhouse_client_sources(
+            document, _required_mapping(clickhouse, "clientAccess", document.source)
+        )
+    _validate_clickhouse_hosts(
+        document,
+        members,
+        index,
+        single=len(replicas) == 1,
+        reachable=len(replicas) > 1 or "clientAccess" in clickhouse,
+    )
+
+
+def _validate_clickhouse_version(
+    document: ResourceDocument, clickhouse: Mapping[str, object]
+) -> None:
+    try:
+        version = ClickhouseVersion.from_boundary(clickhouse.get("version"))
+    except (TypeError, ValueError) as error:
+        raise _clickhouse_refusal(
+            document,
+            ERROR_CLICKHOUSE_VERSION,
+            f"{error}; Cloudfall installs an exact build of a supported LTS "
+            f"series: {clickhouse_series_text()}",
+            "version",
+        ) from error
+    if clickhouse_series(version) is None:
+        raise _clickhouse_refusal(
+            document,
+            ERROR_CLICKHOUSE_VERSION,
+            f"ClickHouse {version.value} is not of a long-term support series "
+            "ClickHouse still maintains; the supported series are "
+            f"{clickhouse_series_text()}",
+            "version",
+        )
+
+
+def _refuse_repeated_or_undeclared(
+    document: ResourceDocument,
+    servers: tuple[ResourceId, ...],
+    index: Mapping[ResourceKey, ResourceDocument],
+    code: str,
+    field: tuple[str, ...],
+) -> None:
+    seen: set[ResourceId] = set()
+    for position, server in enumerate(servers):
+        if server in seen:
+            raise _clickhouse_refusal(
+                document,
+                code,
+                f"Server/{server} is listed twice in {'.'.join(field)}",
+                *field,
+                position,
+            )
+        seen.add(server)
+        if ResourceKey(kind=ResourceKind.SERVER, resource_id=server) not in index:
+            raise _clickhouse_refusal(
+                document,
+                code,
+                f"Server/{server} in {'.'.join(field)} is not declared",
+                *field,
+                position,
+            )
+
+
+def _validate_clickhouse_replica_list(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> tuple[ResourceId, ...]:
+    replicas = _clickhouse_replicas(document, spec)
+    _refuse_repeated_or_undeclared(
+        document, replicas, index, ERROR_CLICKHOUSE_REPLICAS, ("replicas",)
+    )
+    server_id = _resource_id_value(spec, "server", document.source)
+    if server_id not in replicas:
+        raise _clickhouse_refusal(
+            document,
+            ERROR_CLICKHOUSE_REPLICAS,
+            f"replicas must contain the service's server, Server/{server_id}",
+            "replicas",
+        )
+    if len(replicas) > CLICKHOUSE_MAX_REPLICAS:
+        raise _clickhouse_refusal(
+            document,
+            ERROR_CLICKHOUSE_REPLICAS,
+            f"replicas names {len(replicas)} servers; a ClickHouse service holds "
+            f"its data on one server or {CLICKHOUSE_MAX_REPLICAS}",
+            "replicas",
+        )
+    return replicas
+
+
+def _validate_clickhouse_keeper_list(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    replicas: tuple[ResourceId, ...],
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> None:
+    voters = _clickhouse_keeper_servers(document, spec)
+    _refuse_repeated_or_undeclared(
+        document, voters, index, ERROR_CLICKHOUSE_KEEPER_SERVERS, _KEEPER_SERVERS_FIELD
+    )
+    for replica in replicas:
+        if replica not in voters:
+            raise _clickhouse_refusal(
+                document,
+                ERROR_CLICKHOUSE_KEEPER_SERVERS,
+                f"keeper.servers misses the replica Server/{replica}; every "
+                "replica votes in Keeper",
+                *_KEEPER_SERVERS_FIELD,
+            )
+    needed = CLICKHOUSE_VOTERS[len(replicas)]
+    if len(voters) != needed:
+        raise _clickhouse_refusal(
+            document,
+            ERROR_CLICKHOUSE_KEEPER_SERVERS,
+            f"keeper.servers names {len(voters)} servers for {len(replicas)} "
+            f"replicas, which need {needed}: one voter for one replica, three "
+            "for two, since with two voters the loss of either stops every write",
+            *_KEEPER_SERVERS_FIELD,
+        )
+
+
+def _validate_clickhouse_environments(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    members: tuple[_ClickhouseMember, ...],
+    index: Mapping[ResourceKey, ResourceDocument],
+) -> None:
+    """Refuse a server of the service that belongs to another environment."""
+    environment = _resource_id_value(spec, "environment", document.source)
+    for member in members:
+        server = index[ResourceKey(kind=ResourceKind.SERVER, resource_id=member.server)]
+        server_spec = _required_mapping(server.content, "spec", server.source)
+        server_environment = _resource_id_value(
+            server_spec, "environment", server.source
+        )
+        if server_environment != environment:
+            raise _clickhouse_refusal(
+                document,
+                ERROR_CLICKHOUSE_ENVIRONMENT,
+                f"Server/{member.server} belongs to {server_environment}, not "
+                f"{environment}",
+                *member.field,
+            )
+
+
+def _validate_clickhouse_databases(
+    document: ResourceDocument, clickhouse: Mapping[str, object]
+) -> None:
+    """Refuse a database without its owner, or a name ClickHouse or Cloudfall holds."""
+    raw_databases = clickhouse.get("databases", [])
+    if not isinstance(raw_databases, list):
+        raise _clickhouse_refusal(
+            document,
+            "internal_state_shape_invalid",
+            "validated ClickHouse databases are not a list",
+            "databases",
+        )
+    names: set[str] = set()
+    owners: dict[str, str] = {}
+    for position, raw_database in enumerate(raw_databases):
+        database = cast("Mapping[str, object]", raw_database)
+        field = ("databases", position)
+        name = _clickhouse_name(
+            document, database, field, "name", ClickhouseDatabaseName.from_boundary
+        )
+        if "application" in database:
+            raise _clickhouse_refusal(
+                document,
+                ERROR_CLICKHOUSE_DATABASE,
+                f"database {name!r} names an application: ClickHouse has no "
+                "login by unix socket, so every account has a password; declare "
+                "an owner and its passwordRef",
+                *field,
+                "application",
+            )
+        for required in ("owner", "passwordRef"):
+            if required not in database:
+                raise _clickhouse_refusal(
+                    document,
+                    ERROR_CLICKHOUSE_DATABASE,
+                    f"database {name!r} needs {required}: it belongs to a user "
+                    "whose password comes from passwordRef",
+                    *field,
+                )
+        if name in names:
+            raise _clickhouse_refusal(
+                document,
+                "service_database_duplicate",
+                f"duplicate service database name: {name}",
+                *field,
+                "name",
+            )
+        names.add(name)
+        owner = _clickhouse_name(
+            document, database, field, "owner", ClickhouseUserName.from_boundary
+        )
+        if owner in owners:
+            raise _clickhouse_refusal(
+                document,
+                ERROR_CLICKHOUSE_DATABASE,
+                f"owner {owner!r} already owns database {owners[owner]!r}; an "
+                "owner has privileges on its own database only",
+                *field,
+                "owner",
+            )
+        owners[owner] = name
+
+
+def _clickhouse_name(
+    document: ResourceDocument,
+    database: Mapping[str, object],
+    field: tuple[str | int, ...],
+    key: str,
+    parse: Callable[[object], ClickhouseDatabaseName | ClickhouseUserName],
+) -> str:
+    """Read a database or owner name, refusing one ClickHouse or Cloudfall holds."""
+    try:
+        name = parse(database.get(key))
+    except (TypeError, ValueError) as error:
+        raise _clickhouse_refusal(
+            document, ERROR_CLICKHOUSE_DATABASE, str(error), *field, key
+        ) from error
+    if name.is_reserved:
+        raise _clickhouse_refusal(
+            document,
+            ERROR_DATABASE_OWNER_RESERVED,
+            f"{'database' if key == 'name' else 'owner'} {name.value!r} is a name "
+            "ClickHouse or Cloudfall holds (default, cloudfall, system, "
+            "information_schema, INFORMATION_SCHEMA), or starts with cloudfall_, "
+            "the prefix of the restore drill's scratch databases",
+            *field,
+            key,
+        )
+    return name.value
+
+
+def _validate_clickhouse_client_sources(
+    document: ResourceDocument, client_access: Mapping[str, object]
+) -> None:
+    """Refuse a client source that is no canonical network, or every address (S-006)."""
+    raw_sources = client_access.get("allowedSources")
+    sources = raw_sources if isinstance(raw_sources, list) else []
+    for position, raw_source in enumerate(sources):
+        field = ("clientAccess", "allowedSources", position)
+        try:
+            source = IpNetworkCidr.from_boundary(raw_source)
+        except (TypeError, ValueError) as error:
+            raise _clickhouse_refusal(
+                document,
+                "service_remote_access_source_invalid",
+                f"allowed source is not a canonical CIDR: {error}",
+                *field,
+            ) from error
+        if source.is_unrestricted:
+            raise _clickhouse_refusal(
+                document,
+                "service_remote_access_open",
+                f"allowed source {source.value} matches every address; name the "
+                "networks the clients connect from",
+                *field,
+            )
+
+
+def _validate_clickhouse_hosts(
+    document: ResourceDocument,
+    members: tuple[_ClickhouseMember, ...],
+    index: Mapping[ResourceKey, ResourceDocument],
+    *,
+    single: bool,
+    reachable: bool,
+) -> None:
+    """Refuse a server that can't hold what its part of the service needs (S-022).
+
+    Each server's volume (``clickhouse`` on a replica, ``clickhouse-keeper``
+    on the third voter) goes into the only storage pool of its baseline, on
+    two disks for a service of one replica, the only copy of its data. A
+    service that others reach, two replicas or ``clientAccess``, needs on each
+    server a firewall to admit them alone and an IPv4 to be reached at.
+    """
+    for member in members:
+        server = index[ResourceKey(kind=ResourceKind.SERVER, resource_id=member.server)]
+        server_spec = _required_mapping(server.content, "spec", server.source)
+        baseline_id, baseline_spec = _baseline_of(server, index)
+        storage = _required_mapping(baseline_spec, "storage", server.source)
+        raw_pools = storage.get("pools")
+        pools = [
+            pool
+            for pool in (raw_pools if isinstance(raw_pools, list) else [])
+            if isinstance(pool, dict)
+        ]
+        volume = "clickhouse" if member.replica else "clickhouse-keeper"
+        if len(pools) != 1:
+            code = (
+                "volume_requirement_pool_missing"
+                if not pools
+                else "volume_requirement_pool_ambiguous"
+            )
+            reason = (
+                f"Baseline/{baseline_id} declares no storage pool"
+                if not pools
+                else f"Baseline/{baseline_id} declares {len(pools)} pools, and the "
+                "volume goes into the only one"
+            )
+            raise _clickhouse_refusal(
+                document,
+                code,
+                f"the {volume} volume of Server/{member.server} has nowhere to "
+                f"live: {reason}",
+                *member.field,
+            )
+        if single and member.replica and "secondary" not in pools[0]:
+            raise _clickhouse_refusal(
+                document,
+                "volume_requirement_pool_unmirrored",
+                f"the clickhouse volume of Server/{member.server} is mirrored, the "
+                f"only copy of a service of one replica, but pool "
+                f"{pools[0].get('id')} of Baseline/{baseline_id} has no secondary "
+                "physical volume; add one",
+                *member.field,
+            )
+        if reachable and "firewall" not in baseline_spec:
+            raise _clickhouse_refusal(
+                document,
+                ERROR_CLICKHOUSE_UNFIREWALLED,
+                f"Server/{member.server} opens its ClickHouse ports to the other "
+                f"servers of the service or the clientAccess sources only, but "
+                f"Baseline/{baseline_id} declares no firewall to keep every other "
+                "address out",
+                *member.field,
+            )
+        if reachable and not (
+            "network" in server_spec or _is_ipv4(server_spec.get("address"))
+        ):
+            raise _clickhouse_refusal(
+                document,
+                ERROR_CLICKHOUSE_SERVER_UNADDRESSED,
+                f"Server/{member.server} has a name for its address and declares "
+                "no network, so the other servers and the clients have no IPv4 "
+                "to reach it at and the firewalls none to admit; give it an IPv4 "
+                "address or a network block",
+                *member.field,
+            )
+
+
+def _claim_clickhouse_servers(
+    document: ResourceDocument,
+    spec: Mapping[str, object],
+    port: int,
+    servers_taken: dict[ResourceId, ResourceDocument],
+    ports: dict[tuple[ResourceId, int], ResourceDocument],
+) -> None:
+    """Refuse a server already in another ClickHouse service, or a taken port.
+
+    The Debian packages run one instance per host, so a server is a replica
+    or a voter of one service only; every replica listens on the service's
+    port.
+    """
+    for member in _clickhouse_members(document, spec):
+        if member.server in servers_taken:
+            raise _clickhouse_refusal(
+                document,
+                ERROR_CLICKHOUSE_SERVER_SHARED,
+                f"Server/{member.server} is already a replica or a Keeper voter "
+                "of the ClickHouse service declared at "
+                f"{servers_taken[member.server].source.display()}; a server "
+                "holds at most one replica and votes in at most one Keeper",
+                *member.field,
+            )
+        servers_taken[member.server] = document
+        if not member.replica:
+            continue
+        listener = (member.server, port)
+        if listener in ports:
+            issue = ValidationIssue(
+                code="service_port_conflict",
+                message=(
+                    f"Server/{member.server} port {port} already used by the "
+                    f"service declared at {ports[listener].source.display()}"
+                ),
+                source=document.source,
+                field_path=("spec", "bind", "port"),
+            )
+            raise ConfigValidationError(issue)
+        ports[listener] = document
+
+
+@dataclass(frozen=True, slots=True)
+class ClickhouseVersionEnding:
+    """A service whose ClickHouse series ends within the window, or has ended."""
+
+    service: ResourceId
+    version: ClickhouseVersion
+    series: ClickhouseSeries
+
+    def message(self, today: date) -> str:
+        """Say when support of the series ends, or that it has ended."""
+        tense = "ended" if today > self.series.end_of_support else "ends"
+        return (
+            f"Service/{self.service} runs ClickHouse {self.version.value}, whose "
+            f"LTS series {self.series.label} {tense} support on "
+            f"{self.series.end_of_support.isoformat()}; move it to the next "
+            "supported series"
+        )
+
+
+def clickhouse_versions_ending(
+    config: ValidatedConfig,
+    today: date,
+    table: tuple[ClickhouseSeries, ...] = CLICKHOUSE_SUPPORTED_SERIES,
+) -> tuple[ClickhouseVersionEnding, ...]:
+    """Return each ClickHouse service whose series is within its window on ``today``.
+
+    ``today`` is passed in, so the answer depends on the caller's clock only.
+    """
+    endings: list[ClickhouseVersionEnding] = []
+    for document in config.resources(ResourceKind.SERVICE):
+        if not _is_clickhouse_service(document):
+            continue
+        spec = _required_mapping(document.content, "spec", document.source)
+        clickhouse = _required_mapping(spec, "clickhouse", document.source)
+        version = ClickhouseVersion.from_boundary(clickhouse.get("version"))
+        series = clickhouse_series(version, table)
+        if series is not None and series.is_ending(today):
+            endings.append(
+                ClickhouseVersionEnding(document.key.resource_id, version, series)
+            )
+    return tuple(endings)
+
+
+def clickhouse_single_replicas(config: ValidatedConfig) -> tuple[ResourceId, ...]:
+    """Return each ClickHouse service of the production environment with one replica."""
+    found: list[ResourceId] = []
+    for document in config.resources(ResourceKind.SERVICE):
+        if not _is_clickhouse_service(document):
+            continue
+        spec = _required_mapping(document.content, "spec", document.source)
+        environment = _resource_id_value(spec, "environment", document.source)
+        if (
+            environment.value == CLICKHOUSE_PRODUCTION
+            and len(_clickhouse_replicas(document, spec)) == 1
+        ):
+            found.append(document.key.resource_id)
+    return tuple(found)
+
+
+def clickhouse_warnings(
+    config: ValidatedConfig,
+    today: date,
+    table: tuple[ClickhouseSeries, ...] = CLICKHOUSE_SUPPORTED_SERIES,
+) -> tuple[ServiceWarning, ...]:
+    """Return the S-022 warnings of ``config`` on ``today``.
+
+    ``CLICKHOUSE_VERSION_ENDING`` per service whose series ends within the
+    window, or has ended, naming the date; ``CLICKHOUSE_SINGLE_REPLICA`` per
+    production service of one replica. ``today`` and ``table`` are passed in,
+    so the answer depends on the caller's clock only.
+    """
+    endings = tuple(
+        ServiceWarning(
+            code=CLICKHOUSE_WARNING_VERSION_ENDING,
+            message=ending.message(today),
+            context={
+                "service": ending.service.value,
+                "version": ending.version.value,
+                "series": ending.series.label,
+                "endOfLife": ending.series.end_of_support.isoformat(),
+            },
+        )
+        for ending in clickhouse_versions_ending(config, today, table)
+    )
+    single_replicas = tuple(
+        ServiceWarning(
+            code=CLICKHOUSE_WARNING_SINGLE_REPLICA,
+            message=(
+                f"Service/{service} is one ClickHouse replica in production: the "
+                "data has one copy, and every restart stops the service; add a "
+                "second replica and a third Keeper voter"
+            ),
+            context={"service": service.value},
+        )
+        for service in clickhouse_single_replicas(config)
+    )
+    return endings + single_replicas
 
 
 def _validate_logging_references(

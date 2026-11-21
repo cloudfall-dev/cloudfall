@@ -471,6 +471,100 @@
         "memoryHighWatermarkMb"
       ],
       "additionalProperties": false
+    },
+    "clickhouse": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "maxServerMemoryMb": {
+          "type": "integer",
+          "minimum": 2048,
+          "maximum": 4194304
+        },
+        "replicas": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/resourceId"
+          }
+        },
+        "keeper": {
+          "type": "object",
+          "properties": {
+            "servers": {
+              "type": "array",
+              "items": {
+                "$ref": "common.schema.json#/$defs/resourceId"
+              }
+            }
+          },
+          "required": [
+            "servers"
+          ],
+          "additionalProperties": false
+        },
+        "databases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 63,
+                "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
+              },
+              "owner": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 63,
+                "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
+              },
+              "passwordRef": {
+                "$ref": "#/$defs/secretValueReference"
+              },
+              "application": {
+                "$ref": "common.schema.json#/$defs/resourceId"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "clientAccess": {
+          "type": "object",
+          "properties": {
+            "allowedSources": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 49
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "allowedSources"
+          ],
+          "additionalProperties": false
+        },
+        "remoteAccess": {
+          "$ref": "#/$defs/remoteAccess"
+        }
+      },
+      "required": [
+        "version",
+        "maxServerMemoryMb"
+      ],
+      "additionalProperties": false
     }
   },
   "type": "object",
@@ -493,7 +587,8 @@
             "redis",
             "elasticsearch",
             "mariadb",
-            "rabbitmq"
+            "rabbitmq",
+            "clickhouse"
           ]
         },
         "environment": {
@@ -650,6 +745,9 @@
         },
         "rabbitmq": {
           "$ref": "#/$defs/rabbitmq"
+        },
+        "clickhouse": {
+          "$ref": "#/$defs/clickhouse"
         },
         "metrics": {
           "type": "object",
@@ -827,6 +925,56 @@
             "not": {
               "required": [
                 "rabbitmq"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "serviceKind": {
+                "const": "clickhouse"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "clickhouse"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "postgresql"
+                  ]
+                },
+                {
+                  "required": [
+                    "redis"
+                  ]
+                },
+                {
+                  "required": [
+                    "elasticsearch"
+                  ]
+                },
+                {
+                  "required": [
+                    "mariadb"
+                  ]
+                },
+                {
+                  "required": [
+                    "rabbitmq"
+                  ]
+                }
+              ]
+            }
+          },
+          "else": {
+            "not": {
+              "required": [
+                "clickhouse"
               ]
             }
           }
