@@ -536,7 +536,10 @@ def test_s023_13_the_version_filters_read_rabbitmqs_output() -> None:
         "rabbit@h1": "4.4.1",
         "rabbit@h2": "4.3.2",
     }
-    assert VERSION.node_versions(json.dumps({"running_nodes": []})) == {}
+    # An output without the versions map is not read as no member running:
+    # the refusals of S-023-13 would pass every member unchecked
+    with pytest.raises(VERSION.VersionReadError):
+        VERSION.node_versions(json.dumps({"running_nodes": []}))
     with pytest.raises(VERSION.VersionReadError):
         VERSION.node_versions(json.dumps({"versions": {"rabbit@h1": {}}}))
     listed = json.dumps(
@@ -549,6 +552,14 @@ def test_s023_13_the_version_filters_read_rabbitmqs_output() -> None:
     assert VERSION.disabled_stable_flags(listed) == ["b"]
     with pytest.raises(VERSION.VersionReadError):
         VERSION.disabled_stable_flags("Error")
+    # A flag without its stability or state is not read as one that passes
+    for partial in (
+        {"name": "b", "state": "disabled"},
+        {"name": "b", "stability": "stable"},
+        {"state": "disabled", "stability": "stable"},
+    ):
+        with pytest.raises(VERSION.VersionReadError):
+            VERSION.disabled_stable_flags(json.dumps([partial]))
 
 
 def test_the_check_mode_install_waits_for_the_previewed_change() -> None:

@@ -90,7 +90,8 @@ def node_versions(cluster_status: str) -> dict[str, str]:
     if not isinstance(status, dict):
         message = "cluster_status did not print an object"
         raise VersionReadError(message)
-    raw = cast("dict[str, object]", status).get("versions", {})
+    # A running node always prints the map; without it no member is checked
+    raw = cast("dict[str, object]", status).get("versions")
     if not isinstance(raw, dict):
         message = "cluster_status's versions is not an object"
         raise VersionReadError(message)
@@ -120,10 +121,23 @@ def disabled_stable_flags(feature_flags: str) -> list[str]:
             message = "list_feature_flags printed an entry that is not an object"
             raise VersionReadError(message)
         flag = cast("dict[str, object]", item)
-        if flag.get("stability") in ("stable", "required") and (
-            flag.get("state") != "enabled"
+        name, state, stability = (
+            flag.get("name"),
+            flag.get("state"),
+            flag.get("stability"),
+        )
+        if not (
+            isinstance(name, str)
+            and isinstance(state, str)
+            and isinstance(stability, str)
         ):
-            found.append(str(flag.get("name")))
+            message = (
+                "list_feature_flags printed an entry without its name, state "
+                "and stability"
+            )
+            raise VersionReadError(message)
+        if stability in ("stable", "required") and state != "enabled":
+            found.append(name)
     return sorted(found)
 
 
