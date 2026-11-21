@@ -510,8 +510,12 @@ def _play(
     tasks: list[dict[str, Any]],
     variables: dict[str, object],
     hostvars: dict[str, str] | None = None,
+    *,
+    check: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], int | None]:
     """Run ``tasks`` locally; with ``hostvars``, as that host of an inventory.
+
+    With ``check``, the play is a dry run (``--check``).
 
     ``hostvars`` names each declared node's hostname, as the rendered
     inventory gives ``cloudfall_hostname``.
@@ -554,7 +558,13 @@ def _play(
     binary = shutil.which("ansible-playbook")
     assert binary is not None
     done = subprocess.run(  # noqa: S603 - fixed binary and arguments.
-        [binary, "--inventory", inventory, str(playbook)],
+        [
+            binary,
+            *(["--check"] if check else []),
+            "--inventory",
+            inventory,
+            str(playbook),
+        ],
         check=False,
         capture_output=True,
         text=True,

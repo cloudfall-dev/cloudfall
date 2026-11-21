@@ -121,27 +121,36 @@
   changed_when: false
   check_mode: false
 
-# A change of version is a rolling change of its own (#509); RabbitMQ never
-# goes back to an older one
+# A change of version is rolling, from the service's home (version.yml), and
+# RabbitMQ never goes back to an older one nor skips a series (S-023-13)
 - name: Refuse a version other than the installed one
   ansible.builtin.assert:
     that:
       - >-
         cloudfall_rabbitmq_installed_version in
         ['', cloudfall_rabbitmq_package_version]
+        or cloudfall_rabbitmq_version_previewed | bool
+        or (
+          cloudfall_rabbitmq_home | bool
+          and [cloudfall_rabbitmq_installed_version]
+            | cloudfall_rabbitmq_version_refusal(
+                cloudfall_rabbitmq_service.rabbitmq.version,
+                cloudfall_rabbitmq_erlang_minimum | list)
+            | length == 0
+        )
     fail_msg: >-
       {{ cloudfall_server_id }} runs RabbitMQ {{ cloudfall_rabbitmq_installed_version }},
       and service {{ cloudfall_rabbitmq_service.id }} declares
-      {{ cloudfall_rabbitmq_service.rabbitmq.version }}; this release does not
-      change the version of a node. Nothing changed
-  vars:
-    cloudfall_rabbitmq_installed_version: >-
+      {{ cloudfall_rabbitmq_service.rabbitmq.version }}:
       {{
-        cloudfall_rabbitmq_installed.stdout.split('|')[1]
-        if cloudfall_rabbitmq_installed.rc == 0
-        and cloudfall_rabbitmq_installed.stdout.startswith('installed|')
-        else ''
-      }}
+        [cloudfall_rabbitmq_installed_version]
+        | cloudfall_rabbitmq_version_refusal(
+            cloudfall_rabbitmq_service.rabbitmq.version,
+            cloudfall_rabbitmq_erlang_minimum | list)
+        or 'the version of every node changes from the home of the service, '
+           ~ cloudfall_rabbitmq_service.server
+           ~ ', one node at a time; converge it with this server'
+      }}. Nothing changed
 
 # The timers run on the service's home only
 - name: Validate the declared backup and restore-drill calendar expressions
@@ -169,8 +178,35 @@
     - cloudfall_rabbitmq_installed.rc == 0
     - cloudfall_rabbitmq_installed.stdout.startswith('installed|')
 
+# Every running member's version, which the majority check read, is held to
+# the same rule as the home's package, before any task that changes a host
+# (S-023-13)
+- name: Refuse a version change a running member can't make
+  ansible.builtin.assert:
+    that:
+      - cloudfall_rabbitmq_version_refused | length == 0
+    fail_msg: >-
+      RabbitMQ service {{ cloudfall_rabbitmq_service.id }} declares
+      {{ cloudfall_rabbitmq_service.rabbitmq.version }}, and its members run
+      {{ cloudfall_rabbitmq_running_versions | to_json }}:
+      {{ cloudfall_rabbitmq_version_refused }}. Nothing changed
+  vars:
+    cloudfall_rabbitmq_version_refused: >-
+      {{
+        cloudfall_rabbitmq_running_versions.values() | list
+        | cloudfall_rabbitmq_version_refusal(
+            cloudfall_rabbitmq_service.rabbitmq.version,
+            cloudfall_rabbitmq_erlang_minimum | list)
+      }}
+  when: cloudfall_rabbitmq_home | bool
+
 - name: Install the RabbitMQ repository and the Erlang of the Debian release
   ansible.builtin.import_tasks: package.yml
+
+# One node at a time, the service's home last; nothing to change runs nothing
+- name: Change the RabbitMQ version of every node one at a time
+  ansible.builtin.include_tasks: version.yml
+  when: cloudfall_rabbitmq_version_change | bool
 
 - name: Prepare the data volume
   ansible.builtin.import_tasks: storage.yml
@@ -248,6 +284,15 @@
     # the managed settings and the cookie in place
     policy_rc_d: 101
   notify: Restart RabbitMQ
+  # A dry run of a version change previewed it in version.yml, for the home
+  # and every other node; the package is still held at the version it
+  # replaces
+  when: >-
+    not (
+      ansible_check_mode
+      and (cloudfall_rabbitmq_version_change | bool
+           or cloudfall_rabbitmq_version_previewed | bool)
+    )
 
 - name: Hold the RabbitMQ server package
   ansible.builtin.dpkg_selections:
