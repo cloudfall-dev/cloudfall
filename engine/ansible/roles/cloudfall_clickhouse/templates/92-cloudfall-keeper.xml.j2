@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<!-- Managed by Cloudfall: service {{ cloudfall_clickhouse_service.id }} (S-022).
+     Keeper runs inside the server, its voters are keeper.servers, and the
+     replica is named for the pair it waits to form: its server id in the
+     service's shard. -->
+<clickhouse>
+    <keeper_server>
+        <tcp_port>{{ cloudfall_clickhouse_keeper_port }}</tcp_port>
+        <server_id>{{ cloudfall_clickhouse_keeper_server_id }}</server_id>
+        <log_storage_path>{{ cloudfall_clickhouse_data_path }}/coordination/log</log_storage_path>
+        <snapshot_storage_path>{{ cloudfall_clickhouse_data_path }}/coordination/snapshots</snapshot_storage_path>
+        <raft_configuration>
+{% for voter in cloudfall_clickhouse_service.clickhouse.keeper.servers %}
+            <server>
+                <id>{{ loop.index }}</id>
+                <hostname>127.0.0.1</hostname>
+                <port>{{ cloudfall_clickhouse_raft_port }}</port>
+            </server>
+{% endfor %}
+        </raft_configuration>
+    </keeper_server>
+    <zookeeper>
+        <node>
+            <host>127.0.0.1</host>
+            <port>{{ cloudfall_clickhouse_keeper_port }}</port>
+        </node>
+    </zookeeper>
+    <macros>
+        <shard>{{ cloudfall_clickhouse_service.id }}</shard>
+        <replica>{{ cloudfall_server_id }}</replica>
+    </macros>
+</clickhouse>

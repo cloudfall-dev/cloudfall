@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<!-- Managed by Cloudfall: service {{ cloudfall_clickhouse_service.id }} (S-022).
+     No account logs in without a password: default is removed. cloudfall
+     connects from loopback only, creates the databases and the users, and
+     this file holds only the SHA-256 of its password. -->
+<clickhouse>
+    <users>
+        <default remove="remove"/>
+        <{{ cloudfall_clickhouse_user }}>
+            <password_sha256_hex>{{ lookup('ansible.builtin.file', cloudfall_clickhouse_files.cloudfallPassword) | hash('sha256') }}</password_sha256_hex>
+            <networks>
+                <ip>127.0.0.1</ip>
+                <ip>::1</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+            <access_management>1</access_management>
+        </{{ cloudfall_clickhouse_user }}>
+    </users>
+</clickhouse>

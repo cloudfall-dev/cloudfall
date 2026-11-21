@@ -80,6 +80,16 @@
         "maxLength": 1024
       }
     },
+    "clickhouseNameList": {
+      "description": "Names of ClickHouse databases or users",
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
     "blockDevice": {
       "type": "object",
       "properties": {
@@ -1009,6 +1019,42 @@
               "vhostTags": {
                 "description": "Each virtual host with its tags, as 'jobs|cloudfall-managed,cloudfall-owner:jobs'",
                 "$ref": "#/$defs/rabbitmqNameList"
+              }
+            },
+            "required": [
+              "service",
+              "available"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "clickhouseAccounts": {
+          "description": "The databases and users of each ClickHouse service whose home is the server (S-022), names only: those with Cloudfall's comment or role, and the users that may log in from no host; the lists are absent when the server could not be read",
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "properties": {
+              "service": {
+                "$ref": "common.schema.json#/$defs/resourceId"
+              },
+              "available": {
+                "type": "boolean"
+              },
+              "databases": {
+                "$ref": "#/$defs/clickhouseNameList"
+              },
+              "managedDatabases": {
+                "$ref": "#/$defs/clickhouseNameList"
+              },
+              "users": {
+                "$ref": "#/$defs/clickhouseNameList"
+              },
+              "managedUsers": {
+                "$ref": "#/$defs/clickhouseNameList"
+              },
+              "lockedUsers": {
+                "$ref": "#/$defs/clickhouseNameList"
               }
             },
             "required": [

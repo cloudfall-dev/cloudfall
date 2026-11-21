@@ -1,0 +1,256 @@
+---
+# One replica of a ClickHouse service (S-022). Every refusal comes before the
+# first task that changes the host (S-022-4). One replica is configured as a
+# pair that waits for its second: Keeper runs inside the server, the replica
+# and shard names are set, and every declared database is Replicated.
+- name: Validate ClickHouse service target and declaration
+  ansible.builtin.assert:
+    that:
+      - ansible_facts["distribution"] == "Debian"
+      - ansible_facts["distribution_major_version"] | string == "13"
+      - ansible_facts["service_mgr"] == "systemd"
+      - cloudfall_clickhouse_service.serviceKind == "clickhouse"
+      - cloudfall_server_id in cloudfall_clickhouse_service.clickhouse.replicas
+      - >-
+        cloudfall_clickhouse_service.server
+        in cloudfall_clickhouse_service.clickhouse.replicas
+      - cloudfall_clickhouse_service.bind.address == "127.0.0.1"
+    fail_msg: >-
+      ClickHouse service {{ cloudfall_clickhouse_service.id }} needs a Debian
+      13 replica that it declares, and a loopback-only bind address. Nothing
+      changed
+
+# Two replicas with three Keeper voters (#571) and clientAccess over TLS
+# (#570) are converged by later releases; this one never half-builds them
+- name: Refuse a service of two replicas or with client access
+  ansible.builtin.assert:
+    that:
+      - cloudfall_clickhouse_service.clickhouse.replicas | length == 1
+      - >-
+        cloudfall_clickhouse_service.clickhouse.keeper.servers
+        == cloudfall_clickhouse_service.clickhouse.replicas
+      - cloudfall_clickhouse_service.clickhouse.clientAccess is not defined
+    fail_msg: >-
+      ClickHouse service {{ cloudfall_clickhouse_service.id }} declares
+      {{ cloudfall_clickhouse_service.clickhouse.replicas | length }}
+      replicas, Keeper voters
+      {{ cloudfall_clickhouse_service.clickhouse.keeper.servers | join(', ') }}{{
+        ' and clientAccess'
+        if cloudfall_clickhouse_service.clickhouse.clientAccess is defined else ''
+      }}: this release converges one replica, its own only voter, without
+      clientAccess. Nothing changed
+
+# services.yml refuses it before any service role too; checked again here,
+# the role is safe to include on its own
+- name: Refuse a memory limit above nine tenths of the server's memory
+  ansible.builtin.assert:
+    that:
+      - >-
+        (cloudfall_clickhouse_service.clickhouse.maxServerMemoryMb | int) * 10
+        <= (ansible_facts['memtotal_mb'] | int) * 9
+    fail_msg: >-
+      maxServerMemoryMb
+      {{ cloudfall_clickhouse_service.clickhouse.maxServerMemoryMb }} of
+      service {{ cloudfall_clickhouse_service.id }} is above nine tenths of
+      the {{ ansible_facts['memtotal_mb'] }} MB of {{ cloudfall_server_id }}:
+      lower maxServerMemoryMb, or move the replica to a server with more
+      memory. Nothing changed
+
+- name: Refuse a series Cloudfall does not install
+  ansible.builtin.assert:
+    that:
+      - cloudfall_clickhouse_series in cloudfall_clickhouse_supported_series
+    fail_msg: >-
+      ClickHouse {{ cloudfall_clickhouse_service.clickhouse.version }} of
+      service {{ cloudfall_clickhouse_service.id }} is of no series this role
+      installs ({{ cloudfall_clickhouse_supported_series | join(', ') }}).
+      Nothing changed
+
+# The values stay on the controller; only their paths are checked
+- name: Require the staged cloudfall password and every owner's hash
+  ansible.builtin.assert:
+    that:
+      - cloudfall_clickhouse_files.cloudfallPassword is defined
+      - >-
+        cloudfall_clickhouse_service.clickhouse.databases
+        | map(attribute='owner')
+        | difference((cloudfall_clickhouse_files.owners | default({})) | list)
+        | length == 0
+    fail_msg: >-
+      ClickHouse service {{ cloudfall_clickhouse_service.id }} has no staged
+      cloudfall password or owner hash; converge it through cloudfall
+      (converge_services or operator approve), which stages them. Nothing
+      changed
+    quiet: true
+
+- name: Read the installed ClickHouse server package
+  ansible.builtin.command:
+    argv:
+      - dpkg-query
+      - --showformat
+      - "${db:Status-Status}|${Version}"
+      - --show
+      - clickhouse-server
+  register: cloudfall_clickhouse_installed
+  # rc 1: dpkg knows no such package
+  failed_when: cloudfall_clickhouse_installed.rc not in [0, 1]
+  changed_when: false
+  check_mode: false
+
+# A change of version is rolling and comes with a later release (#576)
+- name: Refuse a version other than the installed one
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudfall_clickhouse_installed_version
+        in ['', cloudfall_clickhouse_package_version]
+    fail_msg: >-
+      {{ cloudfall_server_id }} runs ClickHouse
+      {{ cloudfall_clickhouse_installed_version }}, and service
+      {{ cloudfall_clickhouse_service.id }} declares
+      {{ cloudfall_clickhouse_service.clickhouse.version }}: this release
+      changes no installed version. Nothing changed
+
+- name: Install ClickHouse's repository
+  ansible.builtin.import_tasks: package.yml
+
+# Mounted before the packages make their first files there
+- name: Prepare the data volume
+  ansible.builtin.import_tasks: storage.yml
+
+- name: Install the pinned ClickHouse packages
+  ansible.builtin.apt:
+    name: >-
+      {{
+        cloudfall_clickhouse_packages
+        | map('regex_replace', '$', '=' ~ cloudfall_clickhouse_package_version)
+        | list
+      }}
+    state: present
+    # Nothing starts during the install: the handler starts the server
+    # once, with the managed settings in place
+    policy_rc_d: 101
+  notify: Restart ClickHouse
+
+- name: Hold the ClickHouse packages
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: "{{ cloudfall_clickhouse_packages }}"
+
+# After the packages, whose install may set the directory's owner: set here,
+# a second converge finds it as it is
+- name: Give the data directory to the server
+  ansible.builtin.file:
+    path: "{{ cloudfall_clickhouse_data_path }}"
+    state: directory
+    owner: clickhouse
+    group: clickhouse
+    mode: "0750"
+
+- name: Create the configuration directories
+  ansible.builtin.file:
+    path: "{{ cloudfall_clickhouse_config_directory }}/{{ item }}"
+    state: directory
+    owner: root
+    group: clickhouse
+    mode: "0750"
+  loop:
+    - config.d
+    - users.d
+
+- name: Install the managed server settings
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ cloudfall_clickhouse_config_directory }}/config.d/{{ item }}"
+    owner: root
+    group: clickhouse
+    mode: "0640"
+  loop: "{{ cloudfall_clickhouse_managed_config_files }}"
+  notify: Restart ClickHouse
+
+# The server reads users.d again by itself when it changes: no restart. The
+# file holds the SHA-256 of the cloudfall password, never shown
+- name: Install the managed accounts
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ cloudfall_clickhouse_config_directory }}/users.d/{{ item }}"
+    owner: root
+    group: clickhouse
+    mode: "0640"
+  loop: "{{ cloudfall_clickhouse_managed_users_files }}"
+  no_log: true
+
+- name: Install the cloudfall account's client configuration
+  ansible.builtin.template:
+    src: cloudfall-client.xml.j2
+    dest: "{{ cloudfall_clickhouse_client_config_path }}"
+    owner: clickhouse
+    group: clickhouse
+    mode: "0600"
+  no_log: true
+
+- name: Start the server with its settings
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start the ClickHouse server
+  ansible.builtin.systemd_service:
+    name: clickhouse-server.service
+    enabled: true
+    state: started
+
+- name: Wait until the server answers cloudfall
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_clickhouse_client }}"
+      - --config-file
+      - "{{ cloudfall_clickhouse_client_config_path }}"
+      - --query
+      - SELECT version()
+  register: cloudfall_clickhouse_version
+  changed_when: false
+  retries: 24
+  delay: 5
+  until: cloudfall_clickhouse_version.rc == 0
+  when: not ansible_check_mode
+
+- name: Refuse a server that does not run the declared version
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudfall_clickhouse_version.stdout | trim
+        == cloudfall_clickhouse_service.clickhouse.version
+    fail_msg: >-
+      {{ cloudfall_server_id }} runs ClickHouse
+      {{ cloudfall_clickhouse_version.stdout | trim }}, not the declared
+      {{ cloudfall_clickhouse_service.clickhouse.version }}
+  when: not ansible_check_mode
+
+- name: Read the listening sockets
+  ansible.builtin.command:
+    argv:
+      - ss
+      - -Htlnp
+  register: cloudfall_clickhouse_sockets
+  changed_when: false
+  when: not ansible_check_mode
+
+# Nothing of ClickHouse or of its Keeper listens outside loopback (S-022-3)
+- name: Refuse a listener of ClickHouse or Keeper outside loopback
+  ansible.builtin.assert:
+    that:
+      - cloudfall_clickhouse_public | length == 0
+    fail_msg: >-
+      {{ cloudfall_server_id }} has ClickHouse or Keeper listening outside
+      loopback: {{ cloudfall_clickhouse_public | join(', ') }}; a listen_host
+      of a configuration file of its own opens it
+  vars:
+    cloudfall_clickhouse_public: >-
+      {{ cloudfall_clickhouse_sockets.stdout | cloudfall_clickhouse_public_listeners }}
+  when: not ansible_check_mode
+
+- name: Converge the databases and their owners on the service's home
+  ansible.builtin.import_tasks: accounts.yml
+  when:
+    - cloudfall_clickhouse_home | bool
+    - not ansible_check_mode

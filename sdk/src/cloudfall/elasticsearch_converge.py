@@ -146,6 +146,22 @@ def rabbitmq_volume_requirements(
     return _owned(inventory, services, VolumeRequirement)
 
 
+def clickhouse_volume_requirements(
+    inventory: PlatformInventory,
+) -> tuple[ServerRequirements, ...]:
+    """Return the data volume each ClickHouse service places on its replicas (S-022).
+
+    Only the volume: the ``cloudfall`` password is staged with the owners'
+    hashes.
+    """
+    services = {
+        service.resource_id
+        for service in inventory.services
+        if service.clickhouse is not None
+    }
+    return _owned(inventory, services, VolumeRequirement)
+
+
 def rabbitmq_certificate_requirements(
     inventory: PlatformInventory,
 ) -> tuple[ServerRequirements, ...]:
@@ -341,7 +357,8 @@ def prepared_nodes(
     copies the other's. A RabbitMQ node's data volume is decided in the same
     read, and the certificate of a node of three or with ``clientAccess`` is
     requested and signed with the others and handed to the RabbitMQ role
-    alone (S-023). Nothing to meet yields no variable, leaving the run as it
+    alone (S-023). A ClickHouse replica's data volume is decided in the same
+    read too (S-022). Nothing to meet yields no variable, leaving the run as it
     was. ``server`` meets that one server's alone, for a run limited to it.
     """
     servers = tuple(
@@ -354,6 +371,7 @@ def prepared_nodes(
         for found in _merged(
             mariadb_volume_requirements(inventory),
             rabbitmq_volume_requirements(inventory),
+            clickhouse_volume_requirements(inventory),
         )
         if server is None or found.server_id == server
     )

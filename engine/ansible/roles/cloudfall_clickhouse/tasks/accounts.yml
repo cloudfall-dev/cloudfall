@@ -1,0 +1,125 @@
+---
+# The declared databases and their owners, converged once for the service on
+# its home (S-022, Access), as cloudfall through its client configuration.
+# The play reads the server's databases, users, roles, grants and profiles,
+# and the cloudfall_clickhouse_account_plan filter decides on the controller
+# what differs. An owner's password reaches the server only as the salted
+# SHA-256 the controller computed (D-9), in a statement staged 0600 that the
+# client reads and the run removes; the digest of each hash the role stored is
+# kept beside it, so the same password changes nothing. No password or hash is
+# in any output.
+- name: Read the server's databases and accounts
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_clickhouse_client }}"
+      - --config-file
+      - "{{ cloudfall_clickhouse_client_config_path }}"
+      - --query
+      - "{{ item.value }}"
+  loop: "{{ cloudfall_clickhouse_state_queries | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: cloudfall_clickhouse_state_read
+  changed_when: false
+
+- name: Read the digests of the owners' stored hashes
+  ansible.builtin.slurp:
+    src: "{{ cloudfall_clickhouse_digests_path }}"
+  register: cloudfall_clickhouse_digests_read
+  # A first converge has none
+  failed_when: false
+
+- name: Plan the databases and owners
+  ansible.builtin.set_fact:
+    cloudfall_clickhouse_plan: >-
+      {{
+        dict(
+          cloudfall_clickhouse_state_read.results | map(attribute='item.key')
+          | zip(cloudfall_clickhouse_state_read.results
+                | map(attribute='stdout_lines'))
+        )
+        | cloudfall_clickhouse_account_plan({
+            'databases': cloudfall_clickhouse_service.clickhouse.databases,
+            'ownerFiles': cloudfall_clickhouse_files.owners | default({}),
+            'digests': (
+              cloudfall_clickhouse_digests_read.content | b64decode | from_json
+              if cloudfall_clickhouse_digests_read.content is defined else {}
+            ),
+            'user': cloudfall_clickhouse_user,
+            'managedRole': cloudfall_clickhouse_managed_role,
+            'managedComment': cloudfall_clickhouse_managed_comment,
+            'ownerProfile': cloudfall_clickhouse_owner_profile,
+            'databasePath': cloudfall_clickhouse_database_path,
+            'systemDatabases': cloudfall_clickhouse_system_databases,
+          })
+      }}
+
+# A declared database Cloudfall did not create as Replicated would look
+# declared and not be copied (S-022, Access)
+- name: Refuse a declared database that is not Replicated
+  ansible.builtin.assert:
+    that:
+      - cloudfall_clickhouse_plan.refused | length == 0
+    fail_msg: >-
+      ClickHouse service {{ cloudfall_clickhouse_service.id }}:
+      {{ cloudfall_clickhouse_plan.refused | join('; ') }}
+
+- name: Create the managed role, the owner profile and the databases
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_clickhouse_client }}"
+      - --config-file
+      - "{{ cloudfall_clickhouse_client_config_path }}"
+      - --query
+      - "{{ item }}"
+  loop: "{{ cloudfall_clickhouse_plan.before }}"
+  changed_when: true
+
+- name: Create the ClickHouse role state directory
+  ansible.builtin.file:
+    path: "{{ cloudfall_clickhouse_state_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Set each owner's hash
+  ansible.builtin.include_tasks: owner_password.yml
+  loop: "{{ cloudfall_clickhouse_plan.passwords }}"
+  loop_control:
+    loop_var: cloudfall_clickhouse_owner
+    label: "{{ cloudfall_clickhouse_owner.owner }}"
+
+- name: Keep the digests of the owners' stored hashes
+  ansible.builtin.copy:
+    content: "{{ cloudfall_clickhouse_plan.digests | to_json(sort_keys=True) }}\n"
+    dest: "{{ cloudfall_clickhouse_digests_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Set the owners' hosts, profile, grants and role, and lock undeclared ones
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_clickhouse_client }}"
+      - --config-file
+      - "{{ cloudfall_clickhouse_client_config_path }}"
+      - --query
+      - "{{ item }}"
+  loop: "{{ cloudfall_clickhouse_plan.after }}"
+  changed_when: true
+
+# A database Cloudfall made and no longer declares is kept with its rows, its
+# owner can't log in; neither is dropped (S-022-7)
+- name: Name what the converge left in place
+  ansible.builtin.debug:
+    msg: >-
+      undeclared (made by Cloudfall, kept, owner can't log in):
+      databases {{ cloudfall_clickhouse_plan.undeclared.databases | join(', ') or 'none' }},
+      users {{ cloudfall_clickhouse_plan.undeclared.users | join(', ') or 'none' }};
+      unmanaged (left as they are):
+      databases {{ cloudfall_clickhouse_plan.unmanaged.databases | join(', ') or 'none' }},
+      users {{ cloudfall_clickhouse_plan.unmanaged.users | join(', ') or 'none' }}
+  when: >-
+    (cloudfall_clickhouse_plan.undeclared.values() | flatten | length > 0)
+    or (cloudfall_clickhouse_plan.unmanaged.values() | flatten | length > 0)

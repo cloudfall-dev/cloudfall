@@ -31,6 +31,27 @@ cloudfall_inspect_mariadb_services: []
 cloudfall_inspect_rabbitmq_services: []
 cloudfall_inspect_rabbitmq_ctl: /usr/sbin/rabbitmqctl
 cloudfall_inspect_rabbitmq_diagnostics: /usr/sbin/rabbitmq-diagnostics
+# The ClickHouse services whose home is this server (S-022): their databases
+# and users are read as cloudfall, through the client configuration the role
+# installs (requirements.CLICKHOUSE_CLIENT_CONFIG_PATH), names only. The
+# comment and role are the ones cloudfall.clickhouse names.
+cloudfall_inspect_clickhouse_services: []
+cloudfall_inspect_clickhouse_client: /usr/bin/clickhouse-client
+cloudfall_inspect_clickhouse_client_config_path: /etc/clickhouse-server/cloudfall-client.xml
+cloudfall_inspect_clickhouse_queries:
+  databases: SELECT name FROM system.databases ORDER BY name FORMAT TSVRaw
+  managedDatabases: >-
+    SELECT name FROM system.databases WHERE comment = 'cloudfall-managed'
+    ORDER BY name FORMAT TSVRaw
+  users: SELECT name FROM system.users ORDER BY name FORMAT TSVRaw
+  managedUsers: >-
+    SELECT DISTINCT user_name FROM system.role_grants
+    WHERE granted_role_name = 'cloudfall_managed' AND user_name IS NOT NULL
+    ORDER BY user_name FORMAT TSVRaw
+  lockedUsers: >-
+    SELECT name FROM system.users WHERE empty(host_ip) AND empty(host_names)
+    AND empty(host_names_regexp) AND empty(host_names_like)
+    ORDER BY name FORMAT TSVRaw
 cloudfall_inspect_mariadb_client: /usr/bin/mariadb
 # The one file the MariaDB role writes its managed settings to
 cloudfall_inspect_mariadb_settings_path: /etc/mysql/mariadb.conf.d/90-cloudfall.cnf

@@ -760,6 +760,24 @@
       }}
   when: cloudfall_inspect_rabbitmq_services | length > 0
 
+- name: Collect ClickHouse account evidence
+  ansible.builtin.include_tasks: clickhouse_accounts.yml
+  loop: "{{ cloudfall_inspect_clickhouse_services }}"
+  loop_control:
+    loop_var: cloudfall_inspect_clickhouse_service
+    label: "{{ cloudfall_inspect_clickhouse_service.id }}"
+
+- name: Attach ClickHouse account evidence
+  ansible.builtin.set_fact:
+    cloudfall_inspect_snapshot: >-
+      {{
+        cloudfall_inspect_snapshot | combine(
+          {'spec': {'clickhouseAccounts': cloudfall_inspect_clickhouse_accounts}},
+          recursive=true
+        )
+      }}
+  when: cloudfall_inspect_clickhouse_services | length > 0
+
 - name: Collect RabbitMQ cluster evidence
   ansible.builtin.include_tasks: rabbitmq_cluster.yml
   loop: >-

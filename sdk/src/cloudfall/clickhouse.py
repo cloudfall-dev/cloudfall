@@ -12,6 +12,8 @@ the next minor release of Cloudfall.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -41,6 +43,55 @@ RESERVED_NAMES = frozenset(
 """Names ClickHouse or Cloudfall holds: an owner or database never takes one."""
 SCRATCH_PREFIX = "cloudfall_"
 """The prefix of the scratch databases the restore drill creates."""
+
+CLOUDFALL_USER = "cloudfall"
+"""Cloudfall's own account, defined in ``users.d`` on each replica (S-022, Access)."""
+MANAGED_ROLE = "cloudfall_managed"
+"""The role, holding no privilege, every user Cloudfall creates is granted.
+
+It takes the reserved prefix, so no declared owner can be named so.
+"""
+MANAGED_COMMENT = "cloudfall-managed"
+"""The comment of every database Cloudfall creates."""
+OWNER_PROFILE = "cloudfall_owner"
+"""The settings profile of every owner: only replicated tables, a constant."""
+SYSTEM_DATABASES = frozenset(
+    {"system", "information_schema", "INFORMATION_SCHEMA", "default"}
+)
+"""The databases ClickHouse itself holds: never declared, undeclared or unmanaged."""
+_SALT_CONTEXT = b"cloudfall clickhouse owner salt"
+_SALT_BYTES = 16
+
+
+def owner_salt(salt_key: str, service: str, owner: str) -> str:
+    """Return the salt of an owner's password hash, as 32 hex digits.
+
+    It is the HMAC-SHA256 of the service and owner names keyed by
+    ``salt_key`` (the service's ``cloudfall`` password), so the same password
+    gives the same hash on every converge, and nobody without the key can
+    recompute it (D-9, as for the Elasticsearch users).
+    """
+    if not salt_key:
+        message = "an owner's salt needs a non-empty key"
+        raise ValueError(message)
+    message_bytes = b"\0".join(
+        (_SALT_CONTEXT, service.encode("utf-8"), owner.encode("utf-8"))
+    )
+    return hmac.digest(salt_key.encode("utf-8"), message_bytes, "sha256")[
+        :_SALT_BYTES
+    ].hex()
+
+
+def sha256_password_hash(password: str, salt: str) -> str:
+    """Return what ``IDENTIFIED WITH sha256_hash BY ... SALT`` stores: hex SHA-256.
+
+    ClickHouse checks a login by the SHA-256 of the password followed by the
+    salt, so only this hash and the salt reach the server (D-9).
+    """
+    if not password:
+        message = "an owner's password is empty"
+        raise ValueError(message)
+    return hashlib.sha256((password + salt).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

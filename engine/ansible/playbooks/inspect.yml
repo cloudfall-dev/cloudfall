@@ -52,3 +52,12 @@
           | selectattr('server', 'equalto', cloudfall_server_id)
           | list
         }}
+      # A ClickHouse service's databases and users are in Keeper, read on
+      # its home
+      cloudfall_inspect_clickhouse_services: >-
+        {{
+          cloudfall_services | default([])
+          | selectattr('serviceKind', 'equalto', 'clickhouse')
+          | selectattr('server', 'equalto', cloudfall_server_id)
+          | list
+        }}
