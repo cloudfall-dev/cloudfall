@@ -565,6 +565,54 @@
         "maxServerMemoryMb"
       ],
       "additionalProperties": false
+    },
+    "kibana": {
+      "type": "object",
+      "properties": {
+        "elasticsearch": {
+          "$ref": "common.schema.json#/$defs/resourceId"
+        },
+        "heapMb": {
+          "type": "integer"
+        },
+        "domain": {
+          "$ref": "common.schema.json#/$defs/resourceId"
+        },
+        "users": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 63,
+                "pattern": "^[a-z][a-z0-9_-]*$"
+              },
+              "access": {
+                "enum": [
+                  "view",
+                  "edit"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "access"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "remoteAccess": {
+          "$ref": "#/$defs/remoteAccess"
+        }
+      },
+      "required": [
+        "elasticsearch",
+        "heapMb"
+      ],
+      "additionalProperties": false
     }
   },
   "type": "object",
@@ -588,7 +636,8 @@
             "elasticsearch",
             "mariadb",
             "rabbitmq",
-            "clickhouse"
+            "clickhouse",
+            "kibana"
           ]
         },
         "environment": {
@@ -749,6 +798,9 @@
         "clickhouse": {
           "$ref": "#/$defs/clickhouse"
         },
+        "kibana": {
+          "$ref": "#/$defs/kibana"
+        },
         "metrics": {
           "type": "object",
           "properties": {
@@ -766,8 +818,7 @@
         "serviceKind",
         "environment",
         "server",
-        "bind",
-        "backup"
+        "bind"
       ],
       "additionalProperties": false,
       "allOf": [
@@ -975,6 +1026,62 @@
             "not": {
               "required": [
                 "clickhouse"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "serviceKind": {
+                "const": "kibana"
+              }
+            },
+            "required": [
+              "serviceKind"
+            ]
+          },
+          "then": {
+            "required": [
+              "kibana"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "postgresql"
+                  ]
+                },
+                {
+                  "required": [
+                    "redis"
+                  ]
+                },
+                {
+                  "required": [
+                    "elasticsearch"
+                  ]
+                },
+                {
+                  "required": [
+                    "mariadb"
+                  ]
+                },
+                {
+                  "required": [
+                    "rabbitmq"
+                  ]
+                }
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "backup"
+            ],
+            "not": {
+              "required": [
+                "kibana"
               ]
             }
           }
