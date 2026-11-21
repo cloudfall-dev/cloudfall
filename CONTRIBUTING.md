@@ -66,7 +66,11 @@ snapshot beside `sdk/src/cloudfall/schema-changelog.json` and adds an entry for
 the version. Both files go into the release commit and the wheel, not into
 `main`, so the step before it, `scripts/restore_interface_snapshot.py`, puts
 them back as the previous release's tag holds them. A release whose interface
-did not change adds no entry, and a failed run stops the release.
+did not change adds no entry, and a failed run stops the release. One
+exception: a hotfix from a release line that predates the interface changelog
+(0.7.x) has no `scripts/restore_interface_snapshot.py`, so both steps pass
+with a notice and the release records no interface changes, as its line never
+did (D-29).
 
 ## Licensing of contributions
 

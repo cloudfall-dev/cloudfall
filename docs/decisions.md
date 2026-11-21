@@ -237,3 +237,11 @@ Status on 2026-11-15: partly built. component.service.j2 sets only User, Group, 
 - Applies to: .github/workflows/converge.yml, .github/workflows/release.yml, .github/workflows/publish.yml
 - Enforced by: review
 - Supersedes: D-23
+
+## D-29: A hotfix from a line without the interface changelog skips its release steps with a notice
+
+- Decided: 2026-11-21, in cloudfall-dev/cloudfall#516
+- Rule: after_stamp in .github/shipmill.toml runs scripts/restore_interface_snapshot.py and treaty changelog-add only when the release tree has scripts/restore_interface_snapshot.py; on a tree without it (a release line that predates the interface changelog, such as 0.7.x) both steps print a notice and pass, and that release records no interface changes; every other failed after_stamp step still stops the release
+- Why: a 0.7.x hotfix runs main's after_stamp against release/0.7, which has neither the script nor sdk/src/cloudfall/schema-changelog.json, so it could never ship; backporting both would seed a changelog that 0.7's CLI never reads, and the 0.7 line never recorded interface changes, so the hotfix ships without one as 0.7.0 did; the same shape as D-28
+- Applies to: .github/shipmill.toml, CONTRIBUTING.md, scripts/restore_interface_snapshot.py
+- Enforced by: review
