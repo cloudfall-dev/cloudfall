@@ -91,25 +91,28 @@
         state: stopped
 
     # The package is held so an unattended upgrade never restarts a node; the
-    # change releases the hold and holds the new version again
-    - name: Release the hold of the RabbitMQ server package
-      ansible.builtin.dpkg_selections:
-        name: rabbitmq-server
-        selection: install
+    # change releases the hold and holds the new version again, and holds
+    # the package it found when the install fails
+    - name: Install the declared RabbitMQ server under a released hold
+      block:
+        - name: Release the hold of the RabbitMQ server package
+          ansible.builtin.dpkg_selections:
+            name: rabbitmq-server
+            selection: install
 
-    - name: Install the declared RabbitMQ server
-      ansible.builtin.apt:
-        name: rabbitmq-server={{ cloudfall_rabbitmq_package_version }}
-        state: present
-        update_cache: true
-        # A dry run, which releases no hold, previews it too
-        allow_change_held_packages: true
-        policy_rc_d: 101
-
-    - name: Hold the RabbitMQ server package again
-      ansible.builtin.dpkg_selections:
-        name: rabbitmq-server
-        selection: hold
+        - name: Install the declared RabbitMQ server
+          ansible.builtin.apt:
+            name: rabbitmq-server={{ cloudfall_rabbitmq_package_version }}
+            state: present
+            update_cache: true
+            # A dry run, which releases no hold, previews it too
+            allow_change_held_packages: true
+            policy_rc_d: 101
+      always:
+        - name: Hold the RabbitMQ server package again
+          ansible.builtin.dpkg_selections:
+            name: rabbitmq-server
+            selection: hold
 
     - name: Start the node with the declared version
       ansible.builtin.systemd_service:

@@ -177,9 +177,7 @@ def test_s023_12_a_node_stops_only_once_the_others_can_take_over() -> None:
         "Wait until every quorum queue keeps its majority without the node",
         "Move the clients and queue leaders of the node to the others",
         "Stop the node",
-        "Release the hold of the RabbitMQ server package",
-        "Install the declared RabbitMQ server",
-        "Hold the RabbitMQ server package again",
+        "Install the declared RabbitMQ server under a released hold",
         "Start the node with the declared version",
         "Wait until the node runs again",
         "Take the node out of maintenance",
@@ -216,7 +214,16 @@ def test_s023_12_the_package_is_released_installed_and_held_again() -> None:
         "Change the version of {{ cloudfall_rabbitmq_version_node }}",
         _tasks("version_node.yml"),
     )
-    tasks = {task["name"]: task for task in block["block"]}
+    held = {task["name"]: task for task in block["block"]}[
+        "Install the declared RabbitMQ server under a released hold"
+    ]
+    tasks = {task["name"]: task for task in held["block"]}
+    # The package is held again even when its install fails: a node left
+    # unheld would follow the next apt upgrade
+    assert [task["name"] for task in held["always"]] == [
+        "Hold the RabbitMQ server package again"
+    ]
+    tasks |= {task["name"]: task for task in held["always"]}
     release = tasks["Release the hold of the RabbitMQ server package"]
     assert release["ansible.builtin.dpkg_selections"] == {
         "name": "rabbitmq-server",
