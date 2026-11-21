@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<!-- Managed by Cloudfall: service {{ cloudfall_clickhouse_service.id }} (S-022).
+     Clients on loopback only, in plain text: the native port and HTTP. -->
+<clickhouse>
+    <listen_host>127.0.0.1</listen_host>
+    <tcp_port>{{ cloudfall_clickhouse_service.bind.port }}</tcp_port>
+    <http_port>{{ cloudfall_clickhouse_http_port }}</http_port>
+</clickhouse>

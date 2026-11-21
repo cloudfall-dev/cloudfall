@@ -1,0 +1,70 @@
+---
+# Every ClickHouse package comes from the lts suite of ClickHouse's own APT
+# repository, which keeps every earlier build, at the declared version, and is
+# held so an unattended upgrade never restarts the server (S-022, Supported
+# versions).
+- name: Install ClickHouse repository prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - python3-debian
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create APT keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Fetched only when missing, so a re-converge needs no network (#388)
+- name: Check for the ClickHouse repository signing key
+  ansible.builtin.stat:
+    path: "{{ cloudfall_clickhouse_repository_key_path }}"
+  register: cloudfall_clickhouse_repository_key
+
+- name: Install the ClickHouse repository signing key
+  ansible.builtin.get_url:
+    url: "{{ cloudfall_clickhouse_repository_key_url }}"
+    dest: "{{ cloudfall_clickhouse_repository_key_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: cloudfall_clickhouse_repository_key_download
+  until: cloudfall_clickhouse_repository_key_download is succeeded
+  retries: 5
+  delay: 10
+  when: not cloudfall_clickhouse_repository_key.stat.exists
+
+- name: Keep the installed ClickHouse repository signing key's owner and mode
+  ansible.builtin.file:
+    path: "{{ cloudfall_clickhouse_repository_key_path }}"
+    state: file
+    owner: root
+    group: root
+    mode: "0644"
+  when: cloudfall_clickhouse_repository_key.stat.exists
+
+- name: Configure ClickHouse's LTS repository
+  ansible.builtin.deb822_repository:
+    name: clickhouse
+    types:
+      - deb
+    uris:
+      - "{{ cloudfall_clickhouse_repository_url }}"
+    suites:
+      - "{{ cloudfall_clickhouse_repository_suite }}"
+    components:
+      - main
+    signed_by: "{{ cloudfall_clickhouse_repository_key_path }}"
+    state: present
+  register: cloudfall_clickhouse_repository
+
+# A new repository is read now, not when the cache next expires
+- name: Read ClickHouse's LTS repository  # noqa: no-handler
+  ansible.builtin.apt:
+    update_cache: true
+  when: cloudfall_clickhouse_repository is changed

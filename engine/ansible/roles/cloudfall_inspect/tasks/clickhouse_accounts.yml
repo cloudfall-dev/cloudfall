@@ -1,0 +1,50 @@
+---
+# The databases and users of one ClickHouse service (S-022), read on its home
+# as cloudfall through the client configuration the role installs: their
+# names, which ones carry Cloudfall's comment or role, and which users may log
+# in from no host. No password or hash is read.
+- name: Read the ClickHouse service's databases and users
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_inspect_clickhouse_client }}"
+      - --config-file
+      - "{{ cloudfall_inspect_clickhouse_client_config_path }}"
+      - --query
+      - "{{ item.value }}"
+  loop: "{{ cloudfall_inspect_clickhouse_queries | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: cloudfall_inspect_clickhouse_read
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Attach the ClickHouse service's databases and users
+  ansible.builtin.set_fact:
+    cloudfall_inspect_clickhouse_accounts: >-
+      {{
+        cloudfall_inspect_clickhouse_accounts | default([])
+        + [cloudfall_inspect_clickhouse_evidence]
+      }}
+  vars:
+    cloudfall_inspect_clickhouse_available: >-
+      {{
+        cloudfall_inspect_clickhouse_read.results
+        | rejectattr('rc', 'equalto', 0) | list | length == 0
+      }}
+    cloudfall_inspect_clickhouse_evidence: >-
+      {{
+        {
+          'service': cloudfall_inspect_clickhouse_service.id,
+          'available': cloudfall_inspect_clickhouse_available,
+        }
+        | combine(
+          dict(
+            cloudfall_inspect_clickhouse_read.results | map(attribute='item.key')
+            | zip(cloudfall_inspect_clickhouse_read.results
+                  | map(attribute='stdout_lines')
+                  | map('select') | map('list'))
+          )
+          if cloudfall_inspect_clickhouse_available else {}
+        )
+      }}

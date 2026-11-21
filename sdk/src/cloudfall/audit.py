@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, cast
 import yaml
 from cryptography import x509
 
+from cloudfall.clickhouse import CLOUDFALL_USER as CLICKHOUSE_USER
+from cloudfall.clickhouse import SYSTEM_DATABASES as CLICKHOUSE_SYSTEM_DATABASES
 from cloudfall.dashboards import bundled_dashboards
 from cloudfall.domain import ResourceKind
 from cloudfall.elasticsearch import supported_line
@@ -355,6 +357,7 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
         checks.extend(_audit_mariadb_server(service, snapshot))
     checks.extend(_audit_mariadb_accounts(services, snapshot))
     checks.extend(_audit_rabbitmq_accounts(services, snapshot))
+    checks.extend(_audit_clickhouse_accounts(services, snapshot))
     checks.extend(_audit_rabbitmq_cluster(services, rabbitmq_nodes, snapshot))
     checks.extend(_audit_alert_rules(alert_rules, snapshot))
     checks.extend(
@@ -1560,6 +1563,114 @@ def _audit_rabbitmq_accounts(
             continue
         checks.append(_rabbitmq_accounts_check(name, desired, entry))
     return tuple(checks)
+
+
+def _audit_clickhouse_accounts(
+    services: tuple[ServiceInventory, ...],
+    snapshot: ObservedServerSnapshot,
+) -> tuple[AuditCheck, ...]:
+    """Compare each ClickHouse service's databases and owners with the declared.
+
+    Read on the service's home. A database with Cloudfall's comment and a
+    user with Cloudfall's role were made by Cloudfall: one no longer declared
+    is listed as undeclared, which is the declared outcome and not drift as
+    long as the user may log in from no host (S-022-7). Anything else is
+    listed as unmanaged and left alone. A declared database or owner that is
+    missing, a declared owner that can't log in, an undeclared one that
+    still can, and a ``default`` user are drift.
+    """
+    evidence = {
+        _string(entry, "service"): entry
+        for entry in _mapping_sequence(snapshot.spec, "clickhouseAccounts")
+    }
+    checks: list[AuditCheck] = []
+    for service in services:
+        clickhouse = service.clickhouse
+        if clickhouse is None:
+            continue
+        name = f"clickhouse.accounts[{service.resource_id.value}]"
+        desired: dict[str, list[str]] = {
+            "databases": sorted(item.name.value for item in clickhouse.databases),
+            "users": sorted(item.owner.value for item in clickhouse.databases),
+        }
+        entry = evidence.get(service.resource_id.value)
+        if entry is None or entry.get("available") is not True:
+            checks.append(
+                AuditCheck(
+                    check=name,
+                    status=AuditStatus.UNKNOWN,
+                    desired=desired,
+                    observed=None,
+                    message=(
+                        "the server's databases and users were not read; inspect "
+                        "again once ClickHouse answers cloudfall on the home server"
+                    ),
+                )
+            )
+            continue
+        checks.append(_clickhouse_accounts_check(name, desired, entry))
+    return tuple(checks)
+
+
+def _clickhouse_accounts_check(
+    name: str, desired: dict[str, list[str]], entry: Mapping[str, object]
+) -> AuditCheck:
+    databases = set(_strings(entry, "databases"))
+    managed_databases = set(_strings(entry, "managedDatabases"))
+    users = set(_strings(entry, "users"))
+    managed_users = set(_strings(entry, "managedUsers")) & users
+    locked = set(_strings(entry, "lockedUsers"))
+    declared_databases = set(desired["databases"])
+    declared_users = set(desired["users"])
+    undeclared_users = sorted(managed_users - declared_users - {CLICKHOUSE_USER})
+    observed: dict[str, object] = {
+        "databases": sorted(databases & declared_databases),
+        "users": sorted(users & declared_users),
+        "lockedUsers": sorted(locked & declared_users),
+        "default": "default" in users,
+        "undeclaredDatabases": sorted(
+            managed_databases - declared_databases - CLICKHOUSE_SYSTEM_DATABASES
+        ),
+        "undeclaredUsers": undeclared_users,
+        "undeclaredUsersThatLogIn": sorted(set(undeclared_users) - locked),
+        "unmanagedDatabases": sorted(
+            databases
+            - managed_databases
+            - declared_databases
+            - CLICKHOUSE_SYSTEM_DATABASES
+        ),
+        "unmanagedUsers": sorted(
+            users - managed_users - declared_users - {CLICKHOUSE_USER, "default"}
+        ),
+    }
+    matches = (
+        observed["databases"] == desired["databases"]
+        and observed["users"] == desired["users"]
+        and not observed["lockedUsers"]
+        and not observed["default"]
+        and not observed["undeclaredUsersThatLogIn"]
+    )
+    message = "desired state matches" if matches else "desired state does not match"
+    if observed["default"]:
+        message += "; the default user exists"
+    for label, key in (
+        ("undeclared (made by Cloudfall, kept, owner can't log in)", "undeclared"),
+        ("unmanaged (not made by Cloudfall, left as they are)", "unmanaged"),
+    ):
+        parts = [
+            f"{kind} {', '.join(cast('list[str]', observed[f'{key}{title}']))}"
+            for kind, title in (("databases", "Databases"), ("users", "Users"))
+            if observed[f"{key}{title}"]
+        ]
+        if parts:
+            message += f"; {label}: " + "; ".join(parts)
+    return AuditCheck(
+        check=name,
+        status=AuditStatus.COMPLIANT if matches else AuditStatus.DRIFT,
+        desired=desired,
+        observed=observed,
+        message=message,
+    )
 
 
 def _audit_rabbitmq_cluster(

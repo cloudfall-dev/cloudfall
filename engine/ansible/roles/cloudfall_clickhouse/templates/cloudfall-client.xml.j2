@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<!-- Managed by Cloudfall: service {{ cloudfall_clickhouse_service.id }} (S-022).
+     The cloudfall account's login on loopback, the configuration file
+     clickhouse-client is given; 0600 clickhouse. -->
+<config>
+    <host>127.0.0.1</host>
+    <port>{{ cloudfall_clickhouse_service.bind.port }}</port>
+    <user>{{ cloudfall_clickhouse_user }}</user>
+    <password>{{ lookup('ansible.builtin.file', cloudfall_clickhouse_files.cloudfallPassword) | e }}</password>
+</config>

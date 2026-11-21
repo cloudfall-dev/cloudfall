@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<!-- Managed by Cloudfall: service {{ cloudfall_clickhouse_service.id }} (S-022).
+     maxServerMemoryMb {{ cloudfall_clickhouse_service.clickhouse.maxServerMemoryMb }}, in bytes. -->
+<clickhouse>
+    <max_server_memory_usage>{{ (cloudfall_clickhouse_service.clickhouse.maxServerMemoryMb | int) * 1048576 }}</max_server_memory_usage>
+</clickhouse>

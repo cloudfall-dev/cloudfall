@@ -1,0 +1,113 @@
+---
+cloudfall_clickhouse_service: {}
+# Controller paths of the service's staged cloudfall password
+# ('cloudfallPassword') and of each owner's '<hash>:<salt>' file ('owners');
+# services.yml passes the service's entry of
+# cloudfall_services_clickhouse_files, never an owner's password (S-022, D-9).
+cloudfall_clickhouse_files: {}
+# What the services converge decided for this server's data volume (S-014).
+cloudfall_clickhouse_volume_actions: >-
+  {{ (cloudfall_volume_actions | default({})).get(cloudfall_server_id, [])
+     | selectattr('name', 'equalto', 'clickhouse') | list }}
+cloudfall_clickhouse_series: >-
+  {{ cloudfall_clickhouse_service.clickhouse.version.split('.')[:2] | join('.') }}
+# The LTS series Cloudfall installs, the same table as
+# cloudfall.clickhouse.SUPPORTED_SERIES (a test compares them).
+cloudfall_clickhouse_supported_series:
+  - "26.3"
+  - "26.8"
+# ClickHouse's packages carry the build as it is: 26.8.37.168.
+cloudfall_clickhouse_package_version: "{{ cloudfall_clickhouse_service.clickhouse.version }}"
+# What a replica installs, each at the declared version and held
+# (requirements.CLICKHOUSE_REPLICA_PACKAGES); the server needs the other two.
+cloudfall_clickhouse_packages:
+  - clickhouse-common-static
+  - clickhouse-client
+  - clickhouse-server
+# ClickHouse's APT repository: its lts suite keeps every build of the LTS
+# series, so a pinned version comes from there.
+cloudfall_clickhouse_repository_url: https://packages.clickhouse.com/deb
+cloudfall_clickhouse_repository_suite: lts
+cloudfall_clickhouse_repository_key_url: >-
+  https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key
+# Armored: APT reads a .asc keyring as it is.
+cloudfall_clickhouse_repository_key_path: /etc/apt/keyrings/clickhouse.asc
+cloudfall_clickhouse_data_path: /var/lib/clickhouse
+cloudfall_clickhouse_config_directory: /etc/clickhouse-server
+# The managed settings, each in a file of its own that sorts after the
+# operator's (S-022, What each server needs); audit compares only these.
+cloudfall_clickhouse_managed_config_files:
+  - 90-cloudfall-listeners.xml
+  - 91-cloudfall-memory.xml
+  - 92-cloudfall-keeper.xml
+  - 93-cloudfall-access.xml
+cloudfall_clickhouse_managed_users_files:
+  - 90-cloudfall-users.xml
+# The client configuration of the cloudfall account, which holds its
+# password, 0600 clickhouse (requirements.CLICKHOUSE_CLIENT_CONFIG_PATH): the
+# role, the backup scripts and inspect connect with it, so the password is
+# on no command line.
+cloudfall_clickhouse_client_config_path: /etc/clickhouse-server/cloudfall-client.xml
+cloudfall_clickhouse_client: /usr/bin/clickhouse-client
+cloudfall_clickhouse_http_port: 8123
+# Keeper runs inside the server on a replica: its client port and its Raft
+# port, both on loopback with one replica.
+cloudfall_clickhouse_keeper_port: 9181
+cloudfall_clickhouse_raft_port: 9234
+# A voter's id is its place in keeper.servers, from 1.
+cloudfall_clickhouse_keeper_server_id: >-
+  {{ cloudfall_clickhouse_service.clickhouse.keeper.servers.index(cloudfall_server_id) + 1 }}
+# Where the declared databases and the users and their grants live in Keeper:
+# the same path on every replica, so one statement on the home applies on
+# both (S-022, One replica is a pair that waits for its second).
+cloudfall_clickhouse_database_path: /clickhouse/databases
+cloudfall_clickhouse_access_path: /clickhouse/access/
+# Names Cloudfall holds (cloudfall.clickhouse, a test compares them): its
+# account, the role every user it creates is granted, the comment of every
+# database it creates, and the settings profile of every owner.
+cloudfall_clickhouse_user: cloudfall
+cloudfall_clickhouse_managed_role: cloudfall_managed
+cloudfall_clickhouse_managed_comment: cloudfall-managed
+cloudfall_clickhouse_owner_profile: cloudfall_owner
+cloudfall_clickhouse_system_databases:
+  - system
+  - information_schema
+  - INFORMATION_SCHEMA
+  - default
+# Whether this server is the service's home, where the databases and users
+# converge once for the service (S-022).
+cloudfall_clickhouse_home: >-
+  {{ cloudfall_clickhouse_service.server == cloudfall_server_id }}
+# The host directory an owner's statement, holding its hash, is staged in,
+# and where the digest of each owner's hash the role last stored is kept,
+# 0700 root; the statement is removed after the run.
+cloudfall_clickhouse_state_directory: /var/lib/cloudfall/clickhouse
+cloudfall_clickhouse_statement_path: >-
+  {{ cloudfall_clickhouse_state_directory }}/{{ cloudfall_clickhouse_service.id }}-owner.sql
+cloudfall_clickhouse_digests_path: >-
+  {{ cloudfall_clickhouse_state_directory }}/{{ cloudfall_clickhouse_service.id }}-owners.json
+# The X.Y.Z.N of the installed clickhouse-server, or '' when none is.
+cloudfall_clickhouse_installed_version: >-
+  {{
+    cloudfall_clickhouse_installed.stdout.split('|')[1]
+    if cloudfall_clickhouse_installed.rc == 0
+    and cloudfall_clickhouse_installed.stdout.startswith('installed|')
+    else ''
+  }}
+# What accounts.yml reads before it changes anything, one JSON row a line.
+cloudfall_clickhouse_state_queries:
+  databases: SELECT name, engine, comment FROM system.databases FORMAT JSONEachRow
+  users: >-
+    SELECT name, host_ip, host_names, host_names_regexp, host_names_like
+    FROM system.users FORMAT JSONEachRow
+  roles: SELECT name FROM system.roles FORMAT JSONEachRow
+  roleGrants: >-
+    SELECT user_name, granted_role_name FROM system.role_grants
+    WHERE user_name IS NOT NULL FORMAT JSONEachRow
+  grants: >-
+    SELECT user_name, database FROM system.grants
+    WHERE user_name IS NOT NULL AND is_partial_revoke = 0 FORMAT JSONEachRow
+  profiles: SELECT name FROM system.settings_profiles FORMAT JSONEachRow
+  profileElements: >-
+    SELECT profile_name, user_name, setting_name, value, writability,
+    inherit_profile FROM system.settings_profile_elements FORMAT JSONEachRow

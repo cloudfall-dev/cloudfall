@@ -434,6 +434,8 @@ def requirements_of(inventory: PlatformInventory) -> tuple[ServerRequirements, .
             by_server.setdefault(server_id.value, []).append(requirement)
         for server_id, requirement in _rabbitmq_requirements(service, inventory):
             by_server.setdefault(server_id.value, []).append(requirement)
+        for server_id, requirement in _clickhouse_requirements(service, inventory):
+            by_server.setdefault(server_id.value, []).append(requirement)
     return tuple(
         ServerRequirements(
             server.resource_id,
@@ -836,6 +838,93 @@ def _rabbitmq_requirements(
         )
         for node_id in rabbitmq.nodes
     )
+    return placed
+
+
+CLICKHOUSE_REQUIREMENT_NAME = RequirementName("clickhouse")
+CLICKHOUSE_VOLUME_PATH = AbsolutePath("/var/lib/clickhouse")
+CLICKHOUSE_VOLUME_SIZE = ByteSize(20 * GIBIBYTE)
+"""The starting size of each replica's data volume; it grows, never shrinks."""
+CLICKHOUSE_REPLICA_PACKAGES = (
+    PackageName("clickhouse-server"),
+    PackageName("clickhouse-client"),
+    PackageName("clickhouse-common-static"),
+)
+"""What a replica installs, every one at the declared version and held."""
+CLICKHOUSE_PASSWORD_NAME = RequirementName("clickhouse-cloudfall-password")
+CLICKHOUSE_CLIENT_CONFIG_PATH = AbsolutePath(
+    "/etc/clickhouse-server/cloudfall-client.xml"
+)
+"""Where each replica keeps the ``cloudfall`` account's password, 0600 clickhouse.
+
+The file is the ``clickhouse-client`` configuration the role, the backup
+scripts and inspect connect with, so the password is never on a command line.
+"""
+CLICKHOUSE_PASSWORD_KEY = SecretKeyName("CLOUDFALL_PASSWORD")
+
+
+def clickhouse_password_reference(
+    environment: ResourceId, service_id: ResourceId
+) -> SecretValueReference:
+    """Return where the store keeps the ``cloudfall`` password: ``/services/<id>``."""
+    return SecretValueReference(
+        environment=environment,
+        path=AbsolutePath(f"/services/{service_id.value}"),
+        key=CLICKHOUSE_PASSWORD_KEY,
+    )
+
+
+def _clickhouse_requirements(
+    service: ServiceInventory, inventory: PlatformInventory
+) -> list[tuple[ResourceId, Requirement]]:
+    """Place what each replica of a ClickHouse service needs (S-022).
+
+    Every replica needs its data volume, mirrored when it is the only one
+    and expendable with two (the copy is on the other replica), the server,
+    the client and their common package at the declared version, and the
+    ``cloudfall`` password Cloudfall generates; the role writes it on the
+    replica and only its SHA-256 into ``users.d``. One replica without
+    ``clientAccess`` listens on loopback only and needs no port and no
+    certificate; the third voter's needs, and the ports and certificates of
+    two replicas or ``clientAccess``, come with those (#571, #570).
+    """
+    clickhouse = service.clickhouse
+    if clickhouse is None:
+        return []
+    owner = RequirementOwner(ResourceKind.SERVICE, service.resource_id)
+    servers = {server.resource_id: server for server in inventory.servers}
+    placement = (
+        VolumePlacement.EXPENDABLE
+        if len(clickhouse.replicas) > 1
+        else VolumePlacement.MIRRORED
+    )
+    password = SecretRequirement(
+        CLICKHOUSE_PASSWORD_NAME,
+        SecretSource.GENERATE,
+        CLICKHOUSE_CLIENT_CONFIG_PATH,
+        clickhouse_password_reference(service.environment, service.resource_id),
+    )
+    packages = tuple(
+        PackageRequirement(
+            RequirementName(package.value),
+            package,
+            PackageVersion(clickhouse.version.value),
+        )
+        for package in CLICKHOUSE_REPLICA_PACKAGES
+    )
+    placed: list[tuple[ResourceId, Requirement]] = []
+    for replica in clickhouse.replicas:
+        baseline = inventory.baseline(servers[replica].baseline_id)
+        volume = VolumeRequirement(
+            CLICKHOUSE_REQUIREMENT_NAME,
+            CLICKHOUSE_VOLUME_PATH,
+            CLICKHOUSE_VOLUME_SIZE,
+            placement,
+            (SystemdUnitName("clickhouse-server.service"),),
+            _pool(baseline, None, CLICKHOUSE_REQUIREMENT_NAME.value),
+        )
+        specs: tuple[RequirementSpec, ...] = (volume, password, *packages)
+        placed.extend((replica, Requirement(owner, spec)) for spec in specs)
     return placed
 
 

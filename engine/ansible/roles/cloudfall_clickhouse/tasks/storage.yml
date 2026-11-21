@@ -1,0 +1,55 @@
+---
+# S-022's volume requirement: the data directory, Keeper's logs and snapshots
+# included, lives on the clickhouse volume, mounted before the packages make
+# their first files there. The services converge decided its action before
+# any host changed (S-014); a run that brings no decision (cloudfall-engine
+# playbook run) needs the volume already mounted.
+- name: Create, grow and mount the data volume
+  ansible.builtin.include_role:
+    name: cloudfall_volumes
+  vars:
+    cloudfall_volumes_actions: "{{ cloudfall_clickhouse_volume_actions }}"
+  when: cloudfall_clickhouse_volume_actions | length > 0
+
+- name: Read what is mounted at the data directory
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --noheadings
+      - --output
+      - SOURCE
+      - --mountpoint
+      - "{{ cloudfall_clickhouse_data_path }}"
+  register: cloudfall_clickhouse_data_mount
+  # rc 1: nothing is mounted there
+  failed_when: cloudfall_clickhouse_data_mount.rc not in [0, 1]
+  changed_when: false
+  check_mode: false
+
+# A dry run creates no volume, so only a real run can tell
+- name: Refuse a data directory that is not its volume
+  ansible.builtin.assert:
+    that:
+      - cloudfall_clickhouse_data_mount.rc == 0
+    fail_msg: >-
+      {{ cloudfall_clickhouse_data_path }} on {{ cloudfall_server_id }} is not
+      a mounted volume; converge the service through cloudfall
+      (converge_services or operator approve), which creates the clickhouse
+      volume in its baseline's storage pool
+  when: not ansible_check_mode
+
+# The packages' postinst creates them too, alike; made first, the files the
+# role writes before the server starts have their owner
+- name: Create the clickhouse group
+  ansible.builtin.group:
+    name: clickhouse
+    system: true
+
+- name: Create the clickhouse user
+  ansible.builtin.user:
+    name: clickhouse
+    group: clickhouse
+    system: true
+    home: /nonexistent
+    create_home: false
+    shell: /bin/false

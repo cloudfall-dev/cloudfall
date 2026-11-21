@@ -86,6 +86,32 @@
         loop_var: cloudfall_service_item
         label: "{{ cloudfall_service_item.id }}"
 
+    # The ClickHouse role refuses such a limit as well; checked here, before
+    # any service role, the server is left unchanged (S-022-4).
+    - name: Refuse a ClickHouse memory limit above nine tenths of the server's memory
+      ansible.builtin.assert:
+        that:
+          - >-
+            (cloudfall_service_item.clickhouse.maxServerMemoryMb | int) * 10
+            <= (ansible_facts['memtotal_mb'] | int) * 9
+        fail_msg: >-
+          maxServerMemoryMb
+          {{ cloudfall_service_item.clickhouse.maxServerMemoryMb }} of service
+          {{ cloudfall_service_item.id }} is above nine tenths of the
+          {{ ansible_facts['memtotal_mb'] }} MB of {{ cloudfall_server_id }}:
+          lower maxServerMemoryMb, or move the replica to a server with more
+          memory
+      loop: >-
+        {{
+          cloudfall_services | default([])
+          | selectattr('serviceKind', 'equalto', 'clickhouse')
+          | selectattr('clickhouse.replicas', 'contains', cloudfall_server_id)
+          | list
+        }}
+      loop_control:
+        loop_var: cloudfall_service_item
+        label: "{{ cloudfall_service_item.id }}"
+
     # Every declared kind has a role below; a service of a kind with none
     # would converge as a silent no-op and report success for a service it
     # never touched.
@@ -94,14 +120,16 @@
         that:
           - >-
             cloudfall_services | default([]) | map(attribute='serviceKind')
-            | difference(['postgresql', 'redis', 'mariadb', 'elasticsearch', 'rabbitmq'])
+            | difference(['postgresql', 'redis', 'mariadb', 'elasticsearch', 'rabbitmq',
+                           'clickhouse'])
             | length == 0
         fail_msg: >-
           {{ cloudfall_server_id }} declares a service of a kind services.yml
           has no role for:
           {{
             cloudfall_services | default([]) | map(attribute='serviceKind')
-            | difference(['postgresql', 'redis', 'mariadb', 'elasticsearch', 'rabbitmq'])
+            | difference(['postgresql', 'redis', 'mariadb', 'elasticsearch', 'rabbitmq',
+                           'clickhouse'])
             | join(', ')
           }}
   tasks:
@@ -231,6 +259,29 @@
         {{
           cloudfall_services | default([])
           | selectattr('serviceKind', 'equalto', 'rabbitmq')
+          | list
+        }}
+      loop_control:
+        loop_var: cloudfall_service_item
+        label: "{{ cloudfall_service_item.id }}"
+
+    - name: Deploy declared ClickHouse services
+      ansible.builtin.include_role:
+        name: cloudfall_clickhouse
+      vars:
+        cloudfall_clickhouse_service: "{{ cloudfall_service_item }}"
+        # Controller paths of the staged cloudfall password and the owners'
+        # salted hashes cloudfall passes as cloudfall_services_clickhouse_files;
+        # never an owner's password (S-022, D-9).
+        cloudfall_clickhouse_files: >-
+          {{
+            (cloudfall_services_clickhouse_files | default({}))
+            [cloudfall_service_item.id] | default({})
+          }}
+      loop: >-
+        {{
+          cloudfall_services | default([])
+          | selectattr('serviceKind', 'equalto', 'clickhouse')
           | list
         }}
       loop_control:

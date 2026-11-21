@@ -52,6 +52,8 @@ from cloudfall.rabbitmq_cluster import is_cluster as is_rabbitmq_cluster
 from cloudfall.secret_store import SecretStore, sops_encrypt
 from cloudfall.secrets import (
     SecretsError,
+    clickhouse_account_passwords,
+    clickhouse_owner_passwords,
     elasticsearch_account_passwords,
     elasticsearch_existing_cluster_credentials,
     elasticsearch_existing_cluster_logins,
@@ -93,6 +95,8 @@ if TYPE_CHECKING:
     )
     from cloudfall.mariadb_replication import ReplicationOutcome
     from cloudfall.secrets import (
+        ClickhouseAccountPassword,
+        ClickhouseOwnerPassword,
         ElasticsearchAccountPassword,
         ElasticsearchExistingClusterLogin,
         ElasticsearchS3Credentials,
@@ -1185,6 +1189,8 @@ class ServicesSecrets:
     mariadb_sources: tuple[MariadbSourceLogin, ...] = ()
     rabbitmq_owners: tuple[RabbitmqOwnerPassword, ...] = ()
     rabbitmq_cookies: tuple[RabbitmqCookie, ...] = ()
+    clickhouse_owners: tuple[ClickhouseOwnerPassword, ...] = ()
+    clickhouse_accounts: tuple[ClickhouseAccountPassword, ...] = ()
 
 
 def _mariadb_source_cas(
@@ -1214,8 +1220,9 @@ def services_passwords(
     passwords of each Elasticsearch service and each of its declared users',
     the S3 keys of each S3 snapshot repository, the login of each
     ``existingCluster`` that names a ``credentialsRef``, each MariaDB
-    owner's, each MariaDB primary's replication password, and each RabbitMQ
-    service's Erlang cookie and owners' passwords. A missing file
+    owner's, each MariaDB primary's replication password, each RabbitMQ
+    service's Erlang cookie and owners' passwords, and each ClickHouse
+    service's ``cloudfall`` and owners' passwords. A missing file
     or key fails here, naming the expected path and key, so the converge
     stops before any playbook starts.
     """
@@ -1250,6 +1257,8 @@ def services_passwords(
             ),
             rabbitmq_owner_passwords(inventory, provider),
             rabbitmq_cookies(inventory, provider),
+            clickhouse_owner_passwords(inventory, provider),
+            clickhouse_account_passwords(inventory, provider),
         )
     except SecretsError as error:
         raise LifecycleError(ERROR_SERVICES_SECRET, error.message) from error
@@ -1302,6 +1311,8 @@ def run_services_playbook(
             sources=secrets.mariadb_sources,
             rabbitmq=secrets.rabbitmq_owners,
             cookies=secrets.rabbitmq_cookies,
+            clickhouse=secrets.clickhouse_owners,
+            clickhouse_accounts=secrets.clickhouse_accounts,
         ) as extra,
         tempfile.TemporaryDirectory(prefix="cloudfall-replication-") as reports,
     ):

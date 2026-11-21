@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<!-- Managed by Cloudfall: service {{ cloudfall_clickhouse_service.id }} (S-022).
+     The cloudfall account is in users.d, so it logs in while Keeper has no
+     quorum; the users, roles, profiles and grants made by SQL are in Keeper,
+     so one statement on the home makes them on every replica. -->
+<clickhouse>
+    <user_directories replace="replace">
+        <users_xml>
+            <path>users.xml</path>
+        </users_xml>
+        <replicated>
+            <zookeeper_path>{{ cloudfall_clickhouse_access_path }}</zookeeper_path>
+        </replicated>
+    </user_directories>
+</clickhouse>
