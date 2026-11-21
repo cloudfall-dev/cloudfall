@@ -2079,18 +2079,8 @@ def _validate_service_uniqueness(documents: Sequence[ResourceDocument]) -> None:
         if document.key.kind is not ResourceKind.SERVICE:
             continue
         spec = _required_mapping(document.content, "spec", document.source)
-        bind = _required_mapping(spec, "bind", document.source)
         server_id = _resource_id_value(spec, "server", document.source)
-        raw_kind = spec.get("serviceKind")
-        raw_port = bind.get("port")
-        if not isinstance(raw_kind, str) or not isinstance(raw_port, int):
-            issue = ValidationIssue(
-                code="internal_state_shape_invalid",
-                message="validated service kind or port has an invalid shape",
-                source=document.source,
-                field_path=("spec",),
-            )
-            raise ConfigValidationError(issue)
+        raw_kind, raw_port = _service_kind_and_port(document, spec)
         if raw_kind == "elasticsearch":
             _claim_elasticsearch_nodes(document, spec, raw_port, nodes_taken, ports)
             continue
@@ -2142,6 +2132,23 @@ def _validate_service_uniqueness(documents: Sequence[ResourceDocument]) -> None:
             )
             raise ConfigValidationError(issue)
         ports[listener] = document
+
+
+def _service_kind_and_port(
+    document: ResourceDocument, spec: Mapping[str, object]
+) -> tuple[str, int]:
+    bind = _required_mapping(spec, "bind", document.source)
+    raw_kind = spec.get("serviceKind")
+    raw_port = bind.get("port")
+    if not isinstance(raw_kind, str) or not isinstance(raw_port, int):
+        issue = ValidationIssue(
+            code="internal_state_shape_invalid",
+            message="validated service kind or port has an invalid shape",
+            source=document.source,
+            field_path=("spec",),
+        )
+        raise ConfigValidationError(issue)
+    return raw_kind, raw_port
 
 
 def _claim_elasticsearch_nodes(
