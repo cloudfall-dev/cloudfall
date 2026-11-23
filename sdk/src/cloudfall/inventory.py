@@ -66,6 +66,7 @@ from cloudfall.domain import (
     ReleaseCommandTimeout,
     ReleaseRelativePath,
     RepositoryUrl,
+    RequestBodyMegabytes,
     RequiredServiceState,
     RequiredServiceStatus,
     ResourceDocument,
@@ -764,6 +765,7 @@ class DomainProxy:
     service_name: ServiceName
     upstream_address: IpAddress | None = None
     upstream_port: TcpPort | None = None
+    max_request_body: RequestBodyMegabytes | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -882,6 +884,8 @@ class DomainInventory:
                 "address": self.proxy.upstream_address.value,
                 "port": self.proxy.upstream_port.value,
             }
+        if self.proxy.max_request_body is not None:
+            proxy["maxRequestBodyMegabytes"] = self.proxy.max_request_body.value
         result: dict[str, object] = {
             "id": self.resource_id.value,
             "primaryName": self.primary_name.value,
@@ -2489,6 +2493,13 @@ def _domain_inventory(document: ResourceDocument) -> DomainInventory:
                 None
                 if proxy_upstream is None
                 else TcpPort.from_boundary(proxy_upstream.get("port"))
+            ),
+            max_request_body=(
+                None
+                if proxy.get("maxRequestBodyMegabytes") is None
+                else RequestBodyMegabytes.from_boundary(
+                    proxy.get("maxRequestBodyMegabytes")
+                )
             ),
         ),
         origin=DomainOrigin(

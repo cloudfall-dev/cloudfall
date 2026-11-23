@@ -1,0 +1,3 @@
+### Added
+
+- A Domain can set its request body limit with `spec.proxy.maxRequestBodyMegabytes`, an integer from 1 to 10240: `cloudfall domains apply` renders `client_max_body_size <n>m;` in every `server` block of its managed vhost (the port 80 block, and the 443 block once TLS is active), so an app that takes uploads larger than Nginx's 1 MB default no longer answers 413. `config validate` refuses 0, a negative number, a value over 10240, or a size string such as `"55m"`. A Domain without the field renders a byte-identical vhost. A Domain with `edge.mode: proxied` is still capped by the edge provider's own upload limit (Cloudflare's is 100 MB on its Free and Pro plans) (#600)

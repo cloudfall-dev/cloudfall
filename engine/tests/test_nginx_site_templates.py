@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 import yaml
@@ -38,7 +39,11 @@ def _domain() -> dict[str, object]:
 
 
 def _render(
-    *, tls_active: bool, nginx_version: str = "1.26.3", http2: object = True
+    *,
+    tls_active: bool,
+    nginx_version: str = "1.26.3",
+    http2: object = True,
+    domain: dict[str, object] | None = None,
 ) -> str:
     # trim_blocks matches the template module's default.
     environment = Environment(
@@ -52,7 +57,7 @@ def _render(
     environment.tests.update(AnsibleTests().tests())
     environment.filters.update(AnsibleFilters().filters())
     return environment.get_template("domain-site.conf.j2").render(
-        cloudfall_nginx_site_domain=_domain(),
+        cloudfall_nginx_site_domain=_domain() if domain is None else domain,
         cloudfall_nginx_site_acme_webroot="/var/lib/letsencrypt",
         cloudfall_nginx_site_tls_active=tls_active,
         cloudfall_nginx_site_version=nginx_version,
@@ -136,6 +141,64 @@ def test_http2_off_renders_no_http2_on_either_side_of_1_25_1(
         "    server_name crm.example.test www.crm.example.test;\n"
     ) in rendered
     assert "http2" not in rendered
+
+
+def _body_limited_domain(megabytes: int) -> dict[str, object]:
+    domain = _domain()
+    proxy = dict(cast("dict[str, object]", domain["proxy"]))
+    proxy["maxRequestBodyMegabytes"] = megabytes
+    return domain | {"proxy": proxy}
+
+
+@pytest.mark.parametrize("nginx_version", [DEBIAN_12_NGINX, "1.26.3"])
+def test_a_body_limit_renders_in_both_server_blocks_with_tls(
+    nginx_version: str,
+) -> None:
+    """The port 80 block only redirects then, but every block carries it (#600)."""
+    rendered = _render(
+        tls_active=True,
+        nginx_version=nginx_version,
+        domain=_body_limited_domain(55),
+    )
+    plain, tls = rendered.split("\nserver {\n")[1:]
+
+    for block in (plain, tls):
+        assert (
+            "    server_name crm.example.test www.crm.example.test;\n"
+            "    client_max_body_size 55m;\n"
+            "\n"
+        ) in block
+    assert rendered.count("client_max_body_size") == 2
+
+
+@pytest.mark.parametrize("nginx_version", [DEBIAN_12_NGINX, "1.26.3"])
+def test_a_body_limit_renders_in_the_one_block_without_tls(
+    nginx_version: str,
+) -> None:
+    rendered = _render(
+        tls_active=False,
+        nginx_version=nginx_version,
+        domain=_body_limited_domain(55),
+    )
+
+    assert (
+        "    server_name crm.example.test www.crm.example.test;\n"
+        "    client_max_body_size 55m;\n"
+        "\n"
+        "    location /.well-known/acme-challenge/ {\n"
+    ) in rendered
+    assert rendered.count("client_max_body_size") == 1
+    assert rendered == _render(
+        tls_active=False, nginx_version=nginx_version
+    ).replace(
+        "www.crm.example.test;\n",
+        "www.crm.example.test;\n    client_max_body_size 55m;\n",
+    )
+
+
+@pytest.mark.parametrize("tls_active", [True, False])
+def test_no_body_limit_renders_no_directive(*, tls_active: bool) -> None:
+    assert "client_max_body_size" not in _render(tls_active=tls_active)
 
 
 def test_http2_defaults_on_in_the_role_and_its_argument_spec() -> None:

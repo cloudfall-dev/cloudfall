@@ -116,6 +116,23 @@ def _routed_domain(tmp_path: Path, routes: str) -> dict[str, object]:
     assert _UPSTREAM in text
     text = text.replace(_UPSTREAM, "").replace("  origin:\n", routes + "  origin:\n")
     path.write_text(text, encoding="utf-8")
+    return _host_domain(project)
+
+
+def _body_limited_domain(tmp_path: Path) -> dict[str, object]:
+    """Render the example Domain with a 55 MB body limit through the inventory."""
+    project = tmp_path / "project-body-limit"
+    copy_examples(project)
+    path = project / "domains" / "crm-site.yaml"
+    text = path.read_text(encoding="utf-8")
+    assert _UPSTREAM in text
+    text = text.replace(_UPSTREAM, _UPSTREAM + "    maxRequestBodyMegabytes: 55\n")
+    path.write_text(text, encoding="utf-8")
+    return _host_domain(project)
+
+
+def _host_domain(project: Path) -> dict[str, object]:
+    """Return the one Domain the engine inventory hands proxy server h2."""
     inventory = render_ansible_inventory(
         PlatformInventory.from_state(validate_config(project, SCHEMAS))
     )
@@ -216,6 +233,7 @@ def rendered(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
             "role-default": _upstream_only_domain(),
             "no-http2": _upstream_only_domain(),
             "no-http2-extra-var": _upstream_only_domain(),
+            "body-limit": _body_limited_domain(tmp_path),
         },
         {
             "role-default": {
@@ -378,6 +396,29 @@ def test_http2_off_drops_it_from_the_tls_server_on_every_version(
     assert rendered[f"{label}/http-{nginx_version}.conf"] == (
         GOLDEN / f"http-{nginx_version}.conf"
     ).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("nginx_version", NGINX_VERSIONS)
+@pytest.mark.parametrize("tls", ["tls", "http"])
+def test_a_declared_body_limit_reaches_every_server_block(
+    rendered: dict[str, str], tls: str, nginx_version: str
+) -> None:
+    """The field travels config -> inventory -> role -> vhost (#600).
+
+    The example Domain's upstream is the golden files' one, so the render is
+    the golden file with the directive after each ``server_name``.
+    """
+    name = f"{tls}-{nginx_version}.conf"
+    vhost = rendered[f"body-limit/{name}"]
+    golden = (GOLDEN / name).read_text(encoding="utf-8")
+    server_name = "    server_name crm.example.test www.crm.example.test;\n"
+
+    assert vhost == golden.replace(
+        server_name, server_name + "    client_max_body_size 55m;\n"
+    )
+    servers = _servers(vhost)
+    assert len(servers) == (2 if tls == "tls" else 1)
+    assert all("    client_max_body_size 55m;\n" in s for s in servers)
 
 
 # proves: S-003-2

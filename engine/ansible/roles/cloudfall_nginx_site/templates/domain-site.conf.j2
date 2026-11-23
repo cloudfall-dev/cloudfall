@@ -70,10 +70,18 @@
 {{ proxy_location('/', cloudfall_nginx_site_domain.proxy.upstream) -}}
 {% endif %}
 {% endmacro %}
+{#
+  A Domain's request body limit covers every route of every server block it
+  renders; without one, Nginx keeps its 1 MB default.
+#}
+{% set body_limit = cloudfall_nginx_site_domain.proxy.maxRequestBodyMegabytes %}
 server {
     listen 80;
     listen [::]:80;
     server_name {{ names }};
+{% if body_limit is defined %}
+    client_max_body_size {{ body_limit | int }}m;
+{% endif %}
 
     location /.well-known/acme-challenge/ {
         root {{ cloudfall_nginx_site_acme_webroot }};
@@ -106,6 +114,9 @@ server {
     listen [::]:443 ssl http2;
 {% endif %}
     server_name {{ names }};
+{% if body_limit is defined %}
+    client_max_body_size {{ body_limit | int }}m;
+{% endif %}
 
     ssl_certificate /etc/letsencrypt/live/{{ cloudfall_nginx_site_domain.primaryName }}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/{{ cloudfall_nginx_site_domain.primaryName }}/privkey.pem;
