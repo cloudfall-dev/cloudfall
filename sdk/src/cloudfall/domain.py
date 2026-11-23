@@ -697,6 +697,31 @@ class HealthCheckAttempts:
         )
 
 
+_REQUEST_BODY_MEGABYTES_MAXIMUM = 10240
+
+
+@dataclass(frozen=True, slots=True)
+class RequestBodyMegabytes:
+    """The largest request body a Domain's vhost accepts: 1 to 10240 MB."""
+
+    value: int
+
+    def __post_init__(self) -> None:
+        """Reject booleans and values outside 1..10240."""
+        _required_bounded_integer(
+            self.value, "request body limit", _REQUEST_BODY_MEGABYTES_MAXIMUM
+        )
+
+    @classmethod
+    def from_boundary(cls, value: object) -> RequestBodyMegabytes:
+        """Coerce a required boundary value into a request body limit."""
+        return cls(
+            _required_bounded_integer(
+                value, "request body limit", _REQUEST_BODY_MEGABYTES_MAXIMUM
+            )
+        )
+
+
 _RETAIN_RELEASES_MINIMUM = 2
 _RETAIN_RELEASES_DEFAULT = 5
 

@@ -127,6 +127,11 @@
             },
             "upstream": {
               "$ref": "#/$defs/upstream"
+            },
+            "maxRequestBodyMegabytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10240
             }
           },
           "required": [

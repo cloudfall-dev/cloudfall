@@ -39,6 +39,11 @@ argument_specs:
                   port:
                     type: int
                     required: true
+              maxRequestBodyMegabytes:
+                type: int
+                description:
+                  - The vhost's client_max_body_size in megabytes, 1 to 10240
+                  - Unset keeps Nginx's 1 MB default
           routes:
             type: list
             elements: dict

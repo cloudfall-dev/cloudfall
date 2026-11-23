@@ -376,6 +376,13 @@ Nginx worker (`www-data`) traverse-only access (`user:www-data:--x`) from the
 application root to the install root and its `releases/`; the worker joins no
 group, so the environment files under `shared/env/` stay unreadable to it.
 
+A Domain's `proxy.maxRequestBodyMegabytes` (an integer, 1 to 10240) sets the
+largest request body its vhost accepts: every `server` block of the Domain
+renders `client_max_body_size <n>m;`, covering all its routes. Without it,
+Nginx keeps its 1 MB default and answers 413 to a larger upload. A Domain with
+`edge.mode: proxied` is still capped by the edge provider's own upload limit
+(Cloudflare's is 100 MB on its Free and Pro plans).
+
 The site role installs Nginx and Certbot, serves the ACME challenge webroot,
 and converges in two phases: until a certificate exists the route serves
 plain HTTP so the site stays reachable during cutover; once TLS material is
