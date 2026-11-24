@@ -57,7 +57,7 @@ REFUSALS = (
         "Refuse a Kibana heap that with the node's is above three quarters of the "
         "host's memory"
     ),
-    "Refuse a Domain this release does not converge",
+    "Refuse a Domain this server does not hold for Kibana",
     "Require the staged encryption keys and the cloudfall password",
     "Read the installed Kibana version",
     "Refuse a Kibana of another version than the Elasticsearch service's",
@@ -422,8 +422,8 @@ def test_s024_4_every_refusal_comes_before_any_task_that_changes_the_host() -> N
     assert (
         names[len(REFUSALS)] == "Install the Elasticsearch service's version of Kibana"
     )
-    # A Domain is refused until a release publishes Kibana (#573)
-    domain = _task("Refuse a Domain this release does not converge", main)
+    # A domain the server does not hold is refused before any change (#573)
+    domain = _task("Refuse a Domain this server does not hold for Kibana", main)
     assert _holds(domain, _variables())
     published = _kibana(domain="search-kibana-site")
     assert not _holds(domain, _variables(cloudfall_kibana_service=published))

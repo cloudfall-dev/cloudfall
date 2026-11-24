@@ -356,6 +356,15 @@
                              cloudfall_service_item.kibana.elasticsearch)
                 | first | default({})
               }}
+            # The Domain that publishes Kibana (S-024-8): its proxy server is
+            # this server, so it is among the server's own Domains.
+            cloudfall_kibana_domain: >-
+              {{
+                cloudfall_domains | default([])
+                | selectattr('id', 'equalto',
+                             cloudfall_service_item.kibana.domain | default(''))
+                | first | default({})
+              }}
             # Controller paths of the staged encryption keys cloudfall passes
             # as cloudfall_services_kibana_files; never the values (S-024-5).
             cloudfall_kibana_files: >-
