@@ -16,8 +16,9 @@ if TYPE_CHECKING:
 
 import yaml
 from cryptography import x509
-from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema import Draft202012Validator, FormatChecker, TypeChecker
 from jsonschema.exceptions import SchemaError, ValidationError
+from jsonschema.validators import extend
 from referencing import Registry, Resource
 
 from cloudfall.clickhouse import MAX_REPLICAS as CLICKHOUSE_MAX_REPLICAS
@@ -261,6 +262,26 @@ class ValidatedConfig:
         }
 
 
+def _is_strict_integer(_checker: TypeChecker, instance: object) -> bool:
+    """Accept a Python ``int`` only: no ``bool``, no whole-number float."""
+    return isinstance(instance, int) and not isinstance(instance, bool)
+
+
+# The stock 2020-12 ``integer`` accepts ``8100.0``, which the value objects
+# refuse with a TypeError in the command that reads it (#602). The extended
+# class keeps the 2020-12 keywords, metaschema and interface; jsonschema's
+# ``extend`` is untyped, hence the casts.
+_StrictValidator = cast(
+    "type[Draft202012Validator]",
+    cast("Callable[..., object]", extend)(
+        Draft202012Validator,
+        type_checker=Draft202012Validator.TYPE_CHECKER.redefine(
+            "integer", _is_strict_integer
+        ),
+    ),
+)
+
+
 class SchemaCatalog:
     """Validated v1 schemas and their reference registry."""
 
@@ -289,7 +310,7 @@ class SchemaCatalog:
                     message=f"{path}: {error.message}",
                 )
                 raise ConfigValidationError(issue) from error
-            named_validators[path.name] = Draft202012Validator(
+            named_validators[path.name] = _StrictValidator(
                 schema,
                 registry=registry,
                 format_checker=FormatChecker(),
