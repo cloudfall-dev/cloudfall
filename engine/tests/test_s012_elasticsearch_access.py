@@ -1092,7 +1092,7 @@ def test_the_collector_requires_the_exporter_files_before_it_changes_the_host(
 
 
 def _collector_step() -> dict[str, object]:
-    (play,) = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))
+    play = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))[0]
     return next(
         task
         for task in play["tasks"]
@@ -1258,7 +1258,7 @@ def test_a_services_converge_leaves_a_host_without_the_collector_alone(
         "name": "cloudfall_logging_collector",
         "tasks_from": "exporters",
     }
-    (play,) = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))
+    play = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))[0]
     assert play["tasks"][-1] == step
     for task in _flat(_exporter_tasks()):
         assert "ansible.builtin.apt" not in task

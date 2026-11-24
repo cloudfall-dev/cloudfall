@@ -778,7 +778,8 @@ def test_backup_runs_on_the_services_home_as_root() -> None:
 
 
 def test_services_yml_refuses_a_kind_it_has_no_role_for() -> None:
-    play = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))[0]
+    plays = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))
+    play = plays[0]
     refuse = _task(
         "Refuse a service of a kind this playbook does not converge", play["pre_tasks"]
     )
@@ -786,9 +787,12 @@ def test_services_yml_refuses_a_kind_it_has_no_role_for() -> None:
     assert _holds(refuse, {**_variables(), **known})
     unknown = {"cloudfall_services": [{"serviceKind": "kafka"}]}
     assert not _holds(refuse, {**_variables(), **unknown})
+    # Kibana's role runs in a block of the play after the nodes' (S-024)
     roles = {
         task["ansible.builtin.include_role"]["name"]
-        for task in play["tasks"]
+        for each in plays
+        for listed in each["tasks"]
+        for task in (listed, *listed.get("block", []))
         if "ansible.builtin.include_role" in task
     }
     kinds = set(re.findall(r"'(\w+)'", refuse["ansible.builtin.assert"]["that"][0])) - {

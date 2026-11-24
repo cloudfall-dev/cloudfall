@@ -1,0 +1,12 @@
+# Managed by Cloudfall for Kibana service {{ cloudfall_kibana_service.id }};
+# a converge overwrites it. The service token and the encryption keys are in
+# kibana.keystore, never here.
+server.host: "{{ cloudfall_kibana_service.bind.address }}"
+server.port: {{ cloudfall_kibana_service.bind.port }}
+server.publicBaseUrl: "{{ cloudfall_kibana_url }}"
+elasticsearch.hosts: ["{{ cloudfall_kibana_elasticsearch_url }}"]
+{% if cloudfall_kibana_elasticsearch_service.elasticsearch.remoteAccess is defined %}
+elasticsearch.ssl.certificateAuthorities: ["{{ cloudfall_kibana_ca_path }}"]
+elasticsearch.ssl.verificationMode: full
+{% endif %}
+telemetry.optIn: false

@@ -1,0 +1,67 @@
+---
+argument_specs:
+  main:
+    short_description: Converge one declared Kibana service on a node of its cluster
+    options:
+      cloudfall_kibana_service:
+        type: dict
+        required: true
+        options:
+          id:
+            type: str
+            required: true
+          description:
+            type: str
+          serviceKind:
+            type: str
+            choices:
+              - kibana
+            required: true
+          environment:
+            type: str
+            required: true
+          server:
+            type: str
+            required: true
+          bind:
+            type: dict
+            required: true
+            options:
+              address:
+                type: str
+                required: true
+              port:
+                type: int
+                required: true
+          kibana:
+            type: dict
+            required: true
+            options:
+              elasticsearch:
+                type: str
+                required: true
+              heapMb:
+                type: int
+                required: true
+              domain:
+                type: str
+              users:
+                type: list
+                elements: dict
+                required: true
+      cloudfall_kibana_elasticsearch_service:
+        type: dict
+        required: true
+        description: >-
+          The Elasticsearch service the Kibana service reads, as the host's
+          services carry it
+      cloudfall_kibana_files:
+        type: dict
+        description: >-
+          Controller paths of the three staged encryption keys ('securityKey',
+          'savedObjectsKey', 'reportingKey'), never the values
+      cloudfall_kibana_elasticsearch_files:
+        type: dict
+        description: >-
+          Controller paths of the Elasticsearch service's staged account
+          files; the role reads 'cloudfallPassword'

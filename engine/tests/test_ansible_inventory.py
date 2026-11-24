@@ -495,7 +495,7 @@ def test_engine_cli_writes_the_hosts_home_first(
     # treaty's envelope sorts every object's keys, so only the file keeps order
     assert answer == written
     # Ansible runs the play's hosts in the order the file lists them
-    (play,) = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))
+    play = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))[0]
     manager = InventoryManager(loader=DataLoader(), sources=[str(output_path)])
     hosts = manager.get_hosts(play["hosts"], order="inventory")
     assert (play["serial"], [host.name for host in hosts]) == (1, ["h2", "h1"])

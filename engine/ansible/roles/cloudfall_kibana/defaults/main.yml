@@ -1,0 +1,79 @@
+---
+cloudfall_kibana_service: {}
+# The Elasticsearch service the Kibana service reads, as services.yml finds it
+# among the host's services by kibana.elasticsearch (S-024).
+cloudfall_kibana_elasticsearch_service: {}
+# Controller paths of the three staged encryption keys (securityKey,
+# savedObjectsKey, reportingKey) cloudfall passes as
+# cloudfall_services_kibana_files; never the values.
+cloudfall_kibana_files: {}
+# Controller paths of the Elasticsearch service's staged account files: the
+# role reads Kibana's status as the cloudfall account (cloudfallPassword).
+cloudfall_kibana_elasticsearch_files: {}
+cloudfall_kibana_configuration_directory: /etc/kibana
+cloudfall_kibana_keystore_tool: /usr/share/kibana/bin/kibana-keystore
+# The keystore the S-011 secret requirements name
+# (requirements.KIBANA_KEYSTORE_PATH).
+cloudfall_kibana_keystore_path: "{{ cloudfall_kibana_configuration_directory }}/kibana.keystore"
+# The node's own tool and the file it keeps service tokens in: a token there
+# is valid on this node only and is not in the cluster's security index.
+cloudfall_kibana_elasticsearch_configuration_directory: /etc/elasticsearch
+cloudfall_kibana_service_tokens_tool: /usr/share/elasticsearch/bin/elasticsearch-service-tokens
+cloudfall_kibana_service_tokens_file: >-
+  {{ cloudfall_kibana_elasticsearch_configuration_directory }}/service_tokens
+# The node's repository, which the Elasticsearch role configured earlier in
+# the run: Kibana comes from the same one, at the same version.
+cloudfall_kibana_repository_path: /etc/apt/sources.list.d/elasticsearch.sources
+# With remoteAccess the node answers HTTPS only, verified against the project
+# CA, which the Elasticsearch role keeps where Kibana's user can't read it.
+cloudfall_kibana_elasticsearch_ca_path: /etc/elasticsearch/certs/ca.crt
+cloudfall_kibana_ca_path: "{{ cloudfall_kibana_configuration_directory }}/elasticsearch-ca.crt"
+cloudfall_kibana_state_directory: /var/lib/cloudfall/kibana
+# The token's name: the Kibana service's id, as elastic/kibana/<id>.
+cloudfall_kibana_token_name: "{{ cloudfall_kibana_service.id }}"
+cloudfall_kibana_token_setting: elasticsearch.serviceAccountToken
+# Beside the keystore, the SHA-256 of the three keys it was given, so a
+# second converge that finds the same keys changes nothing.
+cloudfall_kibana_keys_marker: >-
+  {{ cloudfall_kibana_state_directory }}/{{ cloudfall_kibana_service.id }}.keys.sha256
+cloudfall_kibana_keys: >-
+  {{
+    [
+      {'setting': 'xpack.security.encryptionKey',
+       'source': cloudfall_kibana_files.securityKey},
+      {'setting': 'xpack.encryptedSavedObjects.encryptionKey',
+       'source': cloudfall_kibana_files.savedObjectsKey},
+      {'setting': 'xpack.reporting.encryptionKey',
+       'source': cloudfall_kibana_files.reportingKey},
+    ]
+  }}
+cloudfall_kibana_keys_digest: >-
+  {{
+    (
+      lookup('ansible.builtin.file', cloudfall_kibana_files.securityKey)
+      ~ ':' ~ lookup('ansible.builtin.file', cloudfall_kibana_files.savedObjectsKey)
+      ~ ':' ~ lookup('ansible.builtin.file', cloudfall_kibana_files.reportingKey)
+    ) | hash('sha256')
+  }}
+# Where the role reaches Kibana, and how Kibana reaches the node: plain HTTP
+# on loopback, or, with the node's remoteAccess, HTTPS on its listen address.
+cloudfall_kibana_url: >-
+  http://{{
+    ('[' ~ cloudfall_kibana_service.bind.address ~ ']')
+    if ':' in cloudfall_kibana_service.bind.address
+    else cloudfall_kibana_service.bind.address
+  }}:{{ cloudfall_kibana_service.bind.port }}
+cloudfall_kibana_elasticsearch_url: >-
+  {%- set remote = cloudfall_kibana_elasticsearch_service.elasticsearch.remoteAccess
+                   | default(none) -%}
+  {%- if remote is none -%}
+  http://{{ cloudfall_kibana_elasticsearch_service.bind.address }}:{{
+    cloudfall_kibana_elasticsearch_service.bind.port }}
+  {%- else -%}
+  https://{{ ('[' ~ remote.listenAddress ~ ']') if ':' in remote.listenAddress
+             else remote.listenAddress }}:{{
+    cloudfall_kibana_elasticsearch_service.bind.port }}
+  {%- endif -%}
+# How long Kibana may take to report itself available (10 s apart): a first
+# start, or a new version, migrates its saved objects first.
+cloudfall_kibana_available_retries: 60

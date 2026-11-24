@@ -45,6 +45,7 @@ from cloudfall.elasticsearch_cluster import (
     transport_address,
 )
 from cloudfall.inventory import SecretValueReference, StoragePool
+from cloudfall.kibana import KibanaEncryptionKey
 from cloudfall.mariadb import MariadbReplicationRole
 from cloudfall.rabbitmq_access import CA_PATH as RABBITMQ_CA_PATH
 from cloudfall.rabbitmq_access import CERTIFICATE_PATH as RABBITMQ_CERTIFICATE_PATH
@@ -433,6 +434,8 @@ def requirements_of(inventory: PlatformInventory) -> tuple[ServerRequirements, .
         for server_id, requirement in _mariadb_requirements(service, inventory):
             by_server.setdefault(server_id.value, []).append(requirement)
         for server_id, requirement in _rabbitmq_requirements(service, inventory):
+            by_server.setdefault(server_id.value, []).append(requirement)
+        for server_id, requirement in _kibana_requirements(service, inventory):
             by_server.setdefault(server_id.value, []).append(requirement)
     return tuple(
         ServerRequirements(
@@ -837,6 +840,65 @@ def _rabbitmq_requirements(
         for node_id in rabbitmq.nodes
     )
     return placed
+
+
+KIBANA_PACKAGE = PackageName("kibana")
+KIBANA_REQUIREMENT_NAME = RequirementName("kibana")
+KIBANA_KEYSTORE_PATH = AbsolutePath("/etc/kibana/kibana.keystore")
+"""Where Kibana keeps its three encryption keys, beside its service token."""
+
+
+def kibana_key_reference(
+    environment: ResourceId, service_id: ResourceId, key: KibanaEncryptionKey
+) -> SecretValueReference:
+    """Return where the store keeps a Kibana service's key: ``/services/<id>``."""
+    return SecretValueReference(
+        environment=environment,
+        path=AbsolutePath(f"/services/{service_id.value}"),
+        key=SecretKeyName(key.store_key),
+    )
+
+
+def _kibana_requirements(
+    service: ServiceInventory, inventory: PlatformInventory
+) -> list[tuple[ResourceId, Requirement]]:
+    """Place what the server of a Kibana service needs (S-024).
+
+    The package at the version of the Elasticsearch service it reads, from
+    that service's repository, and the three encryption keys Cloudfall
+    generates, which the role puts into Kibana's keystore. No volume, port or
+    certificate: Kibana keeps its state in the cluster and listens on loopback.
+    """
+    kibana = service.kibana
+    if kibana is None:
+        return []
+    cluster = next(
+        item for item in inventory.services if item.resource_id == kibana.elasticsearch
+    )
+    if cluster.elasticsearch is None:
+        message = (
+            f"Kibana service {service.resource_id.value} reads "
+            f"{kibana.elasticsearch.value}, which is no Elasticsearch service"
+        )
+        raise ValueError(message)
+    owner = RequirementOwner(ResourceKind.SERVICE, service.resource_id)
+    specs: list[RequirementSpec] = [
+        SecretRequirement(
+            RequirementName(key.requirement_name),
+            SecretSource.GENERATE,
+            KIBANA_KEYSTORE_PATH,
+            kibana_key_reference(service.environment, service.resource_id, key),
+        )
+        for key in KibanaEncryptionKey
+    ]
+    specs.append(
+        PackageRequirement(
+            KIBANA_REQUIREMENT_NAME,
+            KIBANA_PACKAGE,
+            PackageVersion(cluster.elasticsearch.version.value),
+        )
+    )
+    return [(service.server_id, Requirement(owner, spec)) for spec in specs]
 
 
 def mariadb_server_names(

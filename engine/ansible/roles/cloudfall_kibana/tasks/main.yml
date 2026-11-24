@@ -1,0 +1,319 @@
+---
+# Kibana runs on a node of the Elasticsearch service it reads and talks to
+# that node only (S-024). This release converges it on loopback, without a
+# Domain; the kibana_system user is never set or changed.
+- name: Validate Kibana service target and declaration
+  ansible.builtin.assert:
+    that:
+      - ansible_facts["distribution"] == "Debian"
+      - ansible_facts["distribution_major_version"] == "13"
+      - ansible_facts["service_mgr"] == "systemd"
+      - cloudfall_kibana_service.serviceKind == "kibana"
+      - cloudfall_kibana_service.server == cloudfall_server_id
+      - >-
+        cloudfall_kibana_elasticsearch_service.id | default('')
+        == cloudfall_kibana_service.kibana.elasticsearch
+      - cloudfall_kibana_elasticsearch_service.serviceKind | default('') == "elasticsearch"
+      - cloudfall_server_id in cloudfall_kibana_elasticsearch_service.elasticsearch.nodes
+      - >-
+        cloudfall_kibana_service.bind.address is match('^127[.]')
+        or cloudfall_kibana_service.bind.address == '::1'
+    fail_msg: >-
+      Kibana service {{ cloudfall_kibana_service.id }} needs a Debian 13
+      server with systemd that is a node of Elasticsearch service
+      {{ cloudfall_kibana_service.kibana.elasticsearch }}, and a loopback bind
+      address
+
+# A Baseline declares no memory, so the heap meets the host here (S-024-4):
+# Kibana's Node.js heap and the node's Elasticsearch heap together stay
+# within three quarters of the host's memory. services.yml refuses it too,
+# before any service role; here it still comes before any task that changes
+# the host.
+- name: Refuse a Kibana heap that with the node's is above three quarters of the host's memory
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          (cloudfall_kibana_service.kibana.heapMb | int)
+          + (cloudfall_kibana_elasticsearch_service.elasticsearch.heapMb | int)
+        ) * 4
+        <= (ansible_facts['memtotal_mb'] | int) * 3
+    fail_msg: >-
+      heapMb {{ cloudfall_kibana_service.kibana.heapMb }} of Kibana service
+      {{ cloudfall_kibana_service.id }} and heapMb
+      {{ cloudfall_kibana_elasticsearch_service.elasticsearch.heapMb }} of
+      Elasticsearch service {{ cloudfall_kibana_elasticsearch_service.id }}
+      are above three quarters of the {{ ansible_facts['memtotal_mb'] }} MB of
+      {{ cloudfall_server_id }}: lower a heapMb, or move the services to a
+      server with more memory
+
+# Publishing Kibana through a Domain comes with a later release (#573):
+# refused rather than left unpublished by a converge that reports success.
+- name: Refuse a Domain this release does not converge
+  ansible.builtin.assert:
+    that:
+      - cloudfall_kibana_service.kibana.domain is not defined
+    fail_msg: >-
+      Kibana service {{ cloudfall_kibana_service.id }} declares domain
+      {{ cloudfall_kibana_service.kibana.domain | default('') }}; this release
+      converges Kibana on loopback only, reached through an SSH forward:
+      remove domain, then converge again
+
+- name: Require the staged encryption keys and the cloudfall password
+  ansible.builtin.assert:
+    that:
+      - "'securityKey' in cloudfall_kibana_files"
+      - "'savedObjectsKey' in cloudfall_kibana_files"
+      - "'reportingKey' in cloudfall_kibana_files"
+      - "'cloudfallPassword' in cloudfall_kibana_elasticsearch_files"
+    fail_msg: >-
+      The encryption keys of Kibana service {{ cloudfall_kibana_service.id }},
+      or the cloudfall password of Elasticsearch service
+      {{ cloudfall_kibana_service.kibana.elasticsearch }}, are not staged; run
+      services.yml through cloudfall (converge_services, cloudfall migrate or
+      operator approve), which reads them from --secrets-dir after
+      `cloudfall secrets generate`
+
+- name: Read the installed Kibana version
+  ansible.builtin.command:
+    argv:
+      - dpkg-query
+      - --show
+      - --showformat
+      - "${db:Status-Status} ${Version}"
+      - kibana
+  register: cloudfall_kibana_installed
+  # rc 1: dpkg knows no such package, so nothing is installed
+  failed_when: cloudfall_kibana_installed.rc not in [0, 1]
+  changed_when: false
+  # A read: a dry run (--check) must refuse a drifted host too
+  check_mode: false
+
+# Kibana runs at the version of its cluster. Moving it after the nodes when
+# the service's version changes comes with a later release (#579), so a
+# Kibana of another version is refused before anything changes.
+- name: Refuse a Kibana of another version than the Elasticsearch service's
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudfall_kibana_installed_version == ''
+        or cloudfall_kibana_installed_version
+        == cloudfall_kibana_elasticsearch_service.elasticsearch.version
+    fail_msg: >-
+      kibana {{ cloudfall_kibana_installed_version }} is installed on
+      {{ cloudfall_server_id }}; Elasticsearch service
+      {{ cloudfall_kibana_elasticsearch_service.id }} declares
+      {{ cloudfall_kibana_elasticsearch_service.elasticsearch.version }}, and
+      this release does not move Kibana to another version
+  vars:
+    cloudfall_kibana_installed_version: >-
+      {{
+        cloudfall_kibana_installed.stdout.split(' ', 1) | last
+        if cloudfall_kibana_installed.rc == 0
+        and cloudfall_kibana_installed.stdout is match('installed ')
+        else ''
+      }}
+
+# Kibana comes from the repository of the service's major, which the
+# Elasticsearch role configured on this node earlier in the run.
+- name: Read the Elastic repository of the node
+  ansible.builtin.stat:
+    path: "{{ cloudfall_kibana_repository_path }}"
+  register: cloudfall_kibana_repository
+
+- name: Require the Elastic repository of the node
+  ansible.builtin.assert:
+    that:
+      - cloudfall_kibana_repository.stat.exists
+    fail_msg: >-
+      {{ cloudfall_server_id }} has no {{ cloudfall_kibana_repository_path }};
+      services.yml converges Elasticsearch service
+      {{ cloudfall_kibana_service.kibana.elasticsearch }} first, which
+      configures it
+
+# Every refusal above only reads; the host changes from here on.
+- name: Install the Elasticsearch service's version of Kibana
+  ansible.builtin.apt:
+    name: "kibana={{ cloudfall_kibana_elasticsearch_service.elasticsearch.version }}"
+    state: present
+    allow_change_held_packages: true
+    policy_rc_d: 101
+  notify: Restart Kibana
+
+- name: Hold the Kibana package at the service's version
+  ansible.builtin.dpkg_selections:
+    name: kibana
+    selection: hold
+
+# The token and the encryption keys are in the keystore, never here.
+- name: Install the managed Kibana configuration
+  ansible.builtin.template:
+    src: kibana.yml.j2
+    dest: "{{ cloudfall_kibana_configuration_directory }}/kibana.yml"
+    owner: root
+    group: kibana
+    mode: "0660"
+  notify: Restart Kibana
+
+# The package's own Node.js options stay; only the heap is Cloudfall's.
+- name: Give Kibana's Node.js process the declared heap
+  ansible.builtin.lineinfile:
+    path: "{{ cloudfall_kibana_configuration_directory }}/node.options"
+    regexp: '^\s*#?\s*--max-old-space-size='
+    line: "--max-old-space-size={{ cloudfall_kibana_service.kibana.heapMb }}"
+    owner: root
+    group: kibana
+    mode: "0660"
+  notify: Restart Kibana
+
+- name: Give Kibana the project CA the node's HTTPS is verified against
+  ansible.builtin.copy:
+    src: "{{ cloudfall_kibana_elasticsearch_ca_path }}"
+    dest: "{{ cloudfall_kibana_ca_path }}"
+    remote_src: true
+    owner: root
+    group: kibana
+    mode: "0640"
+  notify: Restart Kibana
+  when: cloudfall_kibana_elasticsearch_service.elasticsearch.remoteAccess is defined
+
+# A dry run leaves the keystore and the node's tokens alone: before the
+# package is installed there is no keystore tool to ask.
+- name: Put the service token and the encryption keys in Kibana's keystore
+  ansible.builtin.include_tasks: keystore.yml
+  when: not ansible_check_mode
+
+- name: Apply the managed Kibana configuration
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start Kibana
+  ansible.builtin.systemd_service:
+    name: kibana.service
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# A first start, and a new version, migrate Kibana's saved objects before it
+# reports itself available; the converge stops when it never does. The
+# status API is read as the cloudfall account, which Kibana checks against
+# the node.
+- name: Wait until Kibana reports itself available
+  when: not ansible_check_mode
+  block:
+    - name: Read Kibana's status until it reports itself available
+      ansible.builtin.uri:
+        url: "{{ cloudfall_kibana_url }}/api/status"
+        url_username: cloudfall
+        url_password: >-
+          {{ lookup('ansible.builtin.file',
+                    cloudfall_kibana_elasticsearch_files.cloudfallPassword) }}
+        force_basic_auth: true
+        status_code: [200, 503]
+      register: cloudfall_kibana_status
+      retries: "{{ cloudfall_kibana_available_retries }}"
+      delay: 10
+      until: >-
+        cloudfall_kibana_status.status == 200
+        and cloudfall_kibana_status.json.status.overall.level == 'available'
+      no_log: true
+  rescue:
+    - name: Stop the converge when Kibana is not available
+      ansible.builtin.fail:
+        msg: >-
+          Kibana service {{ cloudfall_kibana_service.id }} on
+          {{ cloudfall_server_id }} did not report itself available (last
+          level: {{ cloudfall_kibana_status.json.status.overall.level
+          | default('no answer') }}); read journalctl -u kibana.service
+
+- name: Refuse a Kibana that reports another version than the service's
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudfall_kibana_status.json.version.number
+        == cloudfall_kibana_elasticsearch_service.elasticsearch.version
+    fail_msg: >-
+      Kibana on {{ cloudfall_server_id }} reports version
+      {{ cloudfall_kibana_status.json.version.number }}; Elasticsearch service
+      {{ cloudfall_kibana_elasticsearch_service.id }} declares
+      {{ cloudfall_kibana_elasticsearch_service.elasticsearch.version }}
+  when: not ansible_check_mode
+
+# Kibana logs in to the node with its token: the node lists the token among
+# the file tokens of elastic/kibana it holds.
+- name: Read the file tokens of elastic/kibana the node holds
+  ansible.builtin.uri:
+    url: >-
+      {{ cloudfall_kibana_elasticsearch_url
+      }}/_security/service/elastic/kibana/credential
+    ca_path: >-
+      {{
+        cloudfall_kibana_elasticsearch_ca_path
+        if cloudfall_kibana_elasticsearch_service.elasticsearch.remoteAccess is defined
+        else omit
+      }}
+    url_username: cloudfall
+    url_password: >-
+      {{ lookup('ansible.builtin.file',
+                cloudfall_kibana_elasticsearch_files.cloudfallPassword) }}
+    force_basic_auth: true
+    status_code: 200
+  register: cloudfall_kibana_credentials
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Refuse a Kibana whose token the node does not hold
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudfall_kibana_token_name
+        in (cloudfall_kibana_credentials.json.nodes_credentials.file_tokens
+            | default({}))
+    fail_msg: >-
+      The node on {{ cloudfall_server_id }} holds no file token
+      elastic/kibana/{{ cloudfall_kibana_token_name }}; check
+      {{ cloudfall_kibana_service_tokens_file }}
+  when: not ansible_check_mode
+
+# Kibana's own login form stands in front of every page.
+- name: Read where an unauthenticated request for a dashboard is sent
+  ansible.builtin.uri:
+    url: "{{ cloudfall_kibana_url }}/app/dashboards"
+    follow_redirects: none
+    status_code: 302
+  register: cloudfall_kibana_anonymous
+  when: not ansible_check_mode
+
+- name: Refuse a dashboard that opens without a login
+  ansible.builtin.assert:
+    that:
+      - cloudfall_kibana_anonymous.location | default('') is search('/login')
+    fail_msg: >-
+      An unauthenticated request for a dashboard of Kibana on
+      {{ cloudfall_server_id }} was not sent to the login form
+  when: not ansible_check_mode
+
+- name: Read the listeners of the host
+  ansible.builtin.command:
+    argv:
+      - ss
+      - -H
+      - -t
+      - -l
+      - -n
+  register: cloudfall_kibana_sockets
+  changed_when: false
+  check_mode: false
+
+- name: Refuse a Kibana listener outside loopback
+  ansible.builtin.assert:
+    that:
+      - cloudfall_kibana_public | length == 0
+    fail_msg: >-
+      {{ cloudfall_server_id }} listens on {{ cloudfall_kibana_public | join(', ') }}
+      for Kibana; Kibana answers on loopback only
+  vars:
+    cloudfall_kibana_public: >-
+      {{
+        cloudfall_kibana_sockets.stdout
+        | cloudfall_kibana_public_listeners(cloudfall_kibana_service.bind.port)
+      }}

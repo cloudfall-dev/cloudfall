@@ -24,6 +24,52 @@ WARNING_PUBLISHED = "KIBANA_PUBLISHED"
 """Warning code of a Kibana a Domain publishes: its login form faces the internet."""
 
 
+class KibanaEncryptionKey(StrEnum):
+    """One of the three keys Kibana encrypts with, by the setting that names it.
+
+    Each is generated once into the project's store and put into Kibana's
+    keystore, never into ``kibana.yml`` (S-024, What the server needs).
+    """
+
+    SECURITY = "xpack.security.encryptionKey"
+    SAVED_OBJECTS = "xpack.encryptedSavedObjects.encryptionKey"
+    REPORTING = "xpack.reporting.encryptionKey"
+
+    @property
+    def requirement_name(self) -> str:
+        """Return the name of the key's S-011 secret requirement."""
+        return _KEY_NAMES[self][0]
+
+    @property
+    def store_key(self) -> str:
+        """Return the key of ``/services/<id>`` in the store that holds the value."""
+        return _KEY_NAMES[self][1]
+
+    @property
+    def staged_name(self) -> str:
+        """Return the name ``services.yml`` is handed the staged file under."""
+        return _KEY_NAMES[self][2]
+
+
+_KEY_NAMES = {
+    KibanaEncryptionKey.SECURITY: (
+        "kibana-security-encryption-key",
+        "SECURITY_ENCRYPTION_KEY",
+        "securityKey",
+    ),
+    KibanaEncryptionKey.SAVED_OBJECTS: (
+        "kibana-saved-objects-encryption-key",
+        "SAVED_OBJECTS_ENCRYPTION_KEY",
+        "savedObjectsKey",
+    ),
+    KibanaEncryptionKey.REPORTING: (
+        "kibana-reporting-encryption-key",
+        "REPORTING_ENCRYPTION_KEY",
+        "reportingKey",
+    ),
+}
+
+
 class KibanaAccess(StrEnum):
     """What a user of the Elasticsearch service may do in Kibana."""
 

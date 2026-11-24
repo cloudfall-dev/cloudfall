@@ -1116,7 +1116,7 @@ def test_s019_15_a_role_swap_ends_within_two_converges_with_no_row_lost(
 def test_s019_15_the_services_converge_opens_the_new_primary_to_its_replica(
     pair: Pair,
 ) -> None:
-    (play,) = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))
+    play = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))[0]
     tasks = play["tasks"]
     enforce = next(
         task
