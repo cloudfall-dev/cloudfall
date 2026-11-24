@@ -394,6 +394,12 @@
                 (cloudfall_services_elasticsearch_files | default({}))
                 [cloudfall_service_item.kibana.elasticsearch] | default({})
               }}
+            # Where a converge refused while a node of the cluster is older
+            # than the declared version is reported, the directory the
+            # MariaDB role reports to: the services converge answers it with
+            # PRECONDITION (S-024-9).
+            cloudfall_kibana_report_directory: >-
+              {{ cloudfall_services_mariadb_report_directory | default('') }}
           loop: "{{ cloudfall_kibana_here }}"
           loop_control:
             loop_var: cloudfall_service_item

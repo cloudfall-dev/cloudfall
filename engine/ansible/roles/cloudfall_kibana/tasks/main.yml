@@ -104,30 +104,27 @@
   # A read: a dry run (--check) must refuse a drifted host too
   check_mode: false
 
-# Kibana runs at the version of its cluster. Moving it after the nodes when
-# the service's version changes comes with a later release (#579), so a
-# Kibana of another version is refused before anything changes.
-- name: Refuse a Kibana of another version than the Elasticsearch service's
+# Kibana runs at the version of its cluster and follows a change of it
+# (S-024-9) as the node does (S-012): to a later patch or minor of the same
+# major. APT does not downgrade it, and a new major needs Elastic's upgrade
+# checks, so both are refused before anything changes.
+- name: Refuse a Kibana version the converge can't move to the service's
   ansible.builtin.assert:
     that:
       - >-
         cloudfall_kibana_installed_version == ''
-        or cloudfall_kibana_installed_version
-        == cloudfall_kibana_elasticsearch_service.elasticsearch.version
+        or (
+          cloudfall_kibana_installed_version.split('.')[0]
+          == cloudfall_kibana_elasticsearch_service.elasticsearch.version.split('.')[0]
+          and cloudfall_kibana_installed_version
+          is version(cloudfall_kibana_elasticsearch_service.elasticsearch.version, '<=')
+        )
     fail_msg: >-
       kibana {{ cloudfall_kibana_installed_version }} is installed on
       {{ cloudfall_server_id }}; Elasticsearch service
       {{ cloudfall_kibana_elasticsearch_service.id }} declares
-      {{ cloudfall_kibana_elasticsearch_service.elasticsearch.version }}, and
-      this release does not move Kibana to another version
-  vars:
-    cloudfall_kibana_installed_version: >-
-      {{
-        cloudfall_kibana_installed.stdout.split(' ', 1) | last
-        if cloudfall_kibana_installed.rc == 0
-        and cloudfall_kibana_installed.stdout is match('installed ')
-        else ''
-      }}
+      {{ cloudfall_kibana_elasticsearch_service.elasticsearch.version }}, another
+      major or older, which this converge does not install
 
 # Kibana comes from the repository of the service's major, which the
 # Elasticsearch role configured on this node earlier in the run.
@@ -146,7 +143,22 @@
       {{ cloudfall_kibana_service.kibana.elasticsearch }} first, which
       configures it
 
-# Every refusal above only reads; the host changes from here on.
+# Whenever the package would change (a first install, or a new declared
+# version), every node of the cluster is read first, and Kibana stays as it is
+# while one is older (S-024-9). A converge that finds Kibana at the declared
+# version reads nothing more. A dry run converges no node, so it reads none.
+- name: Stop before Kibana's package changes while a node of its cluster is older
+  ansible.builtin.include_tasks: version.yml
+  when:
+    - not ansible_check_mode
+    - >-
+      cloudfall_kibana_installed_version
+      != cloudfall_kibana_elasticsearch_service.elasticsearch.version
+
+# Every refusal above only reads; the host changes from here on. The package
+# is held, so the pinned install moves it to a new declared version, and the
+# restart it notifies starts the new version, which migrates the saved objects
+# before Kibana reports itself available below.
 - name: Install the Elasticsearch service's version of Kibana
   ansible.builtin.apt:
     name: "kibana={{ cloudfall_kibana_elasticsearch_service.elasticsearch.version }}"

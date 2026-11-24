@@ -1279,7 +1279,9 @@ def run_services_playbook(
     replica that can't attach or diverged) stops the run as that refusal,
     which the command answers with ``PRECONDITION``, rather than as a failed
     playbook. The RabbitMQ role reports the same way a converge it refused
-    while its cluster has no majority (S-023). The outcomes are returned.
+    while its cluster has no majority (S-023), and the Kibana role one it
+    refused while a node of its cluster is older than the declared version
+    (S-024-9). The outcomes are returned.
     """
     state = validate_config(context.project_directory, context.schema_directory)
     inventory = PlatformInventory.from_state(state)
@@ -1312,11 +1314,14 @@ def run_services_playbook(
         tempfile.TemporaryDirectory(prefix="cloudfall-replication-") as reports,
     ):
         extra_vars: dict[str, object] = {**extra, **provided}
-        # A project without MariaDB or a RabbitMQ cluster runs as it did; the
-        # RabbitMQ role reports there a converge it refused while its cluster
-        # has no majority (S-023)
+        # A project without MariaDB, a RabbitMQ cluster or Kibana runs as it
+        # did; the RabbitMQ role reports there a converge it refused while its
+        # cluster has no majority (S-023), the Kibana role one it refused while
+        # a node of its cluster is older than the declared version (S-024-9)
         if any(
-            service.mariadb is not None or is_rabbitmq_cluster(service)
+            service.mariadb is not None
+            or is_rabbitmq_cluster(service)
+            or service.kibana is not None
             for service in inventory.services
         ):
             extra_vars[REPORT_DIRECTORY_VARIABLE] = reports

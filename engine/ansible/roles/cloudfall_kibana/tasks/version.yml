@@ -1,0 +1,51 @@
+---
+# Kibana moves to the Elasticsearch service's version after every node of its
+# cluster (S-024-9): Elastic supports no Kibana newer than a node. services.yml
+# runs Kibana after the nodes this run converges; a node the run did not
+# converge (another server's --limit, a node left behind) is still read here,
+# from the cluster itself, before the package changes. While one is older
+# than the declared version, Kibana is left as it is and the services converge
+# answers PRECONDITION. Only reads come before the stop.
+- name: Read the version of every node of the cluster
+  ansible.builtin.uri:
+    url: >-
+      {{ cloudfall_kibana_elasticsearch_url
+      }}/_nodes?filter_path=nodes.*.name,nodes.*.version
+    ca_path: >-
+      {{
+        cloudfall_kibana_elasticsearch_ca_path
+        if cloudfall_kibana_elasticsearch_service.elasticsearch.remoteAccess is defined
+        else omit
+      }}
+    url_username: cloudfall
+    url_password: >-
+      {{ lookup('ansible.builtin.file',
+                cloudfall_kibana_elasticsearch_files.cloudfallPassword) }}
+    force_basic_auth: true
+    status_code: 200
+  register: cloudfall_kibana_nodes
+  no_log: true
+
+- name: Report the converge refused while a node is older than the service's version
+  ansible.builtin.copy:
+    content: >-
+      {{ {'service': cloudfall_kibana_service.id,
+          'server': cloudfall_server_id,
+          'outcome': 'refused',
+          'code': cloudfall_kibana_node_older_code,
+          'message': cloudfall_kibana_node_older_message} | to_json }}
+    dest: >-
+      {{ cloudfall_kibana_report_directory }}/{{ cloudfall_kibana_service.id }}.json
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when:
+    - cloudfall_kibana_older | length > 0
+    - cloudfall_kibana_report_directory | length > 0
+
+- name: Stop before Kibana's package changes while a node is older than the service's version
+  ansible.builtin.fail:
+    msg: >-
+      PRECONDITION {{ cloudfall_kibana_node_older_code }}:
+      {{ cloudfall_kibana_node_older_message }}
+  when: cloudfall_kibana_older | length > 0

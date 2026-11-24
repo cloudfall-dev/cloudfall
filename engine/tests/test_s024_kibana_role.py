@@ -60,9 +60,10 @@ REFUSALS = (
     "Refuse a Domain this server does not hold for Kibana",
     "Require the staged encryption keys and the cloudfall password",
     "Read the installed Kibana version",
-    "Refuse a Kibana of another version than the Elasticsearch service's",
+    "Refuse a Kibana version the converge can't move to the service's",
     "Read the Elastic repository of the node",
     "Require the Elastic repository of the node",
+    "Stop before Kibana's package changes while a node of its cluster is older",
 )
 
 
@@ -232,15 +233,16 @@ def test_s024_3_kibana_is_the_clusters_version_and_held() -> None:
         "/etc/apt/sources.list.d/elasticsearch.sources"
     )
     refuse = _task(
-        "Refuse a Kibana of another version than the Elasticsearch service's", main
+        "Refuse a Kibana version the converge can't move to the service's", main
     )
     installed = {"rc": 0, "stdout": "installed 9.2.4"}
     assert _holds(refuse, _variables(cloudfall_kibana_installed=installed))
     assert _holds(
         refuse, _variables(cloudfall_kibana_installed={"rc": 1, "stdout": ""})
     )
-    older = {"rc": 0, "stdout": "installed 9.2.3"}
-    assert not _holds(refuse, _variables(cloudfall_kibana_installed=older))
+    # A newer Kibana is never moved back (S-024-9 moves an older one forward)
+    newer = {"rc": 0, "stdout": "installed 9.2.5"}
+    assert not _holds(refuse, _variables(cloudfall_kibana_installed=newer))
 
 
 # proves: S-024-3

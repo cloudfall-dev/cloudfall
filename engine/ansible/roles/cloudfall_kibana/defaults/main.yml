@@ -89,3 +89,33 @@ cloudfall_kibana_elasticsearch_url: >-
 # How long Kibana may take to report itself available (10 s apart): a first
 # start, or a new version, migrates its saved objects first.
 cloudfall_kibana_available_retries: 60
+# The Kibana dpkg has installed, read by "Read the installed Kibana version";
+# '' when none is.
+cloudfall_kibana_installed_version: >-
+  {{
+    cloudfall_kibana_installed.stdout.split(' ', 1) | last
+    if cloudfall_kibana_installed.rc == 0
+    and cloudfall_kibana_installed.stdout is match('installed ')
+    else ''
+  }}
+# Where a converge refused while a node of the cluster is older than the
+# declared version is reported, the directory the MariaDB and RabbitMQ roles
+# report to: the services converge answers it with PRECONDITION (S-024-9).
+cloudfall_kibana_report_directory: ""
+cloudfall_kibana_node_older_code: service_kibana_node_older
+# "name version" of each node GET /_nodes answered older than the declared
+# version, read before Kibana's package changes.
+cloudfall_kibana_older: >-
+  {{
+    cloudfall_kibana_nodes.json
+    | cloudfall_kibana_older_nodes(
+        cloudfall_kibana_elasticsearch_service.elasticsearch.version)
+  }}
+cloudfall_kibana_node_older_message: >-
+  Kibana service {{ cloudfall_kibana_service.id }} on {{ cloudfall_server_id }}
+  is left at {{ cloudfall_kibana_installed_version or 'no version' }}: these
+  nodes of Elasticsearch service {{ cloudfall_kibana_elasticsearch_service.id }}
+  run older than the declared
+  {{ cloudfall_kibana_elasticsearch_service.elasticsearch.version }}:
+  {{ cloudfall_kibana_older | join(', ') }}. Kibana never runs ahead of a
+  node; converge every node to that version, then run the command again

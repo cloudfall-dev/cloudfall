@@ -70,3 +70,9 @@ argument_specs:
         description: >-
           Controller paths of the Elasticsearch service's staged account
           files; the role reads 'cloudfallPassword'
+      cloudfall_kibana_report_directory:
+        type: str
+        description: >-
+          Controller directory where a converge refused while a node of the
+          cluster is older than the declared version is reported, for the
+          services converge to answer PRECONDITION; empty reports nothing
