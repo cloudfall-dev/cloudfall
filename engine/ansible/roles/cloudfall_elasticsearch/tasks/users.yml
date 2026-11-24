@@ -29,6 +29,10 @@
         cloudfall_elasticsearch_service.elasticsearch.users
         | map(attribute='name') | list
       }}
+    # The role of each Kibana access (S-024), kept by the Kibana role
+    cloudfall_elasticsearch_kibana_roles:
+      view: cloudfall-kibana-view
+      edit: cloudfall-kibana-edit
 
 - name: Read the users of the cluster
   ansible.builtin.uri:
@@ -149,6 +153,11 @@
   changed_when: true
   no_log: true
 
+# A user the service's Kibana names in kibana.users holds the Kibana role of
+# its access next to its own role (S-024); any other user holds its own role
+# alone. The hash is sent only when the user is new or its stored password
+# changed: giving or taking Kibana access keeps a password the person changed
+# in Kibana.
 - name: Put each declared user with its password hash
   ansible.builtin.uri:
     url: "{{ cloudfall_elasticsearch_api_url }}/_security/user/{{ item.name }}"
@@ -160,12 +169,12 @@
                 cloudfall_elasticsearch_account_files.cloudfallPassword) }}
     force_basic_auth: true
     body_format: json
-    body:
-      password_hash: "{{ cloudfall_elasticsearch_user_hash }}"
-      roles:
-        - "{{ item.name }}"
-      enabled: true
-      metadata: "{{ cloudfall_elasticsearch_user_metadata }}"
+    body: >-
+      {{
+        cloudfall_elasticsearch_user_body
+        | combine({'password_hash': cloudfall_elasticsearch_user_hash}
+                  if cloudfall_elasticsearch_user_password_changed else {})
+      }}
     status_code: 200
   loop: "{{ cloudfall_elasticsearch_service.elasticsearch.users }}"
   loop_control:
@@ -177,11 +186,30 @@
     cloudfall_elasticsearch_user_metadata:
       cloudfall_managed_by: "{{ cloudfall_elasticsearch_service.id }}"
       cloudfall_password_digest: "{{ cloudfall_elasticsearch_user_hash | hash('sha256') }}"
+    cloudfall_elasticsearch_user_roles: >-
+      {{
+        [item.name]
+        + (
+          [cloudfall_elasticsearch_kibana_roles[cloudfall_elasticsearch_kibana_access[item.name]]]
+          if item.name in cloudfall_elasticsearch_kibana_access
+          else []
+        )
+      }}
+    cloudfall_elasticsearch_user_body:
+      roles: "{{ cloudfall_elasticsearch_user_roles }}"
+      enabled: true
+      metadata: "{{ cloudfall_elasticsearch_user_metadata }}"
     cloudfall_elasticsearch_user_current: >-
       {{ cloudfall_elasticsearch_users_current.json.get(item.name) }}
+    cloudfall_elasticsearch_user_password_changed: >-
+      {{
+        cloudfall_elasticsearch_user_current is none
+        or cloudfall_elasticsearch_user_current.metadata.cloudfall_password_digest
+        | default('') != cloudfall_elasticsearch_user_metadata.cloudfall_password_digest
+      }}
   when: >-
     cloudfall_elasticsearch_user_current is none
-    or cloudfall_elasticsearch_user_current.roles != [item.name]
+    or cloudfall_elasticsearch_user_current.roles != cloudfall_elasticsearch_user_roles
     or not cloudfall_elasticsearch_user_current.enabled
     or cloudfall_elasticsearch_user_current.metadata
     != cloudfall_elasticsearch_user_metadata

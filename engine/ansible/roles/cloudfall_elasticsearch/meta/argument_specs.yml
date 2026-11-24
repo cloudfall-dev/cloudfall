@@ -12,6 +12,12 @@ argument_specs:
           existingUsername and existingPassword files, and under users each
           declared user's bcrypt hash file; cloudfall passes them, never the
           values
+      cloudfall_elasticsearch_kibana_access:
+        type: dict
+        description: >-
+          The access, view or edit, of each user the service's Kibana names in
+          kibana.users, by user name (S-024); the user converge gives that user
+          the role cloudfall-kibana-view or cloudfall-kibana-edit next to its own
       cloudfall_elasticsearch_service:
         type: dict
         required: true

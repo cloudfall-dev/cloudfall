@@ -253,6 +253,11 @@
       {{ cloudfall_kibana_elasticsearch_service.elasticsearch.version }}
   when: not ansible_check_mode
 
+# Through Kibana's role API, so Kibana has to be available first (S-024-6).
+- name: Keep the view and edit roles of Kibana
+  ansible.builtin.include_tasks: roles.yml
+  when: not ansible_check_mode
+
 # Kibana logs in to the node with its token: the node lists the token among
 # the file tokens of elastic/kibana it holds.
 - name: Read the file tokens of elastic/kibana the node holds

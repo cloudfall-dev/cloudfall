@@ -1,0 +1,77 @@
+---
+# The two roles a declared user may hold next to its own (S-024, People and
+# what they may do): Kibana's base privilege read, or all, on every space,
+# and no privilege in Elasticsearch, so neither reaches an index or manages
+# users and roles. They are written through Kibana's role API, as Elastic
+# tells operators to manage Kibana privileges, and read first: a role that
+# already holds what it should is not put again. The S-012 user converge
+# gives each user named in kibana.users the role of its access.
+- name: Name the roles Kibana keeps
+  ansible.builtin.set_fact:
+    cloudfall_kibana_roles:
+      - name: cloudfall-kibana-view
+        base: read
+      - name: cloudfall-kibana-edit
+        base: all
+
+- name: Read the roles Kibana keeps
+  ansible.builtin.uri:
+    url: "{{ cloudfall_kibana_url }}/api/security/role/{{ item.name }}"
+    url_username: cloudfall
+    url_password: >-
+      {{ lookup('ansible.builtin.file',
+                cloudfall_kibana_elasticsearch_files.cloudfallPassword) }}
+    force_basic_auth: true
+    status_code: [200, 404]
+  loop: "{{ cloudfall_kibana_roles }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: cloudfall_kibana_roles_current
+  no_log: true
+
+- name: Put each role Kibana keeps
+  ansible.builtin.uri:
+    url: "{{ cloudfall_kibana_url }}/api/security/role/{{ item.item.name }}"
+    method: PUT
+    url_username: cloudfall
+    url_password: >-
+      {{ lookup('ansible.builtin.file',
+                cloudfall_kibana_elasticsearch_files.cloudfallPassword) }}
+    force_basic_auth: true
+    headers:
+      kbn-xsrf: cloudfall
+    body_format: json
+    body: "{{ cloudfall_kibana_role_body }}"
+    status_code: [200, 204]
+  loop: "{{ cloudfall_kibana_roles_current.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  vars:
+    cloudfall_kibana_role_body:
+      metadata:
+        cloudfall_managed_by: "{{ cloudfall_kibana_service.id }}"
+      elasticsearch:
+        cluster: []
+        indices: []
+        run_as: []
+      kibana:
+        - base:
+            - "{{ item.item.base }}"
+          feature: {}
+          spaces:
+            - "*"
+    cloudfall_kibana_role_current: "{{ item.json | default({}) }}"
+  when: >-
+    item.status == 404
+    or cloudfall_kibana_role_current.elasticsearch.cluster | default([]) != []
+    or cloudfall_kibana_role_current.elasticsearch.indices | default([]) != []
+    or cloudfall_kibana_role_current.elasticsearch.run_as | default([]) != []
+    or cloudfall_kibana_role_current.elasticsearch.remote_indices | default([]) != []
+    or cloudfall_kibana_role_current.kibana | default([]) | length != 1
+    or cloudfall_kibana_role_current.kibana[0].base | default([]) != [item.item.base]
+    or cloudfall_kibana_role_current.kibana[0].feature | default({}) != {}
+    or cloudfall_kibana_role_current.kibana[0].spaces | default([]) != ['*']
+    or cloudfall_kibana_role_current.metadata | default({})
+    != cloudfall_kibana_role_body.metadata
+  changed_when: true
+  no_log: true
