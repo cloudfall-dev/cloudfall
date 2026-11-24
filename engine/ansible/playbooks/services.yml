@@ -254,20 +254,6 @@
             | flatten(levels=1)
             | items2dict(key_name='name', value_name='access')
           }}
-        # The ids of the Kibana services that read the cluster (S-024-10):
-        # each snapshot must then hold the feature state kibana, Kibana's
-        # saved objects. Read from every server's services, as above.
-        cloudfall_elasticsearch_kibana_services: >-
-          {{
-            groups['cloudfall_servers'] | default([])
-            | map('extract', hostvars)
-            | map(attribute='cloudfall_services', default=[])
-            | flatten(levels=1)
-            | selectattr('serviceKind', 'equalto', 'kibana')
-            | selectattr('kibana.elasticsearch', 'equalto', cloudfall_service_item.id)
-            | map(attribute='id')
-            | unique | list
-          }}
       loop: >-
         {{
           cloudfall_services | default([])

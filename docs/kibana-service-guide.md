@@ -1,9 +1,9 @@
 # Run a Kibana service
 
 Status: this guide covers where Kibana's dashboards are backed up, how to
-restore them, and what a rebuilt Kibana server gets. The backup check and the
-keys of a rebuilt server are proven against stand-ins of Elasticsearch and of
-Kibana's keystore, not yet on a live Debian 13 host. The other sections the
+restore them, and what a rebuilt Kibana server gets. The snapshot request and
+the keys of a rebuilt server are proven against stand-ins of Elasticsearch and
+of Kibana's keystore, not yet on a live Debian 13 host. The other sections the
 spec names (declaring Kibana, its users, publishing it with a Domain, an SSH
 forward, a version change and licences) come with later releases.
 
@@ -23,13 +23,11 @@ dashboards. The Kibana service has no `backup`, timer or receipt of its own:
 uv run cloudfall backup run search-main
 ```
 
-When a Kibana service reads the cluster, `cloudfall-elasticsearch-backup`
-also checks that the snapshot it took lists the feature state `kibana`, and
-fails the run when it does not: Kibana then never started against the
-cluster, or its system indices are gone. The snapshot itself is unchanged: it
-asks for the cluster state and every feature state, as for a cluster without
-Kibana. The restore drill of the Elasticsearch service restores renamed
-copies of data indices only and never touches a feature state.
+The snapshot asks for the cluster state with no list of feature states,
+which Elasticsearch takes as every feature state, so once Kibana has started
+against the cluster each snapshot lists the feature state `kibana`. The
+restore drill of the Elasticsearch service restores renamed copies of data
+indices only and never touches a feature state.
 
 To see the feature states a snapshot holds, ask the node (on the Kibana
 server, which is a node of its cluster):

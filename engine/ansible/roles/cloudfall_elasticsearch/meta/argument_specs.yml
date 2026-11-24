@@ -18,12 +18,6 @@ argument_specs:
           The access, view or edit, of each user the service's Kibana names in
           kibana.users, by user name (S-024); the user converge gives that user
           the role cloudfall-kibana-view or cloudfall-kibana-edit next to its own
-      cloudfall_elasticsearch_kibana_services:
-        type: list
-        elements: str
-        description: >-
-          The ids of the Kibana services that read the cluster (S-024-10); with
-          one, a snapshot that holds no feature state kibana fails the backup
       cloudfall_elasticsearch_service:
         type: dict
         required: true

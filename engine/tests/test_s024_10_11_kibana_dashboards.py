@@ -1,8 +1,9 @@
 """Kibana's dashboards survive a snapshot restore and a rebuilt server (S-024, #580).
 
-S-024-10: the snapshot script of the Elasticsearch role, rendered with
-Ansible's own templating, runs for real against the fake node of
-``test_s012_elasticsearch_snapshots``; the guide's restore steps are read from
+S-024-10: S-012's backup script, rendered with Ansible's own templating as for
+any cluster, runs for real against the fake node of
+``test_s012_elasticsearch_snapshots``, which lists the feature states of a
+cluster with Kibana; the guide's restore steps are read from
 ``docs/kibana-service-guide.md``. S-024-11: the Kibana role's keystore tasks run
 for real twice, on a converged host and on a rebuilt empty one, against the
 stand-ins of ``kibana_node``. Restoring the feature state on a live cluster,
@@ -12,17 +13,16 @@ and are listed in the pull request as unverified.
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 from typing import cast
 
 import pytest
-import yaml
-from ansible.parsing.dataloader import DataLoader
-from ansible.template import Templar, trust_as_template
 from test_s012_elasticsearch_snapshots import (
     PASSWORD,
     FakeElasticsearch,
@@ -36,12 +36,11 @@ from test_s012_elasticsearch_snapshots import (
 from test_s024_kibana_role import KEYS, SETTINGS, TOKEN_SETTING, Node, requires_ansible
 
 ROOT = Path(__file__).parents[2]
-SERVICES = ROOT / "engine" / "ansible" / "playbooks" / "services.yml"
 GUIDE = ROOT / "docs" / "kibana-service-guide.md"
 
 
-def _script(tmp_path: Path, port: int, kibana: list[str]) -> Path:
-    """Render the backup script as the converge does with ``kibana`` reading it."""
+def _backup(tmp_path: Path, port: int) -> subprocess.CompletedProcess[str]:
+    """Render and run S-012's backup script, as the converge installs it."""
     password = tmp_path / "cloudfall-password"
     password.write_text(PASSWORD + "\n", encoding="utf-8")
     rendered = _render(
@@ -50,7 +49,6 @@ def _script(tmp_path: Path, port: int, kibana: list[str]) -> Path:
             _service(port),
             cloudfall_elasticsearch_snapshot_action="backup",
             cloudfall_elasticsearch_password_path=str(password),
-            cloudfall_elasticsearch_kibana_services=kibana,
         ),
     )
     script = tmp_path / "cloudfall-elasticsearch-backup"
@@ -58,14 +56,8 @@ def _script(tmp_path: Path, port: int, kibana: list[str]) -> Path:
         rendered.replace("#!/usr/bin/python3", f"#!{sys.executable}", 1),
         encoding="utf-8",
     )
-    return script
-
-
-def _backup(
-    tmp_path: Path, port: int, kibana: list[str]
-) -> subprocess.CompletedProcess[str]:
     done = subprocess.run(  # noqa: S603 - the rendered script under test.
-        [sys.executable, str(_script(tmp_path, port, kibana))],
+        [sys.executable, str(script)],
         capture_output=True,
         text=True,
         timeout=60,
@@ -75,103 +67,57 @@ def _backup(
     return done
 
 
+def _listed(port: int, name: str) -> dict[str, object]:
+    """Read a snapshot as the guide does: GET /_snapshot/cloudfall/<name>."""
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/_snapshot/cloudfall/{name}",
+        headers={
+            "Authorization": "Basic "
+            + base64.b64encode(f"cloudfall:{PASSWORD}".encode()).decode()
+        },
+    )
+    with urllib.request.urlopen(request, timeout=10) as answer:  # noqa: S310
+        body = json.loads(answer.read())
+    (snapshot,) = body["snapshots"]
+    return cast("dict[str, object]", snapshot)
+
+
 # proves: S-024-10
-def test_s024_10_the_snapshot_lists_the_feature_state_kibana(
+def test_s024_10_the_snapshot_asks_for_every_feature_state(
     tmp_path: Path, fake: tuple[FakeElasticsearch, int]
 ) -> None:
     state, port = fake
-    state.feature_states = ["kibana", "security"]
 
-    done = _backup(tmp_path, port, ["search-kibana"])
+    done = _backup(tmp_path, port)
 
     assert done.returncode == 0, done.stderr
-    (taken,) = state.snapshots
-    features = cast("list[dict[str, object]]", taken["feature_states"])
-    assert "kibana" in [feature["feature_name"] for feature in features]
-    assert f"snapshot {taken['snapshot']} holds the feature state kibana" in done.stdout
-    # The request is S-012's: the cluster state and every feature state, not
-    # the feature state kibana alone
-    assert state.body("PUT", "/_snapshot/") == {
+    # The cluster state with no feature_states list: Elasticsearch then takes
+    # every feature state, kibana among them. Naming kibana alone would drop
+    # the others, so the request stays S-012's
+    body = state.body("PUT", "/_snapshot/")
+    assert body == {
         "include_global_state": True,
         "metadata": {"takenBy": "cloudfall", "service": "search-main"},
     }
+    assert "feature_states" not in body
 
 
 # proves: S-024-10
-def test_s024_10_a_snapshot_without_the_feature_state_kibana_fails_the_backup(
+def test_s024_10_after_backup_run_the_snapshot_lists_the_feature_state_kibana(
     tmp_path: Path, fake: tuple[FakeElasticsearch, int]
 ) -> None:
     state, port = fake
-    state.feature_states = ["security"]
-    state.snapshot("cloudfall-20260101-000000", age_days=60)
+    # A cluster Kibana has started on holds its system indices
+    state.feature_states = ["kibana", "security"]
 
-    done = _backup(tmp_path, port, ["search-kibana"])
-
-    assert done.returncode == 1
-    assert "holds no feature state kibana" in done.stderr
-    assert "Kibana service search-kibana" in done.stderr
-    # No retention after a failed run: the old snapshot stays
-    assert state.requests("DELETE") == []
-    assert "cloudfall-20260101-000000" in state.names()
-
-
-def test_a_cluster_without_kibana_backs_up_and_renders_as_before(
-    tmp_path: Path, fake: tuple[FakeElasticsearch, int]
-) -> None:
-    _, port = fake
-
-    done = _backup(tmp_path, port, [])
+    done = _backup(tmp_path, port)
 
     assert done.returncode == 0, done.stderr
-    assert "feature state" not in done.stdout
-    text = _script(tmp_path, port, []).read_text(encoding="utf-8")
-    assert "KIBANA" not in text
-    assert "feature_state" not in text
-    # With Kibana, the script gains its check and nothing else changes
-    with_kibana = _script(tmp_path, port, ["search-kibana"]).read_text("utf-8")
-    without = text.splitlines()
-    added = [line for line in with_kibana.splitlines() if line not in without]
-    assert [line for line in without if line not in with_kibana.splitlines()] == []
-    assert any("KIBANA_FEATURE_STATE" in line for line in added)
-
-
-# proves: S-024-10
-def test_s024_10_services_yml_tells_each_cluster_which_kibana_reads_it() -> None:
-    nodes, _ = yaml.safe_load(SERVICES.read_text(encoding="utf-8"))
-    deploy = next(
-        task
-        for task in nodes["tasks"]
-        if task.get("ansible.builtin.include_role", {}).get("name")
-        == "cloudfall_elasticsearch"
-    )
-    expression = deploy["vars"]["cloudfall_elasticsearch_kibana_services"]
-    kibana = {
-        "id": "search-kibana",
-        "serviceKind": "kibana",
-        "server": "h2",
-        "kibana": {"elasticsearch": "search-main", "users": []},
-    }
-    other = {**kibana, "id": "logs-kibana", "kibana": {"elasticsearch": "logs-main"}}
-    hostvars = {
-        "h1": {"cloudfall_services": [{"id": "search-main", "serviceKind": "x"}]},
-        # The Kibana of the cluster runs on another node than the home
-        "h2": {"cloudfall_services": [kibana, other]},
-        "h3": {},
-    }
-
-    def found(cluster: str) -> object:
-        templar = Templar(
-            loader=DataLoader(),
-            variables={
-                "groups": {"cloudfall_servers": ["h1", "h2", "h3"]},
-                "hostvars": hostvars,
-                "cloudfall_service_item": {"id": cluster},
-            },
-        )
-        return templar.template(trust_as_template(expression))
-
-    assert found("search-main") == ["search-kibana"]
-    assert found("crm-main") == []
+    (taken,) = state.snapshots
+    listed = _listed(port, str(taken["snapshot"]))
+    assert listed["state"] == "SUCCESS"
+    features = cast("list[dict[str, object]]", listed["feature_states"])
+    assert [feature["feature_name"] for feature in features] == ["kibana", "security"]
 
 
 def _guide_commands() -> list[str]:

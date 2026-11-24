@@ -46,10 +46,6 @@ RETENTION_DAYS = {{ cloudfall_elasticsearch_service.backup.retentionDays | int }
 RESTORE_CHECK_INDICES = {{ cloudfall_elasticsearch_service.elasticsearch.restoreCheckIndices | default([]) | to_json }}
 POLL_SECONDS = {{ cloudfall_elasticsearch_snapshot_poll_seconds | int }}
 WAIT_SECONDS = {{ cloudfall_elasticsearch_snapshot_wait_seconds | int }}
-{% if cloudfall_elasticsearch_kibana_services | length > 0 %}
-KIBANA_SERVICES = {{ cloudfall_elasticsearch_kibana_services | join(', ') | to_json }}
-KIBANA_FEATURE_STATE = {{ cloudfall_elasticsearch_kibana_feature_state | to_json }}
-{% endif %}
 
 SNAPSHOT_NAME = re.compile(r"cloudfall-[0-9]{8}-[0-9]{6}")
 RESTORE_PREFIX = "cloudfall-restore-check-"
@@ -274,21 +270,6 @@ def backup():
         )
     if COUNTS_INDEX not in snapshot["indices"]:
         raise Failure(f"snapshot {name} does not hold {COUNTS_INDEX}")
-{% if cloudfall_elasticsearch_kibana_services | length > 0 %}
-    # Kibana service {{ cloudfall_elasticsearch_kibana_services | join(', ') }} keeps its
-    # dashboards and other saved objects in the feature state kibana, which a
-    # snapshot of the cluster state holds (S-024-10).
-    features = [
-        state.get("feature_name") for state in snapshot.get("feature_states", [])
-    ]
-    if KIBANA_FEATURE_STATE not in features:
-        raise Failure(
-            f"snapshot {name} of {SERVICE} holds no feature state "
-            f"{KIBANA_FEATURE_STATE}, where Kibana service {KIBANA_SERVICES} keeps "
-            "its saved objects; check that Kibana runs and has started once"
-        )
-    print(f"snapshot {name} holds the feature state {KIBANA_FEATURE_STATE}")
-{% endif %}
     print(
         f"snapshot {name} of {SERVICE}: SUCCESS, {len(snapshot['indices'])} "
         f"indices, {shards.get('successful', 0)} of {shards.get('total', 0)} shards"

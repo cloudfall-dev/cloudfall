@@ -7,11 +7,6 @@ cloudfall_elasticsearch_account_files: {}
 # kibana.users, by user name, as services.yml finds it (S-024); a user not
 # named here holds its own role alone.
 cloudfall_elasticsearch_kibana_access: {}
-# The ids of the Kibana services that read the cluster, as services.yml finds
-# them (S-024-10): each snapshot must then hold the feature state kibana.
-cloudfall_elasticsearch_kibana_services: []
-# The feature state Elasticsearch groups Kibana's system indices under.
-cloudfall_elasticsearch_kibana_feature_state: kibana
 cloudfall_elasticsearch_repository_key_url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
 cloudfall_elasticsearch_repository_key_path: /etc/apt/keyrings/elasticsearch.asc
 cloudfall_elasticsearch_repository_url: https://artifacts.elastic.co/packages
