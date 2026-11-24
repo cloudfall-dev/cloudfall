@@ -239,6 +239,21 @@
             (cloudfall_services_elasticsearch_files | default({}))
             [cloudfall_service_item.id] | default({})
           }}
+        # The access of each user the cluster's Kibana names (S-024). The
+        # Kibana service lands on its own server only, which need not be the
+        # home that converges the users, so every server's services are read.
+        cloudfall_elasticsearch_kibana_access: >-
+          {{
+            groups['cloudfall_servers'] | default([])
+            | map('extract', hostvars)
+            | map(attribute='cloudfall_services', default=[])
+            | flatten(levels=1)
+            | selectattr('serviceKind', 'equalto', 'kibana')
+            | selectattr('kibana.elasticsearch', 'equalto', cloudfall_service_item.id)
+            | map(attribute='kibana.users')
+            | flatten(levels=1)
+            | items2dict(key_name='name', value_name='access')
+          }}
       loop: >-
         {{
           cloudfall_services | default([])
