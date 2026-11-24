@@ -3,6 +3,9 @@ cloudfall_kibana_service: {}
 # The Elasticsearch service the Kibana service reads, as services.yml finds it
 # among the host's services by kibana.elasticsearch (S-024).
 cloudfall_kibana_elasticsearch_service: {}
+# The Domain that publishes Kibana, as services.yml finds it among the
+# server's Domains by kibana.domain (S-024-8); empty without a domain.
+cloudfall_kibana_domain: {}
 # Controller paths of the three staged encryption keys (securityKey,
 # savedObjectsKey, reportingKey) cloudfall passes as
 # cloudfall_services_kibana_files; never the values.
@@ -63,6 +66,15 @@ cloudfall_kibana_url: >-
     if ':' in cloudfall_kibana_service.bind.address
     else cloudfall_kibana_service.bind.address
   }}:{{ cloudfall_kibana_service.bind.port }}
+# The address Kibana puts in the links it generates: its Domain's primaryName
+# over HTTPS when a Domain publishes it (S-024-8), else where it listens.
+cloudfall_kibana_published: "{{ cloudfall_kibana_service.kibana.domain is defined }}"
+cloudfall_kibana_public_base_url: >-
+  {{
+    ('https://' ~ cloudfall_kibana_domain.primaryName)
+    if cloudfall_kibana_published | bool
+    else cloudfall_kibana_url
+  }}
 cloudfall_kibana_elasticsearch_url: >-
   {%- set remote = cloudfall_kibana_elasticsearch_service.elasticsearch.remoteAccess
                    | default(none) -%}

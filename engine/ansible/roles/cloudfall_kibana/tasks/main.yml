@@ -1,7 +1,7 @@
 ---
 # Kibana runs on a node of the Elasticsearch service it reads and talks to
-# that node only (S-024). This release converges it on loopback, without a
-# Domain; the kibana_system user is never set or changed.
+# that node only (S-024). It listens on loopback; a Domain may publish it
+# (S-024-8). The kibana_system user is never set or changed.
 - name: Validate Kibana service target and declaration
   ansible.builtin.assert:
     that:
@@ -47,17 +47,32 @@
       {{ cloudfall_server_id }}: lower a heapMb, or move the services to a
       server with more memory
 
-# Publishing Kibana through a Domain comes with a later release (#573):
-# refused rather than left unpublished by a converge that reports success.
-- name: Refuse a Domain this release does not converge
+# A published Kibana (S-024-8) is fronted by its Domain's certificate and
+# nginx site, which domains.yml applies on this server, the Domain's proxy
+# server. Here Kibana only learns its public address: the Domain must be one
+# this server holds, proxying to the loopback listener.
+- name: Refuse a Domain this server does not hold for Kibana
   ansible.builtin.assert:
     that:
-      - cloudfall_kibana_service.kibana.domain is not defined
+      - >-
+        cloudfall_kibana_service.kibana.domain is not defined
+        or (
+          cloudfall_kibana_domain.id | default('')
+          == cloudfall_kibana_service.kibana.domain
+          and cloudfall_kibana_domain.primaryName | default('') | length > 0
+          and cloudfall_kibana_domain.proxy.server | default('')
+          == cloudfall_server_id
+          and cloudfall_kibana_domain.proxy.upstream.port | default(0)
+          == cloudfall_kibana_service.bind.port
+          and cloudfall_kibana_domain.tls.mode | default('') == 'required'
+          and cloudfall_kibana_domain.routes is not defined
+        )
     fail_msg: >-
       Kibana service {{ cloudfall_kibana_service.id }} declares domain
-      {{ cloudfall_kibana_service.kibana.domain | default('') }}; this release
-      converges Kibana on loopback only, reached through an SSH forward:
-      remove domain, then converge again
+      {{ cloudfall_kibana_service.kibana.domain | default('') }}, which is not a
+      Domain of {{ cloudfall_server_id }} proxying to port
+      {{ cloudfall_kibana_service.bind.port }} with tls.mode required and no
+      routes; run cloudfall config validate
 
 - name: Require the staged encryption keys and the cloudfall password
   ansible.builtin.assert:

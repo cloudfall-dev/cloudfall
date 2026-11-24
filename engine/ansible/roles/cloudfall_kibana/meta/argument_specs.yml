@@ -55,6 +55,11 @@ argument_specs:
         description: >-
           The Elasticsearch service the Kibana service reads, as the host's
           services carry it
+      cloudfall_kibana_domain:
+        type: dict
+        description: >-
+          The Domain kibana.domain names, as the server's cloudfall_domains
+          carry it; empty without a domain
       cloudfall_kibana_files:
         type: dict
         description: >-

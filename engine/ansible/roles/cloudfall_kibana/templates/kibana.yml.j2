@@ -3,7 +3,11 @@
 # kibana.keystore, never here.
 server.host: "{{ cloudfall_kibana_service.bind.address }}"
 server.port: {{ cloudfall_kibana_service.bind.port }}
-server.publicBaseUrl: "{{ cloudfall_kibana_url }}"
+server.publicBaseUrl: "{{ cloudfall_kibana_public_base_url }}"
+{% if cloudfall_kibana_published | bool %}
+# Published over HTTPS by its Domain: the session cookie is sent over it only.
+xpack.security.secureCookies: true
+{% endif %}
 elasticsearch.hosts: ["{{ cloudfall_kibana_elasticsearch_url }}"]
 {% if cloudfall_kibana_elasticsearch_service.elasticsearch.remoteAccess is defined %}
 elasticsearch.ssl.certificateAuthorities: ["{{ cloudfall_kibana_ca_path }}"]
