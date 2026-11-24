@@ -1,0 +1,3 @@
+### Added
+
+- How Kibana's dashboards survive a snapshot restore and a rebuilt server (S-024-10, S-024-11): the new `docs/kibana-service-guide.md` explains that the snapshots of `cloudfall backup run <elasticsearch service>` already hold every feature state, `kibana` among them, and gives the restore (stop Kibana, restore the feature state `kibana` alone from a snapshot, start Kibana) and what a rebuilt Kibana server gets: the same three encryption keys from the project's store, so encrypted saved objects still decrypt, and a new service token in the rebuilt node's own `service_tokens` file (#580)

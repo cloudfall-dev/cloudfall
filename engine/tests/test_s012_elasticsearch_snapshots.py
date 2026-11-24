@@ -93,6 +93,9 @@ class FakeElasticsearch:
     calls: list[tuple[str, str, object]] = field(default_factory=list)
     authorizations: set[str] = field(default_factory=set)
     created: list[tuple[str, object]] = field(default_factory=list)
+    # The feature states a new snapshot of the cluster state holds, as a node
+    # lists them; none unless a test gives them (S-024-10).
+    feature_states: list[str] = field(default_factory=list)
 
     def snapshot(
         self,
@@ -273,6 +276,16 @@ def _snapshot_route(  # noqa: C901, PLR0911, PLR0912 - the snapshot API of the f
                 "documents": copy.deepcopy(fake.documents),
                 "polls_left": fake.polls,
                 "shards": {"total": 4, "failed": 0, "successful": 4},
+                **(
+                    {
+                        "feature_states": [
+                            {"feature_name": name, "indices": [f".{name}_1"]}
+                            for name in fake.feature_states
+                        ]
+                    }
+                    if fake.feature_states
+                    else {}
+                ),
             }
         )
         return {"accepted": True}
