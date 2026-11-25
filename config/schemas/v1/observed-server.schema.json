@@ -937,6 +937,156 @@
           ],
           "additionalProperties": false
         },
+        "kibana": {
+          "description": "The Kibana service of the server (S-024): its managed kibana.yml and node.options as text, null when missing; the names of the settings its keystore holds, null when it could not be listed; the overall level Kibana reports; its two roles as Kibana's role API answers them; and the Kibana roles each user of the cluster holds. Names and privileges only: never a token, key, password or hash",
+          "type": "object",
+          "properties": {
+            "service": {
+              "$ref": "common.schema.json#/$defs/resourceId"
+            },
+            "configurationPath": {
+              "$ref": "common.schema.json#/$defs/absolutePath"
+            },
+            "configuration": {
+              "$ref": "#/$defs/nullableString"
+            },
+            "nodeOptions": {
+              "$ref": "#/$defs/nullableString"
+            },
+            "keystore": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "maxItems": 256,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "type": "object",
+              "properties": {
+                "read": {
+                  "description": "Whether Kibana was asked: false when the cloudfall account's password is not on the server",
+                  "type": "boolean"
+                },
+                "level": {
+                  "description": "status.overall.level of GET /api/status, null when Kibana did not answer",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "read",
+                "level"
+              ],
+              "additionalProperties": false
+            },
+            "roles": {
+              "description": "The two roles the Kibana role keeps, as GET /api/security/role/<name> answers them; null when Kibana's role API was not read",
+              "anyOf": [
+                {
+                  "type": "array",
+                  "maxItems": 2,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "enum": [
+                          "cloudfall-kibana-view",
+                          "cloudfall-kibana-edit"
+                        ]
+                      },
+                      "found": {
+                        "type": "boolean"
+                      },
+                      "elasticsearch": {
+                        "type": [
+                          "object",
+                          "null"
+                        ]
+                      },
+                      "kibana": {
+                        "type": [
+                          "array",
+                          "null"
+                        ],
+                        "maxItems": 64,
+                        "items": {
+                          "type": "object"
+                        }
+                      },
+                      "metadata": {
+                        "type": [
+                          "object",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "found",
+                      "elasticsearch",
+                      "kibana",
+                      "metadata"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "userRoles": {
+              "description": "Each user of the cluster that is not built in, with the Kibana roles it holds (cloudfall-kibana-view, cloudfall-kibana-edit), possibly none; null when the node was not read",
+              "anyOf": [
+                {
+                  "type": "object",
+                  "maxProperties": 4096,
+                  "additionalProperties": {
+                    "type": "array",
+                    "maxItems": 2,
+                    "items": {
+                      "enum": [
+                        "cloudfall-kibana-view",
+                        "cloudfall-kibana-edit"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "service",
+            "configurationPath",
+            "configuration",
+            "nodeOptions",
+            "keystore",
+            "status",
+            "roles",
+            "userRoles"
+          ],
+          "additionalProperties": false
+        },
         "mariadbAccounts": {
           "description": "The databases and users of each MariaDB service of the server (S-019); the lists are absent when the server could not be read",
           "type": "array",

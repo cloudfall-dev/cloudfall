@@ -44,6 +44,21 @@
           | selectattr('server', 'equalto', cloudfall_server_id)
           | list
         }}
+      # A Kibana service is read on its server, a node of the cluster it
+      # reads (S-024), which the server's Elasticsearch services hold
+      cloudfall_inspect_kibana_services: >-
+        {{
+          cloudfall_services | default([])
+          | selectattr('serviceKind', 'equalto', 'kibana')
+          | selectattr('server', 'equalto', cloudfall_server_id)
+          | list
+        }}
+      cloudfall_inspect_kibana_elasticsearch_services: >-
+        {{
+          cloudfall_services | default([])
+          | selectattr('serviceKind', 'equalto', 'elasticsearch')
+          | list
+        }}
       # A RabbitMQ service's accounts are the cluster's, read on its home
       cloudfall_inspect_rabbitmq_services: >-
         {{

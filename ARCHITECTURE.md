@@ -225,8 +225,9 @@ add software RAID1 and the hybrid storage layout, while cloud VPS types do
 not. Any server can run any declared service or component:
 
 - Infrastructure services (PostgreSQL, Redis and MariaDB today, MariaDB with
-  manually promoted primary and replica pairs; Elasticsearch and friends as
-  the catalog grows) stay pinned to declared servers
+  manually promoted primary and replica pairs, and Kibana on a node of the
+  Elasticsearch service it reads; Elasticsearch and friends as the catalog
+  grows) stay pinned to declared servers
 - Application components are movable: reassigning `crm-backend` from `h1,h2`
   to `h3` is a config change followed by convergence
 - Failover is manual with easy reassignment rather than automated
@@ -301,7 +302,10 @@ and their current status:
 - **Catalog breadth** — Elasticsearch, RabbitMQ, and Node runtime services
   following the PostgreSQL, Redis and MariaDB pattern: pinned installs,
   loopback-only binds, backup policies, audited evidence. MariaDB is built
-  ([spec 019](docs/specs/019-mariadb-service.md)); MySQL and Percona Server
+  ([spec 019](docs/specs/019-mariadb-service.md)), and so is Kibana over an
+  Elasticsearch service, on loopback at its cluster's version with its saved
+  objects in the cluster's snapshots
+  ([spec 024](docs/specs/024-kibana-service.md)); MySQL and Percona Server
   as a kind of their own are not
 - **Multi-server assignment at scale** — components spread across many
   servers and moved by editing the config; the model exists, fleet-scale

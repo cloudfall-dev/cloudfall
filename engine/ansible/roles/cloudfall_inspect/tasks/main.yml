@@ -742,6 +742,13 @@
       }}
   when: cloudfall_inspect_mariadb_services | length > 0
 
+- name: Collect Kibana evidence
+  ansible.builtin.include_tasks: kibana.yml
+  loop: "{{ cloudfall_inspect_kibana_services }}"
+  loop_control:
+    loop_var: cloudfall_inspect_kibana_service
+    label: "{{ cloudfall_inspect_kibana_service.id }}"
+
 - name: Collect RabbitMQ account evidence
   ansible.builtin.include_tasks: rabbitmq_accounts.yml
   loop: "{{ cloudfall_inspect_rabbitmq_services }}"
