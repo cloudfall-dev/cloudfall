@@ -366,7 +366,10 @@ def test_inspect_reads_the_kibana_service_of_the_server_only() -> None:
         _search_main(),
         {"id": "jobs", "serviceKind": "rabbitmq", "server": "h1"},
     ]
-    variables = {"cloudfall_services": services, "cloudfall_server_id": "h1"}
+    variables: dict[str, object] = {
+        "cloudfall_services": services,
+        "cloudfall_server_id": "h1",
+    }
 
     kibana = _template(role["cloudfall_inspect_kibana_services"], variables)
     clusters = _template(
