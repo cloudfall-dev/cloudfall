@@ -184,8 +184,12 @@ routine and widen what it can carry, in rough priority order:
   loopback-only binds, backup policies, audited evidence (Redis ✔ with RDB
   backups, restore checks, and Alloy metrics; MariaDB ✔ with primary and
   replica pairs, promotion, dumps that record their GTID position, restore
-  drills, and metrics ([spec 019](docs/specs/019-mariadb-service.md)); MySQL
-  and Percona Server as a kind of their own, and the rest, pending)
+  drills, and metrics ([spec 019](docs/specs/019-mariadb-service.md)); Kibana
+  ✔ over an Elasticsearch service, at its cluster's version, with view and
+  edit access for declared users, publishing through a Domain, its
+  dashboards in the cluster's snapshots, and audit
+  ([spec 024](docs/specs/024-kibana-service.md)); MySQL and Percona Server
+  as a kind of their own, and the rest, pending)
 - **Render API import** ✔ — `cloudfall import render-api` maps a live
   workspace with real environment values and database-URL rewriting; cron
   jobs arrive with their schedules in the gap report, and modeling them as

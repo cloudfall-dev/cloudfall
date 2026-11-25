@@ -45,3 +45,13 @@ argument_specs:
         elements: dict
         default: []
         description: The MariaDB services of this server, whose accounts are read
+      cloudfall_inspect_kibana_services:
+        type: list
+        elements: dict
+        default: []
+        description: The Kibana services of this server, at most one
+      cloudfall_inspect_kibana_elasticsearch_services:
+        type: list
+        elements: dict
+        default: []
+        description: The Elasticsearch services of this server, one of them the cluster Kibana reads

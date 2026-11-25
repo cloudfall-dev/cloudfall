@@ -79,5 +79,40 @@ cloudfall_inspect_mariadb_queries:
     SELECT DISTINCT REPLACE(d.Db, '\\_', '_') FROM mysql.db d
     JOIN mysql.roles_mapping m ON m.User = d.User AND m.Host = d.Host
     WHERE m.Role = 'cloudfall-managed' AND m.Admin_option = 'N'
+# The Kibana services of this server (S-024), at most one, and the
+# Elasticsearch services of the server, among which each one's cluster is
+cloudfall_inspect_kibana_services: []
+cloudfall_inspect_kibana_elasticsearch_services: []
+cloudfall_inspect_kibana_configuration_directory: /etc/kibana
+cloudfall_inspect_kibana_keystore_tool: /usr/share/kibana/bin/kibana-keystore
+# The two roles the Kibana role keeps (cloudfall.kibana.ROLE_NAMES)
+cloudfall_inspect_kibana_role_names:
+  - cloudfall-kibana-view
+  - cloudfall-kibana-edit
+# The Elasticsearch service the Kibana service reads, found by its id
+cloudfall_inspect_kibana_elasticsearch: >-
+  {{
+    cloudfall_inspect_kibana_elasticsearch_services
+    | selectattr('id', 'equalto', cloudfall_inspect_kibana_service.kibana.elasticsearch)
+    | first | default({})
+  }}
+# Where the Kibana role reaches Kibana, and Kibana reaches the node
+cloudfall_inspect_kibana_url: >-
+  http://{{
+    ('[' ~ cloudfall_inspect_kibana_service.bind.address ~ ']')
+    if ':' in cloudfall_inspect_kibana_service.bind.address
+    else cloudfall_inspect_kibana_service.bind.address
+  }}:{{ cloudfall_inspect_kibana_service.bind.port }}
+cloudfall_inspect_kibana_elasticsearch_url: >-
+  {%- set remote = cloudfall_inspect_kibana_elasticsearch.elasticsearch.remoteAccess
+                   | default(none) -%}
+  {%- if remote is none -%}
+  http://{{ cloudfall_inspect_kibana_elasticsearch.bind.address }}:{{
+    cloudfall_inspect_kibana_elasticsearch.bind.port }}
+  {%- else -%}
+  https://{{ ('[' ~ remote.listenAddress ~ ']') if ':' in remote.listenAddress
+             else remote.listenAddress }}:{{
+    cloudfall_inspect_kibana_elasticsearch.bind.port }}
+  {%- endif -%}
 # The bundled Grafana dashboards on a logging backend (S-016); the backend role writes here
 cloudfall_inspect_grafana_dashboards: /etc/grafana/dashboards/cloudfall

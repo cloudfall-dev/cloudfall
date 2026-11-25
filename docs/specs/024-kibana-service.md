@@ -1,6 +1,6 @@
 # S-024: Kibana service
 
-status: approved
+status: built
 serves: G-1, G-3
 
 ## Problem
@@ -366,4 +366,93 @@ Touches `config/schemas/v1/service.schema.json`, `config/examples/services/`,
 
 ## Verification
 
-No criterion is verified yet.
+Checked on main at 785d7a0 with the audit of #582 on top. No criterion about a live host has
+run on one: Kibana and Elasticsearch were not installed on a Debian 13 host for any of them.
+They are proven by evaluating the role's conditions, templates and host variables with
+Ansible's own templating, and by replaying the role's tasks in `ansible-playbook` on
+localhost against stand-ins: `kibana-keystore` and `elasticsearch-service-tokens`
+(`engine/tests/kibana_node.py`), an HTTP stand-in answering Elasticsearch's security API and
+Kibana's role API (`test_s024_kibana_access.py`), a stand-in node answering `GET /_nodes`
+(`test_s024_9_kibana_version_change.py`), and the fake node of the S-012 snapshot tests. A
+live proving run is still owed before the stable release. Per criterion:
+
+- S-024-1: `test_s024_1_the_declaration_validates` runs `cloudfall config validate` on the
+  declaration (exit 0), and `test_s024_1_render_carries_kibana_the_cluster_and_analyst` runs
+  `cloudfall-engine inventory render`: the Kibana service, `search-main` and `analyst` with its
+  Kibana access are in it (`test_s024_1_*` in `test_s024_kibana.py` cover the inventory too).
+  Holds
+- S-024-2: `test_s024_2_examples_without_kibana_render_byte_identical` renders
+  `config/examples` and compares it with the golden inventory byte for byte; `cloudfall config
+  validate --project config/examples` exits 0. Holds
+- S-024-3: on templates and stand-ins only, not on a fresh Debian 13 host: the package task
+  installs `kibana=<the service's version>` and holds it, `kibana.yml` answers on loopback and
+  reads the node, `node.options` gets the declared heap, a listener off loopback and a
+  dashboard request not sent to the login form stop the converge, and the converge waits until
+  Kibana reports itself available at the version (`test_s024_3_*` in
+  `test_s024_kibana_role.py`); the server's requirements are the package at the cluster's
+  version and three keys (`test_s024_3_the_server_needs_kibana_at_the_clusters_version_and_three_keys`).
+  A real Kibana's status, Node.js process, listener and login page were not observed
+- S-024-4: replayed on the stand-ins: a second run of the keystore and token tasks gives
+  `changed=0` and notifies no restart
+  (`test_s024_4_a_second_converge_changes_nothing_and_restarts_nothing`), and the heap refusal
+  and every other refusal come before any task that changes the host
+  (`test_s024_4_*`). A whole `services.yml` run with no restart was not checked on a live host
+- S-024-5: on the stand-ins: Kibana gets a token of `elastic/kibana` from the node's
+  `service_tokens` file, made again when the keystore lost it, every task that sees a secret is
+  `no_log`, no secret is in `kibana.yml`, and no task touches `kibana_system`
+  (`test_s024_5_*` in `test_s024_kibana_role.py`); the keys are generated secrets of the store,
+  staged `0600`, in no output, and a missing one stops before any playbook (`test_s024_5_*` in
+  `test_s024_kibana_converge.py`); the node read is `no_log`
+  (`test_s024_5_the_node_read_is_no_log`), and inspect keeps no password or digest in the
+  evidence audit reads (`test_s024_5_inspect_keeps_no_password_or_digest_in_the_evidence`; a
+  hand-written setting's value is in no finding,
+  `test_kibana_yml_changed_by_hand_is_drift`). The journal and the `kibana_system` hash of a
+  live node were not read
+- S-024-6: replayed against the HTTP stand-in, not a live Kibana: both roles are written
+  through Kibana's role API with no index privilege, `analyst` holds the edit role and
+  `support` the view role next to their own roles, and a second converge puts nothing
+  (`test_s024_6_*`). Logging in, building a data view and a dashboard, not seeing `billing-1`,
+  and the refused save were not tried
+- S-024-7: replayed against the same stand-in: a user `kibana.users` does not name keeps its
+  own role alone, removing `analyst` takes only its Kibana role, and `services.yml` hands the
+  cluster's home the access its Kibana names (`test_s024_7_*`). Opening Kibana as such a user
+  and the search of `crm-1` were not tried live
+- S-024-8: on templates: `kibana.yml` links to `https://kibana.example.test` with secure
+  cookies, an unpublished Kibana keeps its loopback settings, a Domain the server does not
+  hold is refused, and the Domain's nginx site fronts Kibana with the certificate of its name
+  (`test_s024_8_*`). The certificate, a login through it and the cookie in a browser were not
+  checked live
+- S-024-9: replayed against the stand-in node: the nodes older than the declared version are
+  named and the converge stops with `PRECONDITION` and Kibana's package unchanged, every node
+  is read before the package changes, the held package moves only once every node is on the
+  new version, Kibana converges after every node, and the converge waits for its migration
+  (`test_s024_9_*`). A real package upgrade, the saved-object migration and the dashboard
+  afterwards were not run on a live host
+- S-024-10: S-012's backup script runs against the fake node, whose snapshot then lists the
+  feature state `kibana`, and asks for every feature state; the guide's restore steps stop
+  Kibana, restore the feature state `kibana` alone and start Kibana (`test_s024_10_*`). A
+  restore on a live cluster and the dashboard opening again were not tried
+- S-024-11: on the stand-ins: a rebuilt empty host gets the store's three keys in its keystore
+  and a new token, and a second converge keeps them (`test_s024_11_*` in
+  `test_s024_10_11_kibana_dashboards.py`); every converge stages the stored keys and the store
+  never replaces a held key (`test_s024_11_*` in `test_s024_11_kibana_rebuild_keys.py`).
+  `analyst` logging in on a rebuilt live server was not tried
+- S-024-12: every refusal under Validation runs `cloudfall config validate` and asserts
+  `CONFIG_INVALID` and its code, and a declaration with `domain` validates with
+  `KIBANA_PUBLISHED` (`test_s024_12_*`). Holds
+- S-024-13: `audit` over observation fixtures reports drift for a Kibana version other than
+  the Elasticsearch service's declared one, a stopped or disabled unit, `server.host` changed
+  by hand to `0.0.0.0` (`kibana.configuration`, and `services.bind` once Kibana listens
+  there), and `support` given `cloudfall-kibana-edit` by hand, while a Kibana converged as
+  declared, its `kibana.yml` rendered from the role's own template in every shape, is
+  compliant (`test_s024_13_*` in `test_s024_13_kibana_audit.py`); the other Audit cases
+  (Kibana's status, the two roles, a user without access given a role, the heap, the keystore)
+  are covered there too, and an Elasticsearch-only project gets no `kibana.` check. Inspect's
+  reading of Kibana's files, keystore, status, roles and users runs through Ansible's
+  templating (`test_s024_13_inspect_reads_kibanas_files_keystore_status_roles_and_users`).
+  Not against a live inspect
+
+Still open before the stable release:
+
+- S-024-3 to S-024-11, S-024-13: a proving run on a live Debian 13 host with Elasticsearch and
+  Kibana, which none of these criteria has had

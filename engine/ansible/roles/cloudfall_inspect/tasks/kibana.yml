@@ -1,0 +1,199 @@
+---
+# The Kibana service of the server (S-024), for audit: the managed kibana.yml
+# and node.options as text, so a hand edit is drift before Kibana restarts
+# with it; the names of the settings its keystore holds, never their values;
+# the overall level Kibana reports; the two roles the Kibana role keeps, as
+# Kibana's role API answers them; and which Kibana roles each user of the
+# cluster holds. Kibana and the node are read as the cloudfall account, whose
+# password is read on the node and used in no_log tasks only. No token, key,
+# password or hash leaves the host: the user answer is reduced to names and
+# Kibana roles before it is attached.
+- name: Look for the managed Kibana configuration
+  ansible.builtin.stat:
+    path: "{{ cloudfall_inspect_kibana_configuration_directory }}/kibana.yml"
+    get_checksum: false
+  register: cloudfall_inspect_kibana_file
+
+- name: Read the managed Kibana configuration
+  ansible.builtin.slurp:
+    src: "{{ cloudfall_inspect_kibana_configuration_directory }}/kibana.yml"
+  register: cloudfall_inspect_kibana_content
+  when: cloudfall_inspect_kibana_file.stat.isreg | default(false)
+
+- name: Look for Kibana's Node.js options
+  ansible.builtin.stat:
+    path: "{{ cloudfall_inspect_kibana_configuration_directory }}/node.options"
+    get_checksum: false
+  register: cloudfall_inspect_kibana_options_file
+
+- name: Read Kibana's Node.js options
+  ansible.builtin.slurp:
+    src: "{{ cloudfall_inspect_kibana_configuration_directory }}/node.options"
+  register: cloudfall_inspect_kibana_options
+  when: cloudfall_inspect_kibana_options_file.stat.isreg | default(false)
+
+- name: List the settings Kibana's keystore holds
+  ansible.builtin.command:
+    argv:
+      - "{{ cloudfall_inspect_kibana_keystore_tool }}"
+      - list
+  environment:
+    KBN_PATH_CONF: "{{ cloudfall_inspect_kibana_configuration_directory }}"
+  register: cloudfall_inspect_kibana_keystore
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Look for the cloudfall account password for Kibana
+  ansible.builtin.stat:
+    path: "{{ cloudfall_inspect_elasticsearch_password_path }}"
+    get_checksum: false
+  register: cloudfall_inspect_kibana_password_file
+
+- name: Read the cloudfall account password for Kibana
+  ansible.builtin.slurp:
+    src: "{{ cloudfall_inspect_elasticsearch_password_path }}"
+  register: cloudfall_inspect_kibana_password
+  no_log: true
+  when: cloudfall_inspect_kibana_password_file.stat.exists
+
+- name: Read the level Kibana reports
+  ansible.builtin.uri:
+    url: "{{ cloudfall_inspect_kibana_url }}/api/status"
+    url_username: cloudfall
+    url_password: "{{ cloudfall_inspect_kibana_password.content | b64decode }}"
+    force_basic_auth: true
+    status_code: [200, 503]
+  register: cloudfall_inspect_kibana_status
+  failed_when: false
+  no_log: true
+  when: cloudfall_inspect_kibana_password_file.stat.exists
+
+- name: Read the roles Kibana keeps
+  ansible.builtin.uri:
+    url: "{{ cloudfall_inspect_kibana_url }}/api/security/role/{{ item }}"
+    url_username: cloudfall
+    url_password: "{{ cloudfall_inspect_kibana_password.content | b64decode }}"
+    force_basic_auth: true
+    status_code: [200, 404]
+  loop: "{{ cloudfall_inspect_kibana_role_names }}"
+  register: cloudfall_inspect_kibana_roles
+  failed_when: false
+  no_log: true
+  when: cloudfall_inspect_kibana_password_file.stat.exists
+
+# Reached as the Kibana role reaches the node: plain HTTP on loopback, or with
+# remoteAccess HTTPS on the listen address, verified against the project CA.
+- name: Read the users of Kibana's cluster
+  ansible.builtin.uri:
+    url: "{{ cloudfall_inspect_kibana_elasticsearch_url }}/_security/user"
+    ca_path: >-
+      {{
+        cloudfall_inspect_elasticsearch_ca_path
+        if cloudfall_inspect_kibana_elasticsearch.elasticsearch.remoteAccess is defined
+        else omit
+      }}
+    url_username: cloudfall
+    url_password: "{{ cloudfall_inspect_kibana_password.content | b64decode }}"
+    force_basic_auth: true
+    status_code: 200
+  register: cloudfall_inspect_kibana_users
+  failed_when: false
+  no_log: true
+  when: cloudfall_inspect_kibana_password_file.stat.exists
+
+- name: Attach Kibana evidence
+  ansible.builtin.set_fact:
+    cloudfall_inspect_snapshot: >-
+      {{
+        cloudfall_inspect_snapshot | combine(
+          {'spec': {'kibana': cloudfall_inspect_kibana_evidence}},
+          recursive=true
+        )
+      }}
+  vars:
+    cloudfall_inspect_kibana_asked: >-
+      {{ cloudfall_inspect_kibana_password_file.stat.exists | default(false) }}
+    cloudfall_inspect_kibana_role_answers: >-
+      {{
+        cloudfall_inspect_kibana_roles.results | default([])
+        | selectattr('status', 'defined')
+        | selectattr('status', 'in', [200, 404])
+        | list
+      }}
+    cloudfall_inspect_kibana_user_answer: >-
+      {{
+        cloudfall_inspect_kibana_users.json
+        if cloudfall_inspect_kibana_users.status | default(0) == 200
+        and cloudfall_inspect_kibana_users.json is mapping
+        else none
+      }}
+    cloudfall_inspect_kibana_evidence:
+      service: "{{ cloudfall_inspect_kibana_service.id }}"
+      configurationPath: >-
+        {{ cloudfall_inspect_kibana_configuration_directory }}/kibana.yml
+      configuration: >-
+        {{
+          cloudfall_inspect_kibana_content.content | b64decode
+          if cloudfall_inspect_kibana_file.stat.isreg | default(false)
+          else none
+        }}
+      nodeOptions: >-
+        {{
+          cloudfall_inspect_kibana_options.content | b64decode
+          if cloudfall_inspect_kibana_options_file.stat.isreg | default(false)
+          else none
+        }}
+      keystore: >-
+        {{
+          cloudfall_inspect_kibana_keystore.stdout_lines
+          | map('trim') | select | list
+          if cloudfall_inspect_kibana_keystore.rc | default(1) == 0
+          else none
+        }}
+      status:
+        read: "{{ cloudfall_inspect_kibana_asked }}"
+        level: >-
+          {{
+            cloudfall_inspect_kibana_status.json.status.overall.level
+            if cloudfall_inspect_kibana_asked
+            and cloudfall_inspect_kibana_status.status | default(0) in [200, 503]
+            and cloudfall_inspect_kibana_status.json.status.overall.level
+            | default(none) is string
+            else none
+          }}
+      # The role's own fields only: its privileges and its metadata
+      roles: >-
+        {%- set found = namespace(roles=[]) -%}
+        {%- for answer in cloudfall_inspect_kibana_role_answers -%}
+        {%- set role = answer.json | default({})
+                       if answer.status == 200 and answer.json is defined
+                       and answer.json is mapping else {} -%}
+        {%- set found.roles = found.roles + [{
+              'name': answer.item,
+              'found': answer.status == 200,
+              'elasticsearch': role.elasticsearch | default(none),
+              'kibana': role.kibana | default(none),
+              'metadata': role.metadata | default(none),
+            }] -%}
+        {%- endfor -%}
+        {{
+          found.roles
+          if cloudfall_inspect_kibana_role_answers | length
+          == cloudfall_inspect_kibana_role_names | length
+          else none
+        }}
+      # Each user that is not built in, with the Kibana roles among its roles:
+      # never its metadata, which holds Cloudfall's password digest.
+      userRoles: >-
+        {%- set held = namespace(users={}) -%}
+        {%- if cloudfall_inspect_kibana_user_answer is not none -%}
+        {%- for user in cloudfall_inspect_kibana_user_answer | dict2items
+                        | rejectattr('value.metadata._reserved', 'defined') -%}
+        {%- set held.users = held.users | combine({
+              user.key: user.value.roles | default([])
+              | select('in', cloudfall_inspect_kibana_role_names) | list
+            }) -%}
+        {%- endfor -%}
+        {%- endif -%}
+        {{ held.users if cloudfall_inspect_kibana_user_answer is not none else none }}

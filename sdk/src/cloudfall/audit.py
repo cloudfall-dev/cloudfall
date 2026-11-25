@@ -24,6 +24,10 @@ from cloudfall.inventory import (
     remote_access_rules_for_server,
     service_remote_access,
 )
+from cloudfall.kibana import EDIT_ROLE as KIBANA_EDIT_ROLE
+from cloudfall.kibana import ROLE_NAMES as KIBANA_ROLE_NAMES
+from cloudfall.kibana import VIEW_ROLE as KIBANA_VIEW_ROLE
+from cloudfall.kibana import KibanaEncryptionKey
 from cloudfall.mariadb import RESERVED_USER_NAMES as RESERVED_MARIADB_USER_NAMES
 from cloudfall.mariadb import SYSTEM_DATABASES as MARIADB_SYSTEM_DATABASES
 from cloudfall.mariadb import MariadbReplicationRole
@@ -44,6 +48,7 @@ from cloudfall.rabbitmq_cluster import is_cluster as is_rabbitmq_cluster
 from cloudfall.rabbitmq_cluster import node_name as rabbitmq_node_name
 from cloudfall.requirements import (
     ELASTICSEARCH_PACKAGE,
+    KIBANA_PACKAGE,
     MARIADB_CA_PATH,
     MARIADB_CERTIFICATE_PATH,
     MARIADB_KEY_PATH,
@@ -69,6 +74,7 @@ if TYPE_CHECKING:
         BaselineInventory,
         ComponentInventory,
         ConfigurationFileRequirement,
+        DomainInventory,
         ElasticsearchService,
         FirewallRequirement,
         LoggingStackInventory,
@@ -98,6 +104,15 @@ MARIADB_LAG_LIMIT_SECONDS = 300
 _MARIADB_UPSTREAM_VERSION = re.compile(r"^(?:\d+:)?(\d+\.\d+\.\d+)")
 _MARIADB_SETTINGS_SECTION = "mariadbd"
 _MARIADB_THREAD_RUNNING = "Yes"
+KIBANA_UNIT = "kibana.service"
+KIBANA_CONFIGURATION_DIRECTORY = "/etc/kibana"
+KIBANA_CA_PATH = f"{KIBANA_CONFIGURATION_DIRECTORY}/elasticsearch-ca.crt"
+"""Where the Kibana role copies the project CA the node's HTTPS is verified against."""
+KIBANA_AVAILABLE_LEVEL = "available"
+_KIBANA_HEAP_OPTION = "--max-old-space-size"
+_KIBANA_ROLE_BASES = {KIBANA_VIEW_ROLE: "read", KIBANA_EDIT_ROLE: "all"}
+"""Kibana's base privilege each role the Kibana role keeps holds on every space."""
+_KIBANA_ELASTICSEARCH_PRIVILEGES = ("cluster", "indices", "run_as", "remote_indices")
 
 
 class AuditStatus(StrEnum):
@@ -238,6 +253,7 @@ def audit_inventory(
         for service in inventory.services
         if service.rabbitmq is not None and is_rabbitmq_cluster(service)
     }
+    kibana = _kibana_contexts(inventory)
     audits = tuple(
         _audit_server(
             server,
@@ -267,6 +283,11 @@ def audit_inventory(
                 and server.resource_id in service.elasticsearch.nodes
             ),
             rabbitmq_nodes=rabbitmq_nodes,
+            kibana=tuple(
+                context
+                for context in kibana
+                if context.service.server_id == server.resource_id
+            ),
         )
         for server in inventory.servers
     )
@@ -301,6 +322,7 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
     dashboards: Mapping[str, str] | None = None,
     elasticsearch_nodes: tuple[ServiceInventory, ...] = (),
     rabbitmq_nodes: Mapping[ResourceId, tuple[str, ...]] | None = None,
+    kibana: tuple[_KibanaContext, ...] = (),
 ) -> ServerAudit:
     if snapshot is None:
         check = AuditCheck(
@@ -354,6 +376,8 @@ def _audit_server(  # noqa: PLR0913 - one audit, many evidence sources.
     for service in services:
         checks.extend(_audit_mariadb_server(service, snapshot))
     checks.extend(_audit_mariadb_accounts(services, snapshot))
+    for context in kibana:
+        checks.extend(_audit_kibana(context, snapshot))
     checks.extend(_audit_rabbitmq_accounts(services, snapshot))
     checks.extend(_audit_rabbitmq_cluster(services, rabbitmq_nodes, snapshot))
     checks.extend(_audit_alert_rules(alert_rules, snapshot))
@@ -1447,6 +1471,448 @@ def _audit_elasticsearch_users(
             )
         )
     return tuple(checks)
+
+
+@dataclass(frozen=True, slots=True)
+class _KibanaContext:
+    """A Kibana service, the Elasticsearch service it reads, and its Domain."""
+
+    service: ServiceInventory
+    cluster: ServiceInventory
+    domain: DomainInventory | None
+
+
+def _kibana_contexts(inventory: PlatformInventory) -> tuple[_KibanaContext, ...]:
+    """Pair each Kibana service with its cluster and Domain, which validation found."""
+    services = {service.resource_id: service for service in inventory.services}
+    domains = {domain.resource_id: domain for domain in inventory.domains}
+    contexts: list[_KibanaContext] = []
+    for service in inventory.services:
+        kibana = service.kibana
+        if kibana is None:
+            continue
+        contexts.append(
+            _KibanaContext(
+                service=service,
+                cluster=services[kibana.elasticsearch],
+                domain=None if kibana.domain is None else domains[kibana.domain],
+            )
+        )
+    return tuple(contexts)
+
+
+def _url_host(address: str) -> str:
+    """Return ``address`` as a URL's host: an IPv6 address in brackets."""
+    return f"[{address}]" if ":" in address else address
+
+
+def kibana_managed_settings(
+    service: ServiceInventory,
+    cluster: ServiceInventory,
+    domain: DomainInventory | None,
+) -> dict[str, object]:
+    """Return the settings the Kibana role writes to ``kibana.yml`` (S-024).
+
+    The file holds these and nothing else: the token and the encryption keys
+    are in Kibana's keystore. Kibana reaches the node as the role's own calls
+    do, over plain HTTP on loopback, or over HTTPS verified against the
+    project CA when the cluster declares ``remoteAccess``.
+    """
+    elasticsearch = cluster.elasticsearch
+    if service.kibana is None or elasticsearch is None:
+        message = (
+            "not a Kibana service and its Elasticsearch service: "
+            f"{service.resource_id.value}, {cluster.resource_id.value}"
+        )
+        raise ValueError(message)
+    address = service.bind.address.value
+    port = service.bind.port.value
+    remote_access = elasticsearch.remote_access
+    node = (
+        f"http://{cluster.bind.address.value}:{cluster.bind.port.value}"
+        if remote_access is None
+        else f"https://{_url_host(remote_access.listen_address.value)}:"
+        f"{cluster.bind.port.value}"
+    )
+    settings: dict[str, object] = {
+        "server.host": address,
+        "server.port": port,
+        "server.publicBaseUrl": (
+            f"http://{_url_host(address)}:{port}"
+            if domain is None
+            else f"https://{domain.primary_name.value}"
+        ),
+    }
+    if domain is not None:
+        settings["xpack.security.secureCookies"] = True
+    settings["elasticsearch.hosts"] = [node]
+    if remote_access is not None:
+        settings["elasticsearch.ssl.certificateAuthorities"] = [KIBANA_CA_PATH]
+        settings["elasticsearch.ssl.verificationMode"] = "full"
+    settings["telemetry.optIn"] = False
+    return settings
+
+
+def _audit_kibana(
+    context: _KibanaContext, snapshot: ObservedServerSnapshot
+) -> tuple[AuditCheck, ...]:
+    """Check one Kibana service; every check only reads (S-024, Audit).
+
+    The installed package against the Elasticsearch service's ``version``,
+    the unit, the managed files, the level Kibana reports, the two roles it
+    keeps, the Kibana roles of the cluster's declared users, and its S-011
+    secret requirements: the three keys in its keystore. A listener off
+    loopback is the ``services.bind`` check every service has.
+    """
+    service = context.service
+    elasticsearch = cast("ElasticsearchService", context.cluster.elasticsearch)
+    service_id = service.resource_id.value
+    version = elasticsearch.version.value
+    installed = [
+        _string(entry, "version")
+        for entry in _mapping_sequence(snapshot.spec, "packages")
+        if _string(entry, "name") == KIBANA_PACKAGE.value
+    ]
+    unit = _optional_mapping(_mapping(snapshot.spec, "services").get(KIBANA_UNIT))
+    unit_observed = (
+        None
+        if unit is None
+        else {"state": _string(unit, "state"), "status": _string(unit, "status")}
+    )
+    unit_desired = {"state": "running", "status": "enabled"}
+    evidence = _optional_mapping(snapshot.spec.get("kibana"))
+    if evidence is not None and _string(evidence, "service") != service_id:
+        evidence = None
+    return (
+        _comparison(
+            f"kibana.version[{service_id}]",
+            {
+                "version": version,
+                "elasticsearch": context.cluster.resource_id.value,
+            },
+            {"versions": installed} if installed else None,
+            matches=installed == [version],
+        ),
+        _comparison(
+            f"kibana.unit[{service_id}]",
+            {"unit": KIBANA_UNIT, **unit_desired},
+            unit_observed,
+            matches=unit_observed == unit_desired,
+        ),
+        _audit_kibana_configuration(context, evidence),
+        _audit_kibana_status(service, evidence),
+        _audit_kibana_roles(service, evidence),
+        _audit_kibana_users(context, evidence),
+        _audit_kibana_keystore(service, evidence),
+    )
+
+
+def _kibana_unknown(check: str, desired: object, reason: str) -> AuditCheck:
+    return AuditCheck(
+        check=check,
+        status=AuditStatus.UNKNOWN,
+        desired=desired,
+        observed=None,
+        message=reason,
+    )
+
+
+_KIBANA_NO_EVIDENCE = (
+    "the observation carries no Kibana evidence; inspect again with this release"
+)
+
+
+def _audit_kibana_configuration(
+    context: _KibanaContext, evidence: Mapping[str, object] | None
+) -> AuditCheck:
+    """Compare ``kibana.yml`` and the heap in ``node.options`` with the rendered.
+
+    ``kibana.yml`` is the role's alone: a setting it does not write is drift,
+    listed by name only, since a hand-written value may be a secret.
+    """
+    service = context.service
+    kibana = service.kibana
+    if kibana is None:
+        message = f"not a Kibana service: {service.resource_id.value}"
+        raise ValueError(message)
+    settings = kibana_managed_settings(service, context.cluster, context.domain)
+    heap = {_KIBANA_HEAP_OPTION: kibana.heap_mb.value}
+    desired = {"kibana.yml": settings, "node.options": heap}
+    check = f"kibana.configuration[{service.resource_id.value}]"
+    if evidence is None:
+        return _kibana_unknown(check, desired, _KIBANA_NO_EVIDENCE)
+    observed: dict[str, object] = {}
+    problems: list[str] = []
+    content = evidence.get("configuration")
+    found = _elasticsearch_settings(content) if isinstance(content, str) else None
+    if not isinstance(content, str):
+        observed["kibana.yml"] = {"present": False}
+        problems.append("kibana.yml is missing")
+    elif found is None:
+        observed["kibana.yml"] = {"present": True, "readable": False}
+        problems.append("kibana.yml is no YAML mapping")
+    else:
+        observed["kibana.yml"] = {key: found.get(key) for key in settings}
+        changed = sorted(key for key in settings if found.get(key) != settings[key])
+        unmanaged = sorted(key for key in found if key not in settings)
+        if unmanaged:
+            observed["unmanagedSettings"] = unmanaged
+        problems.extend(f"{key} differs" for key in changed)
+        if unmanaged:
+            problems.append(
+                "kibana.yml holds settings the role does not write: "
+                + ", ".join(unmanaged)
+            )
+    options = evidence.get("nodeOptions")
+    heaps = _kibana_heaps(options) if isinstance(options, str) else None
+    observed["node.options"] = (
+        {"present": False}
+        if heaps is None
+        else {_KIBANA_HEAP_OPTION: heaps[0] if len(heaps) == 1 else heaps}
+    )
+    if heaps != [kibana.heap_mb.value]:
+        problems.append(
+            "node.options is missing"
+            if heaps is None
+            else f"node.options gives {_KIBANA_HEAP_OPTION} "
+            f"{', '.join(str(item) for item in heaps) or 'nowhere'}"
+        )
+    return AuditCheck(
+        check=check,
+        status=AuditStatus.DRIFT if problems else AuditStatus.COMPLIANT,
+        desired=desired,
+        observed=observed,
+        message="; ".join(problems) if problems else "desired state matches",
+    )
+
+
+def _kibana_heaps(content: str) -> list[int | str]:
+    """Return each ``--max-old-space-size`` an active line of ``node.options`` sets."""
+    found: list[int | str] = []
+    prefix = f"{_KIBANA_HEAP_OPTION}="
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line.startswith(prefix):
+            continue
+        value = line.removeprefix(prefix).strip()
+        found.append(int(value) if value.isdigit() else value)
+    return found
+
+
+def _audit_kibana_status(
+    service: ServiceInventory, evidence: Mapping[str, object] | None
+) -> AuditCheck:
+    """Report a Kibana whose ``GET /api/status`` overall level is not available."""
+    check = f"kibana.status[{service.resource_id.value}]"
+    desired = {"level": KIBANA_AVAILABLE_LEVEL}
+    if evidence is None:
+        return _kibana_unknown(check, desired, _KIBANA_NO_EVIDENCE)
+    status = _mapping(evidence, "status")
+    if status.get("read") is not True:
+        return _kibana_unknown(
+            check,
+            desired,
+            "Kibana was not asked: the cloudfall account's password is not on "
+            "the server",
+        )
+    level = status.get("level")
+    available = level == KIBANA_AVAILABLE_LEVEL
+    return AuditCheck(
+        check=check,
+        status=AuditStatus.COMPLIANT if available else AuditStatus.DRIFT,
+        desired=desired,
+        observed={"level": level},
+        message=(
+            "Kibana reports itself available"
+            if available
+            else "Kibana did not answer GET /api/status"
+            if level is None
+            else f"Kibana reports itself {level}"
+        ),
+    )
+
+
+def _kibana_role_desired(service_id: str, role: str) -> dict[str, object]:
+    """Return a role the Kibana role keeps, as its PUT body defines it."""
+    return {
+        "elasticsearchPrivileges": [],
+        "kibana": [
+            {"base": [_KIBANA_ROLE_BASES[role]], "features": [], "spaces": ["*"]}
+        ],
+        "metadata": {"cloudfall_managed_by": service_id},
+    }
+
+
+def _kibana_role_observed(entry: Mapping[str, object]) -> dict[str, object] | None:
+    """Reduce Kibana's answer for a role to what the role compares; None if absent."""
+    if entry.get("found") is not True:
+        return None
+    elasticsearch = _optional_mapping(entry.get("elasticsearch")) or {}
+    privileges = sorted(
+        key
+        for key in _KIBANA_ELASTICSEARCH_PRIVILEGES
+        if elasticsearch.get(key) not in (None, [])
+    )
+    kibana = [
+        {
+            "base": item.get("base"),
+            "features": sorted(_optional_mapping(item.get("feature")) or {}),
+            "spaces": item.get("spaces"),
+        }
+        for item in _mapping_values_sequence(entry.get("kibana"))
+    ]
+    return {
+        "elasticsearchPrivileges": privileges,
+        "kibana": kibana,
+        "metadata": dict(_optional_mapping(entry.get("metadata")) or {}),
+    }
+
+
+def _audit_kibana_roles(
+    service: ServiceInventory, evidence: Mapping[str, object] | None
+) -> AuditCheck:
+    """Compare the two Kibana roles with what the Kibana role writes (S-024).
+
+    Each holds Kibana's base privilege ``read`` or ``all`` on every space,
+    no feature privilege, no privilege in Elasticsearch, and the service's
+    marker.
+    """
+    service_id = service.resource_id.value
+    check = f"kibana.roles[{service_id}]"
+    roles = sorted(KIBANA_ROLE_NAMES)
+    desired = {role: _kibana_role_desired(service_id, role) for role in roles}
+    if evidence is None:
+        return _kibana_unknown(check, desired, _KIBANA_NO_EVIDENCE)
+    entries = evidence.get("roles")
+    if entries is None:
+        return _kibana_unknown(
+            check,
+            desired,
+            "the roles were not read; inspect again once Kibana answers as the "
+            "cloudfall account",
+        )
+    answered = {
+        _string(entry, "name"): entry for entry in _mapping_values_sequence(entries)
+    }
+    observed = {
+        role: None if role not in answered else _kibana_role_observed(answered[role])
+        for role in roles
+    }
+    differing = [role for role in roles if observed[role] != desired[role]]
+    return AuditCheck(
+        check=check,
+        status=AuditStatus.DRIFT if differing else AuditStatus.COMPLIANT,
+        desired=desired,
+        observed=observed,
+        message=(
+            "; ".join(
+                f"{role} is missing"
+                if observed[role] is None
+                else f"{role} differs from what the role writes"
+                for role in differing
+            )
+            if differing
+            else "desired state matches"
+        ),
+    )
+
+
+def _audit_kibana_users(
+    context: _KibanaContext, evidence: Mapping[str, object] | None
+) -> AuditCheck:
+    """Compare the Kibana roles each declared user holds with its ``access``.
+
+    A user of the Elasticsearch service that ``kibana.users`` names holds the
+    role of its access and no other; every other declared user holds none. A
+    user the service does not declare is not Cloudfall's: one holding a
+    Kibana role is listed as unmanaged without counting as drift.
+    """
+    service = context.service
+    kibana = service.kibana
+    elasticsearch = context.cluster.elasticsearch
+    if kibana is None or elasticsearch is None:
+        message = f"not a Kibana service: {service.resource_id.value}"
+        raise ValueError(message)
+    check = f"kibana.users[{service.resource_id.value}]"
+    access = {user.name.value: user.access.role for user in kibana.users}
+    desired = {
+        name: [access[name]] if name in access else []
+        for name in sorted(user.name.value for user in elasticsearch.users)
+    }
+    if evidence is None:
+        return _kibana_unknown(check, desired, _KIBANA_NO_EVIDENCE)
+    raw = evidence.get("userRoles")
+    held = _optional_mapping(raw)
+    if held is None:
+        return _kibana_unknown(
+            check,
+            desired,
+            "the cluster's users were not read; inspect again once the node "
+            "answers as the cloudfall account",
+        )
+    holding = {name: sorted(_strings(held, name)) for name in held}
+    observed = {name: holding.get(name, []) for name in desired}
+    differing = [name for name in desired if observed[name] != desired[name]]
+    unmanaged = sorted(
+        name for name, roles in holding.items() if name not in desired and roles
+    )
+    problems = [
+        f"{name} holds {', '.join(observed[name]) or 'no Kibana role'} where its "
+        f"access gives {', '.join(desired[name]) or 'none'}"
+        for name in differing
+    ]
+    message = "; ".join(problems) if problems else "desired state matches"
+    if unmanaged:
+        message += (
+            "; unmanaged (not declared, left as they are): "
+            + "; ".join(
+                f"{name} holds {', '.join(holding[name])}" for name in unmanaged
+            )
+        )
+    return AuditCheck(
+        check=check,
+        status=AuditStatus.DRIFT if differing else AuditStatus.COMPLIANT,
+        desired=desired,
+        observed=observed,
+        message=message,
+    )
+
+
+def _audit_kibana_keystore(
+    service: ServiceInventory, evidence: Mapping[str, object] | None
+) -> AuditCheck:
+    """Check the S-011 secret requirements: the three keys in Kibana's keystore.
+
+    Read by setting name only; the package requirement is ``kibana.version``.
+    """
+    check = f"kibana.keystore[{service.resource_id.value}]"
+    keys = sorted(key.value for key in KibanaEncryptionKey)
+    desired = {"settings": keys}
+    if evidence is None:
+        return _kibana_unknown(check, desired, _KIBANA_NO_EVIDENCE)
+    listed = evidence.get("keystore")
+    if listed is None:
+        return AuditCheck(
+            check=check,
+            status=AuditStatus.DRIFT,
+            desired=desired,
+            observed=None,
+            message="Kibana's keystore could not be listed",
+        )
+    held = set(_strings(evidence, "keystore"))
+    present = [key for key in keys if key in held]
+    missing = [key for key in keys if key not in held]
+    return AuditCheck(
+        check=check,
+        status=AuditStatus.DRIFT if missing else AuditStatus.COMPLIANT,
+        desired=desired,
+        observed={"settings": present},
+        message=(
+            "the keystore lacks " + ", ".join(missing)
+            if missing
+            else "desired state matches"
+        ),
+    )
 
 
 def _audit_mariadb_accounts(
