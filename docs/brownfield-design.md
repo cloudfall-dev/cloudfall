@@ -1,8 +1,11 @@
 # Brownfield design: Ansible is the hand, the agent is the brain, Cloudfall is the conscience
 
-Status: proposed concept. Nothing in this document is implemented. It
-re-roots Cloudfall on an existing Ansible inventory instead of Cloudfall's
-own resource documents. It builds on the decision in
+Status: partly built. The read side, the catalog, the gate and the record
+work on a team's own repository since 0.4.0 (`cloudfall why` since 0.6.0);
+safe edits, starter operations and the run-side commands do not. Each of
+[the seven parts](#the-seven-parts) opens with its own status. This
+document re-roots Cloudfall on an existing Ansible inventory instead of
+Cloudfall's own resource documents. It builds on the decision in
 [no Ansible replacement](decisions/2026-09-14-no-ansible-replacement.md)
 and changes the [project vocabulary](../ARCHITECTURE.md): the fleet is no
 longer declared by Cloudfall, it is read from Ansible.
@@ -220,6 +223,11 @@ hosts and a library of verify steps is the product.
 
 ### 1. Operations catalog
 
+Status: built (0.4.0). Operations are declared in `operations/` and read by
+`cloudfall operations list|show`; each risk level is exported as MCP tool
+annotations, and the verify playbook runs after an approved run. Cloudfall's
+own roles are not packaged as starter operations yet (part 7).
+
 Every playbook or role the team already runs becomes an operation:
 
 ```yaml
@@ -252,6 +260,13 @@ that have no baseline yet. They are optional (part 7).
 
 ### 2. Approval and audit
 
+Status: built (0.4.0; `cloudfall why` since 0.6.0). `cloudfall operations
+propose` runs check mode and records the decision, `cloudfall decisions
+approve` is the person's step that runs it and its verify playbook, and
+`cloudfall why` answers from the records. A mutating operation always waits
+for that person: approval by policy for a declared operation is not built
+(see the open questions).
+
 | Risk | Behaviour |
 | --- | --- |
 | `read` | Runs freely |
@@ -282,6 +297,13 @@ process that refuses to run a `destructive` operation without a human.
 
 ### 3. Agent surface
 
+Status: built for the catalog and the reads (0.4.0). `cloudfall mcp serve
+--repository` serves each declared operation as a tool beside `inventory
+show`, `observe`, `audit`, `operations list|show`, `decisions list|show`
+and `why`; no tool approves anything. The safe-edit verbs of part 6 are
+not built, and neither are deploy, rollback, restart and health on a
+repository ([#618](https://github.com/cloudfall-dev/cloudfall/issues/618)).
+
 One CLI and one MCP server, same commands for humans and agents, JSON
 output everywhere. The loop is fixed:
 
@@ -297,6 +319,15 @@ from part 6. Nothing else. A tool that is not on the list is a raw shell
 call, and raw shell calls are what the harness exists to make unnecessary.
 
 ### 4. Fleet reader
+
+Status: built (0.4.0). `cloudfall inventory show`, `cloudfall audit` and
+`cloudfall observe` read the team's inventory (`--inventory`, or the one
+their `ansible.cfg` names) through `cloudfall.ansible_api`, in process with
+the `ansible-inventory` fallback. The `cloudfall` block is per host, with
+`cloudfall_defaults` per group and the `cloudfall_baselines` catalog (the
+answer to the merge question below). Not built: `cloudfall get host`
+returning the merged variables with the file that sets each winning value
+([#620](https://github.com/cloudfall-dev/cloudfall/issues/620)).
 
 Cloudfall declares no servers. It reads the team's inventory (static INI
 or YAML, or a dynamic plugin) through ansible-core's own loader and gets
@@ -333,6 +364,11 @@ document. They do not change what the reader is for.
 
 ### 5. Observation
 
+Status: built (0.4.0). `cloudfall observe` writes one read-only snapshot per
+host through the team's inventory, and `cloudfall audit` judges the fleet
+from those snapshots. Backups and the restore drill do not run on a
+repository yet ([#619](https://github.com/cloudfall-dev/cloudfall/issues/619)).
+
 Facts, service state, disk, recent logs and the last run result are
 gathered into one structured snapshot per host. The agent reads the
 snapshot, never raw SSH output. Snapshots are cached with a timestamp so
@@ -343,6 +379,10 @@ the agent saw. That link is the reason snapshots exist as a Cloudfall
 concept rather than as Ansible fact caching.
 
 ### 6. Safe edits
+
+Status: not built. No `get`, `set`, `unset`, `add host` or `remove host`
+verb exists; `cloudfall get host` is the first
+([#620](https://github.com/cloudfall-dev/cloudfall/issues/620)).
 
 Ansible ships nothing that edits its own files: `ansible-inventory` exports,
 `ansible-config init` generates, ansible-lint validates. An agent editing
@@ -419,6 +459,10 @@ and for the round-trip write that no reviewer can add after the fact.
 
 ### 7. Starter roles
 
+Status: not built. The engine roles run for a Cloudfall project, not as
+operations on a team's repository, and `cloudfall init` still lays out a
+project rather than a plain Ansible inventory.
+
 The existing engine roles stay, packaged as optional operations. A
 greenfield team gets a plain Ansible inventory generated by `cloudfall init`
 so that greenfield and brownfield share one code path.
@@ -456,7 +500,10 @@ so that greenfield and brownfield share one code path.
   (`cloudfall_environment`, `cloudfall_owns`, ...) so each merges by
   precedence on its own; or a `cloudfall` block at host level only with
   group-level defaults read by Cloudfall itself, not by Ansible. The
-  reader (part 4) and the `set` verb (part 6) both depend on the answer
+  reader (part 4) and the `set` verb (part 6) both depend on the answer.
+  The reader took the second option: `cloudfall` is per host and
+  `cloudfall_defaults` per group, merged by Cloudfall with the host
+  winning; the `set` verb is not built
 - **Dynamic inventories.** Where do `host_vars` go when hosts come from a
   cloud plugin? Likely `group_vars` keyed by tag, plus a Cloudfall-side
   overlay file only for hosts that need one

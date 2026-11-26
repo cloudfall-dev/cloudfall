@@ -117,7 +117,7 @@ acceptable if the following hold:
 | 11 | Drain / decommission | Evacuation procedure over 9 + 10 | Missing |
 | 12 | Declared operations with verify | `Operation` catalog, MCP annotations, verify playbook | Partial: MCP tools are annotated, server changes preview until confirmed, and approval stays a person's command; deploys, backups and migrations verify; no catalog over arbitrary playbooks, no declared verify step |
 | 13 | Audit entry per decision | Receipts as the record, `cloudfall why` | Partial: operator proposals and every deploy, backup and drill write receipts; no single entry joining snapshot, diff, approver and verify; no query |
-| 14 | One config, the team's | Fleet reader over their inventory, `cloudfall` key | Missing: the config is Cloudfall's own resources today (design written) |
+| 14 | One config, the team's | Fleet reader over their inventory, `cloudfall` key | Partial: on a team's repository `inventory show`, `audit` and `observe` read their inventory with a `cloudfall` block per host, their playbooks are declared operations, and `why` and `mcp serve --repository` work there; deploy, rollback, restart and health (#618), backups and the restore drill (#619) and `get host` with the file that sets each value (#620) still need a Cloudfall project |
 
 ## Sequencing implications
 

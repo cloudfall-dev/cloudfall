@@ -104,12 +104,37 @@ and run logs are raw Ansible output, so they stay under
 size (D-24). `cloudfall init` lays out a new project and
 `cloudfall add` declares its first fleet resources.
 
-Proposed, not built: for a team that already runs Ansible, the project is
-their existing repository. The fleet is read from their inventory instead of
-`Server` resources, Cloudfall's declarations live under one `cloudfall` key
-in their `group_vars` and `host_vars`, and their playbooks are registered as
-operations. One config, theirs; no import and no second copy. See the
-[brownfield design](docs/brownfield-design.md).
+For a team that already runs Ansible, Cloudfall works on their existing
+repository instead of a project. One config, theirs; no import and no second
+copy. See the [brownfield design](docs/brownfield-design.md).
+
+Built on a team's repository since 0.4.0:
+
+- **The fleet reader.** `cloudfall inventory show`, `cloudfall audit` and
+  `cloudfall observe` read the fleet from their inventory (`--inventory`,
+  or the one their `ansible.cfg` names) instead of `Server` resources.
+  Hosts, groups and connection settings come from Ansible; each host's
+  `cloudfall` block in their `host_vars`, `cloudfall_defaults` per group and
+  the `cloudfall_baselines` catalog carry what Ansible does not model, and
+  are validated against the same schemas a project's resources are
+- **The operations catalog and the gate.** Their playbooks are declared as
+  operations in `operations/`, each with a risk level, typed inputs,
+  preconditions and a verify playbook (`cloudfall operations list|show`);
+  `cloudfall operations propose` runs one in check mode and records it,
+  and `cloudfall decisions approve` is the person's step that runs it and
+  its verify playbook
+- **The record and the agent surface.** `cloudfall why` (0.6.0) answers
+  from the decision records, and `cloudfall mcp serve --repository` serves
+  the declared operations as tools beside those reads
+
+Not built yet on a team's repository, so these still need a Cloudfall
+project: deploy, rollback, restart and health
+([#618](https://github.com/cloudfall-dev/cloudfall/issues/618)); backups
+and the restore drill
+([#619](https://github.com/cloudfall-dev/cloudfall/issues/619)); and
+`cloudfall get host` returning a host's merged variables with the file that
+sets each winning value
+([#620](https://github.com/cloudfall-dev/cloudfall/issues/620)).
 
 ## Module boundaries
 
@@ -152,8 +177,8 @@ The typed resources are today's config, not the point. The point is that
 there is one description of the fleet, the team owns it, it is plain files
 in a repository, and nothing rewrites it silently. The brownfield design
 keeps every one of those properties while moving the description into the
-team's own Ansible inventory; the schemas then validate the `cloudfall`
-block instead of standalone documents.
+team's own Ansible inventory; on a team's repository the schemas already
+validate the `cloudfall` block instead of standalone documents.
 
 ## Application and component model
 
