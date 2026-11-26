@@ -14,10 +14,10 @@ platform team.
 
 ## Goals
 
-- G-1: Host 10 to 100 applications on a small fleet of owned nodes at a fixed cost per node, operated from one management host by an agent
-- G-2: Every operation has a verify step and every decision an audit entry; cloudfall why answers from the record alone
-- G-3: A PaaS app moves over with the operational feel kept: health-gated deploys, rollback, monitoring, databases that provably restore
-- G-4: Works on the team's own Ansible inventory and config, not only on one Cloudfall set up
+- G-1: Host 10 to 100 applications on a small fleet of owned nodes at a fixed cost per node, operated from one management host by an agent. Check: 10 or more applications run on one Cloudfall fleet, operated by an agent. By: 2027-03-31
+- G-2: Held: every operation has a verify step and every decision an audit entry; cloudfall why answers from the record alone. Threshold: every operation in the catalog has a verify step and an audit entry. Source: the catalog test in CI
+- G-3: A PaaS app moves over with the operational feel kept: health-gated deploys, rollback, monitoring, databases that provably restore. Check: one Render or Heroku application moved, with a health-gated deploy, a rollback, monitoring and a passing restore drill. By: 0.7.0
+- G-4: Works on the team's own Ansible inventory and config, not only on one Cloudfall set up. Check: deploy, rollback, restart, health, backups and the restore drill run on a team's own Ansible repository with no Cloudfall project (#188 W-2 to W-4). By: 2027-01-31
 
 ## Non-goals
 
