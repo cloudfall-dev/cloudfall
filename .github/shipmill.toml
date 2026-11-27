@@ -106,9 +106,10 @@ mode = "headless" # nobody attaches: sessions ask on GitHub with needs-decision
 projects = 2      # active projects at once in this product (spec 106): 2 here and 1 in the venture's other product: the maintainer's 2-3 per venture, 2026-11-27
 
 # Programs a gate session's `uv run` may start besides python, pytest, ruff and mypy (D-82):
-# implementers lint Ansible changes before pushing, as CI does (#325)
+# implementers lint Ansible changes (#325) and run the playbook syntax check (#547) before
+# pushing, as CI does
 [hooks]
-uv_run = ["ansible-lint"]
+uv_run = ["ansible-lint", "ansible-playbook"]
 
 [autonomy]
 triage = "act"
