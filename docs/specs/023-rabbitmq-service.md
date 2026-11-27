@@ -28,6 +28,13 @@ RabbitMQ differs from the kinds before it in three ways:
   by copying the data directory of a stopped one. What protects a message here is its copy on
   the other nodes, and the backup holds definitions only
 
+Not every application needs that copy. Work the application can create again, a client
+library that can't use quorum queues, or a team with one server is served by one node with
+classic queues, the minimal configuration; messages that must outlive a server need three
+nodes and quorum queues (cloudfall-dev/cloudfall#539). Only the application's owner knows
+what a lost message and a stopped broker cost, so the kind offers both as profiles and the
+owner of the declaration chooses.
+
 ## Behaviour
 
 ### Declaration
@@ -48,6 +55,7 @@ spec:
   rabbitmq:
     version: 4.4.1
     memoryHighWatermarkMb: 2048
+    profile: cluster
     nodes: [h1, h2, h3]
     vhosts:
       - name: jobs
@@ -70,12 +78,42 @@ spec:
 |---|---|---|
 | `version` | yes | Exact `X.Y.Z` of a supported series (below); `rabbitmq-server` is installed at `X.Y.Z-1` from Team RabbitMQ's APT repository on every node and held (`apt-mark hold`), so an unattended upgrade never restarts a node |
 | `memoryHighWatermarkMb` | yes | `vm_memory_high_watermark.absolute` of each node, 512 or more: above it the node stops taking messages from publishers until it is below again |
-| `nodes` | no | The servers of the cluster, one or three; must contain `spec.server`. Absent means `[spec.server]` |
+| `profile` | no | `simple` or `cluster` (below). Absent means `simple` |
+| `nodes` | no | The servers of the service: one, or three with `profile: cluster`; must contain `spec.server`. Absent means `[spec.server]` |
 | `vhosts` | no | The virtual hosts and their owners: `name`, `owner`, `passwordRef` (the S-006 owner form) |
 | `clientAccess` | no | `allowedSources`: the addresses that may connect to every node from outside its server (below) |
 
 `remoteAccess` (S-006) is refused for this kind: it names one listen address, and here every
 node listens on its own.
+
+### Profiles
+
+It stays one kind: the same package, role, definitions backup, audit and metrics. What a team
+chooses is a profile, which sets two things that are not independent, the number of nodes and
+what a queue declared with no type becomes:
+
+| `profile` | Nodes | Default queue type of every declared virtual host | For |
+|---|---|---|---|
+| `simple` (the default) | one | `classic` | work the application can create again, a client library that can't use quorum queues, one server |
+| `cluster` | three, or one on the way to three | `quorum` | messages that must outlive a server, no stop of the broker when one node is lost |
+
+- **Three nodes with classic queues is not a profile.** RabbitMQ 4.x copies no classic queue
+  to another node, so such a cluster would protect nothing the application declares with no
+  type. Three nodes without `profile: cluster` are refused (Validation)
+- **One node with `profile: cluster`** is the first step toward three: its virtual hosts
+  default to quorum queues of one member, which grow to three when the two nodes join. It is
+  allowed, and warned about in production (Validation)
+- **The queue type belongs to each queue, not to the broker.** The profile only decides what
+  a queue declared with no type becomes. An application on `simple` may declare a quorum
+  queue by its type, and one on `cluster` may declare a classic queue it does not need
+  copied; nothing refuses either
+- **The owner of the `Service` declaration chooses.** Cloudfall supports both, makes `simple`
+  the default, and warns where the choice protects less than it looks; it does not choose
+  for the application. The guide gives the questions to choose by (Documentation)
+
+The role applies the profile as the default queue type of each declared virtual host
+(`rabbitmqctl update_vhost_metadata --default-queue-type`), on creation and whenever it
+differs. A default applies to queues declared after it; a queue that exists keeps its type.
 
 ### Supported versions
 
@@ -116,24 +154,27 @@ Because a series lasts nine months, moving to the next one is part of the kind:
   the next accepted one, are refused by the role before anything changes. RabbitMQ does not
   support downgrades
 
-### One node is a cluster that waits for two more
+### One node of the cluster profile waits for two more
 
-The role configures a service with one node exactly as one with three, so growing is adding
-two servers to `nodes` and converging. No queue is redeclared and no message is moved by
-hand.
+The role configures a service with one node exactly as one with three, apart from the default
+queue type its profile sets, so growing a service already on `profile: cluster` is adding two
+servers to `nodes` and converging. No queue is redeclared and no message is moved by hand.
 
 - The node name of a server is `rabbit@` and its hostname. RabbitMQ can't rename a node that
   holds a quorum queue, so `audit` reports a node whose hostname no longer matches its data
   directory, and the role refuses to start it
 - A node finds the others by a list of the declared node names in its configuration. The role
   makes every node's hostname resolve on the other nodes
-- Every declared virtual host has `quorum` as its default queue type, so a durable queue an
-  application declares with no type is a quorum queue: one copy on one node, three on three.
-  An exclusive or non-durable queue stays a classic queue on the node that took the
-  declaration and dies with its connection or with that node, which is what those words ask
-  for
-- A durable classic queue is the one thing that looks kept and is not copied. Nothing
-  refuses it, because an application may want one; `audit` lists each
+- With `profile: cluster`, every declared virtual host has `quorum` as its default queue
+  type, so a durable queue an application declares with no type is a quorum queue: one copy
+  on one node, three on three. With `profile: simple` the default is `classic`, so the same
+  declaration gives a classic queue on the one node. An exclusive or non-durable queue stays
+  a classic queue on the node that took the declaration and dies with its connection or with
+  that node, which is what those words ask for, under either profile
+- Under `profile: cluster`, a durable classic queue is the one thing that looks kept and is
+  not copied. Nothing refuses it, because an application may want one; `audit` lists each.
+  Under `profile: simple` a durable classic queue is what the owner chose, and `audit` does
+  not list it
 - The target size of a quorum queue is three, and continuous membership reconciliation is
   on. A queue declared on one node has one member; once the other two nodes have joined,
   RabbitMQ adds a member on each with no step by a person
@@ -145,6 +186,31 @@ hand.
 
 Streams are not part of this kind: their replication uses a port range of its own that the
 role does not open. `audit` lists a stream queue as unsupported.
+
+### Growing from the simple profile to the cluster profile
+
+A team that started on `simple` grows by setting `profile: cluster` and naming three servers
+in `nodes`, in one change or in two (the profile first, on its one node, then the two
+servers). The converge:
+
+- sets `quorum` as the default queue type of every declared virtual host, so every durable
+  queue declared with no type from then on is a quorum queue, and joins the two nodes as for
+  a service that was on `cluster` from the start (Adding, replacing and losing a node)
+- leaves every queue that exists as it is: a durable classic queue declared under `simple`
+  stays a classic queue on its node, with its messages, and is not copied to the new nodes.
+  No queue is redeclared, deleted or moved, because moving a queue's messages to another
+  type is the application's step: only it knows which consumers to stop and when
+- leaves the application's declarations working: a declaration with no type of a classic
+  queue that exists matches it, as RabbitMQ 4.x treats a missing type as matching the queue
+  that exists
+- has `audit` list each durable classic queue left, as for any service on `cluster`, so the
+  team sees what is not copied yet
+
+The guide says so before the steps, and gives the move of one queue: declare its quorum
+counterpart under a new name, point the publishers at it, drain the classic queue with its
+consumers, then delete it. Going back from `cluster` to `simple` is allowed on one node only
+(three nodes need `cluster`): the default becomes `classic` again and the quorum queues that
+exist stay quorum queues of one member.
 
 ### Adding, replacing and losing a node
 
@@ -271,6 +337,10 @@ tools.
 - `version` that is not `X.Y.Z` of a supported series (`service_rabbitmq_version`)
 - `nodes` without `spec.server`, with an undeclared server or a duplicate, or with a number
   of servers other than one or three (`service_rabbitmq_nodes`)
+- `profile` other than `simple` or `cluster` (the schema's enum)
+- three nodes without `profile: cluster`, absent `profile` included
+  (`service_rabbitmq_profile`): the message names the fix, `profile: cluster`, and says
+  that without it no queue declared with no type is copied
 - a server that is a node of two RabbitMQ services (`service_rabbitmq_server_shared`)
 - a node in another environment than the service (`service_rabbitmq_environment`)
 - two nodes of a service with the same hostname (`service_rabbitmq_hostname`)
@@ -286,20 +356,27 @@ tools.
 - a server whose baseline declares no storage pool or several, or, for one node, a pool
   without a secondary physical volume: the S-014 codes
 
-It warns `RABBITMQ_SINGLE_NODE` for a production environment with one node: one copy of
-every message, and every restart stops the service.
+It warns `RABBITMQ_SINGLE_NODE` for a production environment with `profile: cluster` and one
+node: the cluster waits for two more nodes, its quorum queues have one member, and every
+restart stops the service. One node on `profile: simple` gets no warning in any environment:
+one copy of every message and a stop on every restart are what that profile is, and the
+owner chose it.
 
 ### Audit and metrics
 
 - `audit` reports drift when a node's installed version differs from `version`, when
   `rabbitmq-server.service` is not enabled and running, when a managed file differs from the
   rendered one, when a plugin other than the managed one is enabled, when a listener is on
-  an address the declaration does not name, and when a requirement of a server is unmet
-  (S-011)
+  an address the declaration does not name, when a requirement of a server is unmet
+  (S-011), and when a declared virtual host's default queue type is not the one its profile
+  sets
 - It reports the state of the cluster: a declared node that is not a running member, a
   member that is not declared, a cluster without majority, a partition, a memory or disk
-  alarm, a quorum queue with fewer members online than the service has nodes, a durable
-  classic queue, a stream queue, and a stable feature flag that is not enabled
+  alarm, a quorum queue with fewer members online than the service has nodes, a stream
+  queue, and a stable feature flag that is not enabled
+- It follows the declared profile for classic queues: under `profile: cluster` it reports
+  each durable classic queue, by virtual host and name, as not copied; under
+  `profile: simple` a durable classic queue is no finding
 - With `metrics.enabled`, the collector on each node scrapes the endpoint the Prometheus
   plugin serves on loopback, with the service id as the label the other exporters use. The
   services dashboard (S-016) gains RabbitMQ panels: messages ready and unacknowledged,
@@ -309,10 +386,23 @@ every message, and every restart stops the service.
 ### Documentation
 
 `docs/rabbitmq-service-guide.md` opens with what a backup does not hold, then covers
-declaring one node, growing to three, what an application lists in its client, publisher
-confirms and manual acknowledgements, which queues are copied and which are not, a version
-change inside a series and to the next one, replacing a lost node, what a team sees while
-the cluster has no majority, and restoring definitions from an export.
+choosing a profile, declaring one node, growing from `simple` to `cluster` (existing classic
+queues are not copied, and how to move one), what an application lists in its client,
+publisher confirms and manual acknowledgements, which queues are copied and which are not, a
+version change inside a series and to the next one, replacing a lost node, what a team sees
+while the cluster has no majority, and restoring definitions from an export.
+
+Choosing a profile is the owner's, and the guide gives the four questions to choose by, with
+what each answer points to:
+
+1. If the broker's server is lost, is the work created again by the application, or is it
+   gone? Gone points to `cluster`
+2. How long may the broker be stopped: the minutes of a restart, or not at all? Not at all
+   points to `cluster`
+3. Does every client library handle quorum queues (global prefetch, priorities, delivery
+   limit)? No points to `simple`, or to declaring those queues classic by type
+4. Are there three servers for it? No means `simple`, or `cluster` on one node as the first
+   step
 
 Touches `config/schemas/v1/service.schema.json`, `config/examples/services/`,
 `sdk/src/cloudfall/domain.py`, `sdk/src/cloudfall/inventory.py`,
@@ -341,10 +431,10 @@ ROADMAP.md, ARCHITECTURE.md, and the guide.
 - S-023-4: A second converge changes nothing (`changed=0`) and restarts no node; a
   `memoryHighWatermarkMb` above six tenths of the host's memory stops the converge before
   any task changes the host
-- S-023-5: `jobs` connects on loopback with its password, declares a durable queue with no
-  type in `jobs`, and the queue is a quorum queue; an exclusive queue it declares is a
-  classic queue; `jobs` is refused on another virtual host, and a login as `guest` is
-  refused
+- S-023-5: dropped in #546, see S-023-22 and S-023-23. Was: `jobs` connects on loopback with
+  its password, declares a durable queue with no type in `jobs`, and the queue is a quorum
+  queue; an exclusive queue it declares is a classic queue; `jobs` is refused on another
+  virtual host, and a login as `guest` is refused
 - S-023-6: The password of `jobs` and the Erlang cookie appear in none of the rendered
   inventory, playbook output, command answers or receipts; the definitions file that sets
   the password holds a hash and never the password, and is gone after the converge; a
@@ -359,7 +449,8 @@ ROADMAP.md, ARCHITECTURE.md, and the guide.
 - S-023-9: Each server's ruleset admits ports 4369 and 25672 from the other two nodes only;
   a connection between nodes is encrypted and verified against the project CA; a node
   started with another cookie, or with a certificate from another CA, does not join
-- S-023-10: Adding two nodes to the service of S-023-3 and converging gives the cluster of
+- S-023-10: Adding two nodes to the service of S-023-23 (one node already on
+  `profile: cluster`) and converging gives the cluster of
   S-023-8 with every queue and message the first node held, each quorum queue grown to three
   members with no step by a person, and no queue redeclared; a second converge changes
   nothing
@@ -393,26 +484,59 @@ ROADMAP.md, ARCHITECTURE.md, and the guide.
   `CONFIG_INVALID` and its code; `version: 4.2.9` and `version: 4.5.0` each fail with
   `service_rabbitmq_version`; `nodes` of two servers fails with `service_rabbitmq_nodes`; a
   version of a series within 90 days of its end of support validates with the warning
-  `RABBITMQ_VERSION_ENDING` naming the date; one node in a production environment validates
-  with `RABBITMQ_SINGLE_NODE`
+  `RABBITMQ_VERSION_ENDING` naming the date; the profile cases are S-023-24
 - S-023-19: With `clientAccess` of `allowedSources: [10.0.0.0/24]`, `jobs` connects to each
   node from an allowed address on 5671 verifying the project CA, a plain connection to 5672
   from that address is refused, and each ruleset holds `ip saddr 10.0.0.0/24 tcp dport 5671
   accept` and no unrestricted rule for a RabbitMQ port
 - S-023-20: `cloudfall audit` reports drift when the installed version differs from the
   declaration, when the unit is stopped, when a managed file is changed by hand, when
-  another plugin is enabled, when a durable classic queue or a stream queue exists, and when
-  a quorum queue has fewer than three members online on a three-node service
+  another plugin is enabled, when a stream queue exists, and when a quorum queue has fewer
+  than three members online on a three-node service; durable classic queues follow the
+  profile, in S-023-25
 - S-023-21: With `metrics.enabled`, the rendered collector configuration of each node holds
   one scrape of its RabbitMQ endpoint, labelled with the service id, and none without it;
   the services dashboard shows the messages ready of the service and the members online of
   its quorum queues
+- S-023-22: On the service of S-023-3, whose declaration has no `profile`, the exported
+  definitions give the virtual host `jobs` the default queue type `classic`; `jobs`
+  connects on loopback with its password, declares a durable queue with no type in `jobs`,
+  and the queue is a classic queue; a durable queue it declares with the type `quorum` is a
+  quorum queue of one member; an exclusive queue it declares is a classic queue; `jobs` is
+  refused on another virtual host, and a login as `guest` is refused
+- S-023-23: The same service with `profile: cluster` converges to the default queue type
+  `quorum` for `jobs`; a durable queue `jobs` declares with no type is a quorum queue of one
+  member, and an exclusive queue it declares is a classic queue; a second converge changes
+  nothing
+- S-023-24: `cloudfall-engine inventory render` carries the profile of every RabbitMQ
+  service, `simple` when the declaration has none; `profile: replicated` fails `cloudfall
+  config validate` with `CONFIG_INVALID`; three nodes with no `profile`, and three nodes with
+  `profile: simple`, each fail with `CONFIG_INVALID` and `service_rabbitmq_profile`, the
+  message naming `profile: cluster`; one node with `profile: cluster` validates, with the
+  warning `RABBITMQ_SINGLE_NODE` in a production environment and none in another; one node
+  with no `profile` in a production environment validates with no `RABBITMQ_SINGLE_NODE`
+- S-023-25: `cloudfall audit` follows the profile: on a service with `profile: simple`, a
+  durable classic queue is no finding; on a service with `profile: cluster`, each durable
+  classic queue is reported by virtual host and name; on either, a declared virtual host
+  whose default queue type was changed by hand is reported as drift, and the next converge
+  sets it back
+- S-023-26: On the service of S-023-22 holding a durable classic queue `before` with
+  messages, setting `profile: cluster` and `nodes: [h1, h2, h3]` and converging gives the
+  cluster of S-023-8 and the default queue type `quorum` for `jobs`; `before` is still a
+  classic queue on `h1` with every message, has no member on `h2` or `h3`, and is declared
+  again with no type by `jobs` without an error; a durable queue declared with no type after
+  the change is a quorum queue of three members; `audit` lists `before` as not copied; a
+  second converge changes nothing
 
 ## Out of scope
 
 - A backup of messages, by any means: a copy of a stopped node's data directory, shovels to
   a second cluster, or a standby cluster
 - Two nodes, and more than three
+- Three nodes with classic queues as the default, and any profile besides `simple` and
+  `cluster`; the default queue type is not a free setting of its own
+- Moving a classic queue's messages into a quorum queue, by the converge or any command:
+  the guide gives the application's steps
 - Removing a node without replacing it, and going from three nodes to one
 - Forcing a node without majority to continue alone
 - Streams and the stream protocol
@@ -438,6 +562,9 @@ ROADMAP.md, ARCHITECTURE.md, and the guide.
 
 - D-9: an owner password reaches the server only as a hash computed on the controller;
   stated for PostgreSQL, applied here to RabbitMQ users
+- D-14: a change after which a validating config stops validating is Breaking; refusing
+  three nodes without `profile: cluster` is not, because no release of Cloudfall has
+  carried the RabbitMQ kind yet
 - D-18: a mirrored volume meets an expendable requirement
 - D-25: a password hash converges by reusing the stored salt; stated for PostgreSQL, applied
   here to RabbitMQ's salted hash
@@ -447,11 +574,11 @@ ROADMAP.md, ARCHITECTURE.md, and the guide.
 - cloudfall-dev/cloudfall#505: S-023-1, S-023-2, S-023-18
 - cloudfall-dev/cloudfall#506: S-023-3, S-023-4, S-023-5, S-023-6, S-023-7
 - cloudfall-dev/cloudfall#507: S-023-19
-- cloudfall-dev/cloudfall#508: S-023-8, S-023-9, S-023-10, S-023-11
+- cloudfall-dev/cloudfall#508: S-023-8, S-023-9, S-023-10, S-023-11, S-023-22, S-023-23, S-023-24, S-023-26
 - cloudfall-dev/cloudfall#509: S-023-12, S-023-13
 - cloudfall-dev/cloudfall#510: S-023-14, S-023-15
 - cloudfall-dev/cloudfall#511: S-023-16, S-023-17
-- cloudfall-dev/cloudfall#512: S-023-20, S-023-21
+- cloudfall-dev/cloudfall#512: S-023-20, S-023-21, S-023-25
 
 ## Verification
 
