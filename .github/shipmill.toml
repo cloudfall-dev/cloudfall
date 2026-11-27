@@ -103,6 +103,7 @@ remind_hours = 4   # repeat it while the session still waits
 max_wait_minutes = 15 # stop a session that waited this long; 0: never
 app_id = 5209412   # gated sessions write as shipmill-romamo[bot]
 mode = "headless" # nobody attaches: sessions ask on GitHub with needs-decision
+projects = 2      # active projects at once in this product (spec 106): 2 here and 1 in the venture's other product: the maintainer's 2-3 per venture, 2026-11-27
 
 # Programs a gate session's `uv run` may start besides python, pytest, ruff and mypy (D-82):
 # implementers lint Ansible changes before pushing, as CI does (#325)
